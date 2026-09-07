@@ -31,6 +31,19 @@ function ensureProfile(home: string): string {
   return dir
 }
 
+/** 交给 web 应用的内部参数 = argv 去掉 launcher 自有的 token：`web` 子命令
+ * （argv[0]）与 `--home <path>`（bin.ts 已在任何上游 import 前消费并写入
+ * DSH_HOME/SUPERD_HOME）。其余 flag 原样交给 web-startup 的 commander 解析。 */
+function webInnerArgs(argv: readonly string[]): string[] {
+  const rest = argv.slice(1) // 去掉子命令 token
+  const inner: string[] = []
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--home') { i += 1; continue } // 跳过 --home 及其值
+    inner.push(rest[i])
+  }
+  return inner
+}
+
 async function runWeb(): Promise<void> {
   const home = process.env.DSH_HOME!
   const profileDir = ensureProfile(home)
@@ -53,7 +66,7 @@ async function runWeb(): Promise<void> {
   ])
   app = await boot(NAME, join(profileDir, PROFILE_ROOT_FILENAME), patches, (hostCtx) => {
     provideCmdline(hostCtx, {
-      args: process.argv.slice(2),
+      args: webInnerArgs(process.argv.slice(2)),
       exit: code => process.exit(code),
     })
   })
