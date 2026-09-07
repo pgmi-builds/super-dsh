@@ -290,8 +290,9 @@ git commit -m "feat(P1): superd home resolution — SUPERD_HOME defaults, DSH_HO
 - Test: `test/patch-compose.spec.ts`
 
 **Interfaces:**
-- Produces: bundle patch 行集合（行 id 契约）：`superd-startup` / `webserver` / `superd-runtime` / `client-hmr` / `modules` / `connection` / `api-remotes` / `cordis-host-runner` / `cordis-client-runner` / `ui-theme` / `locale` / `ui-layout` / `ui-renderer` / `ui-cordis` / `ui-sidebar` / `ui-settings`。Task 4/5 实现其中两行指向的自有插件。
+- Produces: bundle patch 行集合（行 id 契约，20 行）：`superd-startup` / `webserver` / `superd-runtime` / `typert` / `typert-loader` / `typert-gateway` / `credentials` / `client-hmr` / `modules` / `connection` / `api-remotes` / `cordis-host-runner`（P1 disabled）/ `cordis-client-runner` / `ui-theme` / `locale` / `ui-layout` / `ui-renderer` / `ui-cordis` / `ui-sidebar` / `ui-settings`。Task 4/5 实现其中两行指向的自有插件。
 - 决策记录：`ui-workspace`、`ui-settings-general` **P1 不挂**（数据面属 superD BFF 聚合，蓝图边界文档 §4① 复核位）——P2 复核后加。`ui-cordis`（调试面板）挂上，便于 P1 排障。
+- **T7 实证裁决（2026-09-08 首次真实 boot）**：中性 roster 缺 4 个 wire 载体行——`typert`（dsh-typert-registry）/ `typert-loader`（dsh-typert-loader）/ `typert-gateway`（dsh-api-gateway，提供 `typertGateway` 服务）/ `credentials`（**新依赖** `@deepseek-ai/dsh-credentials-local@0.1.3-alpha.2`，提供 `credentials` 服务——BrowserAuth cookie 密钥的持久层，蓝图 §3.6 认证链依赖）；`cordis-host-runner` 行 `disabled: true`（其 `inject=['tools']` 属 agent 面，P1 零 RPC controller；P3 routing mux 落地时再启用/替换）。
 
 **参照（行形状蓝本）:** `upstream/deepseek-harness/packages/bundle/web-app/cordis.patch.yml`。
 
@@ -315,11 +316,11 @@ describe('superd-web-bundle patch', () => {
   it('inserts the carrier + neutral-base roster', () => {
     const ids = entries.map(row => row.id)
     expect(ids).toEqual([
-      'superd-startup', 'webserver', 'superd-runtime', 'client-hmr',
-      'modules', 'connection', 'api-remotes', 'cordis-host-runner',
-      'cordis-client-runner', 'ui-theme', 'locale', 'ui-layout',
-      'ui-renderer', 'ui-cordis', 'ui-sidebar', 'ui-settings',
-    ])
+      'superd-startup', 'webserver', 'superd-runtime',
+      'typert', 'typert-loader', 'typert-gateway', 'credentials',
+      'client-hmr', 'modules', 'connection', 'api-remotes',
+      'cordis-host-runner', 'cordis-client-runner', 'ui-theme', 'locale',
+      'ui-layout', 'ui-renderer', 'ui-cordis', 'ui-sidebar', 'ui-settings',
   })
 
   it('webserver row defers to webStartup and defaults port 3090', () => {
@@ -392,6 +393,24 @@ Expected: FAIL（entries 为空数组 / ids 不匹配）
         printUrl: true
         trustedHosts: !!js ctx.webStartup.trustedHosts
 
+    # ── wire 载体服务（T7 实证：connection 等 inject 依赖，dsh-base 原提供）──
+
+    # Typert RPC 注册表（remote 方法面的服务注册）
+    - id: typert
+      name: '@deepseek-ai/dsh-typert-registry'
+
+    # Typert 加载器
+    - id: typert-loader
+      name: '@deepseek-ai/dsh-typert-loader'
+
+    # /api 网关：绑定 webserver，提供 typertGateway 服务（api-remotes 等 inject）
+    - id: typert-gateway
+      name: '@deepseek-ai/dsh-api-gateway'
+
+    # 凭据存储：BrowserAuth cookie 签名密钥的持久层（蓝图 §3.6 认证链）
+    - id: credentials
+      name: '@deepseek-ai/dsh-credentials-local'
+
     # client 插件热更链：无 watcher 时闲置，dev 期可用
     - id: client-hmr
       name: '@deepseek-ai/dsh-client-hmr'
@@ -412,9 +431,11 @@ Expected: FAIL（entries 为空数组 / ids 不匹配）
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'
 
+    # host 侧 RPC runner：inject=['tools']（agent 面），P1 零 RPC controller——禁用；
+    # P3 routing mux 落地时再启用/替换。disabled 行仍在组合表中（upstream ui-schedule 同款形态）。
     - id: cordis-host-runner
       name: '@deepseek-ai/dsh-cordis-host-runner'
-
+      disabled: true
     - id: cordis-client-runner
       name: '@deepseek-ai/dsh-cordis-client-runner'
 
@@ -888,7 +909,18 @@ function ensureProfile(home: string): string {
   return dir
 }
 
-async function runWeb(): Promise<void> {
+/** 交给 web 应用的内部参数 = argv 去掉 launcher 自有 token：`web` 子命令
+ * （argv[0]）与 `--home <path>`（bin.ts 已消费）。其余 flag 原样交给 web-startup 的 commander。 */
+function webInnerArgs(argv: readonly string[]): string[] {
+  const rest = argv.slice(1)
+  const inner: string[] = []
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--home') { i += 1; continue }
+    inner.push(rest[i]!)
+  }
+  return inner
+}
+
   const home = process.env.DSH_HOME!
   const profileDir = ensureProfile(home)
   const profile = loadProfile(NAME, PROFILE_NAME, INSTALL_ANCHOR, home)
@@ -910,7 +942,7 @@ async function runWeb(): Promise<void> {
   ])
   app = await boot(NAME, join(profileDir, PROFILE_ROOT_FILENAME), patches, (hostCtx) => {
     provideCmdline(hostCtx, {
-      args: process.argv.slice(2),
+      args: webInnerArgs(process.argv.slice(2)),
       exit: code => process.exit(code),
     })
   })
@@ -1104,4 +1136,4 @@ git tag p1-minimal-cordis-host
 - **Spec 覆盖**：蓝图 §2 骨架形态（cordis 宿主 + 载体原样 + 自有插件）→ Task 3/4/5；§5 方案 B exact-pin → Task 1；蓝图 #3/#16（home/端口）→ Task 2/全局约束；M1 第一条「UI 完整可访问（中性底座）」→ Task 7（composition 部分 M1 内由 P3 补 agent-ui-dsh）。ui-workspace 复核位 → Task 3 决策记录。
 - **占位符扫描**：无 TBD；所有代码块完整可落地。
 - **类型一致性**：`WebOptions`/`WebStartup`/`WebRuntimeValues` 定义与消费点已互检；`cmdlineArgs` 按 0.1.3-alpha.2 实况走 getter（不经属性直读）；`initProfile`/`composeEntries`/`loadOverlayPatches` 等全部走 `@deepseek-ai/dsh-app-boot` 主入口（npm tarball 不含 src，`./src/*` 子路径仅上游 workspace 内可用——执行期实证，计划已修正）。
-- **已知风险**：① 中性底座 UI 包是否有隐性 DSH 数据面依赖（冒烟 Step 2 修障路径已给）② ~~npm registry 版本可得性~~ → 已闭案：`@deepseek-ai/dsh-app-boot@0.1.3-alpha.2` lockstep 已核 registry（Task 1 Step 4 校验兜底保留）③ ~~provideCmdline 形态~~ → 已闭案：0.1.3-alpha.2 源码实证 `CmdlineArgs` 为 getter、`ready` 可选；Task 4 startup 已按上游同款 `parseCmdline + commander` 形态实现 ④ 上游 0.1.3 线仍在 alpha 段滚动——每次发版按 Global Constraints 裁决块的对齐轮清单复验。
+- **已知风险**：① ~~中性底座 UI 包隐性 DSH 数据面依赖~~ → **T7 实证并闭案（部分）**：依赖在 wire 层而非 UI 层——`connection`→`credentials`、`api-remotes`→`typertGateway`、`cordis-host-runner`→`tools`；前三者已按 T7 裁决补 wire 载体行，host-runner 禁用；UI 包本身无隐性依赖（冒烟全绿后终验）② ~~npm registry 版本可得性~~ → 已闭案：`@deepseek-ai/dsh-app-boot@0.1.3-alpha.2` lockstep 已核 registry（Task 1 Step 4 校验兜底保留）③ ~~provideCmdline 形态~~ → 已闭案：0.1.3-alpha.2 源码实证 `CmdlineArgs` 为 getter、`ready` 可选；Task 4 startup 已按上游同款 `parseCmdline + commander` 形态实现；launcher 侧 inner-args 剥离（`webInnerArgs`）已按 T7 实证修正 ④ 上游 0.1.3 线仍在 alpha 段滚动——每次发版按 Global Constraints 裁决块的对齐轮清单复验。
