@@ -501,7 +501,7 @@ describe('superd web command', () => {
     expect(options.trustedHost).toEqual(['a.example', 'b.example'])
   })
 
-  it('rejects non-numeric ports (fail loud in the tree, not the bin)', () => {
+  it('rejects non-numeric ports (fail loud at parse, via the shared factory)', () => {
     expect(() => parse(['--port', 'nope'])).toThrow(/number/)
   })
 })
@@ -516,7 +516,7 @@ Expected: FAIL（模块不存在）
 
 ```ts
 /** superd web 子命令的 flag 家族（commander 程序工厂；usage 文本/测试/插件共用）。 */
-import { Command } from 'commander'
+import { Command, InvalidArgumentError } from 'commander'
 
 /** commander 解析后的 web options（trustedHost 对应可重复的 --trusted-host）。 */
 export interface WebOptions {
@@ -534,7 +534,10 @@ export function superdWebCommand(): Command {
     .helpOption('-h, --help', 'show this help')
     .option('--host <host>', 'bind host (default 127.0.0.1)')
     .option('--no-open', 'accepted for upstream parity; superd never auto-opens a browser')
-    .option('--port <port>', 'listen port (default 3090)')
+    .option('--port <port>', 'listen port (default 3090)', (value: string) => {
+      if (!/^\d+$/.test(value)) throw new InvalidArgumentError('must be a number')
+      return value
+    })
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (repeatable)')
     .addHelpText('after', '\nExamples:\n  superd web --port 4999 --home .superd-test\n')
 }
@@ -575,9 +578,6 @@ export function apply(ctx: Context): void {
   const program = superdWebCommand()
   program.action(() => {
     const options = program.opts<WebOptions>()
-    if (options.port !== undefined && !/^\d+$/.test(options.port)) {
-      program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
-    }
     ctx.provide('webStartup', {
       openBrowser: false, // superd 从不自动开浏览器（--no-open 仅为上游形位兼容）
       ...options.host !== undefined && { host: options.host },
