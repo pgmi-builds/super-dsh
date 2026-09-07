@@ -679,6 +679,8 @@ import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import * as FrontendStatic from '@deepseek-ai/dsh-host-frontend-static'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-client-connection'
 
 export const name = 'superd-web-bundle'
 
