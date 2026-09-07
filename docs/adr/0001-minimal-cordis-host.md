@@ -5,3 +5,8 @@ DSH Web UI 的 4 条 wire 契约（静态资产/boot graph/unary RPC/WS mux）�
 ## Considered Options
 - 自写 BFF（剥离研究 §2.2）：薄胶水但欠复刻 WS mux，长期对帧负债。
 - 物理资产抓取（研究方案二）：被研究否证，工作量与自写 BFF 相同且无版本锚。
+
+> **2026-09-08 v0.3 精化**（蓝图 §3.6 / 决策 #20）：替换层的实际形态是 **thin routing mux**——
+> superD 自有 namespace（`machines.*` / `superd.*`）本地应答，其余按 active adapter 转发；DSH 三面
+> （session / workspace / settings）**全透传**（UI 与上游锁死同版 ⇒ 契约逐字节一致）。"替换"不等于
+> "重实现"，本 ADR"不自写 BFF"的结论进一步强化。

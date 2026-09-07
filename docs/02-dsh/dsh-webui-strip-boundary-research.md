@@ -297,4 +297,4 @@ workspace/*      → 侧栏工作区(可先固定单工作区)
 - 实例取证:4999 鉴权抓取 `.scratch/dsh-index.html`(boot graph 51 条、combo URL、注入行);
   `~/.dsh/profiles/node_modules/@deepseek-ai/dsh-client-ui-trajectory/lib/client.js`(npm 工件含
   预构建 bundle);51 bundle 体量盘点(3.94MB)
-- 前置研究:本目录三篇(见文首);`.agents/skills/dsh-plugin-development/references/web-ui.md`
+- 前置研究:本目录三篇(见文首);`../05-dashr-dev/plugin-development.md` §3(web-ui 分量,2026-09-06 自 skill 蒸馏)
