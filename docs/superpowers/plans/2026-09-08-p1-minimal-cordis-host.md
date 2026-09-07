@@ -878,7 +878,7 @@ const DEFAULT_BUNDLES = ['@pgmi-builds/superd-web-bundle']
 const PROFILE_ROOT_CONFIG = '# superd profile root — composition is patch layers.\n[]\n'
 
 const require = createRequire(import.meta.url)
-const INSTALL_ANCHOR = require.resolve('./package.json')
+const INSTALL_ANCHOR = require.resolve('../package.json')  // src/ → root manifest（上游 profile-boot 同款 ../ 形态）
 
 function ensureProfile(home: string): string {
   const dir = join(home, 'profiles', PROFILE_NAME)
