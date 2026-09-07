@@ -2,3 +2,4 @@
 node_modules/
 upstream/
 .dsh_better_edit/
+.npm-cache/

@@ -6,16 +6,16 @@
 
 **Architecture:** 完全复用上游 `@deepseek-ai/dsh-app-boot` 的 boot/profile/bundle 机制（独立 App 形态，非 dsh 插件）：superd CLI 解析 flags → 引导 `~/.superd/profiles/web/` profile（bundles = 自有 bundle 包）→ `boot()` 挂 cordis 树。自有 bundle 包 = `cordis.patch.yml`（载体 + 中性 UI roster，行形状对齐上游 `dsh-web-app` bundle patch）+ 两个胶水插件（startup：cmdlineArgs→webStartup；runtime：webRuntime + frontend dist 服务 + URL 行）。**不含** dsh-base/dsh-web-app（无 agent 运行时、无会话数据面）——空壳即特性。
 
-**Tech Stack:** Node ≥22.18 · TypeScript（tsx 直跑，无构建步）· vitest · npm workspaces · 上游 exact-pin `0.1.2-rc.1` 系列
+**Tech Stack:** Node ≥22.18 · TypeScript（tsx 直跑，无构建步）· vitest · npm workspaces · 上游 exact-pin `0.1.3-alpha.2` 系列
 
 **Spec:** `docs/00-blueprint.md` v0.4a（§2 架构/骨架形态、§5 依赖策略、§10 M1）；`docs/01-component-boundaries.md` v0.3（§2 Host 边界、§4① 中性底座 roster）；ADR 0001（最小 cordis 宿主）、ADR 0005（exact-pin 不 vendor 源码）。
 
-**本地参照（一手源码，勿改）:** `/home/u1/workspaces/superd/upstream/deepseek-harness`（浅克隆，**HEAD = `dsh-v0.1.2-rc.1`**，与 pin 同版；alpha.5 / 0.1.3-alpha.2 两 tag 已 fetch 在本地可 diff。rc.1 相对 alpha.5 为纯版本号 bump——252 处全是 package.json 版本行、计划引用源码零变动，故 docs/02-dsh 研究语料对 rc.1 全部有效）。关键文件锚点见各任务。
+**本地参照（一手源码，勿改）:** `/home/u1/workspaces/superd/upstream/deepseek-harness`（浅克隆，**HEAD = `dsh-v0.1.3-alpha.2`**，与 pin 同版；`dsh-v0.1.2-alpha.5` / `dsh-v0.1.2-rc.1` 两 tag 已 fetch 在本地可 diff——alpha.5 是研究语料基线，rc.1 相对 alpha.5 为纯版本号 bump、252 处全是 package.json 版本行）。关键文件锚点见各任务。
 
 ## Global Constraints
 
-- exact-pin，无 `^`：dsh 系列全部 `0.1.2-rc.1`；`@deepseek-ai/cordis@4.0.2`、`cordis-plugin-loader@1.0.3`、`cordis-plugin-include@1.0.7`、`@deepseek-ai/schemastery@3.18.2`。
-  **版本裁决（2026-09-08）**：npm `latest` = 0.1.2-rc.1（lockstep 已核 registry）；`alpha` 线 0.1.3-alpha.2 经评估**不采**——相对 rc.1 有 4603 个源码文件变更，且直接命中 P1 依赖面（app-boot `boot()`/`profile.ts`、web-app patch yml、connection `rpc-host`、client/modules 扫描器），采用 = 研究语料与计划代码块整轮重验。0.1.3 到 rc 后按 dashr upstream-alignment runbook 跑一次显式对齐轮（exact-pin 使升级 = 每包一行 bump + 复验）。
+- exact-pin，无 `^`：dsh 系列全部 `0.1.3-alpha.2`；`@deepseek-ai/cordis@4.0.2`、`cordis-plugin-loader@1.0.3`、`cordis-plugin-include@1.0.7`、`@deepseek-ai/schemastery@3.18.2`。
+  **版本裁决（2026-09-08 user 裁决）**：dev 基线 = **0.1.3-alpha.2**（npm `alpha` tag）——0.1.2→0.1.3 的主要变更已落在 alpha.2，后续 alpha.3+ 破坏性预期递减，且 superd 要贴近 upstream 跟跑。切换前已对 P1 依赖面逐项核验：`boot()`/`initProfile`/`loadProfile`/`composeEntries`/`healProfilesModuleFallback`/`provideCmdline` 签名全部未变；`cmdlineArgs` 服务为 getter 形态（`{ get(): readonly string[] }`，Task 4 已按此实现）；web-app patch yml 的变更全部落在 superd 不挂的行（open-in-app / file-upload / system-prompt 等）。**对齐纪律**：上游每发一版（alpha.3 / beta / rc…）跑一次显式对齐轮——diff 关键文件清单（app-boot index/profile、web-app patch yml + src、cmdline、connection browser-auth/rpc-host、frontend-static、webserver、home-paths、profile-boot）→ 更新 pin → `npm test` 复验；exact-pin 使升级 = 每包一行 bump。
 - 不修改任何上游包源码；组合只走 patch 层与自有插件。
 - Home：`SUPERD_HOME`（默认 `~/.superd`，dev/test 用仓内 `.superd-test/`）。**`DSH_HOME` 由 bin 显式覆盖，绝不继承用户的 dsh home**。
 - 端口：默认 **3090**；dev/test 一律 **4999**（机器共用惯例，用完即停）。
@@ -61,28 +61,29 @@
     "@deepseek-ai/cordis-plugin-loader": "1.0.3",
     "@deepseek-ai/cordis-plugin-include": "1.0.7",
     "@deepseek-ai/schemastery": "3.18.2",
-    "@deepseek-ai/dsh-app-boot": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-cmdline": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-host-webserver": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-host-frontend-static": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-web-frontend": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-modules": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-connection": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-hmr": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-locale": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-api-gateway": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-api-remotes": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-cordis-client-runner": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-cordis-host-runner": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-typert-registry": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-typert-loader": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-renderer": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-layout": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-theme": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.2-rc.1"
+    "@deepseek-ai/dsh-app-boot": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-cmdline": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-host-webserver": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-host-frontend-static": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-web-frontend": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-modules": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-hmr": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-locale": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-api-gateway": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-api-remotes": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-cordis-client-runner": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-cordis-host-runner": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-typert-registry": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-typert-loader": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-ui-theme": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.3-alpha.2",
+    "commander": "15.0.0"
   },
   "devDependencies": {
     "@types/node": "22.10.5",
@@ -107,7 +108,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./startup": "./src/startup.ts",
-    "./flags": "./src/flags.ts",
+    "./web-command": "./src/web-command.ts",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -115,9 +116,11 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
     "@deepseek-ai/schemastery": "3.18.2",
-    "@deepseek-ai/dsh-host-webserver": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-host-frontend-static": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-client-connection": "0.1.2-rc.1"
+    "@deepseek-ai/dsh-host-webserver": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-host-frontend-static": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.3-alpha.2",
+    "@deepseek-ai/dsh-cmdline": "0.1.3-alpha.2",
+    "commander": "15.0.0"
   }
 }
 ```
@@ -178,14 +181,14 @@ Expected: 正常完成，无 ERESOLVE/404。若某个包名 404：对照
 
 ```bash
 node -e "console.log(require('@deepseek-ai/cordis/package.json').version)"   # 4.0.2
-node -e "console.log(require('@deepseek-ai/dsh-app-boot/package.json').version)"  # 0.1.2-rc.1
+node -e "console.log(require('@deepseek-ai/dsh-app-boot/package.json').version)"  # 0.1.3-alpha.2
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add package.json package-lock.json tsconfig.json vitest.config.ts .gitignore packages/
-git commit -m "chore(P1): repo scaffold — superD root + superd-web-bundle workspace, exact-pin 0.1.2-rc.1"
+git commit -m "chore(P1): repo scaffold — superD root + superd-web-bundle workspace, exact-pin 0.1.3-alpha.2"
 ```
 
 ---
@@ -361,7 +364,7 @@ Expected: FAIL（entries 为空数组 / ids 不匹配）
 # @pgmi-builds/superd-web-bundle — superD web 面的 bundle patch。
 # 只含载体（wire 四面）+ 中性底座 UI 壳；不含 DSH 会话面/agent 面
 # （那些由 P3+ 的 composition 层接管）。行形状对齐上游 dsh-web-app
-# bundle patch（锁版 0.1.2-rc.1）。
+# bundle patch（锁版 0.1.3-alpha.2）。
 #
 # P1 决策：ui-workspace / ui-settings-general 暂不挂（数据面待 superD
 # BFF 聚合，见 docs/01-component-boundaries.md §4① 复核位）。
@@ -439,7 +442,7 @@ Expected: FAIL（entries 为空数组 / ids 不匹配）
       name: '@deepseek-ai/dsh-client-ui-settings'
 ```
 
-注意：`ui-cordis` 需在 Task 1 依赖清单基础上补 `@deepseek-ai/dsh-client-ui-cordis@0.1.2-rc.1`（root `package.json` dependencies 加一行，`npm install --cache .npm-cache`）。
+注意：`ui-cordis` 需在 Task 1 依赖清单基础上补 `@deepseek-ai/dsh-client-ui-cordis@0.1.3-alpha.2`（root `package.json` dependencies 加一行，`npm install --cache .npm-cache`）。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -455,136 +458,147 @@ git commit -m "feat(P1): superd-web-bundle patch — carrier + neutral-base rost
 
 ---
 
-### Task 4: Startup 插件 + flags 解析（cmdlineArgs → webStartup）
+### Task 4: Startup 插件 + web flag 家族（cmdlineArgs → webStartup）
 
 **Files:**
-- Create: `packages/superd-web-bundle/src/flags.ts`
+- Create: `packages/superd-web-bundle/src/web-command.ts`（commander 程序工厂，usage/测试/插件共用）
 - Create: `packages/superd-web-bundle/src/startup.ts`
-- Test: `test/flags.spec.ts`
+- Test: `test/web-command.spec.ts`
 
 **Interfaces:**
-- Consumes: `cmdlineArgs` 服务（bin 的 `provideCmdline(ctx, {args, exit, ready})` 提供，Task 6）。
-- Produces: `webStartup` 服务 `{host: string, port: number, openBrowser: false, trustedHosts: string[]}`；`parseWebFlags(args): WebFlags`（bin 与本插件共用，单一事实源）。
+- Consumes: `cmdlineArgs` 服务（**getter 形态** `{ get(): readonly string[] }`，见 `@deepseek-ai/dsh-cmdline` 的 `CmdlineArgs`）+ `appExit`——均由 bin 的 `provideCmdline(ctx, {args, exit})` 提供（Task 6）。
+- Produces: `webStartup` 服务 `{host?: string, port?: number, openBrowser: false, trustedHosts: string[]}`（host/port 未指定时**省略**，默认值在 patch 行的 `!!js` 表达式里：127.0.0.1 / 3090）；`superdWebCommand(): Command` 工厂 + `WebOptions`。
+- 形态对齐上游（0.1.3-alpha.2 `packages/bundle/web-app/src/startup.ts`）：commander 程序声明 flag 家族 → `program.action` 发布服务 → `parseCmdline(ctx, program)` 接管解析 / `--help` / 错误退出（经 `appExit` 优雅失败）。**bin 不做 fail-fast 预解析**（上游同款分工）。
 
-- [ ] **Step 1: 写失败测试** `test/flags.spec.ts`
+- [ ] **Step 1: 写失败测试** `test/web-command.spec.ts`
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { parseWebFlags } from '@pgmi-builds/superd-web-bundle/flags'
+import { superdWebCommand, type WebOptions } from '@pgmi-builds/superd-web-bundle/web-command'
 
-describe('parseWebFlags', () => {
-  it('defaults: host 127.0.0.1, port 3090', () => {
-    expect(parseWebFlags([])).toEqual({
-      host: '127.0.0.1', port: 3090, trustedHosts: [], dumpConfig: false,
-    })
+function parse(args: string[]): WebOptions {
+  const program = superdWebCommand()
+  program.exitOverride() // 把 program.error/help 变 throw，测试可断言
+  program.parse(args, { from: 'user' })
+  return program.opts<WebOptions>()
+}
+
+describe('superd web command', () => {
+  it('defaults: open true, no host/port, no trusted hosts', () => {
+    const options = parse([])
+    expect(options.open).toBe(true)
+    expect(options.host).toBeUndefined()
+    expect(options.port).toBeUndefined()
+    expect(options.trustedHost).toBeUndefined()
   })
 
-  it('parses host/port/trusted-host (repeatable)/dump-config, skips --home value', () => {
-    expect(parseWebFlags(['--host', '0.0.0.0', '--port', '4999', '--trusted-host', 'a.example',
-      '--trusted-host', 'b.example', '--dump-config', '--home', '/tmp/h']))
-      .toEqual({ host: '0.0.0.0', port: 4999, trustedHosts: ['a.example', 'b.example'], dumpConfig: true })
+  it('parses host/port/trusted-host (repeatable) and --no-open', () => {
+    const options = parse(['--host', '127.0.0.1', '--port', '4999', '--no-open',
+      '--trusted-host', 'a.example', '--trusted-host', 'b.example'])
+    expect(options.host).toBe('127.0.0.1')
+    expect(options.port).toBe('4999')
+    expect(options.open).toBe(false)
+    expect(options.trustedHost).toEqual(['a.example', 'b.example'])
   })
 
-  it('rejects unknown flags and bad ports (fail loud)', () => {
-    expect(() => parseWebFlags(['--wat'])).toThrow(/unknown flag/)
-    expect(() => parseWebFlags(['--port', 'nope'])).toThrow(/port/)
-    expect(() => parseWebFlags(['--port'])).toThrow(/missing value/)
+  it('rejects non-numeric ports (fail loud in the tree, not the bin)', () => {
+    expect(() => parse(['--port', 'nope'])).toThrow(/number/)
   })
 })
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `npx vitest --run test/flags.spec.ts`
+Run: `npx vitest --run test/web-command.spec.ts`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 3: 实现** `packages/superd-web-bundle/src/flags.ts`
+- [ ] **Step 3: 实现** `packages/superd-web-bundle/src/web-command.ts`
 
 ```ts
-/** `superd web` 子命令的 flag 快照（bin 与 startup 插件共用）。 */
-export interface WebFlags {
-  host: string
-  port: number
-  trustedHosts: string[]
-  dumpConfig: boolean
+/** superd web 子命令的 flag 家族（commander 程序工厂；usage 文本/测试/插件共用）。 */
+import { Command } from 'commander'
+
+/** commander 解析后的 web options（trustedHost 对应可重复的 --trusted-host）。 */
+export interface WebOptions {
+  host?: string
+  port?: string
+  open: boolean
+  trustedHost?: string[]
 }
 
-function requireValue(args: readonly string[], i: number, flag: string): string {
-  const value = args[i]
-  if (value === undefined) throw new Error(`superd: missing value for ${flag}`)
-  return value
-}
-
-/** 解析 web 子命令 inner args；未知 flag / 坏端口 fail loud。`--home` 已由 bin 消费，跳过其值。 */
-export function parseWebFlags(args: readonly string[]): WebFlags {
-  const flags: WebFlags = { host: '127.0.0.1', port: 3090, trustedHosts: [], dumpConfig: false }
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!
-    if (arg === '--host') flags.host = requireValue(args, ++i, arg)
-    else if (arg === '--port') {
-      const raw = requireValue(args, ++i, arg)
-      const port = Number(raw)
-      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`superd: invalid port ${raw}`)
-      flags.port = port
-    } else if (arg === '--trusted-host') flags.trustedHosts.push(requireValue(args, ++i, arg))
-    else if (arg === '--dump-config') flags.dumpConfig = true
-    else if (arg === '--home') i++
-    else throw new Error(`superd: unknown flag ${arg}`)
-  }
-  return flags
+/** flag 程序工厂：每次返回新鲜实例（一进程可多次解析，上游同款）。 */
+export function superdWebCommand(): Command {
+  return new Command()
+    .name('superd web')
+    .description('Serve the superD web surface.')
+    .helpOption('-h, --help', 'show this help')
+    .option('--host <host>', 'bind host (default 127.0.0.1)')
+    .option('--no-open', 'accepted for upstream parity; superd never auto-opens a browser')
+    .option('--port <port>', 'listen port (default 3090)')
+    .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (repeatable)')
+    .addHelpText('after', '\nExamples:\n  superd web --port 4999 --home .superd-test\n')
 }
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `npx vitest --run test/flags.spec.ts`
+Run: `npx vitest --run test/web-command.spec.ts`
 Expected: PASS（3 tests）
 
 - [ ] **Step 5: 实现 startup 插件** `packages/superd-web-bundle/src/startup.ts`
 
 ```ts
 /**
- * superd-web-startup — cmdlineArgs → webStartup 提供者。
- * 行内不写 inject：插件级注入等 cmdlineArgs 就绪（对齐上游 web-startup 形态，
- * 参照 upstream/deepseek-harness/packages/bundle/web-app/src/startup.ts）。
+ * superd-web-startup — cmdlineArgs → webStartup 提供者（上游 web-startup 同款形态）：
+ * commander 程序声明 flag 家族，action 发布服务，parseCmdline 接管解析、
+ * --help 与错误退出（经 appExit）。host/port 未指定时省略——默认值在
+ * bundle patch 行的 !!js 表达式里（127.0.0.1 / 3090）。
+ * 参照 upstream/deepseek-harness/packages/bundle/web-app/src/startup.ts（0.1.3-alpha.2）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { parseWebFlags } from './flags.ts'
+import { parseCmdline } from '@deepseek-ai/dsh-cmdline'
+import { superdWebCommand, type WebOptions } from './web-command.ts'
 
 export const name = 'superd-web-startup'
 
-/** web 面启动值：webserver/superd-runtime 行的 !!js 表达式消费。 */
+export const inject = ['cmdlineArgs']
+
+/** web 面启动值：webserver / superd-runtime 行的 !!js 表达式消费。 */
 export interface WebStartup {
-  host: string
-  port: number
+  host?: string
+  port?: number
   openBrowser: boolean
   trustedHosts: string[]
 }
 
 export function apply(ctx: Context): void {
-  ctx.inject(['cmdlineArgs'], (argsCtx) => {
-    const cmdline = argsCtx.cmdlineArgs as { args: readonly string[] }
-    const flags = parseWebFlags(cmdline.args)
+  const program = superdWebCommand()
+  program.action(() => {
+    const options = program.opts<WebOptions>()
+    if (options.port !== undefined && !/^\d+$/.test(options.port)) {
+      program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
+    }
     ctx.provide('webStartup', {
-      host: flags.host,
-      port: flags.port,
-      openBrowser: false,
-      trustedHosts: flags.trustedHosts,
+      openBrowser: false, // superd 从不自动开浏览器（--no-open 仅为上游形位兼容）
+      ...options.host !== undefined && { host: options.host },
+      ...options.port !== undefined && { port: Number(options.port) },
+      trustedHosts: options.trustedHost ?? [],
     } satisfies WebStartup)
   })
+  parseCmdline(ctx, program)
 }
 ```
 
 - [ ] **Step 6: typecheck + 全量测试**
 
 Run: `npm run typecheck && npm test`
-Expected: typecheck 0 错误；全部 PASS（startup 无独立单测，其行为由 Task 7 集成冒烟覆盖）
+Expected: typecheck 0 错误；全部 PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add packages/superd-web-bundle/src/flags.ts packages/superd-web-bundle/src/startup.ts test/flags.spec.ts
-git commit -m "feat(P1): web flags parsing + startup plugin (cmdlineArgs -> webStartup)"
+git add packages/superd-web-bundle/src/web-command.ts packages/superd-web-bundle/src/startup.ts test/web-command.spec.ts
+git commit -m "feat(P1): web flag family (commander) + startup plugin (parseCmdline -> webStartup)"
 ```
 
 ---
@@ -657,7 +671,7 @@ Expected: FAIL（模块不存在）
  * （bundle patch 由同包 cordis.patch.yml 声明）。职责：bind 后提供
  * webRuntime（LAN 信任快照）、以 frontend-static fallback owner 伺服中性
  * 底座 dist、Loader 收敛后打印带 token 的 URL 行。
- * 蓝本：upstream dsh-web-app 的 web-runtime 行（锁版 0.1.2-rc.1），
+ * 蓝本：upstream dsh-web-app 的 web-runtime 行（锁版 0.1.3-alpha.2），
  * 砍掉 DSH 特有面（systemPrompt/shellEnv/SSH 探测/浏览器拉起）。
  */
 import { createRequire } from 'node:module'
@@ -769,7 +783,7 @@ git commit -m "feat(P1): superd-web-bundle runtime glue — webRuntime, frontend
 - Test: `test/launcher.spec.ts`
 
 **Interfaces:**
-- Consumes: `applySuperdHomeEnv`（Task 2）；`parseWebFlags`（Task 4）；`@deepseek-ai/dsh-app-boot` 的 `boot` / `composeEntries` / `healProfilesModuleFallback` / `installFailLoud` / `loadProfile` / `PROFILE_PATCH_FILENAME`；`@deepseek-ai/dsh-app-boot/src/profile.ts` 的 `initProfile`（主入口不导出，走 `./src/*` exports 豁免）；`@deepseek-ai/dsh-cmdline` 的 `provideCmdline`。
+- Consumes: `applySuperdHomeEnv`（Task 2）；`@deepseek-ai/dsh-app-boot` 的 `boot` / `composeEntries` / `healProfilesModuleFallback` / `installFailLoud` / `loadProfile` / `PROFILE_PATCH_FILENAME`；`@deepseek-ai/dsh-app-boot/src/profile.ts` 的 `initProfile`（主入口不导出，走 `./src/*` exports 豁免）；`@deepseek-ai/dsh-cmdline` 的 `provideCmdline`（`{args, exit}`；`ready` 在 0.1.3-alpha.2 为可选，P1 不传）。坏 flag 不在 bin 预解析——树内 startup 插件经 `parseCmdline` + `appExit` 优雅失败（上游同款分工）。
 - Produces: `superd web [--host H] [--port N] [--trusted-host H]… [--dump-config] [--home PATH]`；profile `web`（bundles = `['@pgmi-builds/superd-web-bundle']`，patchReload `startup`）。
 
 **参照（启动器蓝本）:** `upstream/deepseek-harness/apps/cli/src/profile-boot.ts`（runProfile 流程；P1 简化：无 telemetry/launch-environment/patch live-watch——profile patchReload 定为 `startup`，改 patch 重启生效）。
@@ -856,7 +870,6 @@ import {
 } from '@deepseek-ai/dsh-app-boot'
 import { initProfile } from '@deepseek-ai/dsh-app-boot/src/profile.ts'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
-import { parseWebFlags } from '@pgmi-builds/superd-web-bundle/flags'
 
 const NAME = 'superd'
 const PROFILE_NAME = 'web'
@@ -875,13 +888,13 @@ function ensureProfile(home: string): string {
   return dir
 }
 
-async function runWeb(flags: ReturnType<typeof parseWebFlags>): Promise<void> {
+async function runWeb(): Promise<void> {
   const home = process.env.DSH_HOME!
   const profileDir = ensureProfile(home)
   const profile = loadProfile(NAME, PROFILE_NAME, INSTALL_ANCHOR, home)
   await healProfilesModuleFallback({ installAnchor: INSTALL_ANCHOR, profile, home })
 
-  if (flags.dumpConfig) {
+  if (process.argv.includes('--dump-config')) {
     const layers = profile.layers.map(layer => layer.patches)
     console.log(JSON.stringify(composeEntries(structuredClone(layers)), undefined, 2))
     return
@@ -899,12 +912,6 @@ async function runWeb(flags: ReturnType<typeof parseWebFlags>): Promise<void> {
     provideCmdline(hostCtx, {
       args: process.argv.slice(2),
       exit: code => process.exit(code),
-      ready: {
-        onReady(listener) {
-          listener()
-          return () => {}
-        },
-      },
     })
   })
   const shutdown = (code: number): void => {
@@ -918,8 +925,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const command = argv[0]
   if (command === 'web') {
-    const flags = parseWebFlags(argv.slice(1)) // fail loud：坏 flag 在 boot 前死
-    await runWeb(flags)
+    await runWeb()
   } else if (command === undefined || command === '--help' || command === '-h') {
     console.log('usage: superd <command> [flags]\n\ncommands:\n  web    start the superD web surface\n\nflags:\n  --home <path>            superd home (default ~/.superd)\n  --host <addr>            bind host (default 127.0.0.1)\n  --port <n>               port (default 3090)\n  --trusted-host <name>    extra trust-fence authority (repeatable)\n  --dump-config            print the composed entry list and exit')
   } else {
@@ -1067,7 +1073,7 @@ npm run superd -- web --port 4999 --home .superd-test   # dev 实例：4999 + �
 - 默认端口 3090；dev 一律 4999（共用惯例，用完即停）。
 - home 默认 `~/.superd`；`--home`/`SUPERD_HOME` 覆盖；用户 `DSH_HOME` 永不被继承。
 - `superd web --dump-config` 打印组合后的插件行表。
-- 上游参照 checkout：`upstream/deepseek-harness`（pristine `dsh-v0.1.2-rc.1`，gitignored，勿改）。
+- 上游参照 checkout：`upstream/deepseek-harness`（pristine `dsh-v0.1.3-alpha.2`，gitignored，勿改）。
 
 ## Test
 
@@ -1097,5 +1103,5 @@ git tag p1-minimal-cordis-host
 
 - **Spec 覆盖**：蓝图 §2 骨架形态（cordis 宿主 + 载体原样 + 自有插件）→ Task 3/4/5；§5 方案 B exact-pin → Task 1；蓝图 #3/#16（home/端口）→ Task 2/全局约束；M1 第一条「UI 完整可访问（中性底座）」→ Task 7（composition 部分 M1 内由 P3 补 agent-ui-dsh）。ui-workspace 复核位 → Task 3 决策记录。
 - **占位符扫描**：无 TBD；所有代码块完整可落地。
-- **类型一致性**：`WebFlags`/`WebStartup`/`WebRuntimeValues` 定义与消费点已互检；`initProfile` 走 `src/profile.ts` 导入（exports map `./src/*` 豁免，已核验 exports 实况）。
-- **已知风险**：① 中性底座 UI 包是否有隐性 DSH 数据面依赖（冒烟 Step 2 修障路径已给）② ~~npm registry 版本可得性~~ → 已闭案：`@deepseek-ai/dsh-app-boot@0.1.2-rc.1` lockstep 已核 registry（Task 1 Step 4 校验兜底保留）③ `provideCmdline` 的 `ready` 参数形态以 upstream `packages/boot/cmdline/src/index.ts` 导出为准，执行时如有出入按其类型对齐（语义：boot 后立即就绪）。
+- **类型一致性**：`WebOptions`/`WebStartup`/`WebRuntimeValues` 定义与消费点已互检；`cmdlineArgs` 按 0.1.3-alpha.2 实况走 getter（不经属性直读）；`initProfile` 走 `src/profile.ts` 导入（exports map `./src/*` 豁免，已核验 exports 实况）。
+- **已知风险**：① 中性底座 UI 包是否有隐性 DSH 数据面依赖（冒烟 Step 2 修障路径已给）② ~~npm registry 版本可得性~~ → 已闭案：`@deepseek-ai/dsh-app-boot@0.1.3-alpha.2` lockstep 已核 registry（Task 1 Step 4 校验兜底保留）③ ~~provideCmdline 形态~~ → 已闭案：0.1.3-alpha.2 源码实证 `CmdlineArgs` 为 getter、`ready` 可选；Task 4 startup 已按上游同款 `parseCmdline + commander` 形态实现 ④ 上游 0.1.3 线仍在 alpha 段滚动——每次发版按 Global Constraints 裁决块的对齐轮清单复验。
