@@ -1,1 +1,79 @@
-[]
+# @pgmi-builds/superd-web-bundle — superD web 面的 bundle patch。
+# 只含载体（wire 四面）+ 中性底座 UI 壳；不含 DSH 会话面/agent 面
+# （那些由 P3+ 的 composition 层接管）。行形状对齐上游 dsh-web-app
+# bundle patch（锁版 0.1.3-alpha.2）。
+#
+# P1 决策：ui-workspace / ui-settings-general 暂不挂（数据面待 superD
+# BFF 聚合，见 docs/01-component-boundaries.md §4① 复核位）。
+
+- insert:
+    # CLI flags → webStartup 服务（host 默认 127.0.0.1，port 默认 3090）
+    - id: superd-startup
+      name: '@pgmi-builds/superd-web-bundle/startup'
+
+    # 路由载体：host/port 由 webStartup 注入
+    - id: webserver
+      name: '@deepseek-ai/dsh-host-webserver'
+      inject: [webStartup]
+      config:
+        host: !!js ctx.webStartup.host ?? '127.0.0.1'
+        port: !!js ctx.webStartup.port ?? 3090
+        compression: gzip
+        compressionLevel: 1
+        compressionThresholdBytes: 1024
+
+    # superD 胶水：提供 webRuntime、挂 frontend-static（服务中性底座 dist）、打印 token URL
+    - id: superd-runtime
+      name: '@pgmi-builds/superd-web-bundle'
+      inject: [webStartup]
+      config:
+        printUrl: true
+        trustedHosts: !!js ctx.webStartup.trustedHosts
+
+    # client 插件热更链：无 watcher 时闲置，dev 期可用
+    - id: client-hmr
+      name: '@deepseek-ai/dsh-client-hmr'
+
+    # ── 浏览器 roster（node 半为 host 行）──
+
+    # 双面：node 半扫树组装 window.__DSH_BOOT__ 并伺服 /plugins/<id>/client.js
+    - id: modules
+      name: '@deepseek-ai/dsh-client-modules'
+
+    # wire 双端：node 半把 gateway 绑到 webserver /api；浏览器半是 fetch/SSE 客户端
+    - id: connection
+      name: '@deepseek-ai/dsh-client-connection'
+      inject: [webRuntime]
+      config:
+        trustedHosts: !!js ctx.webRuntime.trustedHosts
+
+    - id: api-remotes
+      name: '@deepseek-ai/dsh-api-remotes'
+
+    - id: cordis-host-runner
+      name: '@deepseek-ai/dsh-cordis-host-runner'
+
+    - id: cordis-client-runner
+      name: '@deepseek-ai/dsh-cordis-client-runner'
+
+    - id: ui-theme
+      name: '@deepseek-ai/dsh-client-ui-theme'
+
+    - id: locale
+      name: '@deepseek-ai/dsh-client-locale'
+
+    - id: ui-layout
+      name: '@deepseek-ai/dsh-client-ui-layout'
+
+    - id: ui-renderer
+      name: '@deepseek-ai/dsh-client-ui-renderer'
+
+    # Cordis 调试面板（组合态可视，P1 排障用）
+    - id: ui-cordis
+      name: '@deepseek-ai/dsh-client-ui-cordis'
+
+    - id: ui-sidebar
+      name: '@deepseek-ai/dsh-client-ui-sidebar'
+
+    - id: ui-settings
+      name: '@deepseek-ai/dsh-client-ui-settings'
