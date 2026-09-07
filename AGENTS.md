@@ -41,7 +41,7 @@
 
 ## 三、Dev/Test 约定
 
-- **In-place build，零全局包依赖**：repo 本地 `node_modules` 是唯一依赖来源；禁止 NODE_PATH / symlink 机器全局树。`npm install --cache .npm-cache`（仓内缓存；默认 `~/.npm` 在受限沙箱下 EROFS）。锁版本：exact-pin，无 `^`。
+- **In-place build，零全局包依赖**：repo 本地 `node_modules` 是唯一依赖来源；禁止 NODE_PATH / symlink 机器全局树。`npm install --cache .npm-cache`（仓内缓存；默认 `~/.npm` 在受限沙箱下 EROFS）。锁版本：exact-pin，无 `^`。**系统 npm 9.2.0 在本树会崩**（arborist `edgesOut` null bug）——一律用 npm@11：`npm_config_cache=.npm-cache npx --yes -p npm@11 npm install --cache .npm-cache`。
 - **Test profile 隔离**：dev/test 一律 `--home .superd-test`（仓内，gitignored）或测试 tmpdir。**绝不触碰 `~/.dsh`（用户 dsh 数据）与 `~/.superd`（prod home）**。`DSH_HOME` 由 bin 显式覆盖为 superd home——用户的 `DSH_HOME` 环境变量**永不被 superd 继承**（见 `src/home.ts` 契约）。
 - **端口**：默认 3090（prod 面）；dev/test 一律 **4999**（机器共用惯例，**用完即停**）。
 - **运行（tsx 直跑，无构建步）**：
