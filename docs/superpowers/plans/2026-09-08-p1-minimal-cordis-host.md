@@ -302,8 +302,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
-import { composeEntries } from '@deepseek-ai/dsh-app-boot/src/profile.ts'
+import { composeEntries, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 
 const require = createRequire(import.meta.url)
 const bundleDir = dirname(require.resolve('@pgmi-builds/superd-web-bundle/package.json'))
@@ -783,7 +782,7 @@ git commit -m "feat(P1): superd-web-bundle runtime glue — webRuntime, frontend
 - Test: `test/launcher.spec.ts`
 
 **Interfaces:**
-- Consumes: `applySuperdHomeEnv`（Task 2）；`@deepseek-ai/dsh-app-boot` 的 `boot` / `composeEntries` / `healProfilesModuleFallback` / `installFailLoud` / `loadProfile` / `PROFILE_PATCH_FILENAME`；`@deepseek-ai/dsh-app-boot/src/profile.ts` 的 `initProfile`（主入口不导出，走 `./src/*` exports 豁免）；`@deepseek-ai/dsh-cmdline` 的 `provideCmdline`（`{args, exit}`；`ready` 在 0.1.3-alpha.2 为可选，P1 不传）。坏 flag 不在 bin 预解析——树内 startup 插件经 `parseCmdline` + `appExit` 优雅失败（上游同款分工）。
+- Consumes: `applySuperdHomeEnv`（Task 2）；`@deepseek-ai/dsh-app-boot` 主入口的 `boot` / `composeEntries` / `healProfilesModuleFallback` / `initProfile` / `installFailLoud` / `loadProfile` / `PROFILE_PATCH_FILENAME`（**全部符号已核实于 npm 发布包主入口**——`./src/*` 子路径虽在 exports map 宣称，但 tarball files 只含 lib，npm 消费侧不可解析，勿用）；`@deepseek-ai/dsh-cmdline` 的 `provideCmdline`（`{args, exit}`；`ready` 在 0.1.3-alpha.2 为可选，P1 不传）。坏 flag 不在 bin 预解析——树内 startup 插件经 `parseCmdline` + `appExit` 优雅失败（上游同款分工）。
 - Produces: `superd web [--host H] [--port N] [--trusted-host H]… [--dump-config] [--home PATH]`；profile `web`（bundles = `['@pgmi-builds/superd-web-bundle']`，patchReload `startup`）。
 
 **参照（启动器蓝本）:** `upstream/deepseek-harness/apps/cli/src/profile-boot.ts`（runProfile 流程；P1 简化：无 telemetry/launch-environment/patch live-watch——profile patchReload 定为 `startup`，改 patch 重启生效）。
@@ -865,10 +864,9 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  boot, composeEntries, healProfilesModuleFallback, installFailLoud, loadProfile,
+  boot, composeEntries, healProfilesModuleFallback, initProfile, installFailLoud, loadProfile,
   PROFILE_PATCH_FILENAME,
 } from '@deepseek-ai/dsh-app-boot'
-import { initProfile } from '@deepseek-ai/dsh-app-boot/src/profile.ts'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 
 const NAME = 'superd'
@@ -1103,5 +1101,5 @@ git tag p1-minimal-cordis-host
 
 - **Spec 覆盖**：蓝图 §2 骨架形态（cordis 宿主 + 载体原样 + 自有插件）→ Task 3/4/5；§5 方案 B exact-pin → Task 1；蓝图 #3/#16（home/端口）→ Task 2/全局约束；M1 第一条「UI 完整可访问（中性底座）」→ Task 7（composition 部分 M1 内由 P3 补 agent-ui-dsh）。ui-workspace 复核位 → Task 3 决策记录。
 - **占位符扫描**：无 TBD；所有代码块完整可落地。
-- **类型一致性**：`WebOptions`/`WebStartup`/`WebRuntimeValues` 定义与消费点已互检；`cmdlineArgs` 按 0.1.3-alpha.2 实况走 getter（不经属性直读）；`initProfile` 走 `src/profile.ts` 导入（exports map `./src/*` 豁免，已核验 exports 实况）。
+- **类型一致性**：`WebOptions`/`WebStartup`/`WebRuntimeValues` 定义与消费点已互检；`cmdlineArgs` 按 0.1.3-alpha.2 实况走 getter（不经属性直读）；`initProfile`/`composeEntries`/`loadOverlayPatches` 等全部走 `@deepseek-ai/dsh-app-boot` 主入口（npm tarball 不含 src，`./src/*` 子路径仅上游 workspace 内可用——执行期实证，计划已修正）。
 - **已知风险**：① 中性底座 UI 包是否有隐性 DSH 数据面依赖（冒烟 Step 2 修障路径已给）② ~~npm registry 版本可得性~~ → 已闭案：`@deepseek-ai/dsh-app-boot@0.1.3-alpha.2` lockstep 已核 registry（Task 1 Step 4 校验兜底保留）③ ~~provideCmdline 形态~~ → 已闭案：0.1.3-alpha.2 源码实证 `CmdlineArgs` 为 getter、`ready` 可选；Task 4 startup 已按上游同款 `parseCmdline + commander` 形态实现 ④ 上游 0.1.3 线仍在 alpha 段滚动——每次发版按 Global Constraints 裁决块的对齐轮清单复验。
