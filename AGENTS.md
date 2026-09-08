@@ -53,6 +53,10 @@
 - **认证探针指纹**：GET `/` 未带 token/cookie → 401 + `dsh web authentication required`（复用 client-connection 认证面；也是 DSH runtime 存活探针，蓝图 §6）。
 - **测试**：`npm test`（vitest 单测 + 4999 集成冒烟）；`npm run typecheck`。
 - 调试：`superd web --dump-config` 打印组合后的插件行表。
+- **dsh-plugin 线（multi-agent-registry 等）拉起与用户验收（2026-09-09 user 裁决）**：
+  - 测试实例一律 `systemd-run --user` 拉起（沙箱内直起会继承嵌套沙箱、bwrap 探测失败；沙箱内连 user bus 被拒，单命令按惯例 `danger-full-access` 升级）；配方照 dsh-omp AGENTS.md §二：`WorkingDirectory`=仓根、`Environment=DSH_HOME=<仓内 .superd-test 绝对路径>`、日志 append 到 `.scratch/<unit>.log`、unit 名 `<线名>-<port>-test`，ExecStart = `/usr/bin/node /home/u1/.local/bin/dsh --profile <name> --no-open`。
+  - **trusted hosts**：要让用户从内网/外网实测，bind `0.0.0.0`（web-app bundle 全接口 bind 自动派生 LAN 信任）；外网域名访问加 `--trusted-host <域名>`（omp-web 同款）。只绑 127.0.0.1 的实例用户永远看不到。
+  - **验收模式**：起了 Web 服务器就停下来交给用户——把 token URL 交给用户、**保持运行**，等用户亲手测完再收尾（`systemctl --user stop`）；不得自行 kill 完才报告。
 
 ---
 
