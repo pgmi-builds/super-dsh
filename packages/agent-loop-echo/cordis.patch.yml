@@ -1,0 +1,7 @@
+# Mount the echo ForeignAgent loop (Task 4, M1 routing loop).
+# Pure insert — no upstream row is disabled or repointed; the echo factory
+# takes the `echo` slot of the MultiAgentRegistry (which must be loaded first:
+# see packages/dsh-multi-agent-registry/cordis.patch.yml).
+- insert:
+    - id: agent-loop-echo
+      name: '@pgmi-builds/dsh-agent-loop-echo'

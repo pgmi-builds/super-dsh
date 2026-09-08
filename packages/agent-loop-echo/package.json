@@ -1,0 +1,39 @@
+{
+  "name": "@pgmi-builds/dsh-agent-loop-echo",
+  "version": "0.1.0",
+  "description": "Echo ForeignAgent loop for DeepSeek Harness (first external AgentFactory; registered via MultiAgentRegistry appendFactory)",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-session": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/dsh-agent": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true }
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "license": "MIT",
+  "private": true
+}
