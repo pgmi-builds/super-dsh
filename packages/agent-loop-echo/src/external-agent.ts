@@ -229,6 +229,7 @@ export class EchoAgent implements Agent {
     }, { surfaceOp: 'append' })
     this.session.append('step/end', { turn: pending.turn, step: 1 })
     this.session.append('turn/end', { turn: pending.turn, reason: { kind: 'completed' } })
+  
     this.setStatus('idle')
     this.pump()
   }
@@ -372,11 +373,20 @@ export class EchoAgentFactory implements AgentFactory {
     source: SessionStartSource,
     stored: EchoPersistenceHandle | undefined,
   ): Promise<AgentHandle> {
-    const agent = new EchoAgent(ownerCtx, options.agentOptions ?? {}, session)
+    // The agent's scoped world must root in OUR plugin ctx (injects sessions
+    // etc.); ownerCtx (request-scoped, no injects) is only the ownership caller.
+    const agent = new EchoAgent(this.svcCtx, options.agentOptions ?? {}, session)
     let detachSession: (() => void) | undefined
     let detachAgent: (() => void) | undefined
     let disposed = false
-    const dispose = ownerCtx.effect(() => () => {
+    // Lifecycle ownership: register under OUR plugin context (svcCtx), NOT the
+    // caller's ownerCtx. ownerCtx is request-scoped — entering the session and
+    // agent there unwinds them when the RPC request ends, so a turn completing
+    // after the response appends to a DETACHED session (memory-only, no
+    // session/event dispatch, nothing persists, and the next prompt re-resumes).
+    // Upstream enters both under agent.ctx / the loop's own ctx: the agent
+    // outlives requests, living under the plugin's fiber until unload.
+    const dispose = this.svcCtx.effect(() => () => {
       if (disposed) return
       disposed = true
       agent.dispose()
@@ -392,10 +402,10 @@ export class EchoAgentFactory implements AgentFactory {
       setupCommit?.commit()
       // Publication order mirrors upstream agent-loop's publish():
       // enter both, announce session, announce agent, then session-start.
-      detachSession = this.svcCtx.sessions.enter(session)
-      detachAgent = ownerCtx.agents.enter(agent, ownerCtx.agent)
-      this.svcCtx.sessions.announce(session)
-      ownerCtx.agents.announce(agent)
+      detachSession = agent.ctx.sessions.enter(session)
+      detachAgent = this.svcCtx.agents.enter(agent, ownerCtx.agent)
+      agent.ctx.sessions.announce(session)
+      this.svcCtx.agents.announce(agent)
       agent.emitSessionStart(source)
     } catch (error) {
       dispose()

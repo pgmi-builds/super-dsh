@@ -34,6 +34,8 @@ export function apply(ctx: Context): void {
   if (typeof agents?.appendFactory !== 'function') {
     throw new Error("agent-loop-echo: ctx.agents is not a MultiAgentRegistry (load '@pgmi-builds/dsh-multi-agent-registry' before this plugin)")
   }
+  ;(ctx as any).on?.('session/event', (s: { id: string }, e: { type: string }) => {
+  })
   const factory = new EchoAgentFactory(ctx)
   // appendFactory is itself effect-scoped on the registry side; yield its exact
   // disposer from our own effect for in-order teardown symmetry (M0 pattern).
