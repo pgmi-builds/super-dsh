@@ -116,7 +116,7 @@ test('apply() fails loud without a MultiAgentRegistry', () => {
 
 test('createAgent mints a session: opening events, ordered publication, session-start', async () => {
   const { ctx, emissions, agentsCalls, sessionsCalls, sessionsList } = makeFakeCtx()
-  const factory = new EchoAgentFactory()
+  const factory = new EchoAgentFactory(ctx)
   const handle = await factory.createAgent(ctx, { sessionId: 'session-echo-1', meta: { cwd: '/tmp' } })
   const session = sessionsList[0]
 
@@ -152,7 +152,7 @@ test('createAgent passes options through to persistence create (pipe principle)'
     open: async () => makeFakeHandle([]),
   }
   const { ctx, sessionsList } = makeFakeCtx({ persistence })
-  await new EchoAgentFactory().createAgent(ctx, { sessionId: 'session-p', inheritedEventCount: 0 })
+  await new EchoAgentFactory(ctx).createAgent(ctx, { sessionId: 'session-p', inheritedEventCount: 0 })
   assert.strictEqual(calls.length, 1)
   assert.strictEqual(calls[0].header.id, 'session-p')
   // suffix flush: the three opening events were appended through the handle
@@ -162,7 +162,7 @@ test('createAgent passes options through to persistence create (pipe principle)'
 
 test('followup drives one full echo turn with the correct event sequence', async () => {
   const { ctx, sessionsList, emissions } = makeFakeCtx()
-  const { agent } = await new EchoAgentFactory().createAgent(ctx, { sessionId: 'session-turn' })
+  const { agent } = await new EchoAgentFactory(ctx).createAgent(ctx, { sessionId: 'session-turn' })
   const session = sessionsList[0]
 
   agent.followup(textMessage('hello echo'))
@@ -190,7 +190,7 @@ test('followup drives one full echo turn with the correct event sequence', async
 
 test('queued followups run sequentially, each in its own turn', async () => {
   const { ctx, sessionsList } = makeFakeCtx()
-  const { agent } = await new EchoAgentFactory().createAgent(ctx, { sessionId: 'session-q' })
+  const { agent } = await new EchoAgentFactory(ctx).createAgent(ctx, { sessionId: 'session-q' })
   agent.followup(textMessage('one', 'm1'))
   agent.followup(textMessage('two', 'm2'))
   await agent.whenIdle()
@@ -203,7 +203,7 @@ test('queued followups run sequentially, each in its own turn', async () => {
 
 test('cancel aborts the pending echo: no assistant message, turn/end aborted', async () => {
   const { ctx, sessionsList } = makeFakeCtx()
-  const { agent } = await new EchoAgentFactory().createAgent(ctx, { sessionId: 'session-cancel' })
+  const { agent } = await new EchoAgentFactory(ctx).createAgent(ctx, { sessionId: 'session-cancel' })
   agent.followup(textMessage('never answered'))
   agent.cancel({ kind: 'user' })
   await agent.whenIdle()
@@ -217,7 +217,7 @@ test('cancel aborts the pending echo: no assistant message, turn/end aborted', a
 
 test('cancel discards queued but unstarted followups (simplified keepInbox)', async () => {
   const { ctx, sessionsList } = makeFakeCtx()
-  const { agent } = await new EchoAgentFactory().createAgent(ctx, { sessionId: 'session-qc' })
+  const { agent } = await new EchoAgentFactory(ctx).createAgent(ctx, { sessionId: 'session-qc' })
   agent.followup(textMessage('first', 'm1'))
   agent.followup(textMessage('second', 'm2'))
   agent.cancel({ kind: 'user' })
@@ -229,14 +229,14 @@ test('cancel discards queued but unstarted followups (simplified keepInbox)', as
 
 test('whenIdle resolves immediately on a fresh agent', async () => {
   const { ctx } = makeFakeCtx()
-  const { agent } = await new EchoAgentFactory().createAgent(ctx, { sessionId: 'session-idle' })
+  const { agent } = await new EchoAgentFactory(ctx).createAgent(ctx, { sessionId: 'session-idle' })
   await agent.whenIdle() // must not hang
   assert.strictEqual(agent.status, 'idle')
 })
 
 test('runMaintenance runs the task immediately and preserves its value', async () => {
   const { ctx } = makeFakeCtx()
-  const { agent } = await new EchoAgentFactory().createAgent(ctx, { sessionId: 'session-maint' })
+  const { agent } = await new EchoAgentFactory(ctx).createAgent(ctx, { sessionId: 'session-maint' })
   const value = await agent.runMaintenance(async (signal) => {
     assert.ok(signal instanceof AbortSignal)
     return 42
@@ -255,7 +255,7 @@ test('resume loads the persisted log through the persistence handle', async () =
     create: async () => makeFakeHandle([]),
   }
   const { ctx, emissions, sessionsList } = makeFakeCtx({ persistence })
-  const { agent } = await new EchoAgentFactory().resume(ctx, { resumeSessionId: 'session-resumed' })
+  const { agent } = await new EchoAgentFactory(ctx).resume(ctx, { resumeSessionId: 'session-resumed' })
   assert.strictEqual(agent.id, 'session-resumed')
   const startEmission = emissions.find((args) => args[1] === 'agent/session-start')
   assert.strictEqual(startEmission[2].source, 'resume')
@@ -270,7 +270,7 @@ test('resume loads the persisted log through the persistence handle', async () =
 test('resume without persistence fails loud', async () => {
   const { ctx } = makeFakeCtx()
   await assert.rejects(
-    () => new EchoAgentFactory().resume(ctx, { resumeSessionId: 'session-x' }),
+    () => new EchoAgentFactory(ctx).resume(ctx, { resumeSessionId: 'session-x' }),
     /persistence is not configured/,
   )
 })
@@ -278,7 +278,7 @@ test('resume without persistence fails loud', async () => {
 test('setup runs before publication and its commit runs at the boundary', async () => {
   const order = []
   const { ctx, agentsCalls } = makeFakeCtx()
-  await new EchoAgentFactory().createAgent(ctx, {
+  await new EchoAgentFactory(ctx).createAgent(ctx, {
     sessionId: 'session-setup',
     setup: (agentCtx) => {
       order.push('setup')
