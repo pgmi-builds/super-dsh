@@ -1,0 +1,2 @@
+- id: agent
+  name: '@pgmi-builds/dsh-multi-agent-registry'
