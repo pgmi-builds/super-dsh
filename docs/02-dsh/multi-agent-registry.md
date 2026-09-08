@@ -13,7 +13,7 @@
 
 **不改一行上游源码、不复制任何代码：`export default class MultiAgentRegistry extends AgentRegistry`，override 三个方法（`setFactory` 兼容腿 / `appendFactory` / `create`+`resume` 路由），随发包 patch 一行把 base bundle 的 `id: agent` 行 `name` 重指到我们的包——多槽 registry 就位。**
 
-占位机制不需要任何特殊语法：cordis `Service` 基类构造函数里的 `reflect.provide(name, this)` 会在子类实例化时自动完成服务注册（§一）。原生 `agent-loop` 经 `setFactory` 兼容腿无感知注册为 `native` 槽；外来 Agent Loop（OMP、PI agent）经 `appendFactory(key, …)` 各自注册，各自拥有独立 fiber/effect/disposer 时间线。
+（as-built：装载形态为禁原行+插新行，见 §二勘误——patch 行 name 是守卫专用。）占位机制不需要任何特殊语法：cordis `Service` 基类构造函数里的 `reflect.provide(name, this)` 会在子类实例化时自动完成服务注册（§一）。原生 `agent-loop` 经 `setFactory` 兼容腿无感知注册为 `native` 槽；外来 Agent Loop（OMP、PI agent）经 `appendFactory(key, …)` 各自注册，各自拥有独立 fiber/effect/disposer 时间线。
 
 ---
 
