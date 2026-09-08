@@ -43,7 +43,7 @@ if (!existsSync(patchPath)) {
   writeFileSync(patchPath, `# Profile layer for m0: dev/test port convention (AGENTS.md 三).
 - id: webserver
   config:
-    port: 4999
+    port: 4998 # ruling 2026-09-09: 4999 held by a foreign long-lived dsh instance; m0 dev/test moved to 4998
 `)
   console.log('wrote', patchPath)
 }
