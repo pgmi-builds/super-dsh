@@ -199,7 +199,7 @@ base bundle 现状：`packages/bundle/base/cordis.patch.yml:67-68`（`- id: agen
 
 ## 七、里程碑
 
-1. **M0 registry 继承 PoC**：`MultiAgentRegistry`（纯透传：`setFactory` 兼容腿 + `create/resume` 直通 native）+ patch 行替换。验收：`dsh web` 正常起、原生全功能、`--dump-config` 行表正确。
+1. **M0 registry 继承 PoC**：✅ 已完成（2026-09-09，报告 `docs/test-reports/2026-09-09-m0-multi-agent-registry.md`；装载形态 as-built 为禁行+插行，见 §二勘误）。
 2. **M1 echo + 路由闭环**：`appendFactory('echo', …)` 回声 provider + 路由键（header/RPC）+ UI chip。验收：运行期切 echo/切回 native，无重启无重载无任务死亡（seam §六.6 实验的接口级扩大）。
 3. **M2 OMP Agent Loop**：omp-web Adapter 搬进 `appendFactory('omp')` 形态。验收：OMP 会话在原生 DSH Web UI 全交互、与原生并存互切、宿主重启断档续播。
 4. **M3 PI agent**：第二外来 loop（同 PI 核心），验证 ForeignAgent 底座泛化。
