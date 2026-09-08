@@ -24,6 +24,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { agentEvents, Inbox } from '@deepseek-ai/dsh-agent'
+import { createScope } from '@deepseek-ai/dsh-scope'
 import type {
   Agent, AgentCancelCause, AgentFactory, AgentHandle, AgentOptions, AgentStatus,
   CancelOptions, CreateAgentOptions, ResumeAgentOptions, SessionStartSource,
@@ -111,6 +112,7 @@ export class EchoAgent implements Agent {
   private pending: PendingEcho | undefined
   private idleWaiters: Array<() => void> = []
   private disposed = false
+  private scope: ReturnType<typeof createScope>
   private maintenanceAbort: AbortController | undefined
 
   constructor(ctx: Context, options: AgentOptions, session: Session) {
@@ -119,7 +121,8 @@ export class EchoAgent implements Agent {
     // e.g. api-session-controller's installSelection throws otherwise). The
     // upstream loop uses scope.ctx.extend({ agent: this }); extend() with own
     // properties is the minimal equivalent.
-    this.ctx = ctx.extend({ agent: this })
+    this.scope = createScope(ctx, this)
+    this.ctx = this.scope.ctx.extend({ agent: this })
     this.options = options
     this.session = session
     this.id = session.id

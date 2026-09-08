@@ -70,6 +70,9 @@ function makeFakeCtx({ sessionsList = [], persistence = undefined } = {}) {
     // cordis Context.extend: derived context with own props over a prototype
     // chain to the base (Object.create pattern).
     extend(props) { return Object.assign(Object.create(this), props) },
+    // cordis ctx.plugin: mount a child plugin, return its fiber. Fake fiber's
+    // ctx is a prototype-derived context (inherits extend etc.).
+    plugin(_plugin) { return { ctx: Object.create(this), dispose: () => {} } },
   }
   return { ctx, emissions, agentsCalls, sessionsCalls, effects, sessionsList }
 }
