@@ -1,0 +1,78 @@
+#!/usr/bin/env node
+// M0 test-profile bootstrap: creates .superd-test/profiles/m0 and installs the
+// link: dep tree (no @deepseek-ai nesting: pnpm hoisted linker + autoInstallPeers=false,
+// mirroring the omp-web profile precedent). Idempotent: only writes files if absent.
+//
+// Usage: node scripts/m0-profile.mjs
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+const home = join(repoRoot, '.superd-test')
+const profile = join(home, 'profiles', 'm0')
+
+mkdirSync(profile, { recursive: true })
+
+const pkgPath = join(profile, 'package.json')
+if (!existsSync(pkgPath)) {
+  writeFileSync(pkgPath, JSON.stringify({
+    name: 'dsh-profile-m0',
+    private: true,
+    dependencies: {
+      // link: relative to the profile dir; @deepseek-ai/* bundles resolve from
+      // the global dsh vendored tree (omp-web two-layer resolution precedent)
+      '@pgmi-builds/dsh-multi-agent-registry': 'link:../../../packages/dsh-multi-agent-registry',
+    },
+    dsh: {
+      profile: {
+        bundles: [
+          '@deepseek-ai/dsh-base',
+          '@deepseek-ai/dsh-web-app',
+          '@pgmi-builds/dsh-multi-agent-registry',
+        ],
+      },
+    },
+  }, null, 2) + '\n')
+  console.log('wrote', pkgPath)
+}
+
+const patchPath = join(profile, 'cordis.patch.yml')
+if (!existsSync(patchPath)) {
+  writeFileSync(patchPath, `# Profile layer for m0: dev/test port convention (AGENTS.md 三).
+- id: webserver
+  config:
+    port: 4999
+`)
+  console.log('wrote', patchPath)
+}
+
+// pnpm workspace config: hoisted linker so the host-resolved @deepseek-ai peers
+// stay unnested (nested copies break cordis scopeOf identity); no peer auto-install.
+const wsPath = join(profile, 'pnpm-workspace.yaml')
+if (!existsSync(wsPath)) {
+  writeFileSync(wsPath, `packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+storeDir: ../../.npm-cache/pnpm-store
+`)
+  console.log('wrote', wsPath)
+}
+
+// Rebuild the package dist if missing (dist/ is gitignored in the package).
+const distIndex = join(repoRoot, 'packages/dsh-multi-agent-registry/dist/index.js')
+if (!existsSync(distIndex)) {
+  console.log('dist missing, building package…')
+  const r = spawnSync('npx', ['tsc', '-p', 'packages/dsh-multi-agent-registry'], { cwd: repoRoot, stdio: 'inherit' })
+  if (r.status !== 0) { console.error('package build failed'); process.exit(1) }
+}
+
+console.log('installing profile deps with pnpm…')
+const r = spawnSync('pnpm', ['install', '--store-dir', join(repoRoot, '.npm-cache/pnpm-store')], { cwd: profile, stdio: 'inherit' })
+if (r.status !== 0) { console.error('pnpm install failed'); process.exit(1) }
+
+console.log('\ndone. proof run:')
+console.log(`DSH_HOME=${home} /home/u1/.local/bin/dsh --profile m0 --dump-config`)
