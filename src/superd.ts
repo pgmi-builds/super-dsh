@@ -4,13 +4,12 @@
  * fallback → boot(prepare 提供 cmdlineArgs)。patchReload 定 'startup'
  * （无 live watcher；改 patch 重启生效）。
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   boot, composeEntries, healProfilesModuleFallback, initProfile, installFailLoud, loadProfile,
-  PROFILE_PATCH_FILENAME,
 } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 

@@ -14,6 +14,10 @@ describe('superd web smoke (P1 acceptance)', { timeout: 120_000, sequential: tru
 
   it('boots on 4999 and prints the token URL line', async () => {
     const home = mkdtempSync(join(tmpdir(), 'superd-smoke-'))
+
+    // Pre-flight: a foreign 4999 holder must fail fast with a clear message,
+    // not an opaque 60s timeout (incident: stale external listener, T7 round 1)
+    await expect(fetch(BASE)).rejects.toThrow()
     child = spawn(
       process.execPath,
       ['--import', 'tsx/esm', 'src/bin.ts', 'web', '--port', String(PORT), '--home', home],
@@ -59,5 +63,12 @@ describe('superd web smoke (P1 acceptance)', { timeout: 120_000, sequential: tru
     }
   })
 
-  afterAll(() => { child?.kill('SIGTERM') })
+  afterAll(async () => {
+    if (child === undefined) return
+    child.kill('SIGTERM')
+    const exited = new Promise<void>(resolve => { child!.on('exit', () => resolve()) })
+    const timer = new Promise<'timeout'>(resolve => { setTimeout(() => resolve('timeout'), 5_000).unref?.() })
+    if ((await Promise.race([exited, timer])) === 'timeout') child.kill('SIGKILL')
+    await exited
+  })
 })
