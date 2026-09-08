@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-// M0 test-profile bootstrap: creates .superd-test/profiles/m0 and installs the
+// M0/M1 test-profile bootstrap: creates .superd-test/profiles/m0 and installs the
 // link: dep tree (no @deepseek-ai nesting: pnpm hoisted linker + autoInstallPeers=false,
-// mirroring the omp-web profile precedent). Idempotent: only writes files if absent.
+// mirroring the omp-web profile precedent).
+//
+// package.json is written idempotently against the desired dependency/bundle
+// set below: appending a bundle here updates an existing profile in place
+// (no delete+recreate dance).
 //
 // Usage: node scripts/m0-profile.mjs
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -15,26 +19,40 @@ const profile = join(home, 'profiles', 'm0')
 
 mkdirSync(profile, { recursive: true })
 
+// Desired profile manifest (single source of truth for this script).
+const profileManifest = {
+  name: 'dsh-profile-m0',
+  private: true,
+  dependencies: {
+    // link: relative to the profile dir; @deepseek-ai/* bundles resolve from
+    // the global dsh vendored tree (omp-web two-layer resolution precedent)
+    '@pgmi-builds/dsh-multi-agent-registry': 'link:../../../packages/dsh-multi-agent-registry',
+    '@pgmi-builds/dsh-agent-loop-echo': 'link:../../../packages/agent-loop-echo',
+  },
+  dsh: {
+    profile: {
+      bundles: [
+        '@deepseek-ai/dsh-base',
+        '@deepseek-ai/dsh-web-app',
+        '@pgmi-builds/dsh-multi-agent-registry',
+        '@pgmi-builds/dsh-agent-loop-echo',
+      ],
+    },
+  },
+}
+
+function readIfExists(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
 const pkgPath = join(profile, 'package.json')
-if (!existsSync(pkgPath)) {
-  writeFileSync(pkgPath, JSON.stringify({
-    name: 'dsh-profile-m0',
-    private: true,
-    dependencies: {
-      // link: relative to the profile dir; @deepseek-ai/* bundles resolve from
-      // the global dsh vendored tree (omp-web two-layer resolution precedent)
-      '@pgmi-builds/dsh-multi-agent-registry': 'link:../../../packages/dsh-multi-agent-registry',
-    },
-    dsh: {
-      profile: {
-        bundles: [
-          '@deepseek-ai/dsh-base',
-          '@deepseek-ai/dsh-web-app',
-          '@pgmi-builds/dsh-multi-agent-registry',
-        ],
-      },
-    },
-  }, null, 2) + '\n')
+const desiredPkg = JSON.stringify(profileManifest, null, 2) + '\n'
+if (readIfExists(pkgPath) !== desiredPkg) {
+  writeFileSync(pkgPath, desiredPkg)
   console.log('wrote', pkgPath)
 }
 
@@ -64,12 +82,14 @@ storeDir: ../../.npm-cache/pnpm-store
   console.log('wrote', wsPath)
 }
 
-// Rebuild the package dist if missing (dist/ is gitignored in the package).
-const distIndex = join(repoRoot, 'packages/dsh-multi-agent-registry/dist/index.js')
-if (!existsSync(distIndex)) {
-  console.log('dist missing, building package…')
-  const r = spawnSync('npx', ['tsc', '-p', 'packages/dsh-multi-agent-registry'], { cwd: repoRoot, stdio: 'inherit' })
-  if (r.status !== 0) { console.error('package build failed'); process.exit(1) }
+// Rebuild package dists if missing (dist/ is gitignored in the packages).
+for (const pkg of ['dsh-multi-agent-registry', 'agent-loop-echo']) {
+  const distIndex = join(repoRoot, `packages/${pkg}/dist/index.js`)
+  if (!existsSync(distIndex)) {
+    console.log(`dist missing for ${pkg}, building…`)
+    const r = spawnSync('npx', ['tsc', '-p', `packages/${pkg}`], { cwd: repoRoot, stdio: 'inherit' })
+    if (r.status !== 0) { console.error('package build failed'); process.exit(1) }
+  }
 }
 
 console.log('installing profile deps with pnpm…')

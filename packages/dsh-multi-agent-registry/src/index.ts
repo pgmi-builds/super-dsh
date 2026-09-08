@@ -2,7 +2,9 @@ import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { AgentFactory, AgentHandle, CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { getTraceable, symbols } from '@deepseek-ai/cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import { readKey } from './routing.js'
+import { registerRuntimeKeyRpc } from './rpc.js'
 
 /**
  * Multi-slot {@link AgentRegistry}: the upstream single `#factory` slot is
@@ -17,6 +19,13 @@ import { readKey } from './routing.js'
  * (routing.ts): per-session keys select the slot at delivery time.
  */
 export default class MultiAgentRegistry extends AgentRegistry {
+  constructor(ctx: Context) {
+    super(ctx)
+    // RPC face for the routing key (M1 Task 5): mounts /api/agent-runtime on
+    // the shared connection channel (behind the standard auth fence); a no-op
+    // when the connection service is absent (fake-ctx unit tests).
+    registerRuntimeKeyRpc(ctx, this)
+  }
   // TS-private ORDINARY members, not `#` privates: cordis service proxies
   // delegate property access via the prototype chain, and `#` fields AND
   // methods are per-instance brands only the real constructor can install —
@@ -41,10 +50,21 @@ export default class MultiAgentRegistry extends AgentRegistry {
    * Multi-slot registration entry point for foreign agent loops.
    * Same-key fail-loud (dsh composition-surface discipline).
    */
+  /**
+   * Multi-slot registration entry point for foreign agent loops.
+   * Same-key fail-loud (dsh composition-surface discipline).
+   */
   appendFactory(key: string, factory: AgentFactory): () => void {
     return this.append(key, factory)
   }
 
+  /**
+   * Registered factory keys (the runtime-key face: this IS the list of
+   * routable agent runtimes). Public for the RPC layer; order unspecified.
+   */
+  listFactories(): string[] {
+    return [...this.factories.keys()]
+  }
   private append(key: string, factory: AgentFactory): () => void {
     if (this.factories.has(key)) throw new Error(`an agent factory is already registered for "${key}"`)
     // Avoid stacking two Cordis shadow layers when a caller passes a Service
