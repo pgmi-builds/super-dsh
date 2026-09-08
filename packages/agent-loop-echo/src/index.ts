@@ -18,7 +18,7 @@ import { EchoAgentFactory } from './external-agent.js'
 export const name = 'agent-loop-echo'
 
 /** Required services: the (multi-slot) agent registry. */
-export const inject: string[] = ['agents']
+export const inject: string[] = ['agents', 'sessions', 'sessionPersistence']
 
 /** The MultiAgentRegistry face this plugin programs against (M0 package). */
 type MultiSlotAgents = AgentRegistry & {
@@ -34,7 +34,7 @@ export function apply(ctx: Context): void {
   if (typeof agents?.appendFactory !== 'function') {
     throw new Error("agent-loop-echo: ctx.agents is not a MultiAgentRegistry (load '@pgmi-builds/dsh-multi-agent-registry' before this plugin)")
   }
-  const factory = new EchoAgentFactory()
+  const factory = new EchoAgentFactory(ctx)
   // appendFactory is itself effect-scoped on the registry side; yield its exact
   // disposer from our own effect for in-order teardown symmetry (M0 pattern).
   ctx.effect(() => agents.appendFactory('echo', factory), 'agent-loop-echo.appendFactory()')

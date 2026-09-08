@@ -253,9 +253,19 @@ export class EchoAgent implements Agent {
  * `native` slot.
  */
 export class EchoAgentFactory implements AgentFactory {
+  /**
+   * The plugin's OWN context (declares the service injects). Service access
+   * (sessions / persistence) must go through this context, mirroring upstream
+   * agent-loop's `runtime.ctx` "Plain holder" pattern: the caller's ownerCtx
+   * does not inject our dependencies, so touching ctx.sessions there throws
+   * "cannot get property ... without inject". ownerCtx remains authoritative
+   * for publication and ownership only.
+   */
+  constructor(private readonly svcCtx: Context) {}
+
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     options.signal?.throwIfAborted()
-    const session = ownerCtx.sessions.prepare(options.sessionId, {
+    const session = this.svcCtx.sessions.prepare(options.sessionId, {
       ...options.seed === undefined ? {} : { seed: options.seed },
       ...options.meta === undefined ? {} : { meta: options.meta },
       ...options.inheritedEventCount === undefined ? {} : { inheritedEventCount: options.inheritedEventCount },
@@ -269,7 +279,7 @@ export class EchoAgentFactory implements AgentFactory {
     appendExtended('sandbox/mode', { mode: 'workspace-write' })
     appendExtended('approval/policy', { policy: 'ask' })
 
-    const persistence = getPersistence(ownerCtx)
+    const persistence = getPersistence(this.svcCtx)
     let stored: EchoPersistenceHandle | undefined
     if (persistence !== undefined) {
       options.signal?.throwIfAborted()
@@ -288,7 +298,7 @@ export class EchoAgentFactory implements AgentFactory {
   }
 
   async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
-    const persistence = getPersistence(ownerCtx)
+    const persistence = getPersistence(this.svcCtx)
     if (persistence === undefined) {
       throw new Error('cannot resume: session persistence is not configured (load a dsh-session-persistence backend)')
     }
@@ -305,7 +315,7 @@ export class EchoAgentFactory implements AgentFactory {
       options.signal?.throwIfAborted()
       const closers = interruptedTurnClosers(coldRead.events)
       if (closers.length > 0) await handle.append(closers)
-      session = ownerCtx.sessions.prepare(id, {
+      session = this.svcCtx.sessions.prepare(id, {
         seed: [...coldRead.events, ...closers],
         meta: structuredClone(handle.header),
         inheritedEventCount: handle.inheritedEventCount,
@@ -345,9 +355,9 @@ export class EchoAgentFactory implements AgentFactory {
       setupCommit?.commit()
       // Publication order mirrors upstream agent-loop's publish():
       // enter both, announce session, announce agent, then session-start.
-      detachSession = ownerCtx.sessions.enter(session)
+      detachSession = this.svcCtx.sessions.enter(session)
       detachAgent = ownerCtx.agents.enter(agent, ownerCtx.agent)
-      ownerCtx.sessions.announce(session)
+      this.svcCtx.sessions.announce(session)
       ownerCtx.agents.announce(agent)
       agent.emitSessionStart(source)
     } catch (error) {
