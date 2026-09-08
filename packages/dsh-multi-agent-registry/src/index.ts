@@ -1,7 +1,8 @@
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { AgentFactory, AgentHandle, CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { getTraceable } from '@deepseek-ai/cordis'
+import { getTraceable, symbols } from '@deepseek-ai/cordis'
+import { readKey } from './routing.js'
 
 /**
  * Multi-slot {@link AgentRegistry}: the upstream single `#factory` slot is
@@ -12,8 +13,8 @@ import { getTraceable } from '@deepseek-ai/cordis'
  *
  * M0 shape: routing always resolves to the `native` slot (the upstream
  * agent-loop registers through the `setFactory` compatibility leg), so
- * behavior is a transparent passthrough. M1 will source routing keys from
- * header config.runtime / RPC side-channel in resolve.
+ * behavior is a transparent passthrough. M1 adds the routing-key side table
+ * (routing.ts): per-session keys select the slot at delivery time.
  */
 export default class MultiAgentRegistry extends AgentRegistry {
   // TS-private ORDINARY members, not `#` privates: cordis service proxies
@@ -25,6 +26,7 @@ export default class MultiAgentRegistry extends AgentRegistry {
   // cordis Service subclasses.
   // pattern (a plain property, not a private field) exists for exactly this.
   private factories = new Map<string, AgentFactory>()
+  private staleKeyWarnings = new Set<string>()
 
   /**
    * Compatibility leg: the upstream agent-loop constructor calls this by
@@ -45,13 +47,18 @@ export default class MultiAgentRegistry extends AgentRegistry {
 
   private append(key: string, factory: AgentFactory): () => void {
     if (this.factories.has(key)) throw new Error(`an agent factory is already registered for "${key}"`)
-    this.factories.set(key, factory)
+    // Avoid stacking two Cordis shadow layers when a caller passes a Service
+    // already read through a context. Calls are re-traced through their
+    // actual owner context in create/resume (getTraceable) — same rationale
+    // as upstream setFactory's canonicalization.
+    const target = (factory as AgentFactory & { [symbols.original]?: AgentFactory })[symbols.original] ?? factory
+    this.factories.set(key, target)
     // Effect semantics copied from upstream setFactory: the registration fiber's
     // unload removes the slot; the exact effect disposer is returned so a
     // caller's composite effect can yield it for in-order teardown.
     const dispose = this.ctx.effect(() => {
       return () => {
-        if (this.factories.get(key) !== factory) return
+        if (this.factories.get(key) !== target) return
         this.factories.delete(key)
       }
     }, `agents.append(${key})`)
@@ -60,11 +67,23 @@ export default class MultiAgentRegistry extends AgentRegistry {
 
   /**
    * Delivery-time routing resolution; never touches fiber lifecycles.
-   * M0: no routing-key source exists yet, so always `native`. M1 hooks
-   * header config.runtime / RPC side-channel here.
+   * Key comes from the registry-owned side table (routing.ts): a missing key
+   * or a key whose factory got unregistered degrades to `native` (a single
+   * warn per stale key — delivery must not die because a runtime went away).
+   * Only the total absence of any factory (native itself missing) throws.
    */
-  private resolve(_sessionId: SessionId): AgentFactory {
-    const factory = this.factories.get('native')
+  private resolve(sessionId: SessionId): AgentFactory {
+    const key = readKey(sessionId) ?? 'native'
+    let factory = this.factories.get(key)
+    if (factory === undefined && key !== 'native') {
+      // Degrade gracefully: optional logger (fake-ctx tests carry none).
+      const logger = (this.ctx as { logger?: { warn(...args: unknown[]): void } }).logger
+      if (!this.staleKeyWarnings.has(key)) {
+        this.staleKeyWarnings.add(key)
+        logger?.warn(`agents: runtime "${key}" is not registered; delivering session ${sessionId} to native`)
+      }
+      factory = this.factories.get('native')
+    }
     if (factory === undefined) throw new Error('no agent factory registered (load an agent-loop plugin)')
     return factory
   }

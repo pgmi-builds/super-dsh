@@ -1,6 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import MultiAgentRegistry from '../dist/index.js'
+import { setKeyStorePath, writeKey } from '../dist/routing.js'
+import { symbols } from '@deepseek-ai/cordis'
+
+// Default isolation: every test in this file reads keys from a throwaway
+// store, never the real harness home (~/.dsh is off-limits even read-only).
+setKeyStorePath(join(mkdtempSync(join(tmpdir(), 'mar-default-')), 'keys.json'))
 
 // ---------------------------------------------------------------------------
 // Fake cordis Context: the minimal surface the Service + AgentRegistry
@@ -14,13 +23,15 @@ import MultiAgentRegistry from '../dist/index.js'
 // We never fire 'internal/status' and never iterate the constructor's
 // generator effect, so hasLifecycleAncestor / disposeInitiators never run.
 // ---------------------------------------------------------------------------
-function makeFakeCtx() {
+function makeFakeCtx(withLogger = false) {
   const noop = () => {}
+  const warns = []
   const fakeTypert = {
     lookups: { register: noop },
     contexts: { registerHost: noop },
   }
   const ctx = {
+    ...(withLogger ? { logger: { warn: (...args) => warns.push(args) } } : {}),
     reflect: { provide: noop },
     // cordis inject returns a scoped context; the registry only reads
     // typeCtx.typert.*, so we hand the callback a ctx-like object carrying it.
@@ -37,11 +48,21 @@ function makeFakeCtx() {
       return typeof out === 'function' ? out : noop
     },
   }
+  ctx.warns = warns
   return ctx
 }
 
-function makeRegistry() {
-  return new MultiAgentRegistry(makeFakeCtx())
+// Isolate the routing side table per test (fresh temp file).
+function isolatedKeyStore() {
+  const dir = mkdtempSync(join(tmpdir(), 'mar-keys-'))
+  const path = join(dir, 'agent-runtime-keys.json')
+  setKeyStorePath(path)
+  return path
+}
+
+
+function makeRegistry(withLogger = false) {
+  return new MultiAgentRegistry(makeFakeCtx(withLogger))
 }
 
 function makeNativeFactory() {
@@ -159,4 +180,76 @@ test('M0 routing: resolve is always native even when foreign keys are registered
   await reg.resume({ resumeSessionId: 'any' })
   assert.equal(native.calls.length, 2) // create + resume both hit native
   assert.equal(foreign.calls.length, 0) // foreign slot never consulted in M0
+})
+
+test('append unwraps factory[symbols.original] to the traced target', async () => {
+  isolatedKeyStore()
+  const reg = makeRegistry()
+  const target = makeNativeFactory()
+  // A Service read through a context carries [symbols.original]; the registry
+  // must store the unwrapped target (upstream setFactory pattern).
+  const wrapped = Object.assign(makeNativeFactory(), { [symbols.original]: target })
+  const native = makeNativeFactory()
+  reg.setFactory(native)
+  reg.appendFactory('echo', wrapped)
+  writeKey('s1', 'echo')
+  await reg.create({ sessionId: 's1' })
+  assert.equal(target.calls.length, 1) // delegation hit the UNWRAPPED target
+  assert.equal(wrapped.calls.length, 0) // …never the shadow wrapper
+  assert.strictEqual(target.calls[0].options.sessionId, 's1')
+})
+
+test('key routing: keyed session delegates to the keyed factory', async () => {
+  isolatedKeyStore()
+  const reg = makeRegistry()
+  const native = makeNativeFactory()
+  const echo = makeNativeFactory()
+  reg.setFactory(native)
+  reg.appendFactory('echo', echo)
+  writeKey('s-echo', 'echo')
+  await reg.create({ sessionId: 's-echo' })
+  await reg.resume({ resumeSessionId: 's-echo' })
+  assert.equal(echo.calls.length, 2)
+  assert.equal(native.calls.length, 0)
+})
+
+test('key routing: stale key falls back to native with a single warn (no throw)', async () => {
+  isolatedKeyStore()
+  const reg = makeRegistry(true)
+  const native = makeNativeFactory()
+  reg.setFactory(native)
+  writeKey('s-gone', 'unregistered-runtime')
+  await reg.create({ sessionId: 's-gone' })
+  await reg.create({ sessionId: 's-gone' })
+  assert.equal(native.calls.length, 2) // delivery survived the stale key
+  const warns = reg.ctx.warns.filter((args) => String(args[0]).includes('unregistered-runtime'))
+  assert.equal(warns.length, 1) // exactly one warn per stale key
+})
+
+test('key routing: no key resolves to native (default)', async () => {
+  isolatedKeyStore()
+  const reg = makeRegistry()
+  const native = makeNativeFactory()
+  const echo = makeNativeFactory()
+  reg.setFactory(native)
+  reg.appendFactory('echo', echo)
+  await reg.create({ sessionId: 's-plain' })
+  assert.equal(native.calls.length, 1)
+  assert.equal(echo.calls.length, 0)
+  assert.equal(reg.ctx.warns.length, 0) // no logger wired, no crash either
+})
+
+test('pipe guard: options reference identity reaches the keyed factory unchanged', async () => {
+  isolatedKeyStore()
+  const reg = makeRegistry()
+  const echo = makeNativeFactory()
+  reg.setFactory(makeNativeFactory())
+  reg.appendFactory('echo', echo)
+  writeKey('s-id', 'echo')
+  const createOptions = { sessionId: 's-id', prompt: 'hello', tools: ['bash'] }
+  await reg.create(createOptions)
+  const resumeOptions = { resumeSessionId: 's-id' }
+  await reg.resume(resumeOptions)
+  assert.strictEqual(echo.calls[0].options, createOptions)
+  assert.strictEqual(echo.calls[1].options, resumeOptions)
 })
