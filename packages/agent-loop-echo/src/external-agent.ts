@@ -24,7 +24,30 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { agentEvents, Inbox } from '@deepseek-ai/dsh-agent'
-import { createScope } from '@deepseek-ai/dsh-scope'
+import { createScope as localCreateScope } from '@deepseek-ai/dsh-scope'
+
+/**
+ * dsh-scope MUST be the HOST process's module instance: its scope key is a
+ * module-level `Symbol("dsh.scope")` (NOT Symbol.for), so a second copy of the
+ * package mints a different symbol and host plugins (agent-presets) cannot see
+ * the scope we attach — "refusing to compose an unscoped context". Resolve the
+ * running dsh binary's own module tree first (argv[1] realpath anchors inside
+ * the host install), fall back to this repo's copy for unit tests.
+ */
+async function loadHostScopeModule(): Promise<typeof import('@deepseek-ai/dsh-scope')> {
+  try {
+    const moduleMod = (await import('node:module')).default
+    const fsMod = await import('node:fs')
+    const anchorPath = fsMod.realpathSync(process.argv[1] ?? process.cwd())
+    const req = moduleMod.createRequire(anchorPath)
+    const resolved = req.resolve('@deepseek-ai/dsh-scope')
+    return await import(resolved) as typeof import('@deepseek-ai/dsh-scope')
+  } catch {
+    return await import('@deepseek-ai/dsh-scope')
+  }
+}
+const scopeModule: Awaited<ReturnType<typeof loadHostScopeModule>> = await loadHostScopeModule()
+const createScope = scopeModule.createScope
 import type {
   Agent, AgentCancelCause, AgentFactory, AgentHandle, AgentOptions, AgentStatus,
   CancelOptions, CreateAgentOptions, ResumeAgentOptions, SessionStartSource,
