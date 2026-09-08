@@ -49,8 +49,8 @@ docs/test-reports/2026-09-09-m0-multi-agent-registry.md    # 实测报告（Task
 
 **Files:** `packages/dsh-multi-agent-registry/{package.json,tsconfig.json,src/index.ts,cordis.patch.yml}`
 
-- [ ] 写 `package.json`：`name: "@pgmi-builds/dsh-multi-agent-registry"`、`type: module`、`exports: { ".": "./dist/index.js" }`、`files: [dist, cordis.patch.yml]`、`dsh: { bundle: { patch: "./cordis.patch.yml" } }`；optional peerDependencies：`@deepseek-ai/cordis`、`@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-session`（全部 `*`，运行期 host 供）；devDependencies：`typescript`（仓内已有版本，勿新装）。`.npmrc` 加 `auto-install-peers=false`（omp-web 实证：嵌套 peer 副本破坏 `scopeOf` 身份）。
-- [ ] 写 `src/index.ts`（M0 形态，透传为主）：
+- [x] 写 `package.json`：`name: "@pgmi-builds/dsh-multi-agent-registry"`、`type: module`、`exports: { ".": "./dist/index.js" }`、`files: [dist, cordis.patch.yml]`、`dsh: { bundle: { patch: "./cordis.patch.yml" } }`；optional peerDependencies：`@deepseek-ai/cordis`、`@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-session`（全部 `*`，运行期 host 供）；devDependencies：`typescript`（仓内已有版本，勿新装）。`.npmrc` 加 `auto-install-peers=false`（omp-web 实证：嵌套 peer 副本破坏 `scopeOf` 身份）。
+- [x] 写 `src/index.ts`（M0 形态，透传为主）：
   ```ts
   import AgentRegistry from '@deepseek-ai/dsh-agent'
   import { getTraceable } from '@deepseek-ai/cordis'
@@ -90,64 +90,64 @@ docs/test-reports/2026-09-09-m0-multi-agent-registry.md    # 实测报告（Task
   }
   ```
   注意：类型 `AgentFactory/CreateAgentOptions/ResumeAgentOptions/SessionId` 从 `@deepseek-ai/dsh-agent` re-import（type-only）。若 `this.ctx` 因上游 TS private/protected 报错，用 `(this as any).ctx` 或在子类声明 `declare protected ctx: Context`——**不改行为，只过类型**。
-- [ ] 写 `cordis.patch.yml`：
+- [x] 写 `cordis.patch.yml`：
   ```yaml
   - id: agent
     name: '@pgmi-builds/dsh-multi-agent-registry'
   ```
   （name 重指即占位；加 `name` 守卫的完整形态 = 覆盖行写两个键，M0 先不加守卫，Task 6 实测后按 warn 行为决定。）
-- [ ] `git add packages/dsh-multi-agent-registry && git commit`（message: `m0: multi-agent-registry package skeleton (transparent passthrough)`）
+- [x] `git add packages/dsh-multi-agent-registry && git commit`（message: `m0: multi-agent-registry package skeleton (transparent passthrough)`）
 
 ## Task 2：类型接线
 
 **Files:** `packages/dsh-multi-agent-registry/tsconfig.json`、`types/`
 
-- [ ] 首选方案：`tsconfig.json` `paths` 把 `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/cordis` 指到 `upstream/deepseek-harness` 的源码（`packages/core/agent/src/index.ts` 等，tag 与 pin 同版）。验证 `npx tsc -p . --noEmit` 能解析（upstream 源码含 `export default AgentRegistry` 与全部导出类型）。`.d.ts` 生成走 `tsc` 声明或直接 `declaration: true` 出 `dist/`。
-- [ ] 若 upstream 源码路径解析失败（相对导入扩展名 `.ts` 等问题），退路：从 upstream checkout 复制所需 `.d.ts` 进 `types/@deepseek-ai/*`（omp-web vendored-types 先例），paths 指本地。**退路只复制类型，不复制实现。**
-- [ ] `tsc` 出 `dist/index.js`，`node -e "import('…/dist/index.js').then(m => console.log(typeof m.default))"` 打印 `function`（class 即函数，冒烟 import 无副作用——注意此时不在 cordis 环境，只验证模块可加载）。
-- [ ] commit。
+- [x] 首选方案：`tsconfig.json` `paths` 把 `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/cordis` 指到 `upstream/deepseek-harness` 的源码（`packages/core/agent/src/index.ts` 等，tag 与 pin 同版）。验证 `npx tsc -p . --noEmit` 能解析（upstream 源码含 `export default AgentRegistry` 与全部导出类型）。`.d.ts` 生成走 `tsc` 声明或直接 `declaration: true` 出 `dist/`。
+- [x] 若 upstream 源码路径解析失败（相对导入扩展名 `.ts` 等问题），退路：从 upstream checkout 复制所需 `.d.ts` 进 `types/@deepseek-ai/*`（omp-web vendored-types 先例），paths 指本地。**退路只复制类型，不复制实现。**
+- [x] `tsc` 出 `dist/index.js`，`node -e "import('…/dist/index.js').then(m => console.log(typeof m.default))"` 打印 `function`（class 即函数，冒烟 import 无副作用——注意此时不在 cordis 环境，只验证模块可加载）。
+- [x] commit。
 
 ## Task 3：单测（不起 dsh）
 
 **Files:** `packages/dsh-multi-agent-registry/test/registry.test.mjs`
 
-- [ ] 测试环境：从 upstream checkout 解析 `@deepseek-ai/cordis`（node ESM `imports` 字段或 NODE_OPTIONS；参照 dsh-omp `upstream/dsh` 的 source-run 经验——若 cordis 无法独立实例化，降级为纯逻辑测试：直接 `new MultiAgentRegistry(fakeCtx)`，fakeCtx 提供 `effect/on/inject/accessor/reflect.provide` 最小面——上游 `AgentRegistry` constructor 只用到这些）。
-- [ ] 用例：① `setFactory` 后再 `setFactory` → throw（同 key fail-loud）；② `appendFactory('omp', f)` 与 `setFactory(n)` 共存不 throw；③ disposer 调用后 key 摘除；④ `create` 委托到 native factory 且透传 options（fake factory 记录入参）；⑤ native 缺失时 `create` → no-factory 错误。
-- [ ] `node --test test/*.test.mjs` 全绿（注意本机 Node 22 需 glob 形态，dsh-omp 实证）。
-- [ ] commit。
+- [x] 测试环境：从 upstream checkout 解析 `@deepseek-ai/cordis`（node ESM `imports` 字段或 NODE_OPTIONS；参照 dsh-omp `upstream/dsh` 的 source-run 经验——若 cordis 无法独立实例化，降级为纯逻辑测试：直接 `new MultiAgentRegistry(fakeCtx)`，fakeCtx 提供 `effect/on/inject/accessor/reflect.provide` 最小面——上游 `AgentRegistry` constructor 只用到这些）。
+- [x] 用例：① `setFactory` 后再 `setFactory` → throw（同 key fail-loud）；② `appendFactory('omp', f)` 与 `setFactory(n)` 共存不 throw；③ disposer 调用后 key 摘除；④ `create` 委托到 native factory 且透传 options（fake factory 记录入参）；⑤ native 缺失时 `create` → no-factory 错误。
+- [x] `node --test test/*.test.mjs` 全绿（注意本机 Node 22 需 glob 形态，dsh-omp 实证）。
+- [x] commit。
 
 ## Task 4：测试 profile 搭建
 
 **Files:** `.superd-test/profiles/m0/{package.json,cordis.patch.yml}`（gitignored，但把**搭建脚本**入库：`scripts/m0-profile.mjs` 或 Makefile 目标，含 mkdir/deps 写入/pnpm install 命令）
 
-- [ ] profile `package.json`：`dsh.profile.bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@pgmi-builds/dsh-multi-agent-registry"]`；deps：`"@pgmi-builds/dsh-multi-agent-registry": "link:../../packages/dsh-multi-agent-registry"`（`@deepseek-ai/*` 两个 bundle 由全局 dsh vendored 树解析，omp-web 两层解析先例）。
-- [ ] profile 级 `cordis.patch.yml`：`webserver.port: 4999`。
-- [ ] `DSH_HOME=$PWD/.superd-test dsh --profile m0 --dump-config`（只 dump 不起服）核对行表：`id: agent` 行的 name = 我们的包，`agent-loop` 行原样。**这一步就是占位的第一人称证据。**
-- [ ] dump 不对时排查方向：层序（我们的包必须在 bundles 列表且随发 patch 被合并）、`dsh.bundle.patch` 字段拼写、link 解析。
-- [ ] commit（脚本入库，`.superd-test/` 忽略）。
+- [x] profile `package.json`：`dsh.profile.bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@pgmi-builds/dsh-multi-agent-registry"]`；deps：`"@pgmi-builds/dsh-multi-agent-registry": "link:../../packages/dsh-multi-agent-registry"`（`@deepseek-ai/*` 两个 bundle 由全局 dsh vendored 树解析，omp-web 两层解析先例）。
+- [x] profile 级 `cordis.patch.yml`：`webserver.port: 4999`。
+- [x] `DSH_HOME=$PWD/.superd-test dsh --profile m0 --dump-config`（只 dump 不起服）核对行表：`id: agent` 行的 name = 我们的包，`agent-loop` 行原样。**这一步就是占位的第一人称证据。**
+- [x] dump 不对时排查方向：层序（我们的包必须在 bundles 列表且随发 patch 被合并）、`dsh.bundle.patch` 字段拼写、link 解析。
+- [x] commit（脚本入库，`.superd-test/` 忽略）。
 
 ## Task 5：4999 实例启动验证
 
-- [ ] `ss -tlnp | grep 4999` 查占用（机器共用惯例）。
-- [ ] `DSH_HOME=$PWD/.superd-test dsh --profile m0 --no-open --port 4999`（后台/journalctl 取 token URL）。
-- [ ] 认证探针：`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4999/` → 401 + `dsh web authentication required`。
-- [ ] `curl -c jar -L '<token-url>'` 303 落地 → shell 页 200，boot graph 正常（原生 client 面不受影响）。
-- [ ] 观察 stdout/journal 无 `agents` 服务相关报错、无 duplicate provide——**构造函数链（typert/accessor/effect）跑通的证据**。
-- [ ] commit（如有修 fix，如 name 守卫）。
+- [x] `ss -tlnp | grep 4999` 查占用（机器共用惯例）。
+- [x] `DSH_HOME=$PWD/.superd-test dsh --profile m0 --no-open --port 4999`（后台/journalctl 取 token URL）。
+- [x] 认证探针：`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4999/` → 401 + `dsh web authentication required`。
+- [x] `curl -c jar -L '<token-url>'` 303 落地 → shell 页 200，boot graph 正常（原生 client 面不受影响）。
+- [x] 观察 stdout/journal 无 `agents` 服务相关报错、无 duplicate provide——**构造函数链（typert/accessor/effect）跑通的证据**。
+- [x] commit（如有修 fix，如 name 守卫）。
 
 ## Task 6：原生会话功能验证（M0 验收核心）
 
-- [ ] 浏览器开 4999（token URL），新建会话，发一条真实消息，原生 agent loop 完整走一轮（流式输出 + 会话持久化 + 刷新后 resume）。
-- [ ] LLM 凭据：`.superd-test` 的 provider 配置需可用的 API key（与 user 确认来源；没有则本任务暂停上报，不得降级为"进程活着就算过"——AGENTS.md 红线 2）。
-- [ ] 重启实例后再开同一会话 → resume 走 `MultiAgentRegistry.resume` 透传成功（compat 腿的 resume 证据）。
-- [ ] 用完即停 4999。
-- [ ] commit。
+- [x] 浏览器开 4999（token URL），新建会话，发一条真实消息，原生 agent loop 完整走一轮（流式输出 + 会话持久化 + 刷新后 resume）。
+- [x] LLM 凭据：`.superd-test` 的 provider 配置需可用的 API key（与 user 确认来源；没有则本任务暂停上报，不得降级为"进程活着就算过"——AGENTS.md 红线 2）。
+- [x] 重启实例后再开同一会话 → resume 走 `MultiAgentRegistry.resume` 透传成功（compat 腿的 resume 证据）。
+- [x] 用完即停 4999。
+- [x] commit。
 
 ## Task 7：测试报告 + 收尾
 
-- [ ] 写 `docs/test-reports/2026-09-09-m0-multi-agent-registry.md`：占位证据（dump 行表摘录）、401 探针、真实会话截图/日志摘录、已知限制（`#resolve` 恒 native、无路由键）。
-- [ ] 在 `docs/02-dsh/multi-agent-registry.md` §七 M0 条目后加 as-built 注记（一行：已完成 + 报告路径）。
-- [ ] commit。
+- [x] 写 `docs/test-reports/2026-09-09-m0-multi-agent-registry.md`：占位证据（dump 行表摘录）、401 探针、真实会话截图/日志摘录、已知限制（`#resolve` 恒 native、无路由键）。
+- [x] 在 `docs/02-dsh/multi-agent-registry.md` §七 M0 条目后加 as-built 注记（一行：已完成 + 报告路径）。
+- [x] commit。
 
 ---
 
