@@ -118,12 +118,20 @@ export default class MultiAgentRegistry extends AgentRegistry {
 ```
 
 ```yaml
-# cordis.patch.yml（随发包 dsh.bundle.patch 层）
-- id: agent                          # 行 id 保留——占的就是这个生态位
-  name: '@pgmi-builds/dsh-multi-agent-registry'   # 占位守卫可加原 name
+# cordis.patch.yml（随发包 dsh.bundle.patch 层；M0 as-built 修正 2026-09-09）
+# cordis-plugin-include 0.1.3-alpha.2 把 patch 行的 name 作守卫专用、永不赋值
+# ——"name 重指"在本版不存在，整插件替换 = 禁原行 + 插新行。
+- id: agent
+  name: '@deepseek-ai/dsh-agent'     # 守卫：上游行变了就 warn 跳过（防误 target）
+  disabled: true
+- insert:
+    - id: agent-multi
+      name: '@pgmi-builds/dsh-multi-agent-registry'
 ```
 
-base bundle 现状：`packages/bundle/base/cordis.patch.yml:67-68`（`- id: agent` / `name: '@deepseek-ai/dsh-agent'`）。同 scope 重复 provide 的硬错不触发——原行被**替换**而非并存（cordis-customization §3.3 判定表：patch 行 id 覆盖 + name 重指 = 官方整插件替换入口）。
+base bundle 现状：`packages/bundle/base/cordis.patch.yml:67-68`（`- id: agent` / `name: '@deepseek-ai/dsh-agent'`）。同 scope 重复 provide 的硬错不触发——原行被**禁用**、新行插入，`'agents'` 唯一提供者是我们。
+
+> **勘误（2026-09-09，M0 实测）**：cordis-customization §3.3 与 plugin-development 决策树第 5 行的「patch 行 name 重指 = 整插件替换入口」对 0.1.3-alpha.2 **不成立**——`applyEntryPatches` 将 `name` 解构为守卫专用（vendor/include live 核实），永不赋值。可用的替换形态只有禁行+插行。§2.2 的守卫表述才是对的。
 
 ### 实施要点
 

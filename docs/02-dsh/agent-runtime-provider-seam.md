@@ -193,3 +193,7 @@ cordis 侧的事实支撑（`01-cordis-runtime/cordis-customization-and-override
 | PROFILE_TEMPLATES web=live | `packages/boot/app-boot/src/profile.ts:106-125` |
 | base bundle patch 行（agent / agent-loop / hmr-disabled） | `packages/bundle/base/cordis.patch.yml:21,67,472` |
 | 进程树实测 | 2026-09-08，PID 3229452（见第三节） |
+
+---
+
+> **勘误（2026-09-09，M0 实测）**：本文 §5.2「patch 行 `id: agent` 整行替换」的装载表述在 0.1.3-alpha.2 需修正为**禁原行 + 插新行**（`applyEntryPatches` 把 patch 行 `name` 作守卫专用，永不赋值——live binary 核实）。架构结论不变：`'agents'` 唯一提供者换成我们的包。其余推导不受影响。

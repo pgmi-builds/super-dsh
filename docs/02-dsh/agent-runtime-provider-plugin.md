@@ -121,7 +121,7 @@ interface RuntimeProvider {
 安装是这个 feature 唯一触碰 Cordis 插件机制的地方——与 omp-web 的 `dsh plugin add` 同语义，safe-restart，用户装完之后再也见不到本节内容。
 
 1. 包随发 `dsh.bundle.patch`（`cordis.patch.yml`），`dsh plugin add` 进入 profile bundles。
-2. patch 一行：`agent-loop` 行按 id 覆盖 + `name` 重指我们的包（带原 name 守卫）。行 id 保留；`Entry.update` 的 replace 分支只在安装/升级重启时走——全新 import，无运行期影响。此后每次启动，坐进单槽的就是 CompositeLoop，安装即永驻。
+2. patch 两行（as-built 修正 2026-09-09：0.1.3-alpha.2 的 patch 行 `name` 是守卫专用、不可赋值，「name 重指」不存在）：`{id: agent-loop, name: 原值守卫, disabled: true}` + `insert {id: agent-loop-composite, name: 我们的包}`。此后每次启动，坐进单槽的就是 CompositeLoop，安装即永驻。
 3. 部署形态照抄 omp-web：8 个 `@deepseek-ai/*` optional peers 由 host 自供，profile 树零嵌套副本（`.npmrc` `auto-install-peers=false`）。
 4. 互斥：同一 profile 不能同时装本插件与 omp-web（都在单槽上）。迁移路径：omp-web 独占 profile → 本插件多 runtime profile。
 5. 升级/卸载 = 又一次安装期动作（safe-restart）。drain 只发生在这里，等价于任何一次宿主重启。
