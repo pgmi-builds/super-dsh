@@ -168,9 +168,19 @@ base bundle 现状：`packages/bundle/base/cordis.patch.yml:67-68`（`- id: agen
 
 ## 四、路由键（两案共有的最后一块）
 
-- **resume 侧**：session header `config.runtime` 字段（seam §5.2 定案——与 `provider/model/reasoningEffort` 同构，`provider`（LLM 路由）与 `runtime`（loop 路由）正交）。header 持久化，resume 读它选 factory。前置验证：`request/header` 事件对 config 的校验严格度（seam §六.1）。
-- **create 侧**：omp-web 在产已解决同型问题（控制会话创建路径，先定 provider 再建会话）。落法二选一，实施时照 omp-web 实际代码定：(a) UI 创建会话走我们的 RPC，携带 runtime 键；(b) RPC 先写 header config 再进 `agents.create`。
-- **降级语义**：键 miss = `native`——卸载我们的包后一切回落原生行为。
+- **一条规则（M1 定案，2026-09-09 用户裁决）**：`runtime = header config.runtime ?? 'native'`。读时机 = 投递边界（delivery-time）：每次 create/resume 现读现判，**不做 lastUsed 类粘性缓存**（上游 modelSelection 的粘性行为是 controller 自己的职责面，registry 不继承也不模仿）。写路径 = 插件 RPC（§3.4）。
+- **存储后端**：候选 = session header `config.runtime`（与 `provider/model/reasoningEffort` 同构）vs registry 自管旁路表（插件目录原子 JSON）。裁决待 M1 Task 2 调研（header schema 严格度 + 运行期写通道）；默认预期 = 旁路表（键不随 session log 迁移的代价已知并接受）。
+- **降级语义**：键 miss 或对应 factory 未注册 = `native`（+warn）——卸载我们的包后一切回落原生行为，fail-safe 方向不变。
+
+### 4.1 管道原则（spec 级约束，违反即设计缺陷）
+
+registry 层的**唯一职责**是分流决策（读一个键、选一个 factory）。除此之外：
+
+- `create/resume` 的 `options` 经 `Reflect.apply` **原样透传**（引用同一性）——不检查、不改写、不转发任何字段；
+- provider/model/reasoningEffort 等参数是这条通路上的**交通流量**，归 controller 与 factory 两端管，registry 是管道不是关卡；
+- 唯一允许的 registry 侧逻辑 = runtime 键的读写（读一条规则，写一条 RPC 路径）。
+
+依据（2026-09-09 用户裁决）："如果我们在中间设关卡去检查具体逻辑，关卡会越来越堵，代码逻辑也会变得越来越臃肿。" M0 实现即已符合（透传 + 引用同一性），本节将其升格为不变量，并有守护测试防回归。
 
 ---
 
