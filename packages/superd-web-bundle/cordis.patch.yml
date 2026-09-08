@@ -30,6 +30,24 @@
         printUrl: true
         trustedHosts: !!js ctx.webStartup.trustedHosts
 
+    # ── wire 载体服务（T7 实证：connection 等 inject 依赖，dsh-base 原提供）──
+
+    # Typert RPC 注册表（remote 方法面的服务注册）
+    - id: typert
+      name: '@deepseek-ai/dsh-typert-registry'
+
+    # Typert 加载器
+    - id: typert-loader
+      name: '@deepseek-ai/dsh-typert-loader'
+
+    # /api 网关：绑定 webserver，提供 typertGateway 服务（api-remotes 等 inject）
+    - id: typert-gateway
+      name: '@deepseek-ai/dsh-api-gateway'
+
+    # 凭据存储：BrowserAuth cookie 签名密钥的持久层（蓝图 §3.6 认证链）
+    - id: credentials
+      name: '@deepseek-ai/dsh-credentials-local'
+
     # client 插件热更链：无 watcher 时闲置，dev 期可用
     - id: client-hmr
       name: '@deepseek-ai/dsh-client-hmr'
@@ -50,8 +68,11 @@
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'
 
+    # host 侧 RPC runner：inject=['tools']（agent 面），P1 零 RPC controller——禁用；
+    # P3 routing mux 落地时再启用/替换。disabled 行仍在组合表中（upstream ui-schedule 同款形态）。
     - id: cordis-host-runner
       name: '@deepseek-ai/dsh-cordis-host-runner'
+      disabled: true
 
     - id: cordis-client-runner
       name: '@deepseek-ai/dsh-cordis-client-runner'

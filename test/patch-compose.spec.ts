@@ -15,7 +15,8 @@ describe('superd-web-bundle patch', () => {
   it('inserts the carrier + neutral-base roster', () => {
     const ids = entries.map(row => row.id)
     expect(ids).toEqual([
-      'superd-startup', 'webserver', 'superd-runtime', 'client-hmr',
+      'superd-startup', 'webserver', 'superd-runtime', 'typert',
+      'typert-loader', 'typert-gateway', 'credentials', 'client-hmr',
       'modules', 'connection', 'api-remotes', 'cordis-host-runner',
       'cordis-client-runner', 'ui-theme', 'locale', 'ui-layout',
       'ui-renderer', 'ui-cordis', 'ui-sidebar', 'ui-settings',
