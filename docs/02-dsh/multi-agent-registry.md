@@ -182,6 +182,16 @@ registry 层的**唯一职责**是分流决策（读一个键、选一个 factor
 
 依据（2026-09-09 用户裁决）："如果我们在中间设关卡去检查具体逻辑，关卡会越来越堵，代码逻辑也会变得越来越臃肿。" M0 实现即已符合（透传 + 引用同一性），本节将其升格为不变量，并有守护测试防回归。
 
+### 四-勘注（M1 Task 2 调研，2026-09-09）
+
+上游源码证据（`upstream/deepseek-harness` @ dsh-v0.1.3-alpha.2，只读核验）：
+
+- **A. header config 是封闭 schema，非 passthrough**。`EpochHeader.config` 类型为 `LlmCallConfig`（`packages/core/session/src/types.ts:230-231`），字段 = `provider/model/reasoningEffort?/temperature?/maxTokens?/stop?`，且注释明言「Every field maps 1:1 onto the same-named `GenerateOptions` field」（`packages/llm/llm/src/call-config.ts:23-35`）——config 是 LLM 调用配置，不是任意元数据袋。payload 校验为 closed record：required `['provider','model']`、optional `['reasoningEffort','temperature','maxTokens','stop']`（`packages/session/session-format-v0-to-v1/src/payload-validation.ts:799-806`），未知成员（如 `runtime`）直接 `SessionFormatError: unexpected member`（`validation-helpers.ts:28-33`；该校验在格式迁移读取时执行，`session-format-v1-to-v2/src/migration.ts:101`）。活路径 append 仅做 turn-enclosure 结构校验（`packages/core/session/src/invariant.ts:150-155`），但写入者唯一：agent-loop 本身（`packages/core/agent-loop/src/agent.ts:555-564`）。
+- **B. create/resume 触发时点**。`session/prompt` **每条** prompt 都先 `resolveAgent`（`packages/api/session-controller/src/commands.ts:305`）→ live 命中直接用；无 live agent 则走 `agents.resume`（`agent.ts:428`）。`session/create` → `ensureSession` → `createOrAdopt`（`commands.ts:96`、`agent.ts:435`）：sessionId 已持久化时先 `observeSession` 命中 → **resume**（`agent.ts:460`），仅 `SESSION_QUERY_SESSION_NOT_FOUND` 才 `agents.create`（`agent.ts:477`）。
+- **B'（既有 session、无 live agent）**：首条 prompt 走 **resume**（resolveAgent → agents.resume），不经 create。即常见切换流里路由键在 resume 边界被读；create-time 读只在全新会话首建时发生一次。
+- **C. header config 无运行期写通道**。session RPC 面全集 = list/search/create/selectModel/modelCatalog/observe/openWorkspacePath/rename/fork/prompt/attachment/updateQueue/cancel/page + 2 stream（`packages/api/session-controller/src/index.ts:215-392`）。`rename` 写的是 `session/title` 事件（经 sessionTitle 服务，`commands.ts:168-175`）；`selectModel` 写 `model/selection`（`commands.ts:126-160`）——均非 header 重写。`request/header` 事件的唯一写者是 agent-loop 回合执行本身。
+- **存储后端定案：(b) registry 自管旁路表（插件目录原子 JSON）**，依据：A 证明 header config 是封闭 LLM 调用配置 schema，塞 `runtime` 会触发 payload 校验拒绝/破坏迁移路径且语义错位；C 证明不存在可复用的 header 写通道，经 `sessionPersistence` 自写事件等于绕过校验伪造 loop 事件，改上游语义。旁路表零上游接触、迁移最简单（键不随 session log 迁移的代价已知并接受，见 §四上文）。
+
 ---
 
 ## 五、与坐槽者路由（B 线）的对照
