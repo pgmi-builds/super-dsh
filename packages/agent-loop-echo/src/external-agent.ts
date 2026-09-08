@@ -274,7 +274,13 @@ export class EchoAgentFactory implements AgentFactory {
     // These event types are merged into SessionEventMap by upstream preset
     // plugins, not by the base dsh-session map this package compiles against;
     // append() runtime-validates JSON + surface contract only, so cast the type.
-    const appendExtended = session.append as unknown as (type: string, data: unknown) => void
+    // NOTE: call session.append BOUND (arrow wrapper) — detaching the method
+    // (`const f = session.append`) runs it with `this === undefined` in ESM
+    // strict mode and throws "Cannot read properties of undefined (reading 'log')".
+    // The cast only widens the event-type union (preset plugins merge these
+    // types into SessionEventMap; runtime validates JSON + surface contract).
+    const appendExtended = (type: string, data: unknown, ...rest: unknown[]) =>
+      Reflect.apply(session.append, session, [type, data, ...rest] as Parameters<typeof session.append>)
     appendExtended('permission/preset', { preset: 'workspace-write' })
     appendExtended('sandbox/mode', { mode: 'workspace-write' })
     appendExtended('approval/policy', { policy: 'ask' })
