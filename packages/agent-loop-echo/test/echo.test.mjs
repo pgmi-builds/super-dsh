@@ -67,6 +67,9 @@ function makeFakeCtx({ sessionsList = [], persistence = undefined } = {}) {
       return () => { const d = effects.pop(); d?.() }
     },
     get: (name) => (name === 'sessionPersistence' ? persistence : undefined),
+    // cordis Context.extend: derived context with own props over a prototype
+    // chain to the base (Object.create pattern).
+    extend(props) { return Object.assign(Object.create(this), props) },
   }
   return { ctx, emissions, agentsCalls, sessionsCalls, effects, sessionsList }
 }

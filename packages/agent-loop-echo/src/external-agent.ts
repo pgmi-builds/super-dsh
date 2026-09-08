@@ -114,7 +114,12 @@ export class EchoAgent implements Agent {
   private maintenanceAbort: AbortController | undefined
 
   constructor(ctx: Context, options: AgentOptions, session: Session) {
-    this.ctx = ctx
+    // Scoped world contract (upstream ReactLoopAgent pattern): setup callbacks
+    // receive a context CARRYING the agent (`agentCtx.agent` must resolve —
+    // e.g. api-session-controller's installSelection throws otherwise). The
+    // upstream loop uses scope.ctx.extend({ agent: this }); extend() with own
+    // properties is the minimal equivalent.
+    this.ctx = ctx.extend({ agent: this })
     this.options = options
     this.session = session
     this.id = session.id
