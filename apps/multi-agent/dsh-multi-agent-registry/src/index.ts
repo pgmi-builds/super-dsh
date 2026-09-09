@@ -3,7 +3,7 @@ import type { AgentFactory, AgentHandle, CreateAgentOptions, ResumeAgentOptions 
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { getTraceable, symbols } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
-import { readKey } from './routing.js'
+import { readKey, writeKey } from './routing.js'
 import { registerRuntimeKeyRpc } from './rpc.js'
 
 /**
@@ -13,11 +13,24 @@ import { registerRuntimeKeyRpc } from './rpc.js'
  * `reflect.provide('agents', this)` for this subclass, and the accompanying
  * `cordis.patch.yml` repoints the base bundle's `id: agent` line here.
  *
- * M0 shape: routing always resolves to the `native` slot (the upstream
- * agent-loop registers through the `setFactory` compatibility leg), so
- * behavior is a transparent passthrough. M1 adds the routing-key side table
- * (routing.ts): per-session keys select the slot at delivery time.
+ * Routing (v2, 2026-09-09): per-session keys are in-memory only (routing.ts);
+ * the roster of runtimes IS the factory map — no side-table file. When no key
+ * is set, foreign factories may claim the session via `ownsSession` (their own
+ * durable session index), so post-restart routing derives from the owner.
  */
+
+/**
+ * Factory contract for foreign agent loops registering via `appendFactory`.
+ * `ownsSession` is the durable-ownership claim: consulted only when no
+ * in-memory key exists for the session, so a runtime that owns sessions
+ * across restarts — through ITS OWN index/persistence — can claim them.
+ * Return `false`/`undefined` to decline; sessions nobody claims route to
+ * the `native` slot.
+ */
+export interface ForeignAgentFactory extends AgentFactory {
+  ownsSession?(sessionId: string): boolean | Promise<boolean>
+}
+
 export default class MultiAgentRegistry extends AgentRegistry {
   constructor(ctx: Context) {
     super(ctx)
@@ -26,6 +39,7 @@ export default class MultiAgentRegistry extends AgentRegistry {
     // when the connection service is absent (fake-ctx unit tests).
     registerRuntimeKeyRpc(ctx, this)
   }
+
   // TS-private ORDINARY members, not `#` privates: cordis service proxies
   // delegate property access via the prototype chain, and `#` fields AND
   // methods are per-instance brands only the real constructor can install —
@@ -33,7 +47,6 @@ export default class MultiAgentRegistry extends AgentRegistry {
   // ("Receiver must be an instance of class MultiAgentRegistry"). Upstream
   // uses TS-private ordinary members throughout; no `#` fields OR methods on
   // cordis Service subclasses.
-  // pattern (a plain property, not a private field) exists for exactly this.
   private factories = new Map<string, AgentFactory>()
   private staleKeyWarnings = new Set<string>()
 
@@ -50,10 +63,6 @@ export default class MultiAgentRegistry extends AgentRegistry {
    * Multi-slot registration entry point for foreign agent loops.
    * Same-key fail-loud (dsh composition-surface discipline).
    */
-  /**
-   * Multi-slot registration entry point for foreign agent loops.
-   * Same-key fail-loud (dsh composition-surface discipline).
-   */
   appendFactory(key: string, factory: AgentFactory): () => void {
     return this.append(key, factory)
   }
@@ -65,6 +74,7 @@ export default class MultiAgentRegistry extends AgentRegistry {
   listFactories(): string[] {
     return [...this.factories.keys()]
   }
+
   private append(key: string, factory: AgentFactory): () => void {
     if (this.factories.has(key)) throw new Error(`an agent factory is already registered for "${key}"`)
     // Avoid stacking two Cordis shadow layers when a caller passes a Service
@@ -87,20 +97,45 @@ export default class MultiAgentRegistry extends AgentRegistry {
 
   /**
    * Delivery-time routing resolution; never touches fiber lifecycles.
-   * Key comes from the registry-owned side table (routing.ts): a missing key
-   * or a key whose factory got unregistered degrades to `native` (a single
-   * warn per stale key — delivery must not die because a runtime went away).
-   * Only the total absence of any factory (native itself missing) throws.
+   * Order: (1) in-memory key (RPC write or a previous probe's write-back),
+   * (2) foreign `ownsSession` claims — first claim wins and is written back
+   * to memory so the probe runs at most once per session per process,
+   * (3) `native`. A key whose factory got unregistered degrades to `native`
+   * (a single warn per stale key — delivery must not die because a runtime
+   * went away). Only the total absence of any factory throws.
    */
-  private resolve(sessionId: SessionId): AgentFactory {
-    const key = readKey(sessionId) ?? 'native'
-    let factory = this.factories.get(key)
-    if (factory === undefined && key !== 'native') {
+  private async resolve(sessionId: SessionId): Promise<AgentFactory> {
+    let key = readKey(sessionId)
+    if (key === undefined) {
+      // Fresh process (no in-memory key): let registered foreign runtimes
+      // claim the session through their own durable index. Native never
+      // claims — it is the default when nobody does.
+      for (const [candidateKey, candidateFactory] of this.factories) {
+        if (candidateKey === 'native') continue
+        const owns = (candidateFactory as ForeignAgentFactory).ownsSession
+        if (owns === undefined) continue
+        let claimed = false
+        try {
+          claimed = await owns.call(candidateFactory, sessionId)
+        } catch (error) {
+          const logger = (this.ctx as { logger?: { warn(...args: unknown[]): void } }).logger
+          logger?.warn(`agents: runtime "${candidateKey}" ownsSession probe threw for session ${sessionId}: ${String(error)}`)
+        }
+        if (claimed) {
+          key = candidateKey
+          writeKey(sessionId, candidateKey)
+          break
+        }
+      }
+    }
+    const resolved = key ?? 'native'
+    let factory = this.factories.get(resolved)
+    if (factory === undefined && resolved !== 'native') {
       // Degrade gracefully: optional logger (fake-ctx tests carry none).
       const logger = (this.ctx as { logger?: { warn(...args: unknown[]): void } }).logger
-      if (!this.staleKeyWarnings.has(key)) {
-        this.staleKeyWarnings.add(key)
-        logger?.warn(`agents: runtime "${key}" is not registered; delivering session ${sessionId} to native`)
+      if (!this.staleKeyWarnings.has(resolved)) {
+        this.staleKeyWarnings.add(resolved)
+        logger?.warn(`agents: runtime "${resolved}" is not registered; delivering session ${sessionId} to native`)
       }
       factory = this.factories.get('native')
     }
@@ -110,16 +145,15 @@ export default class MultiAgentRegistry extends AgentRegistry {
 
   async create(options: CreateAgentOptions): Promise<AgentHandle> {
     const ownerCtx = this.ctx
-    const target = this.resolve(options.sessionId)
+    const target = await this.resolve(options.sessionId)
     const receiver = getTraceable(ownerCtx, target)
     return Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
   }
 
   async resume(options: ResumeAgentOptions): Promise<AgentHandle> {
     const ownerCtx = this.ctx
-    const target = this.resolve(options.resumeSessionId)
+    const target = await this.resolve(options.resumeSessionId)
     const receiver = getTraceable(ownerCtx, target)
     return Reflect.apply(target.resume, receiver, [ownerCtx, options])
   }
-
 }

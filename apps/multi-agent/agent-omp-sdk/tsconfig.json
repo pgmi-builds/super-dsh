@@ -11,6 +11,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "baseUrl": ".",
+
     "paths": {
       "@deepseek-ai/cordis": ["./types/@deepseek-ai/cordis/index.d.ts"],
       "@deepseek-ai/dsh-agent": ["./types/@deepseek-ai/dsh-agent/index.d.ts"],
@@ -22,7 +23,10 @@
       "@deepseek-ai/dsh-session/types": ["./types/@deepseek-ai/dsh-session/types.d.ts"],
       "@deepseek-ai/dsh-session-persistence": ["./types/@deepseek-ai/dsh-session-persistence/index.d.ts"],
       "@deepseek-ai/dsh-typert-protocol": ["./types/@deepseek-ai/dsh-typert-protocol/index.d.ts"],
-      "@deepseek-ai/dsh-user-approval": ["./types/@deepseek-ai/dsh-user-approval/index.d.ts"]
+      "@deepseek-ai/dsh-user-approval": ["./types/@deepseek-ai/dsh-user-approval/index.d.ts"],
+      "@deepseek-ai/dsh-session-projection": ["./types/@deepseek-ai/dsh-session-projection/index.d.ts"],
+      "@deepseek-ai/dsh-agent-presets/types": ["./types/@deepseek-ai/dsh-agent-presets/types.d.ts"],
+      "@deepseek-ai/dsh-session-projection/types": ["./types/@deepseek-ai/dsh-session-projection/types.d.ts"]
     },
     "outDir": "dist",
     "rootDir": "src",
@@ -31,5 +35,9 @@
   },
   "include": [
     "src"
+  ],
+  "exclude": [
+    "src/client",
+    "src/mobile/client"
   ]
 }

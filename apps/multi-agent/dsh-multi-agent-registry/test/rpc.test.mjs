@@ -1,17 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import {
   AGENT_RUNTIME_RPC_PATH,
   availableRuntimes,
   registerRuntimeKeyRpc,
 } from '../dist/rpc.js'
-import { readKey, setKeyStorePath, writeKey } from '../dist/routing.js'
+import { readKey, resetKeys, writeKey } from '../dist/routing.js'
 
 function freshStore() {
-  setKeyStorePath(join(mkdtempSync(join(tmpdir(), 'rpc-keys-')), 'keys.json'))
+  resetKeys()
 }
 
 // Fake ctx: inject immediately invokes the callback with a scoped ctx carrying

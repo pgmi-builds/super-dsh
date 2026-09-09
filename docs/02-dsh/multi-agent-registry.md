@@ -239,3 +239,12 @@ registry 层的**唯一职责**是分流决策（读一个键、选一个 factor
 | patch 行 name 重指 = 官方整插件替换入口 | `vendor/loader/src/config/entry.ts:172-287`（cordis-customization §2.3） |
 | 上游外来 runtime 只受进程控制的实证 | `packages/subagent/subagent-claude-code/src/{index,process,run}.ts` |
 | omp-web Adapter/持久化/supervisor 现成实现 | `~/workspaces/dsh-omp/apps/omp-web/src/*.ts` |
+
+### 四-勘注 2（routing v2，2026-09-09 user 裁决：废除旁路表）
+
+上一勘注定案的 (b) registry 自管 JSON 旁路表被 user 否决：真正融入 Cordis 的系统不为「需要清单就实物化一个 JSON」——runtime 名单本来就是 registry 的内存 factory Map（Cordis 服务态，注册即得），per-session 键也不该有 registry 自有的第二份持久化。v2 定案：
+
+- **内存键**：`routing.ts` 只保留进程内 Map（RPC 写入 / 探询问写回）。无文件、无路径派生、无 harness-home 接触。
+- **重启后归属**：`ForeignAgentFactory.ownsSession(sessionId)` 契约——内存键缺失时 registry 逐个探询外来 factory，拥有者用**自己的** durable 索引主张归属（agent-omp-sdk 用 bridge-store `resolveEntryById`），命中写回内存（每会话每进程至多探一次）。探询抛错降级 native。无人主张 → native。
+- **设计含义**：归属的 source of truth 回到各 runtime 自己的持久化（omp 的 union persistence 本来就承担 resume ownership），registry 不复制任何一份数据。先前「键不随 session log 迁移」的已知代价自然消失——归属随 runtime 自己的索引迁移。
+- 上一勘注的 A/B/B'/C 源码证据仍然有效（它们证明的是「header 不是键的载体」，与 v2 结论一致）；仅「存储后端定案 (b)」一条作废。

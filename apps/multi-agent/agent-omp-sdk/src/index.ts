@@ -32,12 +32,11 @@ import type {
 import { emitAgentEvent } from "@deepseek-ai/dsh-agent";
 import { SessionPreparation, type Session, type SessionEvent, type SessionId } from "@deepseek-ai/dsh-session";
 import type { LlmRuntime } from "@deepseek-ai/dsh-llm";
-import { OmpRpcClient } from "./rpc.js";
+import { OmpSdkClient } from "./sdk-client.js";
 import { OmpAgent } from "./agent.js";
 import { replayOmpMessages } from "./replay.js";
 import { OmpLlmAdapter } from "./adapter.js";
 import { OmpUnionSessionPersistence } from "./session-persistence-omp.js";
-import { SingleOmpPresetRoster } from "./agent-preset-omp.js";
 import { resolveEntryById } from "./pairing.js";
 import { cwdFromSessionFile, foreignWriterPid, OMP_SESSIONS_ROOT, parseSelector as parseModelSelector, sessionHeaderId } from "./omp-store.js";
 import { supervisor } from "./supervisor.js";
@@ -47,6 +46,7 @@ import { STORAGE_RECONCILE_INTERVAL_MS } from "./knobs.js";
 import { defaultPermissionPreset, envApprovalMode, ompApprovalMode, presetFromEvents } from "./permission.js";
 import { closeBridgeStore, getBridgeStore, initBridgeStore } from "./store/index.js";
 import { reconcileOnce, syncSessionHeader, upsertCreated } from "./store/reconcile.js";
+import { installMobileBootScript } from "./mobile-boot.js";
 
 /** Bounded grace for avoidance hand-off: abort then wait this long before forced teardown. */
 const AVOIDANCE_GRACE_MS = 10_000;
@@ -111,6 +111,14 @@ interface WorkspaceRegistrySlice {
 export class OmpProvider extends Service implements AgentFactory {
   static inject: string[] = ["agents", "sessions", "llm"];
 
+  /**
+   * Multi-agent registry slot key: this provider registers as a FOREIGN
+   * agent loop (`appendFactory`), never the exclusive `setFactory` — the
+   * native loop stays mounted and serves sessions not owned by OMP.
+   */
+  static readonly RUNTIME_KEY = "omp";
+
+
   /** Plain holder — prevents Cordis re-tracing the factory's ctx through a caller shadow. */
   private readonly runtime: { ctx: Context };
   /** Stops the supervisor's follow loop on provider teardown. */
@@ -122,10 +130,33 @@ export class OmpProvider extends Service implements AgentFactory {
   /** Shadow of DSH's agentDefaultModel selection (`provider/model`) seen last tick. */
   #dshSelectionKey = "";
 
+  /**
+   * Durable-ownership claim for the multi-agent registry
+   * (`ForeignAgentFactory.ownsSession`): a dash session id that the bridge
+   * index (or the OMP native store scan) resolves to an OMP session belongs
+   * to this runtime. Consulted at delivery time when no in-memory routing
+   * key exists (fresh process / post-restart); native never claims.
+   */
+  ownsSession(sessionId: string): boolean {
+    return resolveEntryById(sessionId) !== undefined;
+  }
+
   constructor(ctx: Context) {
     super(ctx, "ompProvider");
     this.runtime = { ctx };
-    ctx.effect(() => ctx.agents.setFactory(this), "ompProvider.setFactory()");
+    // Foreign-loop registration (multi-agent contract): exclusive setFactory
+    // is banned — fail loud if the mounted registry is not multi-slot.
+    const agentsAny = ctx.agents as unknown as {
+      appendFactory?: (key: string, factory: unknown) => () => void;
+      setFactory?: (factory: unknown) => () => void;
+    };
+    if (typeof agentsAny.appendFactory !== "function") {
+      throw new Error(
+        "agent-omp-sdk requires the multi-agent registry (dsh-multi-agent-registry) to be mounted; " +
+          "the exclusive setFactory registration is not supported in coexistence mode",
+      );
+    }
+    ctx.effect(() => agentsAny.appendFactory!(OmpProvider.RUNTIME_KEY, this), "ompProvider.appendFactory(omp)");
     this.#registerModelCatalog();
     // Boot the centralized index BEFORE any service reads session state: warm
     // pass + migration, so the first landing sees real titles/models (D5.1).
@@ -137,13 +168,12 @@ export class OmpProvider extends Service implements AgentFactory {
     // the Settings → Agent Preset tab. Both self-register on child fibers, so
     // they load with this plugin — before any dependent service initializes.
     ctx.plugin(OmpUnionSessionPersistence);
-    // The roster must be visible to the API gateway's root-level remote
-    // enumeration (dsh-host-apiproxy read it from the root service table);
-    // nesting it under a child fiber via ctx.plugin hides its @Remote routes
-    // from the gateway and every agentPresets/* call 404s. Register it on
-    // this plugin's own (top-level) fiber instead — its Service constructor
-    // ties teardown to this fiber via reflect.provide.
-    new SingleOmpPresetRoster(ctx);
+    // Coexistence (multi-agent): the native agent-presets package stays
+    // mounted and serves native sessions; the exclusive-mode SingleOmpPreset
+    // roster + omp projection are NOT registered (two providers of the same
+    // service slot would collide). OMP sessions fall back to the native
+    // preset face — the frontend self-heals on data it is not given.
+
     // Session supervisor: state machine + cold projection + foreign detection.
     // `ctx.logger` output is not captured by the systemd journal in this
     // profile; supervisor events are load-bearing (avoidance), so mirror them
@@ -159,6 +189,10 @@ export class OmpProvider extends Service implements AgentFactory {
     ctx.effect(() => () => this.stopFollow(), "ompProvider.followStop()");
     ctx.effect(() => () => closeBridgeStore(), "ompProvider.storeClose()");
     this.#reconcileWorkspaces();
+    // Mobile page-config boot script (host half): sets `window.__OMP_WEB_MOBILE__`
+    // + the iOS zoom-guard section. Fail-open — a missing webServer leaves the
+    // feature dormant, and an injection failure is logged, never thrown.
+    installMobileBootScript(ctx);
   }
 
   /**
@@ -332,7 +366,7 @@ export class OmpProvider extends Service implements AgentFactory {
     trace(`create id=${id} preset=${preset ?? "none"} approval-mode=${approvalMode}${envMode === undefined ? "" : " (env override)"}`);
 
     // Spawn OMP and wait for the `ready` handshake.
-    const rpc = await OmpRpcClient.spawn(["--approval-mode", approvalMode], cwd);
+    const rpc = await OmpSdkClient.spawn(["--approval-mode", approvalMode], cwd);
 
     try {
       // The Dash session id and OMP's session id are UNRELATED (Dash mints
@@ -468,7 +502,7 @@ export class OmpProvider extends Service implements AgentFactory {
 
     // Re-attach to the OMP session by its persisted file (OMP owns the live
     // agent transcript and keeps generating it from here on).
-    const rpc = await OmpRpcClient.spawn(["--approval-mode", approvalMode, "--resume", sessionFile], spawnCwd);
+    const rpc = await OmpSdkClient.spawn(["--approval-mode", approvalMode, "--resume", sessionFile], spawnCwd);
 
     // L3: TOCTOU closer — a TUI may have opened the file in the spawn window.
     const postHolder = foreignWriterPid(sessionFile);
@@ -570,7 +604,7 @@ async function setupAndPublish(
   agentOptions: AgentOptions,
   setup: AgentSetup | undefined,
   session: Session,
-  rpc: OmpRpcClient,
+  rpc: OmpSdkClient,
   source: "startup" | "resume",
   opts: { enterSession: boolean; preparation?: SessionPreparation },
 ): Promise<AgentHandle> {

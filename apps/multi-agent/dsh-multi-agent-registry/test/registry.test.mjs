@@ -1,15 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import MultiAgentRegistry from '../dist/index.js'
-import { setKeyStorePath, writeKey } from '../dist/routing.js'
+import { resetKeys, writeKey } from '../dist/routing.js'
 import { symbols } from '@deepseek-ai/cordis'
 
-// Default isolation: every test in this file reads keys from a throwaway
-// store, never the real harness home (~/.dsh is off-limits even read-only).
-setKeyStorePath(join(mkdtempSync(join(tmpdir(), 'mar-default-')), 'keys.json'))
+// Per-process in-memory keys (v2: no file). Tests reset the map for isolation.
 
 // ---------------------------------------------------------------------------
 // Fake cordis Context: the minimal surface the Service + AgentRegistry
@@ -52,12 +47,9 @@ function makeFakeCtx(withLogger = false) {
   return ctx
 }
 
-// Isolate the routing side table per test (fresh temp file).
+// Isolate the in-memory key map per test.
 function isolatedKeyStore() {
-  const dir = mkdtempSync(join(tmpdir(), 'mar-keys-'))
-  const path = join(dir, 'agent-runtime-keys.json')
-  setKeyStorePath(path)
-  return path
+  resetKeys()
 }
 
 
@@ -109,7 +101,7 @@ test('appendFactory(key) coexists with setFactory (multi-slot)', () => {
   assert.doesNotThrow(() => reg.appendFactory('pi', makeNativeFactory()))
 })
 
-test('disposer invocation removes the key (registration can be re-made)', () => {
+test('disposer invocation removes the key (registration can be re-made)', async () => {
   const reg = makeRegistry()
   const d = reg.setFactory(makeNativeFactory())
   d()
@@ -120,12 +112,12 @@ test('disposer invocation removes the key (registration can be re-made)', () => 
   // …and create now works again (fresh factory reachable through native slot)
   const f = makeNativeFactory()
   const d2 = reg.setFactory(f)
-  reg.create({ sessionId: 's1', prompt: 'hi' })
+  await reg.create({ sessionId: 's1', prompt: 'hi' })
   assert.equal(f.calls.length, 1)
   d2()
 })
 
-test('disposer removes exactly its own key (stale disposer is a no-op)', () => {
+test('disposer removes exactly its own key (stale disposer is a no-op)', async () => {
   const reg = makeRegistry()
   const f1 = makeNativeFactory()
   const d1 = reg.setFactory(f1)
@@ -134,7 +126,7 @@ test('disposer removes exactly its own key (stale disposer is a no-op)', () => {
   reg.setFactory(f2)
   // d1's guarded teardown must NOT delete f2's registration
   d1() // idempotent / no throw
-  reg.create({ sessionId: 's2' })
+  await reg.create({ sessionId: 's2' })
   assert.equal(f2.calls.length, 1)
 })
 
@@ -252,4 +244,49 @@ test('pipe guard: options reference identity reaches the keyed factory unchanged
   await reg.resume(resumeOptions)
   assert.strictEqual(echo.calls[0].options, createOptions)
   assert.strictEqual(echo.calls[1].options, resumeOptions)
+})
+
+test('ownsSession probe: no in-memory key → foreign owner claims and the claim is cached', async () => {
+  isolatedKeyStore()
+  const reg = makeRegistry()
+  const native = makeNativeFactory()
+  const omp = makeNativeFactory()
+  let probes = 0
+  const ompFactory = Object.assign(omp, {
+    ownsSession(sessionId) {
+      probes += 1
+      return sessionId === 's-owned'
+    },
+  })
+  reg.setFactory(native)
+  reg.appendFactory('omp', ompFactory)
+  // fresh-process shape: no key anywhere, owner index says omp
+  await reg.resume({ resumeSessionId: 's-owned' })
+  assert.equal(omp.calls.length, 1)
+  assert.equal(native.calls.length, 0)
+  assert.equal(probes, 1) // second delivery uses the cached key, no re-probe
+  await reg.resume({ resumeSessionId: 's-owned' })
+  assert.equal(omp.calls.length, 2)
+  assert.equal(probes, 1)
+  // a session the owner declines routes native
+  await reg.resume({ resumeSessionId: 's-other' })
+  assert.equal(native.calls.length, 1)
+})
+
+test('ownsSession probe: a throwing probe degrades to native (no delivery death)', async () => {
+  isolatedKeyStore()
+  const reg = makeRegistry(true)
+  const native = makeNativeFactory()
+  const omp = makeNativeFactory()
+  const ompFactory = Object.assign(omp, {
+    ownsSession() {
+      throw new Error('index unavailable')
+    },
+  })
+  reg.setFactory(native)
+  reg.appendFactory('omp', ompFactory)
+  await reg.create({ sessionId: 's-throw' })
+  assert.equal(native.calls.length, 1)
+  assert.equal(omp.calls.length, 0)
+  assert.ok(reg.ctx.warns.some((args) => String(args[0]).includes('ownsSession probe threw')))
 })

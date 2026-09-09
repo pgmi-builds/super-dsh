@@ -15,9 +15,11 @@
 5. **JS 方法脱绑定**：`const f = obj.method` 后 `f()` 在 ESM 严格模式 `this === undefined`。桥接传方法引用用 `Reflect.apply(obj.method, obj, args)`。
 6. **【未愈 M1.1】resume 路径持久化**：重启后已有会话首建 agent 的轮次事件不落盘（create 路径正常；事件有派发、writer 注册 buffered=0、无 warn、直写 handle 通道可用）。**影响面**：只阻塞"薄壳复用原生 jsonl"的 provider；omp-web 式自持 session 面（自己 provide sessionPersistence）不走此路径。agent-omp 适配选型（a 复用 jsonl / b 自持）决定此项修复优先级。
 7. **绝不调用 `setFactory`**：外来 loop 只经 `appendFactory(key, …)` 注册；apply 时 fail-loud 检查 `ctx.agents` 为 MultiAgentRegistry。
+8. **durable 归属自查 `ownsSession(sessionId): boolean`**（v2 契约，`ForeignAgentFactory`）：内存键缺失（新进程/重启后）时 registry 逐个探询外来 factory 的归属主张，命中即写回内存缓存。外来 runtime 用**自己的** session 索引/持久化回答（agent-omp-sdk 用 bridge-store `resolveEntryById`）；registry 不为归属做第二份存储。探询抛错降级 native，delivery 不死。
+9. **路由键 v2 无文件**（2026-09-09 user 裁决）：per-session 键只在内存 Map（routing.ts）；runtime 名单就是 factory Map（Cordis 服务态）。禁止再引入 registry 自有的键值落盘（JSON side table 等实物化）。
 
 ## agent-omp 适配前置认知（从 omp-web 继承，适配时核对）
 
-- omp-web 原仓：`~/workspaces/dsh-omp`（在产 3081；其 AGENTS.md 是运维契约正本）。本目录 `agent-omp/` 是其源码副本改名 `@pgmi-builds/agent-omp`，**尚未适配** multi-agent：它现在仍是独占式（cordis.patch.yml 禁 agent-loop + `setFactory` 独占）。
-- 适配要点（届时落实）：`OmpProvider implements AgentFactory`（src/index.ts:111）从 `setFactory` 独占改为 `appendFactory('omp', …)`；其 sessionPersistence/supervisor/models/permission 部件按"自持 session 面"路线平移；`sim` 子进程经 broker/supervisor 托管。
-- 依赖形态：`@deepseek-ai/*` 全 optional peers + host 自供；`.npmrc` `auto-install-peers=false`（嵌套 peer 副本破坏 scopeOf 身份）。
+- omp-web-sdk 原仓：`~/workspaces/dsh-omp/apps/omp-web-sdk`（Bun sidecar + `@oh-my-pi/pi-coding-agent` 18.1.14 内嵌核心）。本目录 `agent-omp-sdk/` 是其源码副本改名 `@pgmi-builds/agent-omp-sdk`，**已完成 multi-agent 适配**（2026-09-09）：`OmpProvider` 经 `appendFactory('omp', …)` 注册（缺 MultiAgentRegistry 时 fail-loud）+ `ownsSession` 走 bridge-store；patch 行改共存形态（仅禁 `session-persistence-jsonl`——omp union persistence 是服务两边的超集；agent-loop/llm-*/agent-presets 全部保留挂载）；SingleOmpPresetRoster 与 omp projection 不再注册（与原生 agent-presets 同槽冲突，前端自愈）。
+- 类型编译依赖 `types/` 手写桩（自 omp-web 拷入，tsconfig paths 指向）+ 仓根 node_modules 真实 pinned 类型；本地 node_modules 只装 `@oh-my-pi/pi-coding-agent` + `bun`（202 包）。
+- 适配后验证：tsc 0 错、`npm test` 41/41 绿（2026-09-09）。未做：4999 全链路实测（等 multi-agent 测试 profile + 用户验收）。
