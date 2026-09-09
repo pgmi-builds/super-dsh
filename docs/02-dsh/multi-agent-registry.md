@@ -1,5 +1,14 @@
 # Multi-AgentRegistry —— Registry 继承方案实施文档
 
+> **【状态：搁置（SHELVED）2026-09-10】** 实测裁决定案：本路线只做到了 factory 多槽，
+> 服务面（llm 目录 / sessionPersistence / presets / 默认模型）全部是进程级单例，外来
+> loop 只能靠 disable 上游行腾位，两条线必然混流（详见 `apps/multi-agent/AGENTS.md`
+> 与 2026-09-09/10 实测记录：模型目录恒 native、session 清单恒 OMP、运行时恒
+> native）。方向暂停，另寻切入点；本文保留为推导与实证档案（含 routing v2 的
+> in-memory 键 + ownsSession 契约）。备选路线材料：loader 行热翻转（作用域切入，
+> `docs/02-dsh/scope-switch-route.md`）、多容器 Multi-Context
+> （`docs/superpowers/plans/2026-09-10-multi-context-design.md`）。
+
 - 日期：2026-09-09
 - 性质：**实施级方向文档**（源码行级论证 + 代码骨架；registry 介入路线的落地形态）
 - 源码锚点：`upstream/deepseek-harness` @ `dsh-v0.1.3-alpha.2`

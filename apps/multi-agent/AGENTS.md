@@ -1,7 +1,14 @@
 # apps/multi-agent — 局部规则（Multi-Agent App）
 
 - 本文件管辖本目录及子目录；上层为仓根 `AGENTS.md`（最近者胜，中间无其他层）。
-- 本目录是「Multi-Agent」方向（app）：DSH 原生运行时上的多 Agent Loop 路由。设计正本 `docs/02-dsh/multi-agent-registry.md`；实测报告 `docs/test-reports/`；推导正本 `docs/02-dsh/agent-runtime-provider-seam.md`。
+- **【方向状态：搁置（SHELVED）2026-09-10】** 实测判定：registry 多槽只隔离了 factory 选择，
+llm 目录 / sessionPersistence / presets / 默认模型仍是进程级单例，外来 loop 靠 disable
+上游行腾位 → 两线必然混流（目录恒 native、清单恒 OMP、运行时恒 native，2026-09-09/10
+用户实测）。代码与实证档案保留在本目录，不再演进。备选方向材料：loader 行热翻转
+（`docs/02-dsh/scope-switch-route.md`）、Multi-Context 多容器
+（`docs/superpowers/plans/2026-09-10-multi-context-design.md`）。
+
+本目录是「Multi-Agent」方向（app）：DSH 原生运行时上的多 Agent Loop 路由。设计正本 `docs/02-dsh/multi-agent-registry.md`；实测报告 `docs/test-reports/`；推导正本 `docs/02-dsh/agent-runtime-provider-seam.md`。
 - 方向纪律：本仓根下后续每个方向一个 `apps/<方向名>/` 子目录；不要把方向代码摊在仓根 `packages/`。
 
 ## ForeignAgent 集成契约（四硬点 + 一未愈，2026-09-09 M1 实证，对 agent-omp 及一切真外来 provider 同样成立）

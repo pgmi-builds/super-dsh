@@ -1,4 +1,5 @@
-# M1 路由闭环 Implementation Plan（echo provider + runtime 键 + RPC）
+
+> **【状态：随方向搁置（SHELVED）2026-09-10】** M1 路由循环 已按计划完成并通过验收，但上层方向（multi-agent registry 路线）经 2026-09-09/10 实测判定服务面无法隔离而搁置；本计划及其产物转入维护模式，不再演进。见 `docs/02-dsh/multi-agent-registry.md` 顶部状态。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
