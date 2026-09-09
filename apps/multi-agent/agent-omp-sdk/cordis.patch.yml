@@ -22,11 +22,13 @@
 # plus the durable-ownership claim (ownsSession) for post-restart routing.
 # The multi-agent registry patch row (id: agent-multi) must also be inserted
 # by the profile — this plugin fail-louds without it.
+# The stock jsonl row is unmounted; the omp-provider plugin itself provides
+# `sessionPersistence` (union of JSONL + OMP native store scan) — a superset
+# that serves native sessions too; two providers of one slot would collide.
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'   # guard: skip if upstream row changed
+  disabled: true
+
 - insert:
     - id: omp-provider
       name: '@pgmi-builds/agent-omp-sdk'
-
-# The stock jsonl row is unmounted; the omp-provider plugin itself provides
-# `sessionPersistence` (union of JSONL + OMP native store scan).
-- id: session-persistence-jsonl
-  disabled: true
