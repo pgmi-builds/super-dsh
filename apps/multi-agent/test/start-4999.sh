@@ -44,6 +44,7 @@ systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 systemd-run --user --unit="$UNIT" \
   --property=WorkingDirectory="$REPO" \
   --property=Environment=DSH_HOME="$DSH_HOME_DIR" \
+  --property=Environment=PATH="/home/u1/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
   "$DSH_BIN" "$DSH" --profile ma --no-open "${TRUSTED[@]}"

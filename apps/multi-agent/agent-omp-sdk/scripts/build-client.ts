@@ -22,7 +22,7 @@ import { build } from 'tsdown'
 import { join } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 
-const ID = '@pgmi-builds/omp-web-sdk'
+const ID = '@pgmi-builds/agent-omp-sdk'
 const ENTRY = 'src/client/index.ts'
 const OUT_DIR = 'lib/client'
 const OUT_FILE = 'index.js'

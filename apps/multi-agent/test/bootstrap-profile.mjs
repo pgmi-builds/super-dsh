@@ -103,6 +103,14 @@ if (!existsSync(clientIndex)) {
   if (r.status !== 0) { console.error('client build failed'); process.exit(1) }
 }
 
+// Client half of the registry (lib/client — the runtime selector seat).
+const regClient = join(repoRoot, 'apps/multi-agent/dsh-multi-agent-registry/lib/client/index.js')
+if (!existsSync(regClient)) {
+  console.log('client bundle missing for dsh-multi-agent-registry, building…')
+  const r = spawnSync('npm', ['run', 'build-client'], { cwd: join(repoRoot, 'apps/multi-agent/dsh-multi-agent-registry'), stdio: 'inherit' })
+  if (r.status !== 0) { console.error('client build failed'); process.exit(1) }
+}
+
 console.log('installing profile deps with pnpm…')
 const r = spawnSync('pnpm', ['install', '--store-dir', join(repoRoot, '.npm-cache/pnpm-store')], { cwd: profile, stdio: 'inherit' })
 if (r.status !== 0) { console.error('pnpm install failed'); process.exit(1) }
