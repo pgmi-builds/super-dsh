@@ -5,12 +5,10 @@
   "type": "module",
   "main": "dist/index.js",
   "exports": {
-    ".": "./dist/index.js",
-    "./client": "./lib/client/index.js"
+    ".": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build-client": "tsx scripts/build-client.ts",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
@@ -25,7 +23,6 @@
   },
   "files": [
     "dist",
-    "lib",
     "sidecar",
     "cordis.patch.yml",
     "README.md"
@@ -33,12 +30,6 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-layout"
-      ],
-      "platform": "web"
     }
   },
   "repository": {

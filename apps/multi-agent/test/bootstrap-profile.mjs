@@ -28,6 +28,10 @@ const profileManifest = {
     // the global dsh vendored tree (omp-web two-layer resolution precedent)
     '@pgmi-builds/dsh-multi-agent-registry': 'link:../../../apps/multi-agent/dsh-multi-agent-registry',
     '@pgmi-builds/agent-omp-sdk': 'link:../../../apps/multi-agent/agent-omp-sdk',
+    // Mobile responsive for user testing: the SAME production package
+    // (better-dsh ships the v0.2.1f P3 mobile client half), from the npm
+    // registry exactly like the prod web profile — no embedded copy.
+    'better-dsh': '0.2.3-b',
   },
   dsh: {
     profile: {
@@ -36,6 +40,7 @@ const profileManifest = {
         '@deepseek-ai/dsh-web-app',
         '@pgmi-builds/dsh-multi-agent-registry',
         '@pgmi-builds/agent-omp-sdk',
+        'better-dsh',
       ],
     },
   },
@@ -95,13 +100,6 @@ for (const pkg of ['dsh-multi-agent-registry', 'agent-omp-sdk']) {
     if (r.status !== 0) { console.error('package build failed'); process.exit(1) }
   }
 }
-// Client half of agent-omp-sdk (lib/client — dsh.client compose target).
-const clientIndex = join(repoRoot, 'apps/multi-agent/agent-omp-sdk/lib/client/index.js')
-if (!existsSync(clientIndex)) {
-  console.log('client bundle missing for agent-omp-sdk, building…')
-  const r = spawnSync('npm', ['run', 'build-client'], { cwd: join(repoRoot, 'apps/multi-agent/agent-omp-sdk'), stdio: 'inherit' })
-  if (r.status !== 0) { console.error('client build failed'); process.exit(1) }
-}
 
 // Client half of the registry (lib/client — the runtime selector seat).
 const regClient = join(repoRoot, 'apps/multi-agent/dsh-multi-agent-registry/lib/client/index.js')
@@ -112,7 +110,14 @@ if (!existsSync(regClient)) {
 }
 
 console.log('installing profile deps with pnpm…')
-const r = spawnSync('pnpm', ['install', '--store-dir', join(repoRoot, '.npm-cache/pnpm-store')], { cwd: profile, stdio: 'inherit' })
+const storeDir = join(repoRoot, '.npm-cache/pnpm-store')
+let r = spawnSync('pnpm', ['install', '--store-dir', storeDir], { cwd: profile, stdio: 'inherit' })
+if (r.status !== 0) {
+  // pnpm refuses build scripts of new deps (zeromq rides better-dsh):
+  // approve once, then retry the install.
+  spawnSync('pnpm', ['approve-builds', '--all'], { cwd: profile, stdio: 'inherit' })
+  r = spawnSync('pnpm', ['install', '--store-dir', storeDir], { cwd: profile, stdio: 'inherit' })
+}
 if (r.status !== 0) { console.error('pnpm install failed'); process.exit(1) }
 
 console.log('\ndone. proof run:')

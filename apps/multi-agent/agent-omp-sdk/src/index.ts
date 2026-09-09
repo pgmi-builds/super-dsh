@@ -46,7 +46,6 @@ import { STORAGE_RECONCILE_INTERVAL_MS } from "./knobs.js";
 import { defaultPermissionPreset, envApprovalMode, ompApprovalMode, presetFromEvents } from "./permission.js";
 import { closeBridgeStore, getBridgeStore, initBridgeStore } from "./store/index.js";
 import { reconcileOnce, syncSessionHeader, upsertCreated } from "./store/reconcile.js";
-import { installMobileBootScript } from "./mobile-boot.js";
 
 /** Bounded grace for avoidance hand-off: abort then wait this long before forced teardown. */
 const AVOIDANCE_GRACE_MS = 10_000;
@@ -201,10 +200,6 @@ export class OmpProvider extends Service implements AgentFactory {
     ctx.effect(() => () => this.stopFollow(), "ompProvider.followStop()");
     ctx.effect(() => () => closeBridgeStore(), "ompProvider.storeClose()");
     this.#reconcileWorkspaces();
-    // Mobile page-config boot script (host half): sets `window.__OMP_WEB_MOBILE__`
-    // + the iOS zoom-guard section. Fail-open — a missing webServer leaves the
-    // feature dormant, and an injection failure is logged, never thrown.
-    installMobileBootScript(ctx);
   }
 
   /**
