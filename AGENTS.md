@@ -74,3 +74,14 @@
 - **docs-only + P1 计划**：尚无 src/node_modules（P1 执行时产生）。git：blueprint v0.1 → CONTEXT/ADR 0001–0005 → design freeze v0.4a（含 ADR 0006/0007、研究档重组）→ P1 计划。
 - 上游 checkout 就位（见 §二）；参考源 dsh-omp（OMP adapter 蓝本）与 dashr 仓在同机 `~/workspaces/`。
 - 待决：`.agents/`（superpowers 技能目录）入库与否——user 裁决搁置（ignore）。
+
+---
+
+## 六、嵌套 AGENTS.md 约定（Nested AGENTS.md Convention）
+
+子目录可放置自己的 `AGENTS.md` 承载局部规则；本节约定其组织、作用范围与优先级。
+
+- **嵌套（Nesting）**：支持层层嵌套，但**每一层并非都必须有**——只在有实质内容的子目录放置（源码子项目，如 `apps/ui-preact/`、`packages/agent-loop-echo/`、`packages/dsh-multi-agent-registry/`）。根目录本文件是总纲（base），子目录只补充/覆盖本目录相关规则；中间层级无 `AGENTS.md` 则跳过，沿用最近上层。
+- **作用范围（Scope）**：每个 `AGENTS.md` 只管辖其所在目录及所有子目录（subtree），不约束兄弟目录、不反向影响上层。
+- **优先级（Precedence）**：对某文件，生效规则 = 从根到该文件路径上所有 `AGENTS.md` 的叠加；冲突时离文件最近的胜出（nearest wins）；用户在会话中显式给出的指令优先级高于任何 `AGENTS.md`。
+- **定位写法（不写层级号）**：子目录 `AGENTS.md` 声明自身路径并指向上一层（无中间层则直指根目录），不写绝对层级号；后续更深的子模块若有本地需要，由其自行创建。

@@ -26,8 +26,7 @@ const profileManifest = {
   dependencies: {
     // link: relative to the profile dir; @deepseek-ai/* bundles resolve from
     // the global dsh vendored tree (omp-web two-layer resolution precedent)
-    '@pgmi-builds/dsh-multi-agent-registry': 'link:../../../packages/dsh-multi-agent-registry',
-    '@pgmi-builds/dsh-agent-loop-echo': 'link:../../../packages/agent-loop-echo',
+    '@pgmi-builds/dsh-multi-agent-registry': 'link:../../../apps/multi-agent/dsh-multi-agent-registry',
   },
   dsh: {
     profile: {
@@ -35,7 +34,6 @@ const profileManifest = {
         '@deepseek-ai/dsh-base',
         '@deepseek-ai/dsh-web-app',
         '@pgmi-builds/dsh-multi-agent-registry',
-        '@pgmi-builds/dsh-agent-loop-echo',
       ],
     },
   },
@@ -83,11 +81,11 @@ storeDir: ../../.npm-cache/pnpm-store
 }
 
 // Rebuild package dists if missing (dist/ is gitignored in the packages).
-for (const pkg of ['dsh-multi-agent-registry', 'agent-loop-echo']) {
-  const distIndex = join(repoRoot, `packages/${pkg}/dist/index.js`)
+for (const pkg of ['dsh-multi-agent-registry']) {
+  const distIndex = join(repoRoot, `apps/multi-agent/${pkg}/dist/index.js`)
   if (!existsSync(distIndex)) {
     console.log(`dist missing for ${pkg}, building…`)
-    const r = spawnSync('npx', ['tsc', '-p', `packages/${pkg}`], { cwd: repoRoot, stdio: 'inherit' })
+    const r = spawnSync('npx', ['tsc', '-p', `apps/multi-agent/${pkg}`], { cwd: repoRoot, stdio: 'inherit' })
     if (r.status !== 0) { console.error('package build failed'); process.exit(1) }
   }
 }
