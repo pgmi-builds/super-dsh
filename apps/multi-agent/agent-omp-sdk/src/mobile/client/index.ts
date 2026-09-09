@@ -114,6 +114,13 @@ function mobileCss(breakpointPx: number): string {
     `  [data-sidebar-collapsed] {`,
     `    grid-template-columns: 0px minmax(0, 1fr) 0px !important;`,
     `  }`,
+    // iOS Safari cancels pointer events the moment it classifies the touch
+    // as a scroll (pointercancel fires before pointermove reaches threshold)
+    // — pin vertical-only panning under the breakpoint so horizontal swipes
+    // stay pointer-driven. Vertical scrolling is unaffected (pan-y).
+    `  body {`,
+    `    touch-action: pan-y;`,
+    `  }`,
     `}`,
   ].join('\n')
 }

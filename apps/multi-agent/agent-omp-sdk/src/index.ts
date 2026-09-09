@@ -157,11 +157,23 @@ export class OmpProvider extends Service implements AgentFactory {
       );
     }
     ctx.effect(() => agentsAny.appendFactory!(OmpProvider.RUNTIME_KEY, this), "ompProvider.appendFactory(omp)");
-    this.#registerModelCatalog();
+    // Coexistence (multi-agent, 2026-09-09): OMP must NOT register llm routes
+    // nor sync the default model. Its provider ids collide with native ones
+    // (models.yml carries `zai-plan`/`kimi-plan`…) — upstream llm is
+    // fail-loud on DUPLICATE_ADAPTER, so omp registering first kills the
+    // native pi-ai registration for those ids and every native session on the
+    // default model dispatches to OmpLlmAdapter, which refuses to stream
+    // ("OMP owns generation through its rpc agent"). The native catalog owns
+    // the selector; OMP sessions generate through the sidecar and never call
+    // ctx.llm. Exclusive-mode behavior is opt-in via env for the upstream
+    // omp-web-sdk deployment shape.
+    if (process.env.OMP_EXCLUSIVE_LLM_ROUTES === "1") {
+      this.#registerModelCatalog();
+      void this.#syncModelDefaultTick();
+    }
     // Boot the centralized index BEFORE any service reads session state: warm
     // pass + migration, so the first landing sees real titles/models (D5.1).
     initBridgeStore();
-    void this.#syncModelDefaultTick();
     // Phase B surfaces: the union persistence (Dash JSONL logs ⊕ OMP's native
     // store scan) serves session.list / cold history / resume ownership, and
     // the single-preset roster puts one "OMP" entry on the mode dropdown and
