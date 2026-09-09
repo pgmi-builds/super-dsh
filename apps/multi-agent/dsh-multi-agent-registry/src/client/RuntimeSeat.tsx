@@ -90,7 +90,16 @@ export function RuntimeSeat({ wide, useSessionsList }: RuntimeSeatProps): React.
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((j: { runtime?: unknown }) => {
-        if (typeof j?.runtime === 'string') setState((prev) => ({ ...prev, runtime: j.runtime as string }))
+        if (typeof j?.runtime === 'string') {
+          setState((prev) => ({ ...prev, runtime: j.runtime as string }))
+          // Runtime switch accepted: rebuild the whole client. A React
+          // re-render alone would repaint stale elements with stale data
+          // (catalog / session list / composer all belong to the previous
+          // world); a full root-container re-mount is the honest v1 — the
+          // reload re-fetches every surface fresh (world-aware RPC comes
+          // with M2 isolation; until then this is the visible boundary).
+          setTimeout(() => { window.location.reload() }, 150)
+        }
       })
       .catch((e: unknown) => { setError(String(e)) })
       .finally(() => { setBusy(false) })

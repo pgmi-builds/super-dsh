@@ -27,5 +27,27 @@ export const inject = ['layout']
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  // Operator diagnostic (2026-09-09 iOS investigation): `?mdebug` in the page
+  // URL mounts a self-reporting banner so ONE screenshot from a real device
+  // localizes where the mobile feature breaks (global? style? listeners?
+  // layout service? viewport?). Default path is untouched.
+  if (typeof location !== 'undefined'
+    && (location.search.includes('mdebug') || location.hash.includes('mdebug'))) {
+    const report = (): void => {
+      const facts: string[] = [
+        `bundle=OK`,
+        `global=${String((globalThis as { __OMP_WEB_MOBILE__?: unknown }).__OMP_WEB_MOBILE__ !== undefined)}`,
+        `vw=${String(window.innerWidth)}`,
+        `collapsed=${String(document.querySelector('[data-sidebar-collapsed]') !== null)}`,
+        `rightOpen=${String(document.body.hasAttribute('data-dsh-sidebar-collapsed'))}`,
+      ]
+      const tag = document.createElement('div')
+      tag.textContent = `[mdebug] ${facts.join(' ')}`
+      tag.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b00;color:#fff;font:12px monospace;padding:4px 8px;pointer-events:none;'
+      document.documentElement.append(tag)
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(report, 4000))
+    else setTimeout(report, 4000)
+  }
   setupMobileLayout(ctx)
 }
