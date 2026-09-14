@@ -18,7 +18,7 @@
 # served by an OMP-backed LlmAdapter.
 - insert:
     - id: omp-provider
-      name: '@pgmi-builds/omp-web'
+      name: '@pgmi-builds/agent-adapter-omp'
 
 # OMP owns the live agent transcript; disable the built-in loop so it does not
 # double-run alongside the OMP RPC process.

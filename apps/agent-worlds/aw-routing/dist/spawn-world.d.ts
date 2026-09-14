@@ -26,5 +26,7 @@ export interface SpawnWorldOptions {
     home: string;
     /** Extra patch layers appended after the profile's own (e.g. an adapter's insert row). */
     extraPatches?: Parameters<typeof boot>[2];
+    /** Override the bare-name resolution base (defaults to the install anchor's node_modules). */
+    bareModuleBaseUrl?: string;
 }
 export declare function spawnWorld(opts: SpawnWorldOptions): Promise<import("@deepseek-ai/cordis").Context>;

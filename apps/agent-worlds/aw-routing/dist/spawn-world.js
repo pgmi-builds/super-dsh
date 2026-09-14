@@ -33,7 +33,11 @@ export async function spawnWorld(opts) {
     // Bare plugin names resolve from the installation's node_modules (the
     // anchor owns the complete plugin closure). Same cordis on both sides —
     // no cross-copy Symbol split.
-    const bareModuleBaseUrl = pathToFileURL(join(opts.installAnchor, '..', 'node_modules', '/')).href;
+    // Loader wants a file:// URL base; accept a plain path and normalize.
+    const rawBase = opts.bareModuleBaseUrl ?? join(opts.installAnchor, '..', 'node_modules', '/');
+    const bareModuleBaseUrl = rawBase.startsWith('file:')
+        ? rawBase
+        : pathToFileURL(rawBase.endsWith('/') ? rawBase : rawBase + '/').href;
     // Embedding-host facts via the PUBLIC cmdline API (risk-2 probe: boot owns
     // dshHomePath, so the prepare slot is for OUR provides — cmdlineArgs is not
     // boot-provided and upstream documents the empty-args embedding path).
