@@ -145,12 +145,12 @@
 - **permission 3:3 映射（Task 7 定稿输入）**：`danger-full-access → sandbox: danger-full-access + approvalPolicy: never`；`workspace-write → sandbox: workspace-write + approvalPolicy: on-request`；`read-only → sandbox: read-only + approvalPolicy: never`（沙盒本身即约束，omp 的 always-ask 在 codex 无精确对应——**决策点**：若 UI 审批体验要求询问，改 `untrusted`，执行者实测后定）；env 覆盖 `CODEX_APPROVAL_MODE`（合法值 never/on-request/on-failure/untrusted，非法值忽略）。
 - Modify: `cordis.patch.yml`（omp 版拷贝：insert codex-provider；disable agent-loop/llm-deepseek/llm-pi-ai/agent-presets/session-persistence-jsonl；permission 3-preset 表 defaultPreset 映射 codex sandboxMode）
 
-- [ ] Step 1: replay/knobs/preset/permission 逐文件移植 + 各自单测绿（omp 测试平移；rpc-types 不移植，词汇从 codex-events 导入）
-- [ ] Step 2: codex-store 接入 provider（resume/cold list）
-- [ ] Step 3: agent.ts + index.ts 移植，tsc 0 错
-- [ ] Step 4: world fixture 行表对齐 cordis.patch.yml → Task 6 测试复跑绿
-- [ ] Step 5: provider 集成测试（fake client）：createAgent → prompt → SessionEvent 落 log → resume 复原
-- [ ] Step 6: Commit + 报告
+- [x] Step 1: replay/knobs/preset/permission 逐文件移植 + 单测绿（2026-09-15 子代理落地：permission 4 + replay 7 + roster 7）
+- [x] Step 2: codex-store 接入 persistence（scanByDashId/listCodexSessions → derived id → readCodexRollout → replayCodexSlots；SQLite/磁盘层裁掉）
+- [x] Step 3: agent.ts（CodexAgent + convertContent/convertUsage/wireFailure）+ index.ts（CodexProvider 450 行）+ adapter.ts（CodexLlmAdapter）+ inbox.ts 移植，tsc 0
+- [x] Step 4: cordis.patch.yml 行表落地（codex-provider insert + 5 行 disable + 3-preset 表 defaultPreset danger-full-access）→ world-plugin 测试携真 patch 复跑绿（provider/roster/persistence/projection/adapter 全挂载实证）
+- [x] Step 5: provider 集成测试并入 Task 8 e2e（createAgent/resume 需全服务组合；world 测试已在真树挂载 provider——子代理裁决 #8，成立）
+- [x] Step 6: 报告收到（2026-09-15）：60/60 绿 + tsc 0 + 单实例 0；九项 deviation 逐条核过（#2 codexApprovalMode passthrough、#4 approvalPolicy 随线程构造、#3 usage 一 turn 滞后等，源码复核成立）；docs commit
 - **resume 语义（Task 7 执行输入，2026-09-15）**：omp 按 sessionFile `--resume` 换生为 codex 按 **threadId** `resumeThread(id)`——client 侧需新增 spawn 参数 `--resume-thread <codexThreadId>`（映射 `codex.resumeThread(id)`；与被拒的 omp `--resume <file>` 严格区分）。Dash 侧 seed events 仍从 `readCodexRollout` 重放（UI 历史），模型上下文由 codex 自己的 rollout 恢复。omp resume 的 foreignWriterPid/hot-mtime 避让段**裁掉**（无外来写者）。id 解析：`derivedDashId` ↔ `listCodexSessions` 扫描表（无 SQLite 索引）。
 **Task 7 V1 裁剪（2026-09-15 通读 omp index.ts/agent.ts 后定案，执行者必读）**：omp provider 的下列子系统**不移植**——
 - `supervisor`（避让/游标）：codex SDK 线子进程自管、嵌套 home 无外来写者（2026-09-10「不做避让」裁决 + S7 单向阀），无回避对象。
