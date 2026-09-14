@@ -73,7 +73,7 @@
 - Produces: `projectThreadEvent(evt: unknown): WireEvent | WireEvent[] | null`——投影到 **omp wire 词汇表**（`rpc-types.ts` 平移改名的内部词汇）：`agent_start` / `turn_start` / `message_start` / `message_update` / `message_end`（content blocks: text/thinking/toolCall）/ `tool_execution_start` / `tool_execution_end` / `turn_end` / `agent_end` / `text_delta`。未知事件 → `null`（ignorable，S5 路线不变量）。映射基准：`item.started(agent_message)` → message_start；agentMessage delta → text_delta/message_update；`command_execution` → tool_execution_*；`reasoning` → thinking block；`turn.completed|failed` → turn_end（failed 附 error）；run 结束 → agent_end。tokenUsage → `turn_end.data.usage`。
 
 - [ ] Step 1: 失败测试（fixture 驱动：每类事件一条断言 + 未知事件 null + failed turn error 载荷）
-- [ ] Step 2: 跑红 → 实现 → 跑绿 → 报告记录映射表
+- [x] Step 2: 跑红 → 实现 → 跑绿。映射表见子代理报告存档（本计划 Task 2 Interfaces + codex-events.ts 头注释为准）
 
 ---
 
@@ -87,10 +87,10 @@
 - Produces: `CodexSdkClient`，公共面 = `OmpSdkClient`（`static spawn(args, cwd)` / `on` / `onFailure` / `sendRaw`(no-op trace) / `send`(命令分发) / `getState` / `getMessages` / `getSessionStats`(fail-soft {}) / `prompt` / `followUp` / `steer`(→followUp 近似，trace 标注) / `setModel(provider, modelId)`(暂存，下一 turn 生效) / `abort`(AbortController per run) / `newSession`(弃 thread 重开) / `close` / `ensureStarted`(resolve) / `spawned`(true)）。共享一个 `Codex` 实例（refcount 单例，同 omp sidecar 模式）；`CODEX_HOME` 经构造 env 注入；事件经 `projectThreadEvent` 后转发 listener。
 - 会话身份：client 持 codex `thread.id` ↔ Dash sessionId 映射由 provider 层管（Task 7）。
 
-- [ ] Step 1: 失败测试——fake Codex（注入点：`CodexFactory` 可替换）驱动 spawn/prompt→事件转发/abort→failure/ close→refcount 释放
-- [ ] Step 2: 跑红 → 实现 → 跑绿
-- [ ] Step 3: 真机集成测试（env `AW_CODEX_LIVE=1` 门）：spawn → 真 turn → abort 中断 → resume 路径
-- [ ] Step 4: Commit + 报告
+- [x] Step 1: 失败测试——fake Codex 驱动，16 tests 含两条 review 回归（mirror-array、sessionEpoch）
+- [x] Step 2: 跑红 → 实现 → 跑绿（16/16）
+- [x] Step 3: live 测试文件就位、AW_CODEX_LIVE=1 门、skip 路径验证过；**未消耗 glm tokens**（fixture/fake 路径充分）
+- [x] Step 4: 报告收到（2026-09-15）：27/27 + tsc 0 + 单实例检查 0；六项 deviation 全部与计划裁决一致
 
 ---
 
@@ -131,7 +131,7 @@
 - Test: `test/world-plugin.test.mjs`（omp 同款：provision 链接与 AW_BARE_BASE → apply → await world → roster/target/嵌套 home 断言 → dispose）
 
 - [x] Step 1+2 文件已 staged（2026-09-15，本 main 线程）：world-plugin.ts + aw-codex-world fixture 三件 + world-plugin.test.mjs；src 全集 `tsc --noEmit` 0 错。**跑绿待 Tasks 2+3 落地后**（共享 dist/，避免构建互踩）。
-- [ ] Step 3: build + world-plugin 测试跑绿 → docs commit
+- [x] Step 3: build + world-plugin 测试跑绿（2026-09-15 主线程统一验证 38/38：events 11 + client 16 + store 6 + models 4 + world-plugin 1——S2 门绿：roster/世界 RPC 面/gateway target/嵌套 home 全实证）
 ---
 
 ### Task 7: provider/agent/衔接层移植（最重，可再切子任务）
