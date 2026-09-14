@@ -15,6 +15,7 @@
  * the install anchor (single instance — same physical installation).
  */
 import { loadProfile, boot } from '@deepseek-ai/dsh-app-boot'
+import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -48,5 +49,17 @@ export async function spawnWorld(opts: SpawnWorldOptions) {
   // anchor owns the complete plugin closure). Same cordis on both sides —
   // no cross-copy Symbol split.
   const bareModuleBaseUrl = pathToFileURL(join(opts.installAnchor, '..', 'node_modules', '/')).href
-  return boot(opts.appName, join(profile.dir, 'cordis.yml'), patches, undefined, bareModuleBaseUrl)
+  // Embedding-host facts via the PUBLIC cmdline API (risk-2 probe: boot owns
+  // dshHomePath, so the prepare slot is for OUR provides — cmdlineArgs is not
+  // boot-provided and upstream documents the empty-args embedding path).
+  // Worlds take no flags and never open a browser; exit = dispose own fiber.
+  let fiber: { dispose(): unknown } | undefined
+  const ctxW = await boot(opts.appName, join(profile.dir, 'cordis.yml'), patches, (ctx) => {
+    provideCmdline(ctx, {
+      args: ['--no-open'],
+      exit: () => { void fiber?.dispose() },
+    })
+  }, bareModuleBaseUrl)
+  fiber = ctxW.fiber
+  return ctxW
 }
