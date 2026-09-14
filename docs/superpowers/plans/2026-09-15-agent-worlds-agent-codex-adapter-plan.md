@@ -48,11 +48,17 @@
 **Interfaces:**
 - Produces: `@pgmi-builds/agent-adapter-codex`（exports `.` → `dist/index.js`、`./world` → `dist/world-plugin.js`）；deps `@openai/codex-sdk@0.154.0`、`@openai/codex@0.154.0`（binary）、`@pgmi-builds/agent-hub: file:../agent-hub`；peerDeps @deepseek-ai optional（照抄 omp package.json 结构）。
 
-- [ ] **Step 1: 骨架**（package.json/ tsconfig 从 omp 拷贝改名；`npm install --cache …`；单实例检查零输出）
-- [ ] **Step 2: codex home 拷入脚本**：`config.toml`/`auth.json`/`cc-switch-model-catalog.json` → `<DSH_HOME>/agents/codex/`（已存在则跳过；缺 `~/.codex` 源时报错退出）
-- [ ] **Step 3: spike 测试**：`CODEX_HOME=<wt-home>/agents/codex` 下 `new Codex()` → `startThread()` → `runStreamed("reply with exactly: ok")` → 收集事件至 `turn.completed`，断言 finalResponse 含 `ok`。**先读 `node_modules/@openai/codex-sdk/dist/*.d.ts` 核对 0.154.0 实际 API 名**（Sept 10 研究基于 0.153.4；`ThreadEvent`/item 形状以安装版 .d.ts 为准，偏差记入本任务报告）。
-- [ ] **Step 4: `npm test` spike 绿 → 记录事件序列样本**（存 `test/fixtures/thread-events.sample.json`，Task 2 投影测试的输入）。 spiked 事件链同时验证 turn 级 `signal` 中断可用。
-- [ ] **Step 5: Commit**（docs 侧）+ 线内任务报告小节。
+- [x] **Step 1: 骨架**（package.json/ tsconfig 从 omp 拷贝改名；install 绿；单实例检查零输出）2026-09-15
+- [x] **Step 2: codex home 拷入脚本**（+ prod-home 拒绝护栏，见发现 3）
+- [x] **Step 3: spike 测试**（真 turn 6.1s PASS；0.154.0 API 与 Sept 10 研究一致，无偏差）
+- [x] **Step 4: 事件序列样本**落 `test/fixtures/thread-events.sample.json`；abort 验证 195ms 断流
+- [x] **Step 5: 发现记录于下**；docs commit（线代码不入 git，任务报告即追踪）
+
+**Task 1 发现（2026-09-15 as-built）**：
+1. 事件链实测：`thread.started{thread_id}` → `turn.started` → `item.completed{reasoning}` → `item.completed{agent_message "ok"}` → `turn.completed{usage}`。短 turn **无 item.started/item.updated**（长回答才可能流式）——投影必须三态全处理，`text_delta` 降级为可选通路。
+2. 隔离实证：rollout/sqlite/logs 全落 `<wt-home>/agents/codex/`，`~/.codex` 零写入；rollout 路径 `sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl` 与 Sept 10 研究一致。
+3. **坑**：交互 shell 的环境 `DSH_HOME=/home/u1/.dsh`（prod）会漏进脚本缺省解析——setup 脚本已加 prod-home 拒绝护栏；一切命令显式 `DSH_HOME=<wt>/.superd-test/aw` 是铁律。
+4. SDK `env` 为全量替换语义（须带 `...process.env`）；turn 级 `signal` 有效。
 
 ---
 
