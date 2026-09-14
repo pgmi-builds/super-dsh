@@ -103,8 +103,11 @@
 **Interfaces:**
 - Produces: `listCodexSessions(home): CodexNativeSession[]`、`CODEX_SESSIONS_ROOT(home)`、`deriveDashId(threadId)`（omp-store 同款 derived-id 惯例）、`readRolloutTail(file, budget)`（resume 重灌用，Task 7）。
 
-- [ ] Step 1: fixture rollout（自造最小 JSONL，不拷用户隐私会话）+ 失败测试
-- [ ] Step 2: 拷贝改造 → 跑绿 → Commit
+**Interfaces:**
+- Produces: `listCodexSessions(sessionsRoot): Map<string, CodexNativeSession>`（key = codexThreadId；参数 = sessions 根）、`resolveCodexHome(home?)`（派生 `<home>/agents/codex`，env `CODEX_HOME` 次之，DSH_HOME 缺省）、`useCodexHome(path)`（显式终路径直用，prod 护栏）、`derivedDashId(threadId)`、`readCodexRollout(file): { slots, threadId }`（item 词汇 = SDK ThreadItem 形状 + `user_message` 扩展——SDK 无用户 item、rollout 有；Task 7 的 replay 在一处统一映射 omp 消息形）。
+
+- [x] Step 1: fixture rollout（自造最小 JSONL，不拷用户隐私会话）+ 失败测试（2026-09-15）
+- [x] Step 2: 拷贝改造 → 跑绿（6/6）。as-built 注记：`readRolloutTail` 并入 `readCodexRollout`（全量单遍读已足够；resume 重灌在 Task 7 消费 slots）；prod-home 护栏内置 `assertNotProdHome`；`session_meta.timestamp` 兼容 ISO 字符串与 epoch 数字。
 
 ---
 
@@ -115,10 +118,9 @@
 - Test: `test/models.test.mjs`（fixture config.toml + catalog）
 
 **Interfaces:**
-- Produces: `readCodexModelCatalog(home): { defaultModel, models: Array<{ id, label, reasoningEfforts? }> }`（fail-soft：文件缺失/解析失败 → 单条 `codex-default` 占位，never throw）。
+- Produces: `readCodexModelCatalog(codexHome?): { defaultModel, provider?, models: Array<{ id, label, reasoningEffort?, contextWindow? }> }`（fail-soft：文件缺失/解析失败 → 单条 `codex-default` 占位，never throw；参数 = codex home 终路径）。
 
-- [ ] Step 1: 失败测试 → Step 2: 实现 → 跑绿 → Commit
-
+- [x] Step 1+2: 失败测试 → 实现 → 跑绿（4/4）→ 真嵌套 home 实证：`{defaultModel:"glm-5.2", provider:"zhipu_glm_en", models:[{id:"glm-5.2", label:"GLM-5.2", reasoningEffort:"medium", contextWindow:1000000}]}`（2026-09-15）。as-built 注记：TOML 走最小行解析（仅顶层 key + `[model_providers.<id>].name`，非全语法）；catalog 只取 slug/display_name/default_reasoning_level/context_window 四字段。
 ---
 
 ### Task 6: world-plugin + world profile（S2 门，试金石）
