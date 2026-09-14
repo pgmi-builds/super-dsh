@@ -139,7 +139,9 @@
 **Files:**
 - Port: `src/index.ts`（OmpProvider→CodexProvider：createAgent/resume 事务照抄；threadId↔sessionId 转发表；rollout 路径入 OmpSessionIndex 对应物）
 - Port: `src/agent.ts`（事件 switch 不变——词汇表已对齐；setModel/compact/subagents 走 SDK 缺口降级路径）
-- Port: `src/rpc-types.ts`（内部词汇类型）、`src/replay.ts`、`src/session-persistence-codex.ts`（omp union 形态，OMP store 扫描换 rollout 扫描）、`src/agent-preset-codex.ts` + `agent-preset-projection.ts`、`src/permission.ts`（3-preset ↔ approvalPolicy/sandboxMode 映射表）、`src/knobs.ts`
+- Port: `src/replay.ts`、`src/session-persistence-codex.ts`（omp union 形态，OMP store 扫描换 rollout 扫描）、`src/agent-preset-codex.ts` + `agent-preset-projection.ts`、`src/permission.ts`（3-preset ↔ approvalPolicy/sandboxMode 映射表）、`src/knobs.ts`（裁剪版：仅 STORAGE_RECONCILE_INTERVAL_MS + cache 上限两项，避让/shadow/disk-tier 族全裁）
+- **词汇表归属修订（2026-09-15）**：Task 2 的 `codex-events.ts` 已自带 Wire* 词汇（WireEvent/WireMessage/WireContentBlock/WireAssistantMessageEvent）——**不再单独移植 rpc-types.ts**，agent.ts 移植版直接从 `./codex-events.js` 导入（单一词汇源，两处定义必漂移）。
+- **permission 3:3 映射（Task 7 定稿输入）**：`danger-full-access → sandbox: danger-full-access + approvalPolicy: never`；`workspace-write → sandbox: workspace-write + approvalPolicy: on-request`；`read-only → sandbox: read-only + approvalPolicy: never`（沙盒本身即约束，omp 的 always-ask 在 codex 无精确对应——**决策点**：若 UI 审批体验要求询问，改 `untrusted`，执行者实测后定）；env 覆盖 `CODEX_APPROVAL_MODE`（合法值 never/on-request/on-failure/untrusted，非法值忽略）。
 - Modify: `cordis.patch.yml`（omp 版拷贝：insert codex-provider；disable agent-loop/llm-deepseek/llm-pi-ai/agent-presets/session-persistence-jsonl；permission 3-preset 表 defaultPreset 映射 codex sandboxMode）
 
 - [ ] Step 1: rpc-types/replay/knobs/preset/permission 逐文件移植 + 各自单测绿（omp 测试平移）
