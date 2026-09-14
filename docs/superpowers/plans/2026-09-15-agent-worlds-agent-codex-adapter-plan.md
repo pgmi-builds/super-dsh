@@ -164,7 +164,9 @@
 ### Task 8: 线集成（ctx0 + codex world，进程内 e2e）
 
 **Files:**
-- Create: `apps/agent-worlds/test/smoke-codex.mjs`（smoke.mjs 拷贝：REPO 解析改 `import.meta.url` 相对（worktree 可移植）；insert 行换 `@pgmi-builds/agent-adapter-codex/world`；等 `getTarget('codex')`）
+- Create: `apps/agent-worlds/test/smoke-codex.mjs`（smoke.mjs 拷贝：REPO 解析改 `import.meta.url` 相对（worktree 可移植）；insert 行换 `@pgmi-builds/agent-adapter-codex/world`；等 `getTarget('codex')`）——**已 staged 2026-09-15**
+- Create: `apps/agent-worlds/test/start-4987.sh`（start-4998.sh 拷贝：PORT=4987、LOG=.scratch/aw-codex-4987.log、superd 侧 bootstrap 前置 `node apps/agent-worlds/agent-codex/scripts/setup-codex-home.mjs`）——**已 staged 2026-09-15**
+- **e2e 端点已钉死（2026-09-15 上游 fixture 核实）**：`session/list` / `session/create` / `session/prompt` / `session/page`（history: `{sessionId, throughSeq, beforeSeq?, maxMessages?}`）+ `$events` wire 流；payload 形状在活 world 上一次内省定稿。
 - Create: `apps/agent-worlds/test/start-4987.sh`（start-4998.sh 拷贝：PORT=4987、LOG=.scratch/aw-codex-4987.log、superd 侧 bootstrap 前置 `node apps/agent-worlds/agent-codex/scripts/setup-codex-home.mjs`）
 - Test: `apps/agent-worlds/agent-codex/test/e2e-world.test.mjs`：经 ctx0 selector 翻转 → world gateway `dispatchRpc('session/create'|'session/prompt'|$events)` 全链（进程内、零浏览器）
 
