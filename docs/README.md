@@ -18,7 +18,8 @@
 | 文件 | 说明 |
 |---|---|
 | [`research/research-heterogeneous-agent-runtimes.md`](./research/research-heterogeneous-agent-runtimes.md) | 六家异构 runtime（Claude Code / Codex / Hermes / Pi / OMP…）SDK 与协议面调研——adapter 接入层选型依据（蓝图 §3） |
-| [`02-dsh-embed-modes.md`](./02-dsh-embed-modes.md) | DSH 呈现层嵌入模式（iframe / 反代透传）可行性——2026-09-08，衔接蓝图 §3.6 透传裁决 |
+| [`superpowers/plans/2026-09-12-tui-terminal-surface-research.md`](./superpowers/plans/2026-09-12-tui-terminal-surface-research.md) | **TUI 终端入口**（App feature 子方向）：社区 7 个 TUI 插件实现/成熟度对比 + 上游 dsh 无自带 TUI 但留有隐性挂载入口（profile bundle / cmdline 透传 / session log 重放 / ACP）——2026-09-12 |
+
 
 ## 3. 镜像研究集（01–05 簇，只读）
 

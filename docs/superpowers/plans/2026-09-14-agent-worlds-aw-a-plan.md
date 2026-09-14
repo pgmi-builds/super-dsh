@@ -614,3 +614,7 @@ git commit -m "aw: start-4998 smoke — ctx0 + adapter plugin + zero-port omp wo
 1. **LAN 访问**：smoke args 加 `--trusted-host 192.0.2.130[:4998]`；`aw-4998-relay`（socat）绑 `192.0.2.130:4998 → 127.0.0.1:4998`（LAN URL = `http://192.0.2.130:4998/?token=<本 boot token>`，见 `.scratch/aw-4998.log`）。
 2. **嵌套仓**：`apps/agent-worlds` 拆为独立 git 仓（root 仓 exclude，Task 1-7 历史 root log 可溯；仓内首提交 1136b59）；adapter 并行开发用 worktree——已建 `~/workspaces/aw-worktrees/omp`（branch `adapters/omp`）。
 3. **OMP home = adapter 级自由**：默认 prod `~/.omp` 原样可用；撤销两测试的 env-gated skip → adapter 套件 60/60 全绿（1 skip 为 omp-web 上游自带）。
+
+### 追加（2026-09-15 验收轮 II）：aw-routing → agent-hub 更名 + client 修复
+
+- user 裁决更名 `aw-routing` → `agent-hub`（ast_edit 设备执行接线改名）。client 失败根因 = 拷贝的 `lib/client` 烙旧包 id + LAN fence 未配；重建 client（build-client 以新 ID）+ trusted-host/socat 后 bundle 200/11MB、agent-hub 工厂与 ui-slots 闭包在位。
