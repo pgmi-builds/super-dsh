@@ -1,0 +1,169 @@
+# Agent Worlds AW-E：agent-codex adapter（SDK 线）Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 落地 AW-E——`@pgmi-builds/agent-adapter-codex` 走 agent-omp 已验证的同一插件路径（S2 roster/world/gateway），经 **`@openai/codex-sdk`** 驱动 Codex CLI 子进程，数据面 = omp-web 同构起步（S5），嵌套 home `<dshHomePath>/agents/codex`（S7）。
+
+**Architecture:** 拷贝 `apps/agent-worlds/agent-omp/` 的插件骨架（world-plugin → spawnWorld → registerForeignTarget → provider/agent/persistence/preset/permission），把 OMP SDK client 接缝替换为 `CodexSdkClient`（`@openai/codex-sdk`，每会话一个 thread handle，事件流投影到 omp wire 词汇表使 `agent.ts` 最小差异移植）。Codex 原生件（rollout JSONL 扫描、config.toml/model_catalog 模型目录、sandbox/approval 3-preset 映射）自冻结线 `apps/multi-agent-ctx/agent-codex/` 拷贝改造——拷贝不耦合。app-server B 线（2026-09-10 计划主案）不在本计划范围；同一 client 接缝留作后续 mode。
+
+**Tech Stack:** TypeScript（tsc）、`node --test`、`@openai/codex-sdk@0.154.0` + `@openai/codex@0.154.0`（exact-pin）、`@pgmi-builds/agent-hub`（file: link）、cordis 4.0.2。
+
+**Spec:**
+- `docs/superpowers/plans/2026-09-14-agent-worlds-fusion-design.md`（S1–S7 裁决、§十二 AW-E）
+- `docs/superpowers/plans/2026-09-10-agent-codex-dev-plan.md`（Codex 本机实测事实、SDK 能力缺口表、同核双壳结论——其 B 线裁决属旧线，本计划按 user 2026-09-15 裁决改走 SDK 线）
+- `apps/agent-worlds/AGENTS.md`（本线不变量与运维红线）
+
+## Global Constraints
+
+- **Worktree 姿态（2026-09-15 user 裁决）**：全部工作在 `/home/u1/workspaces/superd/.scratch/aw-codex/`（branch `aw-codex-adapter`）。`apps/agent-worlds/` 在 `.git/info/exclude`（全 worktree 共享）——**线代码不入 git**；git 只承载 `docs/`（计划/报告）。收尾按 finishing-a-development-branch 把 `apps/agent-worlds/agent-codex/`（及 hub 测试小修）拷回主 checkout。
+- **绝不触碰**：`~/.dsh`、`~/.superd`、主 checkout 的 `.superd-test/`（现役 4998 线的家）、live Caddyfile。`~/.codex` 只读（config/auth 拷入 worktree 测试 home，测试期拷入惯例 §七）。
+- **Baseline（已验证 2026-09-15）**：worktree 内 agent-hub 15/15 绿，环境 = `DSH_HOME=<wt>/.superd-test/aw` + `AW_BARE_BASE=<wt>/.superd-test/aw/profiles/node_modules/`。任何测试/启动都带这两个 env。
+- 缓存安装：`npm install --cache /home/u1/workspaces/superd/.npm-cache`（沙箱下 `~/.npm` EROFS）；exact-pin 无 `^`（devDeps 沿用 omp 现状）。install 后单实例检查：`find <wt>/node_modules/@deepseek-ai -maxdepth 1 -mindepth 1 ! -type l`（worktree 根 farm = 纯 symlink，应零输出）。
+- 端口：本 worktree 线默认 **4987**（避开 3080/3081 prod、4998 主线现役、4999 ctx0 线）；拉起前 `ss -tln | grep :4987` 预检；仅 loopback。daemon 一律 `systemd-run --user`，关停 `systemctl --user stop`。
+- 测试约定：`node --test test/*.test.mjs`；测试导入 `dist/`，先 build 后 test；每任务独立 commit（线代码 commit 落在 worktree 分支不可行时，以任务报告小节代替——git 只记 docs）。
+- Codex 认证：测试 home 的 `agents/codex/` 拷入 `config.toml` + `auth.json` + `cc-switch-model-catalog.json`（本机 auth=apikey + cc-switch custom provider glm-5.2）。apikey 落 gitignored 区，不入任何 git 面。
+- SDK 线能力边界（V1，源自 2026-09-10 缺口表）：无 steer（→ followUp 队列近似）、无 live setModel（→ 下一 turn 的 model option）、审批 = launch-only preset 映射（approvalPolicy + sandboxMode）、无 messages 手术/compact（fail-soft 缺省）、无 listThreads（→ rollout JSONL 扫描）。
+
+---
+
+### Task 0: 线内 hub 测试小修（已落在 worktree，收尾拷回）
+
+**Files:**
+- Modify: `apps/agent-worlds/agent-hub/test/zero-port.audit.test.mjs`（spawnWorld 调用补 `bareModuleBaseUrl: process.env.AW_BARE_BASE`——与 omp world-plugin 测试同模式；默认 anchor node_modules 无 `@pgmi-builds`）
+
+**Interfaces:** 无产物变化，仅测试环境韧性。
+
+- [x] Step 1: 修改 + worktree 15/15 验证（2026-09-15 已完成）
+- [ ] Step 2: 收尾时随 agent-codex 一起拷回主 checkout
+
+---
+
+### Task 1: 包骨架 + SDK spike（P0 门）
+
+**Files:**
+- Create: `apps/agent-worlds/agent-codex/package.json`、`tsconfig.json`、`.gitignore`（node_modules/dist/lib）
+- Create: `src/spike.ts` + `test/spike.test.mjs`（临时，Task 7 后删）
+- Create: `scripts/setup-codex-home.mjs`（拷 `~/.codex` 三件到 `<DSH_HOME>/agents/codex/`，幂等）
+
+**Interfaces:**
+- Produces: `@pgmi-builds/agent-adapter-codex`（exports `.` → `dist/index.js`、`./world` → `dist/world-plugin.js`）；deps `@openai/codex-sdk@0.154.0`、`@openai/codex@0.154.0`（binary）、`@pgmi-builds/agent-hub: file:../agent-hub`；peerDeps @deepseek-ai optional（照抄 omp package.json 结构）。
+
+- [ ] **Step 1: 骨架**（package.json/ tsconfig 从 omp 拷贝改名；`npm install --cache …`；单实例检查零输出）
+- [ ] **Step 2: codex home 拷入脚本**：`config.toml`/`auth.json`/`cc-switch-model-catalog.json` → `<DSH_HOME>/agents/codex/`（已存在则跳过；缺 `~/.codex` 源时报错退出）
+- [ ] **Step 3: spike 测试**：`CODEX_HOME=<wt-home>/agents/codex` 下 `new Codex()` → `startThread()` → `runStreamed("reply with exactly: ok")` → 收集事件至 `turn.completed`，断言 finalResponse 含 `ok`。**先读 `node_modules/@openai/codex-sdk/dist/*.d.ts` 核对 0.154.0 实际 API 名**（Sept 10 研究基于 0.153.4；`ThreadEvent`/item 形状以安装版 .d.ts 为准，偏差记入本任务报告）。
+- [ ] **Step 4: `npm test` spike 绿 → 记录事件序列样本**（存 `test/fixtures/thread-events.sample.json`，Task 2 投影测试的输入）。 spiked 事件链同时验证 turn 级 `signal` 中断可用。
+- [ ] **Step 5: Commit**（docs 侧）+ 线内任务报告小节。
+
+---
+
+### Task 2: 事件投影 `src/codex-events.ts`
+
+**Files:**
+- Create: `src/codex-events.ts`
+- Test: `test/codex-events.test.mjs`（输入 = Task 1 样本 fixture + 手造边界用例）
+
+**Interfaces:**
+- Consumes: codex `ThreadEvent`（运行时 duck-typed，不 import SDK 类型进 dist）
+- Produces: `projectThreadEvent(evt: unknown): WireEvent | WireEvent[] | null`——投影到 **omp wire 词汇表**（`rpc-types.ts` 平移改名的内部词汇）：`agent_start` / `turn_start` / `message_start` / `message_update` / `message_end`（content blocks: text/thinking/toolCall）/ `tool_execution_start` / `tool_execution_end` / `turn_end` / `agent_end` / `text_delta`。未知事件 → `null`（ignorable，S5 路线不变量）。映射基准：`item.started(agent_message)` → message_start；agentMessage delta → text_delta/message_update；`command_execution` → tool_execution_*；`reasoning` → thinking block；`turn.completed|failed` → turn_end（failed 附 error）；run 结束 → agent_end。tokenUsage → `turn_end.data.usage`。
+
+- [ ] Step 1: 失败测试（fixture 驱动：每类事件一条断言 + 未知事件 null + failed turn error 载荷）
+- [ ] Step 2: 跑红 → 实现 → 跑绿 → 报告记录映射表
+
+---
+
+### Task 3: `src/codex-client.ts`（CodexSdkClient 接缝）
+
+**Files:**
+- Create: `src/codex-client.ts`
+- Test: `test/codex-client.test.mjs`
+
+**Interfaces:**
+- Produces: `CodexSdkClient`，公共面 = `OmpSdkClient`（`static spawn(args, cwd)` / `on` / `onFailure` / `sendRaw`(no-op trace) / `send`(命令分发) / `getState` / `getMessages` / `getSessionStats`(fail-soft {}) / `prompt` / `followUp` / `steer`(→followUp 近似，trace 标注) / `setModel(provider, modelId)`(暂存，下一 turn 生效) / `abort`(AbortController per run) / `newSession`(弃 thread 重开) / `close` / `ensureStarted`(resolve) / `spawned`(true)）。共享一个 `Codex` 实例（refcount 单例，同 omp sidecar 模式）；`CODEX_HOME` 经构造 env 注入；事件经 `projectThreadEvent` 后转发 listener。
+- 会话身份：client 持 codex `thread.id` ↔ Dash sessionId 映射由 provider 层管（Task 7）。
+
+- [ ] Step 1: 失败测试——fake Codex（注入点：`CodexFactory` 可替换）驱动 spawn/prompt→事件转发/abort→failure/ close→refcount 释放
+- [ ] Step 2: 跑红 → 实现 → 跑绿
+- [ ] Step 3: 真机集成测试（env `AW_CODEX_LIVE=1` 门）：spawn → 真 turn → abort 中断 → resume 路径
+- [ ] Step 4: Commit + 报告
+
+---
+
+### Task 4: `src/codex-store.ts`（rollout JSONL 只读扫描）
+
+**Files:**
+- Create: `src/codex-store.ts`（拷自 `apps/multi-agent-ctx/agent-codex/src/codex-store.ts`，改造：去掉 app-server 主路（`callShared` import 与 server 分支），JSONL walk 升为唯一路；`CODEX_SESSIONS_ROOT` 从模块常量改为 `sessionsRoot(home)` 函数（`<home>/agents/codex/sessions`），env 仅作缺省）
+- Test: `test/codex-store.test.mjs`（fixture rollout 文件：列表/HEAD 解析/derived id/memoized 重扫）
+
+**Interfaces:**
+- Produces: `listCodexSessions(home): CodexNativeSession[]`、`CODEX_SESSIONS_ROOT(home)`、`deriveDashId(threadId)`（omp-store 同款 derived-id 惯例）、`readRolloutTail(file, budget)`（resume 重灌用，Task 7）。
+
+- [ ] Step 1: fixture rollout（自造最小 JSONL，不拷用户隐私会话）+ 失败测试
+- [ ] Step 2: 拷贝改造 → 跑绿 → Commit
+
+---
+
+### Task 5: `src/models.ts`（config.toml + model_catalog_json → 目录）
+
+**Files:**
+- Create: `src/models.ts`（拷自冻结线 `src/models.ts`，去 app-server `model/list` 路；解析 `<home>/agents/codex/config.toml`（`model_provider`/`model`/`model_catalog_json`）+ catalog JSON → `CodexModelCatalog`）
+- Test: `test/models.test.mjs`（fixture config.toml + catalog）
+
+**Interfaces:**
+- Produces: `readCodexModelCatalog(home): { defaultModel, models: Array<{ id, label, reasoningEfforts? }> }`（fail-soft：文件缺失/解析失败 → 单条 `codex-default` 占位，never throw）。
+
+- [ ] Step 1: 失败测试 → Step 2: 实现 → 跑绿 → Commit
+
+---
+
+### Task 6: world-plugin + world profile（S2 门，试金石）
+
+**Files:**
+- Create: `src/world-plugin.ts`（omp 同构：`registerAgent({key:'codex',label:'Codex',ready:false})` → `mkdirSync(<home>/agents/codex)` → `spawnWorld({appName:'aw-codex', profileName:'aw-codex-world', installAnchor: SUPERD_DSH_ANCHOR, home, bareModuleBaseUrl: AW_BARE_BASE})` → `registerForeignTarget({key:'codex', gateway})` → `setReady('codex', true)` → `ctx.provide('aw.world.codex', world)`）
+- Create: `test/fixtures/aw-codex-world/{package.json,cordis.patch.yml,pnpm-workspace.yaml}`（bundle = dsh-base + dsh-web-app + `@pgmi-builds/agent-adapter-codex`；patch = webserver 127.0.0.1:0 + provider insert + 行表（Task 7 定稿后对齐））
+- Test: `test/world-plugin.test.mjs`（omp 同款：provision 链接与 AW_BARE_BASE → apply → await world → roster/target/嵌套 home 断言 → dispose）
+
+- [ ] Step 1: fixture + 失败测试 → Step 2: 实现 → 跑绿 → Step 3: Commit
+
+---
+
+### Task 7: provider/agent/衔接层移植（最重，可再切子任务）
+
+**Files:**
+- Port: `src/index.ts`（OmpProvider→CodexProvider：createAgent/resume 事务照抄；threadId↔sessionId 转发表；rollout 路径入 OmpSessionIndex 对应物）
+- Port: `src/agent.ts`（事件 switch 不变——词汇表已对齐；setModel/compact/subagents 走 SDK 缺口降级路径）
+- Port: `src/rpc-types.ts`（内部词汇类型）、`src/replay.ts`、`src/session-persistence-codex.ts`（omp union 形态，OMP store 扫描换 rollout 扫描）、`src/agent-preset-codex.ts` + `agent-preset-projection.ts`、`src/permission.ts`（3-preset ↔ approvalPolicy/sandboxMode 映射表）、`src/knobs.ts`
+- Modify: `cordis.patch.yml`（omp 版拷贝：insert codex-provider；disable agent-loop/llm-deepseek/llm-pi-ai/agent-presets/session-persistence-jsonl；permission 3-preset 表 defaultPreset 映射 codex sandboxMode）
+
+- [ ] Step 1: rpc-types/replay/knobs/preset/permission 逐文件移植 + 各自单测绿（omp 测试平移）
+- [ ] Step 2: codex-store 接入 provider（resume/cold list）
+- [ ] Step 3: agent.ts + index.ts 移植，tsc 0 错
+- [ ] Step 4: world fixture 行表对齐 cordis.patch.yml → Task 6 测试复跑绿
+- [ ] Step 5: provider 集成测试（fake client）：createAgent → prompt → SessionEvent 落 log → resume 复原
+- [ ] Step 6: Commit + 报告
+
+---
+
+### Task 8: 线集成（ctx0 + codex world，进程内 e2e）
+
+**Files:**
+- Create: `apps/agent-worlds/test/smoke-codex.mjs`（smoke.mjs 拷贝：REPO 解析改 `import.meta.url` 相对（worktree 可移植）；insert 行换 `@pgmi-builds/agent-adapter-codex/world`；等 `getTarget('codex')`）
+- Create: `apps/agent-worlds/test/start-4987.sh`（start-4998.sh 拷贝：PORT=4987、LOG=.scratch/aw-codex-4987.log、superd 侧 bootstrap 前置 `node apps/agent-worlds/agent-codex/scripts/setup-codex-home.mjs`）
+- Test: `apps/agent-worlds/agent-codex/test/e2e-world.test.mjs`：经 ctx0 selector 翻转 → world gateway `dispatchRpc('session/create'|'session/prompt'|$events)` 全链（进程内、零浏览器）
+
+- [ ] Step 1: e2e 失败测试 → Step 2: smoke/bootstrap 就位 → 跑绿 → Step 3: Commit
+
+---
+
+### Task 9: 第一人称验收（repo 纪律）
+
+- [ ] `ss` 预检 → `systemd-run --user --unit=aw-codex-4987-test`（env 三件套 + SUPERD_KEEP）→ token URL（loopback + 按需 socat LAN 中继，勿 0.0.0.0）→ **交 user 亲测，保持运行**。
+- [ ] 验收点：roster 出现 Codex；切 codex 世界；新会话 prompt 走真 glm turn（cc-switch 目录）；abort；重启 resume；native 世界全程无感；`agents/codex/` 嵌套 home 自填充、`~/.codex` 零写入。
+- [ ] 报告落 `docs/superpowers/plans/`（或 docs/test-reports 惯例）+ memory_flush + 收尾拷回清单（agent-codex/、hub 测试小修、本计划文档 merge 主 checkout）。
+
+## 风险与已见坑（继承 + 本次实测）
+
+- **SDK 0.154.0 vs 本机 CLI 0.153.4**：SDK exact-pin 自带 `@openai/codex@0.154.0` vendored binary，不依赖 PATH 的 0.153.4——spike 验证二者无 home 格式冲突（同 `~/.codex` 共存已由 GUI/CLI 双版本先例支持）。
+- **沙箱 EROFS**：codex 必须可写 `CODEX_HOME`；测试 home 在 workspace 内（可写）。spike/集成若报只读文件系统，检查 CODEX_HOME 是否误指 `~/.codex`。
+- **`~/.codex` 读取**：拷入脚本读 prod home 需真文件系统权限；沙箱拒绝时按仓惯例单次升级并说明。
+- **词汇表漂移**：omp `agent.ts` 移植期间若发现消费了投影未覆盖的事件（extension_ui_request 等），按 fail-soft 降级并在报告记缺口，不扩 SDK 线范围。
+- **hub 测试 17s+**：zero-port audit 拉真 world，慢是已知形态（主 checkout 同况），勿当回归。
