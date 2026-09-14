@@ -130,8 +130,8 @@
 - Create: `test/fixtures/aw-codex-world/{package.json,cordis.patch.yml,pnpm-workspace.yaml}`（bundle = dsh-base + dsh-web-app + `@pgmi-builds/agent-adapter-codex`；patch = webserver 127.0.0.1:0 + provider insert + 行表（Task 7 定稿后对齐））
 - Test: `test/world-plugin.test.mjs`（omp 同款：provision 链接与 AW_BARE_BASE → apply → await world → roster/target/嵌套 home 断言 → dispose）
 
-- [ ] Step 1: fixture + 失败测试 → Step 2: 实现 → 跑绿 → Step 3: Commit
-
+- [x] Step 1+2 文件已 staged（2026-09-15，本 main 线程）：world-plugin.ts + aw-codex-world fixture 三件 + world-plugin.test.mjs；src 全集 `tsc --noEmit` 0 错。**跑绿待 Tasks 2+3 落地后**（共享 dist/，避免构建互踩）。
+- [ ] Step 3: build + world-plugin 测试跑绿 → docs commit
 ---
 
 ### Task 7: provider/agent/衔接层移植（最重，可再切子任务）
@@ -149,6 +149,14 @@
 - [ ] Step 5: provider 集成测试（fake client）：createAgent → prompt → SessionEvent 落 log → resume 复原
 - [ ] Step 6: Commit + 报告
 
+**Task 7 V1 裁剪（2026-09-15 通读 omp index.ts/agent.ts 后定案，执行者必读）**：omp provider 的下列子系统**不移植**——
+- `supervisor`（避让/游标）：codex SDK 线子进程自管、嵌套 home 无外来写者（2026-09-10「不做避让」裁决 + S7 单向阀），无回避对象。
+- 模型默认双向同步（`#syncModelDefaultTick`）：config.toml 对 adapter 只读（单向阀），模型选择走 turn 级 option。
+- `installMobileBootScript` / `installOmpDiscovery`（skills/slash 注入）：OMP 专属面，SDK 线无对应。
+- bridge SQLite store（`initBridgeStore`/reconcile）：列表权威 = rollout JSONL 扫描（codex-store），不再养第二索引；workspace reconcile 若保留则直接消费 `listCodexSessions`。
+- fork 拒绝（`parentSession` throw）：照抄保留（codex 无原生 fork，语义一致）。
+- `LazyOmpRpc` + `adoptSpawnedChild`（首 prompt 才物化子进程）：codex 侧 thread 由 CodexSdkClient eager 创建（startThread 零 IO），等价物 = client 本身；Lazy 包装**不需要**。
+保留核心：createAgent/resume 事务（prepare→setup→publish）、union persistence、single preset roster + projection、llm adapter、approval 卡（extension_ui_request 在 SDK 线无来源——审批走 launch-only preset，`#handleExtensionUiRequest` 移植为死代码或裁掉，执行者定）。
 ---
 
 ### Task 8: 线集成（ctx0 + codex world，进程内 e2e）
