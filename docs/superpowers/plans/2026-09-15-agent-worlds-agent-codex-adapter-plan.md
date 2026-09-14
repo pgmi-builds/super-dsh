@@ -171,7 +171,9 @@
 - Create: `apps/agent-worlds/test/start-4987.sh`（start-4998.sh 拷贝：PORT=4987、LOG=.scratch/aw-codex-4987.log、superd 侧 bootstrap 前置 `node apps/agent-worlds/agent-codex/scripts/setup-codex-home.mjs`）
 - Test: `apps/agent-worlds/agent-codex/test/e2e-world.test.mjs`：经 ctx0 selector 翻转 → world gateway `dispatchRpc('session/create'|'session/prompt'|$events)` 全链（进程内、零浏览器）
 
-- [ ] Step 1: e2e 失败测试 → Step 2: smoke/bootstrap 就位 → 跑绿 → Step 3: Commit
+- [x] Step 1: e2e 失败测试（test/e2e-world.test.mjs：真 ctx0 boot + 假 codex factory——零 glm tokens；selector 翻转经 hub `[routing]` stderr 日志实证 `selector=codex -> CTX1`）
+- [x] Step 2: smoke-codex.mjs + start-4987.sh 就位（2026-09-15 主线程 staged；smoke 增加 SUPERD_LAN_HOST trusted-host 支持）
+- [x] Step 3: e2e 2/2 绿 + 全绿集 60/60 复跑（2026-09-15 调试子代理收尾）。**Task 8 过程中揪出并修掉两个生产级缺陷**：① npm 把 `file:` 依赖打包成物理副本——agent-codex/node_modules/@pgmi-builds/agent-hub 是第二 hub 模块实例，world plugin 的 routing target 注册进了副本而 ctx0 gateway 读 symlink 实例 → 拆掉该 dep，`@pgmi-builds` 链改落 worktree 根 node_modules（主仓根惯例）；② `#followThreadId` 真 JS 私有字段在 Cordis tracing proxy 接收器上 brand check 失败（omp registerHeld 同款教训）→ 改 TS-private 箭头字段。集成中实证的全链：create(agentPreset "codex") → selectModel(codex/glm-5.2) → prompt accepted → Dash log 全事件链（permission/sandbox/approval stamps、model/selection、agent-preset/selected、turn/start、user/message、session/title、**assistant/message×2**（thinking+text）、step/end、turn/end）。e2e 根因 = 测试假线程 `id` getter 缺 setter（首个事件即 strict-mode TypeError → onFailure → closeTurn(error)）——adapter 生产路径无恙（假线程修复 + 游标遍历读回后 completed-only 链 append 干净，step/start 非必需经实证）
 
 ---
 
