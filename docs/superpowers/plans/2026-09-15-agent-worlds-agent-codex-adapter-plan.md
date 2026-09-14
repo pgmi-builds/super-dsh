@@ -150,7 +150,7 @@
 - [ ] Step 4: world fixture 行表对齐 cordis.patch.yml → Task 6 测试复跑绿
 - [ ] Step 5: provider 集成测试（fake client）：createAgent → prompt → SessionEvent 落 log → resume 复原
 - [ ] Step 6: Commit + 报告
-
+- **resume 语义（Task 7 执行输入，2026-09-15）**：omp 按 sessionFile `--resume` 换生为 codex 按 **threadId** `resumeThread(id)`——client 侧需新增 spawn 参数 `--resume-thread <codexThreadId>`（映射 `codex.resumeThread(id)`；与被拒的 omp `--resume <file>` 严格区分）。Dash 侧 seed events 仍从 `readCodexRollout` 重放（UI 历史），模型上下文由 codex 自己的 rollout 恢复。omp resume 的 foreignWriterPid/hot-mtime 避让段**裁掉**（无外来写者）。id 解析：`derivedDashId` ↔ `listCodexSessions` 扫描表（无 SQLite 索引）。
 **Task 7 V1 裁剪（2026-09-15 通读 omp index.ts/agent.ts 后定案，执行者必读）**：omp provider 的下列子系统**不移植**——
 - `supervisor`（避让/游标）：codex SDK 线子进程自管、嵌套 home 无外来写者（2026-09-10「不做避让」裁决 + S7 单向阀），无回避对象。
 - 模型默认双向同步（`#syncModelDefaultTick`）：config.toml 对 adapter 只读（单向阀），模型选择走 turn 级 option。
