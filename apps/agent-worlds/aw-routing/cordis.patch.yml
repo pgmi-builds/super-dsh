@@ -9,4 +9,4 @@
 # always CTX0-local).
 - insert:
     - id: multi-agent-routing
-      name: '@pgmi-builds/multi-agent-routing'
+      name: '@pgmi-builds/aw-routing'
