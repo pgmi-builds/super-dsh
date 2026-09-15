@@ -206,3 +206,22 @@ events: thread.started / turn.started|completed|failed / item.started|updated|co
 - **system 类（log-only，非 surface）**：`approval/asked|decided|policy`、`permission/preset`、`sandbox/mode`、`plan/mode`、`model/selection`、`agent-preset/selected`、`session/title`、`request/header|context`、`compaction/*`、`todo/write`、`goal/change`、`subagent/*`…（无 `system/notice`/`system/error`；错误经 `turn/end{reason:{kind:'error'}}`）。
 - **context injection**：**没有** `context/*` 事件；注入 = `user/message` 且 `source.kind==='plugin'`（`ContextFormed.form`: `instructions|catalog|snapshot|notice|relay|recall`）；文件/图片是 content block（`file`/`image` + attachment ref），不是事件。
 - 关系不变量（`invariant.ts`）：turn 从 1 起、step 每 turn 从 1 起；step-scoped 事件（system/assistant/tool call|result/attempt）必须落在**已开**的 turn+step 内；`user/message` 不受限；`turn/end` 必须闭合当前 turn。
+
+---
+
+## 12. Per-agent 定制权（2026-09-16 user 裁定）
+
+- **DSH 侧的一切都是 per-agent 可定制的**：原生 WebUI（shell / 面板 / 插槽呈现）、ctx1（世界）内的一切 dsh 组成、以及 adapter 自己的行表与客户端面——**每一层都由 adapter 自行决定**：可以 patch、可以自己开发替代物、也可以只挂最小面。
+- 推论：
+  - **不得**把「原生 UI 就是这样」当作不可动的前提；adapter 的 UX 目标在其自身层级解决（够用即可，不追求像素级复刻原生）。
+  - 反过来，**也不得**把某个 adapter 的定制上提为线/hub 级规则；hub 只提供机制（挂载、路由、roster），具体面由 adapter 决定。
+  - 「native 面被 patch/替换」属正常手段（例：pin `browse` 目录选择器、替换 `*-auto` 行、换掉 world 的 webserver 姿态）；但**上游源码零修改**仍是红线——定制一律走 patch 层或自有插件/包。
+  - 定制决策必须落档在该 adapter 的文档里（发现即记录），便于将来另一个 adapter 做相反选择。
+
+## 13. Home 与 profile 布局（2026-09-16 user 裁定，取代先前的自造 home）
+
+- **`$DSH_HOME` = 测试 home**（仓内约定：`<repo>/.superd-test`；绝不触碰 `~/.dsh` / `~/.superd`）。
+- **agent app home = `$DSH_HOME/agents/<label>`**（例：codex → `<repo>/.superd-test/agents/codex`）——原生 app 自身数据（config/auth/rollout/state）。
+- **agent dsh profile packages = `$DSH_HOME/profiles/<label>`**（例：`<repo>/.superd-test/profiles/codex`）——该 agent 的 dsh profile（`package.json` 的 `dsh.profile.bundles`、`cordis.patch.yml`、`pnpm-workspace.yaml`）。
+- **禁止自造 per-app home**（例：`.superd-test/codex-app` 是违规先例，已删除）；`profiles/node_modules/@pgmi-builds/*` 仍集中在 `$DSH_HOME/profiles/node_modules/`。
+- `<label>` 取 agent 的 roster key / 运行时短名（codex、omp、…），与 `<home>/agents/<label>` 的下标一致。
