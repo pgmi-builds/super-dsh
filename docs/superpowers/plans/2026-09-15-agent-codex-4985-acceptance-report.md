@@ -58,6 +58,11 @@ class Thread { get id(); runStreamed(input, turnOptions?); run(input, turnOption
 
 **架构含义**：adapter 的 UI 面（omp 线先例 = `@pgmi-builds/agent-adapter-omp/client` + package.json `dsh.client` 块）属于「浏览器侧 composition」；世界 bundle patch 只承载数据面行。AW 后续若要让运行时切换同时切换 UI 面，需要 hub 侧的 per-runtime surface 交付（世界的 ephemeral face 不可达，S4 禁 HTTP 代理）——当前 V1 取值：UI 面挂 ctx0。
 
+## 两层分离的取证（2026-09-15 澄清）
+
+- **服务端（in-pid world）= 好**：4985 的进程同时持有两个监听 —— `127.0.0.1:4985`（ctx0 用户面）与一个 OS 分配的临时口（本次启动 `37791`，上次 `36635`），**同一个 pid** ⇒ codex world 确实在 ctx0 进程内 spawn。发现方式：日志两条 `dsh web: http://127.0.0.1:<port>` + `ss -tlnp | grep pid=<MainPID>`；端口每次重启重选（`webserver.port: 0`）。
+- **浏览器侧（client surfaces）**：`window.__DSH_BOOT__.entries` **只**描述客户端插件面，与服务端行表无关；`@pgmi-builds/*` 缺席 ≠ 世界没起来。缺的是 hub 的 client 产物：`agent-hub/lib/client/index.js` 从未构建 ⇒ RuntimeSeat（agent selector UI）不在清单里。修复：`npm run build-client`（externals 对齐 omp 先例补 `react/jsx-runtime`），并把它写进 `test/smoke-codex.mjs` 的 provision 步骤（产物存在是进清单的前提）。验证：清单出现 `"id":"@pgmi-builds/agent-hub"`，`/plugins/??@pgmi-builds/agent-hub/client.js` HTTP 200 / 7.2KB 真实模块。
+
 ## 已知边界（V1，SDK 线）
 
 - steer = 队列 followUp 近似；setModel = 下一 turn 生效；审批 = launch-only preset；usage 在 assistant/message 上有一 turn 滞后显示。
