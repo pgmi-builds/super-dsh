@@ -140,3 +140,17 @@ worktree：`.scratch/aw-codex`（branch `aw-codex-adapter`；docs 已按任务 c
 - **测试可移植性修复**：测试原先用固定层数（`new URL('../../../../../..')`）推导仓根，只适用于 worktree 深度；改为**向上探测** `upstream/deepseek-harness/package.json` 定位仓根，并让 fixture 建链能替换悬空链接（EEXIST 韧性）。
 - **AW-B 代差（主侧 hub 已升级，跟踪项）**：主 checkout 的 `agent-hub` 是 AW-B 线（single-origin carrier：`carrier.ts` / `envelope.ts` / `ownership.ts` / `world-web-server.ts` / `world-entry.ts`，**无服务端 selector**，世界按挂载路径寻址），而本包的 `world-plugin`/`e2e` 仍用旧 hub 的 `writeSelector` 模型。主侧 e2e 因此显式 skip（原因写在 skip 文案里），**world-plugin 移植到 AW-B mount carrier 是下一步工作**。
 - worktree `.scratch/aw-codex`（branch `aw-codex-adapter`，docs 提交在此）暂留，待 docs merge/cherry-pick 后清理。
+
+
+## Home 布局纠偏 + 每会话路由钉住（2026-09-16）
+
+**布局（user 裁定）**：`$DSH_HOME` = 测试 home（`<repo>/.superd-test`）；agent app home = `$DSH_HOME/agents/<label>`；agent dsh profile packages = `$DSH_HOME/profiles/<label>`。
+- 删除了我自造的 `<repo>/.superd-test/codex-app`（worktree 同名目录一并删除）；`start-codex-app.sh` 改为 `AW_APP_HOME` 默认 `.superd-test` + `LABEL=codex` → profile 落在 `profiles/codex`、codex home 落在 `agents/codex`。
+- 测试默认 home 同步改为 `.superd-test`（`codex-client.live`/`spike`）。
+
+**每会话路由钉住（真缺陷修复）**：共享 test home 的 `settings.yaml` 里带别的线默认值（`deepseek/deepseek-v4-flash`），而 adapter 的 app-wide 默认模型推送经 settings 服务**异步落盘**——首个会话因此在 `session/model-unavailable` 被拒（实测）。
+- 修复：工厂在 create/resume 时同步钉住本会话路由——照上游 `session-controller` 的 `selectForNextRequest` 机制（其私有对象不可达），追加 log-only `model/selection` + `installModelSelection(agent.ctx, {current, assembled})`；provider 侧不再只依赖全局默认。
+- 实测（标准 home、settings 默认属别线）：真 turn 回复 `dsh-native-ok`；`request/context {provider:codex, model:glm-5.3-flash}`；`system/message`（Codex 系统提示）在册；reasoning 块在册；日志 `session route pinned: codex/glm-5.3-flash`。
+- 测试：`node --test test/*.test.mjs`（`DSH_HOME=.superd-test`）= **67 tests / 66 pass / 0 fail / 1 skipped**；tsc strict 0。
+
+**同时**：world-plugin 与其世界形态测试/线脚本已从包中移除（见前节），包只保留"自身作为 web app 点亮"所需的最小面。
