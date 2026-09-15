@@ -28,6 +28,20 @@
 2. **`$DSH_HOME` 为输入 → app-home = `$DSH_HOME/agents/codex`**：provider 从世界自身的 `dshHomePath`（boot 提供，插件内不读环境变量）解析 home 并 `setCodexHomeResolver` 钉住；client + catalog 读取全部走该解析。`CODEX_HOME` env 降为文档化的 adapter 级 override。
 3. `CodexLlmAdapter` 构造注入 home（catalog 读取不依赖 ambient env）。
 
+## 真实链路取证（2026-09-15，非 fake）
+
+此前 e2e 注入 fake codex 工厂（零 token），只证明管道；以下为**真实链路**实测：
+
+1. **in-process 真 turn**（`test/e2e-live.test.mjs`，`AW_CODEX_LIVE=1` 门控）：真 `@openai/codex-sdk` → SDK spawn 真 codex 二进制 → cc-switch → glm-5.2。回复 `live-ok` 落进 Dash log（含 thinking + text 两条 assistant/message、step/end、turn/end）。
+   - 首跑失败暴露真缺陷：provider 把 catalog 占位符 `codex-default` 当真模型推给线程 → 真 codex 卡在 turn/start。**修复**：占位符双侧守卫（push 跳过、create 省略 model 让 config.toml 默认生效）+ 工厂 create 时确定性注入 catalog 真实模型。
+2. **真 WebUI wire**（`test/wire-proof.mjs`，HTTP，无进程内捷径）：`POST /api/agent-runtime`（selector 翻转，UI RuntimeSeat 等价）→ `POST /api/session/create`（agentPreset=**codex**）→ `POST /api/session/prompt`（accepted）→ `POST /api/session/page` 读回完整一轮 → assistant text `["wire-ok"]`。
+   - wire 形状：unary RPC = `POST /api/<ns>/<method>`，envelope `{type:"client-request",rpcId,method,payload}`，payload 即 gateway 的 `{args:{request}}`；响应 `{type:"server-response",rpcId,result:{ok,value|error}}`。`/api/remote.mux` 是 **WebSocket** 路由（实时流），不是 unary 通道。
+
+### 发现（待裁决 / 观察）
+
+- **[真问题] 共享 settings 串味**：codex world 的 app-wide 默认模型推送写进**共享 settings**；此后在 ctx0 新建的 native 会话会继承 `codex/glm-5.2`，prompt 报 `session/model-unavailable: no adapter serves provider "codex"`（实测一次）。候选修复 = world fixture 加 `settings.path` 隔离（settings-under-profile，omp 线同款思路），属设计裁决。
+- **[观察] turn 活动期 HTTP 轮询 `session/page` 会阻塞**（turn 结束后立即恢复；早前 cursor=10 用例 200 正常）。WebUI 实时面走 `/api/remote.mux` WS 推送，不受影响；纯 HTTP 轮询读回需等 turn 收敛。
+
 ## 已知边界（V1，SDK 线）
 
 - steer = 队列 followUp 近似；setModel = 下一 turn 生效；审批 = launch-only preset；usage 在 assistant/message 上有一 turn 滞后显示。
