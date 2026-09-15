@@ -63,6 +63,12 @@ class Thread { get id(); runStreamed(input, turnOptions?); run(input, turnOption
 - **服务端（in-pid world）= 好**：4985 的进程同时持有两个监听 —— `127.0.0.1:4985`（ctx0 用户面）与一个 OS 分配的临时口（本次启动 `37791`，上次 `36635`），**同一个 pid** ⇒ codex world 确实在 ctx0 进程内 spawn。发现方式：日志两条 `dsh web: http://127.0.0.1:<port>` + `ss -tlnp | grep pid=<MainPID>`；端口每次重启重选（`webserver.port: 0`）。
 - **浏览器侧（client surfaces）**：`window.__DSH_BOOT__.entries` **只**描述客户端插件面，与服务端行表无关；`@pgmi-builds/*` 缺席 ≠ 世界没起来。缺的是 hub 的 client 产物：`agent-hub/lib/client/index.js` 从未构建 ⇒ RuntimeSeat（agent selector UI）不在清单里。修复：`npm run build-client`（externals 对齐 omp 先例补 `react/jsx-runtime`），并把它写进 `test/smoke-codex.mjs` 的 provision 步骤（产物存在是进清单的前提）。验证：清单出现 `"id":"@pgmi-builds/agent-hub"`，`/plugins/??@pgmi-builds/agent-hub/client.js` HTTP 200 / 7.2KB 真实模块。
 
+## 独立 app 形态（2026-09-15 落地，绕开 ctx0 selector）
+
+`apps/agent-worlds/test/start-codex-app.sh`（`AW_APP_PORT`，默认 4988）把 codex world **直接当主 app 起**：一个 dsh 进程，composition = adapter bundle（`aw-codex-app` profile：base + web-app + `@pgmi-builds/agent-adapter-codex`），无 hub、无 spawn、无 selector。LAN 走 socat relay（只绑 LAN IP）。
+
+实测（端口 4989）：`llm/listProviders` → `[{"id":"codex","name":"Codex"}]`；`agentPresets/list` → 单一 `codex` preset（isDefault）；`session/create` → `agentPreset=codex`；`session/prompt` → 真 glm 回复 `standalone-ok`，事件链完整（turn/start → user/message → assistant/message → step/end → turn/end）。boot 清单含 `dsh-client-ui-directory-picker-browse`（本 app 自己服务 HTML，故 add workspace 在此形态下生效）。
+
 ## 已知边界（V1，SDK 线）
 
 - steer = 队列 followUp 近似；setModel = 下一 turn 生效；审批 = launch-only preset；usage 在 assistant/message 上有一 turn 滞后显示。
