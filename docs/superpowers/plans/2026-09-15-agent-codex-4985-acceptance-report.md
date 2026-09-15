@@ -69,6 +69,22 @@ class Thread { get id(); runStreamed(input, turnOptions?); run(input, turnOption
 
 实测（端口 4989）：`llm/listProviders` → `[{"id":"codex","name":"Codex"}]`；`agentPresets/list` → 单一 `codex` preset（isDefault）；`session/create` → `agentPreset=codex`；`session/prompt` → 真 glm 回复 `standalone-ok`，事件链完整（turn/start → user/message → assistant/message → step/end → turn/end）。boot 清单含 `dsh-client-ui-directory-picker-browse`（本 app 自己服务 HTML，故 add workspace 在此形态下生效）。
 
+## 独立 home 化 + 两处真缺陷（2026-09-15 深夜）
+
+`start-codex-app.sh` 现在默认 **专属 home** `AW_APP_HOME`（默认 `<WT>/.superd-test/codex-app`）：adapter 包在被单独测试时拥有全部 DSH 级状态（workspace 注册表 / settings / session log），不再被共享 `.superd-test/aw` 里别条线的残留污染。
+
+**缺陷 1（真，已修）**：catalog 读取把 **DSH home** 传给了期望 **codex home** 的 `readCodexModelCatalog` ⇒ 找 `<dshHome>/config.toml` 失败 ⇒ 返回占位符 `codex-default`。后果：默认模型推送写占位值、模型选择器 provider 名回退 "Codex"。此缺陷只在 settings 已存在（早期误写）时被掩盖；专属 home（无 settings）立刻暴露为 `session/model-unavailable: no adapter serves provider "deepseek-official"`。修复：所有读取点改传 `resolveCodexHome(this.home)`（`<home>/agents/codex`），adapter 构造同样。修复后：推送 `deepseek-official/deepseek-flash → codex/glm-5.3-flash`，`settings.yaml` 落真值。
+
+**缺陷 2（真，已修）**：新增的会话路由覆盖方法先用真私有 `#` 命名 ⇒ Cordis tracing-proxy `TypeError: Receiver must be an instance of class CodexProvider`（与早前 `#followThreadId` 同款陷阱）⇒ 改 TS-`private`。
+
+**测试卫生**：专属 home 下 `world-plugin/e2e-world` 曾因我的启动脚本把 `@pgmi-builds/agent-adapter-codex` 链到不存在的目录名（真实目录是 `agent-codex`）而 EEXIST 失败；修正映射后 **62/62 在该 home 也全绿**。
+
+## 数据面归属（2026-09-15 取证）
+
+- **workspace 清单 = 上游 `dsh-workspace` 注册表**：`<home>/storages/workspace.json`（unit `workspace` v2, global.workspaceIds + tables.workspaces[].path）。共享 home 里那 17 条来自别条线（dashr/dsh-omp/orchestra/tgg/sidecarx/base/temp…），**不是 codex adapter 建的**；专属 home 下从 0 开始。adapter 只补上游做不到的两件：rollout 扫描出会话清单、把扫描到的会话 attach 进注册表（上游只在首次 boot 自动分组）。
+- **adapter 自有 app 数据 = `<home>/agents/codex/`**：`config.toml`/`auth.json`/`cc-switch-model-catalog.json`（由 setup 脚本从 `~/.codex` 单向拷入）+ codex 自己的运行时状态（`sessions/2026/…/rollout-*.jsonl` 22 个、`state_*/logs_*/memories_*/goals_*/queue_*.sqlite`、`skills/`、`.tmp/plugins`、`installation_id`）。该目录内无任何 Dash 物化数据。
+- **session stream → DSH session log：是**。adapter 把 codex 线程事件投影成 Dash 会话事件写入 session log（`permission/preset…turn/end` 整链，UI/session replay 读的就是它）。adapter composition 里 `session-persistence-jsonl` 为 `disabled: true`（`--dump-config` 验证），故 codex 会话活在 adapter 的 union persistence（进程内）+ codex rollout（原生记录）；共享 home 里的 `<home>/sessions/**` jsonl 目录来自 **其它 composition**（ctx0/native 与测试 boot，那些 jsonl 行是启用的）。
+
 ## 已知边界（V1，SDK 线）
 
 - steer = 队列 followUp 近似；setModel = 下一 turn 生效；审批 = launch-only preset；usage 在 assistant/message 上有一 turn 滞后显示。
