@@ -42,6 +42,22 @@
 - **[真问题] 共享 settings 串味**：codex world 的 app-wide 默认模型推送写进**共享 settings**；此后在 ctx0 新建的 native 会话会继承 `codex/glm-5.2`，prompt 报 `session/model-unavailable: no adapter serves provider "codex"`（实测一次）。候选修复 = world fixture 加 `settings.path` 隔离（settings-under-profile，omp 线同款思路），属设计裁决。
 - **[观察] turn 活动期 HTTP 轮询 `session/page` 会阻塞**（turn 结束后立即恢复；早前 cursor=10 用例 200 正常）。WebUI 实时面走 `/api/remote.mux` WS 推送，不受影响；纯 HTTP 轮询读回需等 turn 收敛。
 
+## SDK 能力边界（实证，`@openai/codex-sdk@0.154.0` 类型声明全文）
+
+```ts
+class Codex  { constructor(options?); startThread(options?); resumeThread(id, options?) }
+class Thread { get id(); runStreamed(input, turnOptions?); run(input, turnOptions?) }
+```
+**零 app-wide 设施**：无默认模型、无模型列表、无 workspace 列表、无 session 列表、无 fork、无查询。唯一“世界知识”是 `resumeThread` 文档里那句 *"Threads are persisted in ~/.codex/sessions"*（即 rollout 扫描是 session list 的唯一权威）。故 model list / session list / workspace / default model 四项必须 adapter 自持（已建：`models.ts` / rollout 扫描 / `dsh-workspace` reconcile / `agentDefaultModel` 推送）。
+
+## 客户端 surface 交付层（2026-09-15 关键发现）
+
+**client surface 的清单由「服务 HTML 的那个 composition」静态产出**（`window.__DSH_BOOT__.entries`），不是按 selector 动态取。世界的 web face 是 loopback 临时端口（S4），其 client 行**到不了浏览器**——实测：把 `directory-picker-browse` 两面放进 adapter bundle patch 后，世界行表正确（`picker-auto` disabled + 两面 inserted，`--dump-config` 验证），但 ctx0 的 boot 载荷仍只有 `directory-picker-native`。
+
+**修复 = 同一组行挂到 ctx0 侧 patch**（`test/smoke-codex.mjs` 的 aw-ctx0 provisioner + 部署 profile）：mount browse 两面 + `- id: directory-picker / disabled: true`（auto 行在本机解析为 `native` 桌面对话框，洞空 → WorkspacePicker 隐藏 add workspace 入口）。验证：重启后 `__DSH_BOOT__.entries` 出现 `dsh-client-ui-directory-picker-browse`（native 面消失），客户端 bundle `/plugins/??@deepseek-ai/dsh-client-ui-directory-picker-browse/client.js` HTTP 200/49KB 真实模块，日志零错误。
+
+**架构含义**：adapter 的 UI 面（omp 线先例 = `@pgmi-builds/agent-adapter-omp/client` + package.json `dsh.client` 块）属于「浏览器侧 composition」；世界 bundle patch 只承载数据面行。AW 后续若要让运行时切换同时切换 UI 面，需要 hub 侧的 per-runtime surface 交付（世界的 ephemeral face 不可达，S4 禁 HTTP 代理）——当前 V1 取值：UI 面挂 ctx0。
+
 ## 已知边界（V1，SDK 线）
 
 - steer = 队列 followUp 近似；setModel = 下一 turn 生效；审批 = launch-only preset；usage 在 assistant/message 上有一 turn 滞后显示。
