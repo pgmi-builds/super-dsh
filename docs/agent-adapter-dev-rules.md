@@ -178,3 +178,31 @@ events: thread.started / turn.started|completed|failed / item.started|updated|co
 8. **P3 流式增量与 steer**：`*/delta`、`turn/steer`（SDK 不支持）→ 实时体验与打断插话。
 9. **P4 其它**：`fs/*`、`gitDiffToRemote`、`review/start`、`thread/fork`、`threadSection/*`、`thread_spawn`（子代理）。
 10. **形态判断**：以上 5–9 大量能力**不在 SDK**，属 app-server 面 ⇒ 按 §4 的 per-adapter 决策，**`agent-codex-gui`（app-server 线）** 是这些能力的自然归属；SDK 线（本包）保持 happy path + P1/P2 里可由 rollout/CLI 补的项。
+
+---
+
+## 10. DSH-native session 管理的机制事实（2026-09-15 实证，指导 agent-codex 重构）
+
+**上游机制**（`packages/core/agent-loop/src/index.ts`、`packages/session/session-persistence-jsonl/src/storage.ts`）：
+- 工厂必须**自己持有会话的持久化写通道**：create 用 `ctx.sessionPersistence.create(session.header, {inheritedEventCount})`，resume 用 `open(id,'write')` + `handle.read()`；jsonl 后端通过 `ctx.on('session/event', …)` 把已提交事件写入该 handle 的 writer，`handle.close()` 排空。
+- 上游原话：**在 agent 生命周期之外发布的 session 不持久化任何东西**（`core/session/src/index.ts:885-891`）。
+- resume 的标准动作：`handle.read(0,undefined,{signal})` → `interruptedTurnClosers(events)` 追加修补 → `sessions.prepare(id, { seed:[...events,...closers], meta: structuredClone(handle.header), inheritedEventCount, eventState })`。
+- jsonl 落盘：`<home>/sessions/--<normalized-cwd>--/<encoded-id>/session.v<N>.jsonl[.zstd]`（默认 zstd；首行是 header，其后每行一个持久事件）。
+
+**OMP 线现状（对照，反面教材的一半）**：它自带 `SessionPersistence` 子类 + 自己的 SQLite 索引（`bridge-store.sqlite`：omp id ↔ dsh id ↔ transcript 文件），`list` 走索引、`open('read')` 由 OMP transcript 重新派生 DSH 事件，**DSH 侧日志只在内存**（无 `session/event` 监听）——即「DSH 服务只做呈现层，数据权威仍在原生 transcript」。这带来大量维护：id 索引表、增量摄入、派生 replay 缓存、影子 session、viewer 触发等。
+
+**本线（agent-codex）改为 DSH-native（2026-09-15 user 裁定）**：
+- 启用上游 `session-persistence-jsonl`（不再 disable），工厂持写通道 ⇒ **list / replay / 冷读全部由 DSH 服务提供**，adapter 不再扫描、不再解析原生 JSONL 做会话列表或 replay。
+- adapter 只保留**一张极小的映射**（`<codexHome>/dsh-sessions.json`）：`dshSessionId → { threadId, cwd, createdAt, preset }`。因为 Codex 的 threadId 仅在该线程首个 turn 后才成立，而 resume 需要它——这是「只做 mapping」的全部内容。
+- 原生 rollout 仍由 Codex 自己写（runtime 侧权威，S3/S7 单向阀），但 adapter 对它的唯一读取是**system prompt 的头部元数据**（`session_meta.base_instructions`），不是 transcript replay。
+- **待验（本轮验收）**：真 turn 后 DSH 日志落盘 → 重启 → list/replay 由 DSH 提供 → resume 经映射重挂 codex 线程。
+
+## 11. DSH 会话事件词汇（上游实证，接线对照表）
+
+- 事件总数 55（`packages/core/session/src/known-event-types.ts`）；信封 `{type, seq, time, data, ignorable?}`，仅 4 个 surface 事件带 `surfaceOp`/`sourceEventSeqs`：`system/message`、`user/message`、`assistant/message`、`tool/result`。
+- **system prompt** = `system/message {turn, step, message}`，`message = createSystemMessage(text, plugin)`（空文本 ⇒ `content: []`）；上游 loop 每会话恒写一条（surface 节点 0），**不是** header 字段。
+- **reasoning/thinking** = `assistant/message.message.content` 里的 `{type:'reasoning', text}`（**不是 `thinking`**）；原始增量另存于 `assistant/message.stream` / `assistant/attempt.stream`。
+- **tool call/result** = `tool/call {turn,step,callId,name,arguments: string(原始 JSON 串)}` + `tool/result {turn,step,message: ToolResultMessage, error?, meta?}`（`createToolResultMessage({callId,content,isError})`，按 `callId` 配对）。
+- **system 类（log-only，非 surface）**：`approval/asked|decided|policy`、`permission/preset`、`sandbox/mode`、`plan/mode`、`model/selection`、`agent-preset/selected`、`session/title`、`request/header|context`、`compaction/*`、`todo/write`、`goal/change`、`subagent/*`…（无 `system/notice`/`system/error`；错误经 `turn/end{reason:{kind:'error'}}`）。
+- **context injection**：**没有** `context/*` 事件；注入 = `user/message` 且 `source.kind==='plugin'`（`ContextFormed.form`: `instructions|catalog|snapshot|notice|relay|recall`）；文件/图片是 content block（`file`/`image` + attachment ref），不是事件。
+- 关系不变量（`invariant.ts`）：turn 从 1 起、step 每 turn 从 1 起；step-scoped 事件（system/assistant/tool call|result/attempt）必须落在**已开**的 turn+step 内；`user/message` 不受限；`turn/end` 必须闭合当前 turn。
