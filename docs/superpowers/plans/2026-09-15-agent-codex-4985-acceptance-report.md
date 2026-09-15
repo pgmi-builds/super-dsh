@@ -126,3 +126,17 @@ worktree：`.scratch/aw-codex`（branch `aw-codex-adapter`；docs 已按任务 c
 2. **`payload.base_instructions` 是对象**（`{text}`）而非字符串（2026-09-16 的 vendored 二进制行为），原读取器只认字符串 ⇒ 系统提示永远空。修复：两种形态都接受。
 
 **未接（明确记录）**：`compaction/*`、`todo/write`、`subagent/*`、`model/selection`（app-wide 默认模型另走 settings 推送）、`request/header`；approval 仍为 launch-only 预设降级（Codex SDK 无运行时审批；app-server 线才有 `*/requestApproval`）。
+
+
+## 拷回主 checkout 执行结果（2026-09-16）
+
+- **4989 实例已停**（`aw-codex-app-4989-test` + `aw-codex-app-4989-relay` → inactive，端口释放）。
+- **已拷贝**（worktree → 主 checkout）：
+  - `apps/agent-worlds/agent-codex/`（src / test / types / scripts / cordis.patch.yml / package.json / tsconfig.json；node_modules 与 dist 在主侧重新生成）
+  - `apps/agent-worlds/test/{smoke-codex.mjs,start-4985.sh,start-codex-app.sh}`（`start-codex-app.sh` 的 `WT` 已由 worktree 路径改为主 checkout 根）
+  - `apps/agent-worlds/agent-hub/test/zero-port.audit.test.mjs`
+  - 主 checkout `.superd-test/aw/profiles/node_modules/@pgmi-builds/` 增补 `agent-adapter-codex` + `agent-hub` 链接
+- **主侧验证**：`npm install --cache .npm-cache`（7 packages）→ `npm run build`（tsc strict 0）→ `node --test test/*.test.mjs` = **72 tests / 67 pass / 0 fail / 5 skipped**；仓根单实例检查（`find node_modules/@deepseek-ai -maxdepth 1 -mindepth 1 ! -type l`）为空。
+- **测试可移植性修复**：测试原先用固定层数（`new URL('../../../../../..')`）推导仓根，只适用于 worktree 深度；改为**向上探测** `upstream/deepseek-harness/package.json` 定位仓根，并让 fixture 建链能替换悬空链接（EEXIST 韧性）。
+- **AW-B 代差（主侧 hub 已升级，跟踪项）**：主 checkout 的 `agent-hub` 是 AW-B 线（single-origin carrier：`carrier.ts` / `envelope.ts` / `ownership.ts` / `world-web-server.ts` / `world-entry.ts`，**无服务端 selector**，世界按挂载路径寻址），而本包的 `world-plugin`/`e2e` 仍用旧 hub 的 `writeSelector` 模型。主侧 e2e 因此显式 skip（原因写在 skip 文案里），**world-plugin 移植到 AW-B mount carrier 是下一步工作**。
+- worktree `.scratch/aw-codex`（branch `aw-codex-adapter`，docs 提交在此）暂留，待 docs merge/cherry-pick 后清理。
