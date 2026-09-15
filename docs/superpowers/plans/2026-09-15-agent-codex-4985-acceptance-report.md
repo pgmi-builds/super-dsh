@@ -2,7 +2,8 @@
 
 - **日期**: 2026-09-15
 - **实例**: `aw-codex-4985-test.service`（systemd-run --user，SUPERD_KEEP=1，**保持运行待 user 亲测**）
-- **入口**: `http://127.0.0.1:4985/?token=<redacted>`
+- **入口（LAN）**: `http://192.0.2.130:4985/?token=<redacted>`
+- **入口（loopback）**: `http://127.0.0.1:4985/?token=<redacted>`
 - **端口变更说明**: 计划默认 4987 被另一线占用（`react-codemod-to-lit` 的 vite preview，pid 127421，非本线不动）→ 按仓端口纪律改 **4985**（`AW_PORT` 已接入 start 脚本与 unit Environment）。LAN 中继（可选）：`/usr/bin/socat TCP-LISTEN:4985,fork,reuseaddr,bind=192.0.2.130 TCP:127.0.0.1:4985` + unit 加 `Environment=SUPERD_LAN_HOST=192.0.2.130` 后重启。
 
 ## 前置验证（agent 侧已完成）
@@ -20,6 +21,12 @@
 5. Abort → 流中断、状态回 idle。
 6. 重启实例（`systemctl --user restart aw-codex-4985-test`）→ resume → 历史复原、续聊正常。
 7. 切回 native → 原生世界全程无感；`~/.codex` **零写入**（全部落在 `.superd-test/aw/agents/codex/`）。
+
+## 接线重做（2026-09-15 user 三指令后落地）
+
+1. **app-wide 默认模型 = adapter 自持**（SDK 无此概念）：CodexProvider 启动 + reconcile tick 将嵌套 home `config.toml` 的默认模型经 `agentDefaultModel.saveSelection` 推入世界（单向粘性——config 对 adapter 只读，S7 单向阀；echo 守卫防重放）。e2e 已改为**不手动 selectModel** 直接 create+prompt 全链通过。
+2. **`$DSH_HOME` 为输入 → app-home = `$DSH_HOME/agents/codex`**：provider 从世界自身的 `dshHomePath`（boot 提供，插件内不读环境变量）解析 home 并 `setCodexHomeResolver` 钉住；client + catalog 读取全部走该解析。`CODEX_HOME` env 降为文档化的 adapter 级 override。
+3. `CodexLlmAdapter` 构造注入 home（catalog 读取不依赖 ambient env）。
 
 ## 已知边界（V1，SDK 线）
 
