@@ -106,3 +106,23 @@ worktree：`.scratch/aw-codex`（branch `aw-codex-adapter`；docs 已按任务 c
 **不拷回**：worktree 根 `node_modules/`（farm + @pgmi-builds 链，主 checkout 自有）；`.superd-test/`；`.scratch/aw-codex-4985.log`。
 
 **收尾后主 checkout 验证**：`apps/agent-worlds/agent-codex && npm run build && (env 同款) node --test test/*.test.mjs`（除 spike/live）→ 62/62；hub 15/15；`find node_modules/@deepseek-ai -maxdepth 1 -mindepth 1 ! -type l` → 仅 `dsh-client-ui-slots`。
+
+## DSH-native session 管理 + 事件映射补全（2026-09-16 落地并实测）
+
+**session 管理（改自 OMP 的「自带持久化 + 自解析 replay」为 DSH-native）**
+- 启用上游 `session-persistence-jsonl`（adapter bundle patch 里那条 disable 已移除）；工厂按上游 agent-loop 的方式持有写通道：create `persistence.create(header,…)`，resume `open(id,'write')` → `read(0,…)` → `interruptedTurnClosers` → `prepare({seed, meta: handle.header, inheritedEventCount, eventState})`；`setupAndPublish` 在发布点刷未存后缀、dispose 时 `handle.close()` 排空并上抛持久化错误。
+- 删除 `src/session-persistence-codex.ts`（联合持久化 + rollout 扫描 list）、`src/replay.ts`（自解析 replay）、`src/knobs.ts`；`codex-store.ts` 精简为 home 解析 + rollout **首行**元数据读取（仅供系统提示）。
+- 身份 = 一张极小的映射 `<codexHome>/dsh-sessions.json`：`dshSessionId → {threadId, cwd, createdAt, preset}`；`threadId` 在 Codex 物化后回填；resume 查不到（或 thread 从未启动）**fail-closed**。
+
+**实测（4989 独立 app，专属 home；非 fake）**
+- 真 turn：`turn/start → request/context{provider:codex, model:glm-5.2, contextWindow:1000000} → user/message → session/title → step/start(1,1) → system/message(1,1) → assistant/message → step/end → turn/end`，回复 `dsh-native-ok`。
+- 落盘 DSH 日志：`<home>/sessions/<cwd-slug>/<sessionId>/session.v3.jsonl.zstd`（zstd 解出上述 13 行 + header `agentPreset=codex`）。
+- **重启后**：list 由 DSH 持久化提供（19 条，id 全是真实 DSH id，无 `session-codex-*` 合成 id）；replay 直接来自 DSH 日志；对冷会话 prompt 成功 → 日志出现 `session/end-seed`（seed 恢复路径）→ 新 turn 完成，回复 `resumed-ok-ok`。
+- 事件映射（真 turn 实测）：`system/message` 携带真 Codex 系统提示（21,335 字符）；reasoning 块为 `{type:'reasoning', text}`；`tool/call.arguments` 为原始 JSON 串（`{"command":"/bin/bash -lc 'echo tool-ok'"}`）+ `tool/result` 经 `createToolResultMessage` 形状、`source.callId` 配对。
+- 测试：`node --test test/*.test.mjs` → **72 tests / 70 pass / 0 fail / 2 skipped**（live 门控）；tsc strict 0。
+
+**本轮发现的两个真缺陷（由实测抓出，均已修）**
+1. **step 生命周期押在 `message_start` 上**：Codex SDK 对纯文本回复只发 `item.completed`（无 `item.started`），于是整轮没有 `step/start`、step 恒为 0 —— 违反上游「step-scoped 事件必须落在已开 step 内」，并连带使 `system/message` 被跳过（它要求 step ≥ 1）。修复：step 改为**按需开启**（turn_start 即开 + 每个 step-scoped 事件前兜底），`step/end` 仅在确实有开 step 时追加。
+2. **`payload.base_instructions` 是对象**（`{text}`）而非字符串（2026-09-16 的 vendored 二进制行为），原读取器只认字符串 ⇒ 系统提示永远空。修复：两种形态都接受。
+
+**未接（明确记录）**：`compaction/*`、`todo/write`、`subagent/*`、`model/selection`（app-wide 默认模型另走 settings 推送）、`request/header`；approval 仍为 launch-only 预设降级（Codex SDK 无运行时审批；app-server 线才有 `*/requestApproval`）。
