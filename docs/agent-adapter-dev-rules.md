@@ -115,3 +115,66 @@ events: thread.started / turn.started|completed|failed / item.started|updated|co
 
 **cli/rpc 的定位（codex）**：live session 连接已由 SDK 覆盖；仅在需要命令级集成（如 `codex plugin add …`）时才考虑补 cli/rpc 面。
 **已知 V1 降级（登记在案）**：无 steer（仅排队 followUp）、模型切换下一轮生效、审批仅 launch-only、usage 滞后一轮、无 fork、无 supervisor（deliberate cut）。
+
+---
+
+## 8. 现行捕获策略：把 foreign agent **捕获进 DSH 服务**（2026-09-15 user 裁定；**falsifiable，随时间可变**）
+
+> 标注为「现行」——这是一条**当前选定的开发取向**，不是永久不变量；当证据变化时可推翻并重述。
+
+- **取向**：adapter 把 foreign agent runtime **捕获进 DSH 服务层**，其中**最重要的一项是 session persistence**；WebUI 消费的是 **DSH session 服务提供的**东西（会话、事件流、workspace 归属、preset/投影…），而不是去复刻 foreign runtime 的原生界面。
+- **接受的代价（明知而为）**：
+  - **会话存储重复**：一份在 DSH 侧（session log / 投影缓存），一份在 foreign runtime 侧（codex rollout、omp 原生 session）。两处都真实存在，**不是 bug**；DSH log 是 WebUI 的读取面，native log 是 runtime 的持久权威。
+  - **新 spawn 的会话与原生 app 数据分离**：`.codex` / `.omp`（用户级原生 home）≠ `<dshHome>/agents/<runtime>`（adapter 的 app home）。二者是**不同集合**：原生 home 只读单向阀（配置拷入），adapter 的会话数据独立存在。
+- **期望的迁移方向**：用户**逐步改用 DSH WebUI 作为交互面**，而不是继续依赖 foreign agent 的原生界面（TUI 等）。这正是简化开发复杂度的关键：adapter 只需把 runtime 接进 DSH 服务与事件词汇，**不需要**为此再造一套原生交互面。
+- **推论（写给未来的自己）**：
+  - 不要因为「原生已有」就省掉 DSH 侧的必要投影（会话列表、事件、usage 等）——用户看的是 DSH 面。
+  - 反过来，也不要为了像素级复刻原生 TUI 而过度投入；DSH 面达标即可。
+  - 若某天决定改走「桥接原生界面」的取向（如把原生 TUI 直接嵌进 DSH），本节整体作废，需重写规则。
+- **开放项（本条策略下的已知缝）**：foreign threadId ↔ DSH sessionId 的映射目前是**进程内**的（`threadIdIndex`），跨重启后同一 thread 会以 rollout 派生的 `session-codex-<threadId>` 形式重新出现，与重启前的 Dash id（普通 uuid）不同 ⇒ 同一 thread 在重启边界上可能出现两个 id。收敛方向（择一）：把 Dash session id 在创建时就锚定到 threadId，或把映射持久化。
+
+## 9. codex 能力面 survey 与接线 backlog（2026-09-15，实证）
+
+**证据来源**：真实 rollout JSONL（`<home>/agents/codex/sessions/**`）+ vendored CLI `--help` + `codex app-server generate-ts --out …`（**95 个协议类型**，含全部 method/notification 名）。
+
+### 9.1 SDK 现状 vs 原生事件词汇（rollout 实测）
+| rollout 行类型 / payload | 实测字段 | DSH 侧可落点 | 现状 |
+|---|---|---|---|
+| `session_meta` | **`base_instructions`（= 系统提示原文）**、`context_window`、`cli_version`、`git`、`cwd`、`history_mode`、`source`、`thread_source` | 系统提示/会话元数据/上下文上限 | **未接** |
+| `turn_context` | `model`、`effort`、`sandbox_policy`、`file_system_sandbox_policy`、`approval_policy`、`permission_profile`、`workspace_roots`、`collaboration_mode`、`personality`、`multi_agent_version`、`summary`、`timezone` | **有效的**运行时元数据（模型/推理档/沙箱/审批/工作区根） | **未接** |
+| `event_msg: token_count` | `info`（含用量）+ **`rate_limits`** | 实时 token 用量、配额面 | 部分（SDK usage 滞后一轮） |
+| `event_msg: task_started` | `model_context_window`、`collaboration_mode_kind` | ctx 上限、协作模式 | **未接** |
+| `event_msg: task_complete` | `duration_ms`、`time_to_first_token_ms`、`last_agent_message` | 轮次耗时 / TTFT / 最后一条助手消息 | **未接** |
+| `event_msg: thread_settings_applied` | `thread_settings` | 会话设置生效确认 | **未接** |
+| `item_completed.item` | `AgentMessage` / `UserMessage` / `Reasoning` / `McpToolCall`(server,tool,status,duration,result) | 消息/思考/工具调用 | 已接（部分） |
+| `turn/…`（SDK） | thread.started / turn.started\|completed\|failed / item.* / error | 轮次生命周期 | 已接 |
+| `token_usage_record` | `thread_token_usage`、`turn_token_usage`、`usage` | 线程/轮次用量 | **未接** |
+| `world_state` | `full`、`state` | runtime 内部世界态（skills/plugins/goals 线索） | **未接** |
+
+### 9.2 app-server 协议面（SDK 之外的完整能力，`generate-ts` 实证）
+- **thread 生命周期**：`thread/start`、`thread/resume`、`thread/list`、`thread/read`、`thread/turns/list`、`thread/items/list`、`thread/loaded/list`、`thread/fork`、`thread/name/set|updated`、`thread/metadata/update`、`thread/archive|unarchive|delete`、`thread/status/changed`、`thread/settings/updated`、`thread/shellCommand`、`thread/fork`、`thread/revert`、`thread/rollback`、`thread/inject_items`、`thread_unarchive`、`threadSection/{create,update,delete,list}` + `thread/section/move`（**会话分区/文件夹**）
+- **轮次控制**：`turn/start`、**`turn/steer`（SDK 没有的 steer！）**、`turn/interrupt`、`turn/diff/updated`、`turn/plan/updated`、`turn/completed`、`turn/moderationMetadata`
+- **压缩**：`thread/compact/start`、`thread/compacted`、`context_compaction`、`compaction_trigger`、`AutoCompactTokenLimitScope` ⇒ **DSH 压缩事件可接**
+- **审批 / 交互（SDK 完全缺失）**：`item/commandExecution/requestApproval`、`item/fileChange/requestApproval`、`item/permissions/requestApproval`、`item/tool/requestUserInput`、`ApplyPatchApproval`、`item/autoApprovalReview/*`、`thread/approveGuardianDeniedAction`、`mcpServer/elicitation/request` ⇒ **审批与选项事件可接**
+- **流式增量**：`item/agentMessage/delta`、`item/reasoning/textDelta|summaryTextDelta|summaryPartAdded`、`item/commandExecution/outputDelta|terminalInteraction`、`item/fileChange/outputDelta|patchUpdated`、`item/mcpToolCall/progress`、`item/plan/delta`
+- **模型 / 权限档**：`model/list`、`model/rerouted`、`modelProvider/*`、`permissionProfile/list`
+- **技能 / 插件 / 钩子**：`skills/list`、`skills/changed`、`skills/config/write`、`skills/extraRoots/set`；`plugin/{list,read,install,installed}`；`hooks/list`、`hook/started|completed`
+- **MCP**：`mcpServerStatus/list`、`mcpServer/oauth/login`、`mcpServer/resource/read`、`mcpServer/tool/call`、`mcpServer/event/stream/notification`、`mcpServer/startupStatus/updated`
+- **用量 / 配额 / 账号**：`thread/tokenUsage/updated`、`account/usage/read`、`account/rateLimits/read|updated`、`usageLimitExceeded`、`account/{read,login/*,logout}`、`account/rateLimitResetCredit/consume`
+- **文件系统 / 工作区 / git**：`fs/{readFile,writeFile,readDirectory,createDirectory,remove,copy,getMetadata,watch,unwatch}`、`fs/changed`、`gitDiffToRemote`
+- **其它**：`thread_spawn`（子代理/线程派生）、`review/start`、`thread/environment/connected|disconnected`、`thread/project/updated`、`thread/realtime/*`（实时音频/转写）
+
+### 9.3 CLI 子命令面（vendored 二进制 `--help` 实证）
+`agents`（浏览共享 local app-server 守护进程上的所有会话）、`exec`、`review`、`login/logout`、`mcp {list,get,add,remove,login}`、`plugin`、`app-server {daemon,proxy,generate-ts,generate-json-schema}`、`remote-control`、`doctor`（安装/配置/认证/运行时健康）、`sandbox`、`debug`、`apply`、`resume`、`queue`（给已有会话排队消息）、`archive`、`delete`、`migrate-rollouts`、`completion`、`update`。
+
+### 9.4 接线 backlog（建议优先级）
+1. **P1 运行时元数据**：`session_meta.base_instructions`（系统提示）、`context_window`、`turn_context` 的有效 model/effort/sandbox/approval/workspace_roots → DSH session/runtime metadata（现状全缺，UI 只能靠猜）。
+2. **P1 用量**：`token_count` + `token_usage_record`（含 `rate_limits`）→ DSH usage 事件（当前滞后一轮）。
+3. **P1 轮次指标**：`task_complete` 的 `duration_ms`/`time_to_first_token_ms`。
+4. **P2 压缩**：`context_compaction` / `thread/compacted` → DSH compaction 事件（长会话必需）。
+5. **P2 会话清单与生命周期**：改用/对照 app-server `thread/list` + `agents`，并接 `archive/delete/name/metadata`；收敛 §8 的 id 映射缝。
+6. **P2 skills / mcp / plugin 面**：`skills/list`、`mcpServerStatus/list`、`plugin/list` → 面向用户的 slash/能力面板（SDK 无）。
+7. **P3 审批与交互**：`*/requestApproval`、`requestUserInput`、`mcpServer/elicitation` → DSH 审批/扩展 UI（当前 launch-only 降级）。
+8. **P3 流式增量与 steer**：`*/delta`、`turn/steer`（SDK 不支持）→ 实时体验与打断插话。
+9. **P4 其它**：`fs/*`、`gitDiffToRemote`、`review/start`、`thread/fork`、`threadSection/*`、`thread_spawn`（子代理）。
+10. **形态判断**：以上 5–9 大量能力**不在 SDK**，属 app-server 面 ⇒ 按 §4 的 per-adapter 决策，**`agent-codex-gui`（app-server 线）** 是这些能力的自然归属；SDK 线（本包）保持 happy path + P1/P2 里可由 rollout/CLI 补的项。
