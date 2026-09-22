@@ -42,6 +42,12 @@ export interface SshServerFixture {
   stop(): Promise<void>
   /** 本夹具实例累计收到的 SSH 连接数 — 单 TCP 池化断言用。 */
   readonly connectionCount: number
+  /** 本夹具实例累计打开的 sftp 会话通道数（含 upload/cleanup 每次 open）。 */
+  readonly sftpChannelsOpened: number
+  /** 其中已经关闭（服务端收到通道 close）的数量。 */
+  readonly sftpChannelsClosed: number
+  /** 当前仍存活的 sftp 通道数 = opened − closed（sftp 通道泄漏断言用）。 */
+  readonly liveSftpChannels: number
   /** 客户端私钥文件路径（0600，tmpdir 内）— 目标 identityFile 指向它。 */
   readonly clientPrivateKeyPath: string
 }
@@ -100,6 +106,8 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
   let port = 0
   let hostKeyFingerprint = ''
   let connectionCount = 0
+  let sftpChannelsOpened = 0
+  let sftpChannelsClosed = 0
   let clientPrivateKeyPath: string | undefined
   let tmpDir: string | undefined
   const sockets = new Set<Socket>()
@@ -108,12 +116,27 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
     get connectionCount() {
       return connectionCount
     },
+    get sftpChannelsOpened() {
+      if (server === undefined) throw new Error('fixture not started')
+      return sftpChannelsOpened
+    },
+    get sftpChannelsClosed() {
+      if (server === undefined) throw new Error('fixture not started')
+      return sftpChannelsClosed
+    },
+    get liveSftpChannels() {
+      if (server === undefined) throw new Error('fixture not started')
+      return sftpChannelsOpened - sftpChannelsClosed
+    },
     get clientPrivateKeyPath() {
       if (clientPrivateKeyPath === undefined) throw new Error('fixture not started')
       return clientPrivateKeyPath
     },
     async start() {
       if (server !== undefined) throw new Error('fixture already started')
+      connectionCount = 0
+      sftpChannelsOpened = 0
+      sftpChannelsClosed = 0
       // 主机钥（算指纹用 getPublicSSH 的线内 blob — 与客户端 hostVerifier 收到的同形）
       const hostKeys = await generateEd25519Verified()
       const parsedHostKey = utils.parseKey(hostKeys.private)
@@ -201,6 +224,11 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
             // sftp：最小服务端（写文件 + 删除）；未监听的请求 → ssh2 fatal（fail-loud）
             session.on('sftp', (sftpAccept) => {
               const sftp = sftpAccept()
+              // sftp 通道泄漏观测：opened 计 open、closed 计服务端通道 close
+              sftpChannelsOpened++
+              sftp.on('close', () => {
+                sftpChannelsClosed++
+              })
               const OK = utils.sftp.STATUS_CODE.OK
               const FAILURE = utils.sftp.STATUS_CODE.FAILURE
               const NO_SUCH_FILE = utils.sftp.STATUS_CODE.NO_SUCH_FILE
@@ -310,6 +338,8 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
       }
       clientPrivateKeyPath = undefined
       connectionCount = 0
+      sftpChannelsOpened = 0
+      sftpChannelsClosed = 0
     },
   }
   return fixture

@@ -1,5 +1,6 @@
 import { createServer } from 'node:net'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import type { Socket } from 'node:net'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createSshBackend } from '../../src/remote/backend.ts'
 import type { ConnState, ExecOutcome, RemoteError } from '../../src/remote/backend.ts'
 import { createMemoryHostKeyStore } from '../../src/remote/hostkeys.ts'
@@ -121,6 +122,35 @@ describe('SshBackend PTY shell session', () => {
     await session.dispose()
     await backend.close()
   })
+
+  it('ends the rcfile sftp channel after every session (no channel pinning, MaxSessions-safe)', async () => {
+    const solo = createSshServerFixture()
+    try {
+      const { port: p } = await solo.start()
+      // 独立夹具：sftp 计数器从零起；identityFile 指到自己的客户端钥
+      const backend = makeBackend(createMemoryHostKeyStore(), {
+        port: p,
+        identityFile: solo.clientPrivateKeyPath,
+      })
+      // 11 个会话 > 真实 sshd 默认 MaxSessions(10)：泄漏形态（每会话钉一条
+      // upload sftp 通道）下第 11 次上传必然开不出通道
+      for (let i = 0; i < 11; i++) {
+        const session = await backend.openShellSession({ BAKE_TEST_VAR: String(i) })
+        await session.dispose()
+      }
+      // 每个 upload/cleanup sftp 都必须 end — 夹具侧 open/close 计数收敛到零活通道
+      await vi.waitFor(
+        () => {
+          expect(solo.sftpChannelsOpened).toBeGreaterThanOrEqual(22) // 每会话 upload+cleanup ≥ 2
+          expect(solo.liveSftpChannels).toBe(0)
+        },
+        { timeout: 5000 },
+      )
+      await backend.close()
+    } finally {
+      await solo.stop()
+    }
+  })
 })
 
 describe('SshBackend connection pooling', () => {
@@ -143,6 +173,40 @@ describe('SshBackend connection pooling', () => {
       expect(solo.connectionCount).toBe(1)
     } finally {
       await solo.stop()
+    }
+  })
+})
+
+describe('SshBackend close semantics', () => {
+  it('close() during a pending connect keeps the backend closed (no resurrection)', async () => {
+    // 原始 TCP 监听：接受连接但不回 SSH 版本串 → 握手确定性悬置在 connecting
+    const blackhole = createServer()
+    const sockets: Socket[] = []
+    blackhole.on('connection', (socket) => {
+      sockets.push(socket)
+      socket.on('error', () => {}) // 主动拆链竞态下的 ECONNRESET 噪音
+    })
+    await new Promise<void>((resolve) => blackhole.listen(0, '127.0.0.1', resolve))
+    const p = (blackhole.address() as { port: number }).port
+    try {
+      const backend = makeBackend(createMemoryHostKeyStore(), { port: p })
+      // 提前挂 catch，拒绝先于断言到达也不算 unhandled
+      const inFlight = backend.exec('true', { cwd: '/', timeoutMs: EXEC_TIMEOUT }).catch((e: RemoteError) => e)
+      await vi.waitUntil(() => sockets.length > 0, { timeout: 5000 })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(backend.connState()).toBe<ConnState>('connecting')
+      await backend.close()
+      expect(backend.connState()).toBe<ConnState>('closed')
+      // 拆黑洞连接 → 握手立即失败；失败路径不得把 closed 改写成 idle
+      for (const socket of sockets) socket.destroy()
+      const settled = await inFlight
+      expect((settled as RemoteError).code).toBe('E_CONNECT')
+      // 已 closed 的 backend 不许被下一次调用复活重连
+      await rejectWithCode(backend.exec('true', { cwd: '/', timeoutMs: EXEC_TIMEOUT }), 'E_CONNECT')
+      expect(backend.connState()).toBe<ConnState>('closed')
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise<void>((resolve) => blackhole.close(() => resolve()))
     }
   })
 })

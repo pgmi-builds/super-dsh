@@ -113,6 +113,12 @@ export function createSshBackend(
   let client: Client | undefined
   let connectPromise: Promise<Client> | undefined
 
+  /** 经闭包读 state（返回声明类型）：close() 可在 await 间隙并发改写，
+   *  直读会撞上 TS 对 `state = 'connecting'` 的赋值收窄（TS2367 误报）。 */
+  function stateIs(s: ConnState): boolean {
+    return state === s
+  }
+
   function err(code: RemoteError['code'], message: string): RemoteError {
     return remoteError(code, message)
   }
@@ -194,11 +200,17 @@ export function createSshBackend(
             ...auth,
           })
         })
+        // close() 在握手期间到达：不得复活 — 立即拆链并按失败处理（state 保持 closed）
+        if (stateIs('closed')) {
+          c.end()
+          throw err('E_CONNECT', `backend for ${target.name} closed during connect`)
+        }
         client = c
         state = 'ready'
         return c
       } catch (cause) {
-        state = 'idle'
+        // 同上：close() 期间连接失败也必须保持 closed（否则下次调用复活重连）
+        if (!stateIs('closed')) state = 'idle'
         if (client === c) client = undefined
         connectPromise = undefined
         c.end()
@@ -302,7 +314,9 @@ export function createSshBackend(
     if (target.env !== undefined) Object.assign(merged, target.env)
     if (env !== undefined) Object.assign(merged, env)
 
-    // 1. sftp 写 rcfile（0600）— 引擎帧 + 哨兵从此注入
+    // 1. sftp 写 rcfile（0600）— 引擎帧 + 哨兵从此注入。
+    //    写完/写败都必须 end：sftp 是池化连接上的会话通道，不释放会一直钉住
+    //    （真实 sshd MaxSessions 默认 10，钉满后通道开不出来 → E_CONNECT）。
     const sftp = await openSftpOn(c, 'rcfile upload')
     const rcPath = `${RC_PREFIX}${randomBytes(8).toString('hex')}`
     try {
@@ -312,9 +326,8 @@ export function createSshBackend(
           else resolve()
         })
       })
-    } catch (cause) {
+    } finally {
       sftp.end()
-      throw cause
     }
 
     // 2. exec bash --rcfile（真 PTY）；通道适配 ShellChannel
@@ -326,9 +339,6 @@ export function createSshBackend(
         }
         resolve(stream)
       })
-    }).catch((cause) => {
-      sftp.end()
-      throw cause
     })
     const shell = adaptShellChannel(channel)
 
