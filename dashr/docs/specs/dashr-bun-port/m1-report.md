@@ -118,3 +118,30 @@ $ node scripts/dashr/accept-chat.mjs "https://dashr.dev2.internal.test/?token=<t
 
 - 旧 patch-系列机制 `dashr/src/` 已从磁盘移除（本就未跟踪）；旧 94.6MB PoC 二进制已从 `dashr/release/` 移除（gitignore 内、从未跟踪；残留 gitignored `release/anchor/` 1.2M 无害）。
 - `dashr/README.md` 构建体系节改指 port 仓（外层仓 commit `d0268dd`）。
+
+## 8. Addendum — task-12 fix1：browse picker 词汇冻结 + dev2 换装 #2（2026-09-23 05:40–05:50 +0800）
+
+**起因**：§3 偏差披露的种子 workspace 掩盖了 first-run adoption 是否可用的问题；fix round 复核根因并恢复真实验证。
+
+**根因复核（对 T4 裁决的修正）**：stage-1 期旧产物确有 registry miss（dev2 journal 2026-09-22 21:39 +0800：`directory-picker-auto: failed to load @deepseek-ai/dsh-host-directory-picker-browse`），T4 ledger 以 "absent from frozen universe; load errored in stage-1" 记录——当时为真。但 **M1 验收产物（`538c8106`）的冻结 registry 实际已含全部 6 个 directory-picker 包**：gen.ts 的传递闭包经 `directory-picker-auto` 的 peerDependencies（browse/native 后端 + client 面）早已覆盖，dead-picker 日志属旧产物。fix1 把这一"侥幸"转为契约：`gen.ts` 新增 **ALWAYS_FROZEN** 专用列表（引用 directory-picker-auto 导出的 BACKEND_PACKAGES/SURFACE_PACKAGES 固定词汇；非 composition 行——它们是 boot 期动态 loader-create 的），loud unresolved-rows 自检覆盖之；`gen.spec.ts` 增 2 测试；ledger drop 理由改写为 "auto-mounted fixed vocabulary … never a composition row"。port commit `556ebddf18`。
+
+**产物不变式核实**：registry 输出字节不变（253 entries / universe manifests 230）；`clientHalves` **仍为 74**——两个 picker client 面本就在 stage-assets 的 `exports['./client']` 检测内（该检测遍历全部 workspace 包，与冻结宇宙无关），任务预期的 74→76 不成立，无增长、无遗漏。
+
+**新产物（换装 #2）**：`7cd0e6c60745a33f8bc15cc981c8419a839a2f826406849c72c73329aab7c383`，**140,858,568 B——与旧产物同字节大小（delta 0）**，符合"词汇早已在宇宙内、仅转契约"的预期。dev2：stop（`pidof` 验证进程死亡）→ 换 `/opt/dashr/dashr-linux-x64` → start，`systemctl is-active` = active。
+
+**first-run 状态发现的机制**：storages/workspace.json 删除后旧 `ws` 记录会在下次 boot 复活——`workspaceRegistry` 的 `indexLiveSessions` 从持久 session 的 cwd 重建 workspace 记录（产品行为，非缺陷）。故真实 first-run 复核把旧验收 sessions/workspace.json/projcache 移至 `/opt/dashr/task12-fix1-backup/`（保留可查）。
+
+**第一人称 adoption 证据（域名，全新 home，headless Chromium）**：
+
+```
+EVIDENCE workspaces-before: … Workspaces | No sessions yet | Choose a workspace to start   # 真 first-run hero
+EVIDENCE browse-dialog: opened: Select Workspace Directory                                   # browse 目录面
+EVIDENCE listing-rows-home: ["media","workspaces"]                                           # /home/admin 列目
+EVIDENCE path-editor-seed: /home/admin/  →  type /opt/dashr/home + Enter                     # 路径编辑跳转
+EVIDENCE folder-created: ws-fix1-adopt        EVIDENCE selected-row: ["ws-fix1-adopt"]       # New folder + 选中
+EVIDENCE workspaces-after: Workspaces | ws-fix1-adopt   （hero 切换至该 workspace，composer 激活）
+EVIDENCE toasts: []   EVIDENCE consoleErrors: []
+verdict: PASS — 盘上 /opt/dashr/home/ws-fix1-adopt/ 在位；storages/workspace.json 仅此一条记录
+```
+
+**对话轮回归（域名，新二进制）**：`accept-chat.mjs` PASS——marker `m1acc-f03317`，4.0s，reply `PONG m1acc-f03317 — acceptance ping received.`，零 toast、零 console error。发布三闸状态不变（第三闸仍 PENDING，未 publish）。
