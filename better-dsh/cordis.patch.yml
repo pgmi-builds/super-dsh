@@ -48,6 +48,13 @@
     - id: dashr-mobile
       name: 'better-dsh/mobile'
 
+    # Remote `ssh` tool face (plan 2026-09-22-dashr-remote-tool-rm0): registry
+    # from row config + ~/.ssh/config seed; all config defaults, so the row
+    # carries no config block. The model-facing `ssh` tool registers only when
+    # a tools service is composed.
+    - id: dashr-remote
+      name: 'better-dsh/remote'
+
 # Native compaction at the host plane: the base bundle ships the engine, the
 # `/compact` command, and the tool-result pruner as host rows; dsh-web-app
 # disables them to move compaction behind per-session presets. DASHR is
