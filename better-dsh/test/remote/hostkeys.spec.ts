@@ -6,7 +6,7 @@
  * @module dashr/remote/hostkeys (spec)
  */
 
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -88,5 +88,21 @@ describe('createFileHostKeyStore', () => {
     createFileHostKeyStore(path).set('dev3', KNOWN_FP)
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ dev3: KNOWN_FP })
     expect(readdirSync(dir)).toEqual(['host-keys.json']) // 原子写（tmp+rename）无残留
+  })
+
+  it('throws on a corrupt pin file (fail loud — never silently reads as empty)', () => {
+    dir = mkdtempSync(join(tmpdir(), 'dashr-hostkeys-'))
+    const path = join(dir, 'host-keys.json')
+    writeFileSync(path, '{not json') // 损坏：静默当空库 = 替攻击者重新 pin
+    expect(() => createFileHostKeyStore(path).get('dev3')).toThrow()
+  })
+
+  it('throws when the pin file is valid JSON but not an object ([] / null)', () => {
+    dir = mkdtempSync(join(tmpdir(), 'dashr-hostkeys-'))
+    const path = join(dir, 'host-keys.json')
+    for (const garbage of ['[]', 'null']) {
+      writeFileSync(path, garbage) // 形状不对：get 恒 undefined = 同样的 TOFU 洞
+      expect(() => createFileHostKeyStore(path).get('dev3')).toThrow()
+    }
   })
 })
