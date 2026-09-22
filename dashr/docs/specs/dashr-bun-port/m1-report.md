@@ -10,7 +10,7 @@
 |---|---|
 | 文件名 | `dashr-0.1.6-alpha.2-linux-x64` |
 | 大小 | **140,858,568 B**（≈134.3 MiB / 140.9 MB） |
-| sha256 | `538c8106253351bd722520dfd79dcbe15bee58e69782a67b0680a5c8cd7bd18d` |
+| sha256 | `538c8106253351bd722520dfd79dcbe15bee58e69782a67b0680a5c8cd7bd18d`（本表为首次验收产物；**dev2 现行部署 = `7cd0e6c6…`，见 §8 换装 #2**） |
 | 形态 | ELF 64-bit x86-64 单可执行文件（`bun build --compile`，entry = `apps/cli/lib/bin.js`） |
 | 构建 | port 仓 `scripts/dashr/build.sh`，2026-09-22 23:05 (+0800)；248 client artifacts，1721 modules，compile 937ms |
 
