@@ -441,3 +441,40 @@ describe('RemoteEngine — 杂项契约', () => {
     expect(factory.created.map((backend) => backend.closeCount)).toEqual([1, 1]) // timer 已清，无二次 close
   })
 })
+
+describe('RemoteEngine capOutcome — stderr cap + 真原长 threading', () => {
+  function degradedRig(maxOutputChars: number, execResult: Partial<ExecOutcome>): { engine: RemoteEngine; factory: FakeFactory } {
+    const r = rig({ maxOutputChars })
+    const backend = new FakeBackend('t1', r.factory.trace, [])
+    backend.openError = coded('E_EXEC_FALLBACK', 'degraded path for the cap test')
+    backend.execResult = execResult
+    r.factory.seed(backend)
+    return { engine: r.engine, factory: r.factory }
+  }
+
+  it('caps huge stderr with the same maxOutputChars and embeds the marker', async () => {
+    const { engine } = degradedRig(100, { exitCode: 0, output: 'ok', stderr: 'e'.repeat(500), durationMs: 5 })
+    const outcome = await engine.exec('t1', 'x')
+    expect(outcome.output).toBe('ok')
+    expect(outcome.stderr).toBe(`[truncated: showing last 100 of 500 chars]\n${'e'.repeat(100)}`)
+  })
+
+  it('keeps the TRUE original total when the backend already truncated (no re-measuring the 100k tail)', async () => {
+    const { engine } = degradedRig(1_000, { exitCode: 0, output: 'x'.repeat(100_000), truncated: 250_000, durationMs: 5 })
+    const outcome = await engine.exec('t1', 'x')
+    expect(outcome.truncated).toBe(250_000)
+    expect(outcome.output.startsWith('[truncated: showing last 1000 of 250000 chars]\n')).toBe(true)
+  })
+
+  it('threads the PTY session-run truncation total through to the outcome', async () => {
+    const r = rig({ maxOutputChars: 30 })
+    r.factory.seed(
+      new FakeBackend('t1', r.factory.trace, [
+        { kind: 'result', result: { output: `[truncated: showing last 100 of 5000 chars]\n${'y'.repeat(100)}`, truncated: 5_000 } },
+      ]),
+    )
+    const outcome = await r.engine.exec('t1', 'x')
+    expect(outcome.truncated).toBe(5_000)
+    expect(outcome.output.startsWith('[truncated: showing last 30 of 5000 chars]\n')).toBe(true)
+  })
+})

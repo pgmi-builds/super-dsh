@@ -180,8 +180,11 @@ export function formatStatus(line: StatusLine): string {
     let conn = `alive ${formatDuration(line.conn.sinceMs ?? 0)}`
     if (line.facts?.rttMs !== undefined) conn += `   rtt ${line.facts.rttMs}ms`
     lines.push(`conn   : ${conn}`)
+  } else if (line.conn?.state === 'closed') {
+    lines.push('conn   : not connected (closed)')
   } else {
-    lines.push('conn   : not connected (dial on first exec)')
+    // 未连接，不再承诺拨号时机（Minor 8：建连策略后续可变，状态行不绑实现）
+    lines.push('conn   : not connected')
   }
 
   const sessionCwd = line.session?.cwd

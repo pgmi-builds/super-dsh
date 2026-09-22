@@ -324,6 +324,7 @@ export class RemoteEngine {
       cwdAfter: cwd,
       durationMs: result.durationMs,
       interrupted: result.interrupted || undefined,
+      truncated: result.truncated, // 重要评审项 3：会话已截断的真原长，二次裁剪必须沿用
     })
   }
 
@@ -363,15 +364,28 @@ export class RemoteEngine {
     return this.capOutcome(outcome)
   }
 
-  /** maxOutputChars 尾窗截断（会话 100k 上限之后的引擎级二次裁剪）。 */
+  /**
+   * maxOutputChars 尾窗截断（重要评审项 3）：引擎级二次裁剪，output 与 stderr
+   * 同规。产出端已截断时（truncated = 真原长），标记必须沿用那个数——拿 100k
+   * 尾窗串重新计量会把「原始 5 MB」谎报成「原始 100k」。stderr 无 upstream
+   * truncated 通道（backend 侧已给 output 报真原长；stderr 帽与 output 一致），
+   * 裁剪时按自身长度计。
+   */
   private capOutcome(outcome: ExecOutcome): ExecOutcome {
+    const next: ExecOutcome = { ...outcome }
+    const total = outcome.truncated ?? capTail(outcome.output, this.maxOutputChars).truncatedFrom
     const capped = capTail(outcome.output, this.maxOutputChars)
-    if (capped.truncatedFrom === undefined) return outcome
-    return {
-      ...outcome,
-      output: `[truncated: showing last ${capped.text.length} of ${capped.truncatedFrom} chars]\n${capped.text}`,
-      truncated: capped.truncatedFrom,
+    if (total !== undefined) {
+      next.output = `[truncated: showing last ${capped.text.length} of ${total} chars]\n${capped.text}`
+      next.truncated = total
     }
+    if (next.stderr !== undefined) {
+      const sCapped = capTail(next.stderr, this.maxOutputChars)
+      if (sCapped.truncatedFrom !== undefined) {
+        next.stderr = `[truncated: showing last ${sCapped.text.length} of ${sCapped.truncatedFrom} chars]\n${sCapped.text}`
+      }
+    }
+    return next
   }
 
   // ── 内部：连接与会话生命周期 ─────────────────────────────────────────────

@@ -48,6 +48,8 @@ export interface RunResult {
   output: string
   interrupted: boolean
   durationMs: number
+  /** 已截断时的真原长（重要评审项 3/4：引擎二次裁剪的标记要继续报这个数，不得按 100k 尾窗重新计量）。 */
+  truncated?: number
 }
 
 /** Ctrl-C（`\x03`）后等 D 的宽限，默认 5000。 */
@@ -211,17 +213,28 @@ export class PtySession {
     } else {
       wait.resolve({
         exitCode,
-        output: this.takeOutput(),
+        ...this.takeOutput(),
         interrupted: wait.interruptSent,
         durationMs: Date.now() - wait.startedAt,
       })
     }
   }
 
-  /** C→D 段原始输出 → stripAnsi → 超帽尾窗 + 截断标记。 */
-  private takeOutput(): string {
-    const text = stripAnsi(this.parser.takePendingOutput())
-    return withTruncationMarker(text, capTail(text, this.maxOutputChars))
+  /**
+   * C→D 段原始输出 → stripAnsi → 超帽尾窗 + 截断标记，并报真原长（重要评审项 3/4）：
+   * parser 弃过头时（raw < total）标记必须报真实累计 total，而不是 2 MiB 尾窗
+   * 自身的长度——stripAnsi 只会缩短文本，弃头判定用弃前的原始长度最稳。
+   */
+  private takeOutput(): { output: string; truncated?: number } {
+    const rawTotal = this.parser.pendingTotalChars()
+    const raw = this.parser.takePendingOutput()
+    const text = stripAnsi(raw)
+    const capped = capTail(text, this.maxOutputChars)
+    const truncatedFrom = rawTotal > raw.length ? rawTotal : capped.truncatedFrom
+    return {
+      output: withTruncationMarker(capped.text, { text: capped.text, truncatedFrom }),
+      truncated: truncatedFrom,
+    }
   }
 
   /** boot 超时 → E_BOOT；run 超时 → 看门狗 Ctrl-C。 */
@@ -274,7 +287,7 @@ export class PtySession {
       if (tail !== '') this.parser.push(tail)
       wait.resolve({
         exitCode: null,
-        output: this.takeOutput(),
+        ...this.takeOutput(),
         interrupted: wait.interruptSent,
         durationMs: Date.now() - wait.startedAt,
       })

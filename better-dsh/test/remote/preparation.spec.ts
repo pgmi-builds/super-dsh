@@ -158,11 +158,16 @@ describe('formatStatus', () => {
     })
     expect(out.split('\n')).toEqual([
       'target : dev3 → u1@dev3.example.com:22  (key ~/.ssh/id_ed25519, via ~/.ssh/config)',
-      'conn   : not connected (dial on first exec)',
+      'conn   : not connected',
       'cwd    : /tmp/work',
       'env    : login-shell (bash -lc)',
       'session : pty · cwd /tmp/work',
     ])
+  })
+
+  it('renders the closed connection state distinctly (still a not-connected conn line)', () => {
+    const out = formatStatus({ target: TARGET, conn: { state: 'closed' } })
+    expect(out).toContain('conn   : not connected (closed)')
   })
 
   it('renders degraded session mode and cwd fallback to registry default', () => {

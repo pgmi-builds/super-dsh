@@ -48,6 +48,8 @@ export interface SshServerFixture {
   readonly sftpChannelsClosed: number
   /** 当前仍存活的 sftp 通道数 = opened − closed（sftp 通道泄漏断言用）。 */
   readonly liveSftpChannels: number
+  /** 累计收到的 ssh `env` 通道请求数（wire-baked env 契约：backend 恒不发，应保持 0）。 */
+  readonly envRequests: number
   /** 客户端私钥文件路径（0600，tmpdir 内）— 目标 identityFile 指向它。 */
   readonly clientPrivateKeyPath: string
 }
@@ -108,6 +110,7 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
   let connectionCount = 0
   let sftpChannelsOpened = 0
   let sftpChannelsClosed = 0
+  let envRequests = 0
   let clientPrivateKeyPath: string | undefined
   let tmpDir: string | undefined
   const sockets = new Set<Socket>()
@@ -128,6 +131,10 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
       if (server === undefined) throw new Error('fixture not started')
       return sftpChannelsOpened - sftpChannelsClosed
     },
+    get envRequests() {
+      if (server === undefined) throw new Error('fixture not started')
+      return envRequests
+    },
     get clientPrivateKeyPath() {
       if (clientPrivateKeyPath === undefined) throw new Error('fixture not started')
       return clientPrivateKeyPath
@@ -137,6 +144,7 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
       connectionCount = 0
       sftpChannelsOpened = 0
       sftpChannelsClosed = 0
+      envRequests = 0
       // 主机钥（算指纹用 getPublicSSH 的线内 blob — 与客户端 hostVerifier 收到的同形）
       const hostKeys = await generateEd25519Verified()
       const parsedHostKey = utils.parseKey(hostKeys.private)
@@ -178,6 +186,7 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
             // 会话是否申请过 PTY — 决定 exec 子进程挂真 PTY（模拟 sshd 行为）
             let ptyRequested = false
             session.on('env', (envAccept, _reject, info) => {
+              envRequests++
               envVars[info.key] = info.val
               envAccept?.()
             })
@@ -340,6 +349,7 @@ export function createSshServerFixture(options: SshServerFixtureOptions = {}): S
       connectionCount = 0
       sftpChannelsOpened = 0
       sftpChannelsClosed = 0
+      envRequests = 0
     },
   }
   return fixture

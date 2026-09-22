@@ -162,6 +162,15 @@ export function createSshTool(
         )
       }
 
+      // Timeout 必须是正的有限秒数（Minor 11：0/负数/Infinity 此前会一路透传成
+      // 0ms/neg ms/Infinity ms 的看门狗，行为不可预期）。dispatch 前拒绝，
+      // 未拨号未执行。
+      if (args.timeout !== undefined && (!Number.isFinite(args.timeout) || args.timeout <= 0)) {
+        throw new Error(
+          `[E_BAD_TIMEOUT] ssh: timeout must be a positive number of seconds (got ${JSON.stringify(args.timeout)})`,
+        )
+      }
+
       // Neither target nor cmd → the targets list (no dialing).
       if (!hasTarget && !hasCmd) {
         return { kind: 'targets', text: formatTargets(engine.summary()) }

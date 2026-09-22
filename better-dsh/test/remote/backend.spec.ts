@@ -108,6 +108,58 @@ describe('SshBackend degraded exec', () => {
     expect(out.output).toBe('baked-42')
     await backend.close()
   })
+
+  it('caps runaway stdout: 100k tail out, truncated reports the TRUE total (bounded collector)', async () => {
+    const backend = makeBackend()
+    const out = await backend.exec(`head -c 300000 /dev/zero | tr '\\0' 'x'`, {
+      cwd: '/tmp',
+      timeoutMs: EXEC_TIMEOUT,
+    })
+    expect(out.exitCode).toBe(0)
+    expect(out.output.length).toBe(100_000)
+    expect(out.truncated).toBe(300_000) // 真原长，不是 100k 尾窗自身或 200k 缓冲的长度
+    await backend.close()
+  })
+})
+
+describe('SshBackend wire-baked env', () => {
+  it('env rides the wire (baked into command/rcfile), never the ssh2 env channel', async () => {
+    const solo = createSshServerFixture()
+    try {
+      const { port: p } = await solo.start()
+      const backend = makeBackend(createMemoryHostKeyStore(), { port: p, identityFile: solo.clientPrivateKeyPath })
+      const out = await backend.exec('printf %s "$WIRE_VAR"', {
+        cwd: '/tmp',
+        timeoutMs: EXEC_TIMEOUT,
+        env: { WIRE_VAR: 'on-the-wire' },
+      })
+      expect(out.output).toBe('on-the-wire')
+      const session = await backend.openShellSession({ WIRE_VAR: 'pty-wire' })
+      const run = await session.run('printf %s "$WIRE_VAR"')
+      expect(run.output.trim()).toBe('pty-wire')
+      // degraded exec 与 pty rcfile 两条路径都不得发 env 通道请求（stock sshd 默认丢弃）
+      expect(solo.envRequests).toBe(0)
+      await session.dispose()
+      await backend.close()
+    } finally {
+      await solo.stop()
+    }
+  })
+})
+
+describe('SshBackend host-key store resilience', () => {
+  it('E_HOSTKEY_CHANGED (contained, fail loud) when the store read throws mid-handshake', async () => {
+    const broken: HostKeyStore = {
+      get: () => {
+        throw new Error('disk on fire')
+      },
+      set: () => {},
+    }
+    const backend = makeBackend(broken)
+    // store 读失败 → 校验无法完成 → 拒信任（返回 false）→ ssh2 报 host 校验失败；
+    // 不得把 throw 泄进 ssh2 kex 回调里变成未捕获崩溃
+    await rejectWithCode(backend.exec('true', { cwd: '/tmp', timeoutMs: EXEC_TIMEOUT }), 'E_HOSTKEY_CHANGED')
+  })
 })
 
 describe('SshBackend PTY shell session', () => {

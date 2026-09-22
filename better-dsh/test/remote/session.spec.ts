@@ -220,6 +220,21 @@ describe('PtySession output cap', () => {
     const result = await pending
     expect(result.output).toBe('[truncated: showing last 10 of 16 chars]\n6789ABCDEF')
   })
+
+  it('bounds runaway C→D output: 3 MiB still resolves with the TRUE-total marker (parser discard-head)', async () => {
+    const channel = new FakeChannel()
+    const session = await bootSession(channel, { maxOutputChars: 1000 })
+    const pending = session.run('cat big.log')
+    const mib = 'x'.repeat(1024 * 1024)
+    channel.feed(C + mib)
+    channel.feed(mib)
+    channel.feed(mib + D(0) + OSC7('/w')) // 3 MiB 输出（> 2 MiB 缓冲界）
+    const result = await pending
+    // 标记报真实总量 3 MiB，不是 2 MiB 缓冲尾窗或 1000 帽的长度
+    expect(result.output.startsWith('[truncated: showing last 1000 of 3145728 chars]\n')).toBe(true)
+    expect(result.output.length).toBeLessThan(2_000)
+    expect(result.truncated).toBe(3_145_728)
+  })
 })
 
 describe('PtySession.dispose', () => {

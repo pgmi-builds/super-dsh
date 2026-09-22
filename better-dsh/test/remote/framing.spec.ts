@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  bashSupportsEngineFrames,
   buildDegradedCommand,
   buildEngineRc,
   capTail,
@@ -29,6 +30,38 @@ describe('buildEngineRc', () => {
     const rc = buildEngineRc()
     expect(rc).toContain('\\033]7;file://%s\\007')
     expect(rc).toContain('"$PWD"')
+  })
+})
+
+describe('buildEngineRc — wire-baked env', () => {
+  it('bakes call env into export lines AFTER profile sourcing (wire injection wins over profiles)', () => {
+    const rc = buildEngineRc({ NODE_ENV: 'test', GREETING: "it's" })
+    expect(rc).toContain(`export NODE_ENV='test'`)
+    expect(rc).toContain(`export GREETING='it'\\''s'`)
+    // 置于 profile sourcing 之后：显式 env 必赢，profile 不得反超
+    expect(rc.indexOf('export NODE_ENV=')).toBeGreaterThan(rc.indexOf('[ -f "$f" ]'))
+  })
+  it('emits no export lines beyond TERM when env is absent (no wire change for env-less targets)', () => {
+    const rc = buildEngineRc()
+    expect(rc.split('\n').filter((line) => line.startsWith('export '))).toEqual(['export TERM=dumb'])
+  })
+})
+
+describe('bashSupportsEngineFrames', () => {
+  it('4.2 → false (PS0 accepted but never expanded on 4.0–4.3: D arrives, C never comes)', () => {
+    expect(bashSupportsEngineFrames('4.2.10(1)-release')).toBe(false)
+    expect(bashSupportsEngineFrames('4.3.30')).toBe(false)
+  })
+  it('4.4 → true (PS0 floor) and 5.x → true', () => {
+    expect(bashSupportsEngineFrames('4.4')).toBe(true)
+    expect(bashSupportsEngineFrames('4.4.20(1)-release')).toBe(true)
+    expect(bashSupportsEngineFrames('5.1.16(1)-release')).toBe(true)
+    expect(bashSupportsEngineFrames('5.2.15')).toBe(true)
+  })
+  it('unparseable version → false (refuse the session; engine degrades loudly)', () => {
+    expect(bashSupportsEngineFrames('')).toBe(false)
+    expect(bashSupportsEngineFrames('bash')).toBe(false)
+    expect(bashSupportsEngineFrames('4')).toBe(false)
   })
 })
 
@@ -170,6 +203,16 @@ describe('createFrameParser', () => {
     // 调用方两条命令都取走才排干：合并而非丢失（按命令排干是调用方职责）
     expect(parser.takePendingOutput()).toBe('onetwo')
   })
+  it('bounds pending accumulation: 3 MiB between C and D keeps only the tail; true total via pendingTotalChars', () => {
+    const parser = createFrameParser()
+    parser.push(`\x1b]133;C\x07${'a'.repeat(1024 * 1024)}`)
+    parser.push(`${'b'.repeat(2 * 1024 * 1024)}\x1b]133;D;0\x07`)
+    // 真实累计先于 take 读取（take 会归零）；缓冲本体有界 — 跑飞命令不再无界累积
+    expect(parser.pendingTotalChars()).toBe(3 * 1024 * 1024)
+    expect(parser.takePendingOutput().length).toBeLessThanOrEqual(2 * 1024 * 1024)
+    expect(parser.takePendingOutput()).toBe('')
+    expect(parser.pendingTotalChars()).toBe(0) // take 归零（per-command 记账）
+  })
 })
 
 describe('stripAnsi', () => {
@@ -198,6 +241,16 @@ describe('buildDegradedCommand', () => {
     expect(script).toContain(`bash -lc 'pnpm test'`)
     expect(script).toContain(`printf '\\x1eCWD_GONE\\x1e'; exit 127;`)
     expect(script).toContain(`printf '\\x1e%d\\x1e%s\\x1e' "$rc" "$PWD"`)
+  })
+  it('prefixes wire-baked exports before the cd/bash-lc wrapper when env is given', () => {
+    const script = buildDegradedCommand('pnpm test', '/srv/app', { NODE_ENV: 'test', B: "it's" })
+    expect(script).toContain(`export NODE_ENV='test'; export B='it'\\''s'; `)
+    expect(script.indexOf('export NODE_ENV=')).toBeLessThan(script.indexOf('cd '))
+    expect(script).toContain(`bash -lc 'pnpm test'`) // 本体不变
+  })
+  it('stays wire-identical when env is absent or empty', () => {
+    expect(buildDegradedCommand('pnpm test', '/srv/app', {})).toBe(buildDegradedCommand('pnpm test', '/srv/app'))
+    expect(buildDegradedCommand('pnpm test', '/srv/app')).toBe(buildDegradedCommand('pnpm test', '/srv/app'))
   })
 })
 

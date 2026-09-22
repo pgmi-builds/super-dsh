@@ -233,3 +233,32 @@ describe('createSshTool — stdin', () => {
     expect(engine.calls).toEqual([])
   })
 })
+
+describe('createSshTool — timeout validation', () => {
+  it('rejects zero / negative timeout loudly BEFORE dispatch (E_BAD_TIMEOUT)', async () => {
+    const { engine, tool } = make()
+    await expect(tool.execute({ target: 'dev3', cmd: 'x', timeout: 0 }, makeExec())).rejects.toThrow(
+      /E_BAD_TIMEOUT.*positive number of seconds.*0/s,
+    )
+    await expect(tool.execute({ target: 'dev3', cmd: 'x', timeout: -5 }, makeExec())).rejects.toThrow(/E_BAD_TIMEOUT/)
+    expect(engine.execs).toEqual([]) // 未拨号、未执行
+    expect(engine.calls).toEqual([])
+  })
+
+  it('non-finite timeout never reaches dispatch (defineTool arg gate: finite JSON number)', async () => {
+    // 真实 wire 上 JSON 无法携带 NaN/Infinity —— harness 的 defineTool 参数校验
+    // 先于 execute 拒绝非有限数；这里验证该分层成立（响亮、且引擎未被触碰）。
+    const { engine, tool } = make()
+    await expect(tool.execute({ target: 'dev3', cmd: 'x', timeout: Number.POSITIVE_INFINITY }, makeExec())).rejects.toThrow(
+      /must be a finite JSON number/,
+    )
+    expect(engine.execs).toEqual([])
+    expect(engine.calls).toEqual([])
+  })
+
+  it('positive fractional timeout still dispatches (30.5s → 30500ms)', async () => {
+    const { engine, tool } = make()
+    await tool.execute({ target: 'dev3', cmd: 'x', timeout: 30.5 }, makeExec())
+    expect(engine.execs[0]!.timeoutMs).toBe(30_500)
+  })
+})
