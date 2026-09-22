@@ -14,9 +14,13 @@
  * （exitCode null / E_WEDGED / E_CLOSED）→ 本次如实交部分结果或报错，会话作废，
  * 下次调用重建并用内部 `cd -- <lastCwd>` 重新定位（内部 cd 不进审计）。
  *
- * Ruling 2：`status()` 只探测已池化的连接（degraded exec 一次 probe），绝不创建
- * PTY 会话、绝不为冷 target 拨号。`bind()`/`boundTarget()` 是 sessionKey → target
- * 的 LRU 绑定（容量 64）。`onAudit` 每条用户命令一条记录；内部 cd 不记。
+ * Ruling 2（RM0 验收修订）：`status()` 是"一次调用拿全块"——冷 target 也走
+ * exec 同一条 lazy factory 懒拨号（ensureBackend），随后做一次 degraded-exec
+ * probe（buildProbeCommand → parseProbeOutput），渲染 user/key/工具链/sudo/
+ * rtt/cwd 全块。status 唯一不做的是**开 PTY 会话**（openShellSession 只属于
+ * exec）。拨号/探测失败 → formatStatus 的 error 行替代事实行（status 正常
+ * resolve，不 throw）。`bind()`/`boundTarget()` 是 sessionKey → target 的 LRU
+ * 绑定（容量 64）。`onAudit` 每条用户命令一条记录；内部 cd 与 probe 不记。
  *
  * @module dashr/remote/engine
  */
@@ -155,8 +159,9 @@ export class RemoteEngine {
   }
 
   /**
-   * Ruling 2：status 永不建会话、永不为冷 target 拨号。已有池化连接时经同一条
-   * 队列做一次性 degraded-exec probe（与 exec 串行，状态读取无竞态）。
+   * Ruling 2（RM0 验收修订）：status 永不建会话；冷 target 先懒拨号再 probe，
+   * 一次调用拿全块（工具链/sudo/rtt）。经同一条队列（与 exec 串行，状态读取无
+   * 竞态）；拨号也算活动，池化连接照常走 idle TTL。
    */
   async status(name: string): Promise<string> {
     const st = this.mustTarget(name) // 未知名 → rejection（async API 一致性）
@@ -439,17 +444,19 @@ export class RemoteEngine {
   private async renderStatus(st: TargetState): Promise<string> {
     let facts: StatusLine['facts']
     let error: string | undefined
-    if (st.backend !== undefined) {
-      // probe 只在已池化连接上进行（一次性 degraded exec）；失败 → error 行的诚实形态
-      try {
-        const probe = await st.backend.exec(buildProbeCommand(), {
-          cwd: st.lastCwd ?? st.spec.defaultCwd ?? '.',
-          timeoutMs: PROBE_TIMEOUT_MS,
-        })
-        facts = { ...parseProbeOutput(probe.output), rttMs: probe.durationMs }
-      } catch (err) {
-        error = err instanceof Error ? err.message : String(err)
-      }
+    // 冷 target 也拨号（exec 同一条 lazy factory；ensureBackend 内 armIdle，拨号即活动）
+    const { backend } = this.ensureBackend(st)
+    // 一次性 degraded-exec probe；拨号/探测失败 → error 行替代事实行（不 throw）
+    try {
+      const probe = await backend.exec(buildProbeCommand(), {
+        cwd: st.lastCwd ?? st.spec.defaultCwd ?? '.',
+        timeoutMs: PROBE_TIMEOUT_MS,
+      })
+      facts = { ...parseProbeOutput(probe.output), rttMs: probe.durationMs }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+      // 状态机与 exec 同规：连接层码 → 丢弃 backend 由下次调用重 factory（错误仍渲染不抛）
+      this.recover(st, err)
     }
     return formatStatus({
       target: st.spec,

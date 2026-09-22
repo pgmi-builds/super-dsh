@@ -354,33 +354,48 @@ describe('RemoteEngine.bind — LRU 绑定', () => {
   })
 })
 
-describe('RemoteEngine.status — Ruling 2：探测不建会话', () => {
-  it('冷 target 不拨号；已有池化连接时走 probe（degraded exec），conn 行带存活时长与 rtt', async () => {
+describe('RemoteEngine.status — Ruling 2（RM0 修订）：一次调用拿全块，永不建会话', () => {
+  const PROBE_OUT = ['user=root', 'host=h1', 'sudo=nopasswd', 'bash=5.1.0', 'path-node=/usr/bin/node', 'ver-node=v20.3.1', ''].join('\n')
+
+  it('冷 target 懒拨号（factory 建连接、绝不开会话）并渲染 tools/sudo/rtt 全块', async () => {
     let clock = 1_000
     const { engine, factory } = rig({ now: () => clock })
     const backend = new FakeBackend('t1', factory.trace, [{ kind: 'result', cwd: '/proj' }])
-    backend.execResult = {
-      exitCode: 0,
-      durationMs: 7,
-      output: ['user=root', 'host=h1', 'sudo=nopasswd', 'bash=5.1.0', 'path-node=/usr/bin/node', 'ver-node=v20.3.1', ''].join('\n'),
-    }
+    backend.execResult = { exitCode: 0, durationMs: 7, output: PROBE_OUT }
     factory.seed(backend)
 
     const cold = await engine.status('t1')
-    expect(cold).toContain('not connected (dial on first exec)')
-    expect(factory.created).toHaveLength(0) // 绝不为 status 拨号
-    expect(backend.openCount).toBe(0)
+    expect(factory.created).toHaveLength(1) // 冷 status 也拨号（lazy factory）
+    expect(backend.openCount).toBe(0) // 但绝不建 PTY 会话
+    expect(backend.execCalls[0]!.cmd).toBe(buildProbeCommand())
+    expect(backend.execCalls[0]!.timeoutMs).toBe(10_000) // 独立 probe 超时
+    expect(cold).toContain('rtt 7ms')
+    expect(cold).toContain('NOPASSWD ✓')
+    expect(cold).toContain('v20.3.1')
+    expect(engine.summary()[0]!.alive).toBe(true) // 拨号即活动：池化连接生效
 
     await engine.exec('t1', 'a')
     clock = 66_000
     const doc = await engine.status('t1')
-    expect(backend.openCount).toBe(1) // probe 不建会话
-    expect(backend.execCalls[0]!.cmd).toBe(buildProbeCommand())
+    expect(backend.openCount).toBe(1) // probe 依旧不建会话
     expect(doc).toContain('alive 1m5s') // connSince=1000 → 存活 65s
     expect(doc).toContain('rtt 7ms')
-    expect(doc).toContain('NOPASSWD')
-    expect(doc).toContain('v20.3.1')
     expect(doc).toContain('session : pty · cwd /proj')
+  })
+
+  it('拨号/探测失败 → error 行替代事实行，status resolve 不 throw；连接层码丢弃 backend（与 exec 同规）', async () => {
+    const { engine, factory } = rig()
+    const bad = new FakeBackend('t1', factory.trace, [])
+    bad.execError = coded('E_AUTH', 'permission denied (publickey)')
+    factory.seed(bad)
+
+    const doc = await engine.status('t1')
+    expect(doc).toContain('error :')
+    expect(doc).toContain('E_AUTH')
+    expect(doc).not.toContain('tools')
+    expect(doc).not.toContain('sudo')
+    expect(bad.closeCount).toBe(1) // 连接层码 → 掉线重连路径（下次重 factory）
+    expect(engine.summary()[0]!.alive).toBe(false)
   })
 })
 
