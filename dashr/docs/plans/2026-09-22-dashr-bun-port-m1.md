@@ -184,8 +184,8 @@ const RESOURCE_BASE = { kind: 'directory', path: ASSET_ROOT } as const
 - [ ] **Step 5: 单测 + 类型验证**
 
 ```bash
-pnpm --filter @deepseek-ai/dsh-scope exec vitest run packages/core/scope/tests 2>/dev/null || pnpm exec vitest run packages/core/scope
 node_modules/.bin/tsc -b packages/core/scope packages/preset/agent-presets packages/skill/skill-badge packages/session/session-persistence-jsonl
+pnpm exec vitest run packages/core/scope
 ```
 
 期待：测试绿（scope 语义未变——同进程内单例恒等）；tsc 0。
@@ -235,7 +235,7 @@ with open('composition/dashr.cordis.yml', 'w') as out:
         if r in drop:
             out.write(f'# dashr: drop {drop[r]}\n#- id: {r}\n#  name: {r}\n\n')
         else:
-            out.write(f'# dashr: keep\n- id: {r.rsplit("/",1)[-1].replace("/","-")}\n  name: {r}\n\n')
+            out.write(f'# dashr: keep\n- id: {r}\n  name: {r}\n\n')
 print('rows:', len(seen), 'dropped:', sum(1 for r in seen if r in drop))
 EOF
 ```
