@@ -9,9 +9,27 @@
 > 组件化、可独立发布、装进任何 dsh）；dashr 是 **组合与交付层**（消费 better-dsh 各包，
 > 不重复实现它们）。类比：better-dsh = 组件集，dashr = 用这套组件装好的整机。
 >
-> **状态（2026-09-22）**：本目录目前只有本章程，无代码、无 package.json。发行物形态
-> （npm pack / bundle tarball / profile 模板 / 安装器）、版本与 tag 命名、与上游对齐节奏的
-> 绑定方式——见根 AGENTS.md 与仓库编排讨论结论后再立。
+> **状态（2026-09-23 更新）**：bun 单文件二进制发行线已落地——构建体系在 **`port/`
+> 移植仓库**（见下 §构建），首个可用产物 = **dashr-linux-x64 单二进制**（含 dsh-base ∪
+> dsh-web-app 闭包与全部 agent presets，`bun build --compile` 产物）。better-dsh 各组件
+> 的随包组合随 stage-2（post-built 插件动态装载线）并回。版本与 tag 命名、与上游对齐
+> 节奏的绑定方式——见根 AGENTS.md 与仓库编排讨论结论后再立。
 >
 > **红线继承**：本仓 Development Operation Contract（根 AGENTS.md §〇）对 dashr 同样生效；
 > 发布前三闸（第一人称实测 → 报告 → user 放行）不豁免。
+
+## 构建体系（port/，2026-09-23）
+
+旧的 `src/` patch-系列构建机制已退役（fresh-start 账本裁决，spec §9）。distro 构建的
+唯一正源 = **`dashr/port/` 移植仓库**（自包含 git 仓）：构建入口
+`dashr/port/scripts/dashr/build.sh`，规格书 `dashr/docs/specs/dashr-bun-port/spec.md`；
+port 仓对上游（deepseek-harness）的一切合并经 git tag 走 pristine tag 快照，永不就地
+开发 upstream 工作树。
+
+## 发行渠道（设计，未发布）
+
+npm 通道（目标形态，esbuild/turborepo 同款）：`dashr` umbrella 包（bin shim +
+`optionalDependencies` 平台组）+ `@dashr/dashr-<os>-<arch>` 平台包（纯二进制载荷，
+os/cpu 门）。用户侧 `npm i -g dashr` / `bun i -g dashr` 即装即用（bun 与 npm 同读 npm
+registry，无需新生态）。备选/并行：GitHub Releases 附安装脚本。**任何实际 publish
+走根 AGENTS.md §〇 三闸。**
