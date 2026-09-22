@@ -88,6 +88,19 @@ describe('PtySession.run', () => {
     expect(result.interrupted).toBe(false)
   })
 
+  it('decodes a multibyte character split across two data chunks (no U+FFFD)', async () => {
+    const channel = new FakeChannel()
+    const session = await bootSession(channel)
+    const pending = session.run('echo 你好')
+    const bytes = Buffer.from('你好', 'utf8') // e4 bd a0 | e5 a5 bd
+    // 断在 好 的首字节之后：逐 chunk toString 会把两半各自变成 U+FFFD
+    channel.feedBytes(Buffer.concat([Buffer.from(C, 'utf8'), bytes.subarray(0, 4)]))
+    channel.feedBytes(Buffer.concat([bytes.subarray(4), Buffer.from(D(0) + OSC7('/w'), 'utf8')]))
+    const result = await pending
+    expect(result.output).toBe('你好')
+    expect(result.output).not.toContain('\uFFFD')
+  })
+
   it('rejects a concurrent run with E_BUSY (queueing is the engine’s job)', async () => {
     const channel = new FakeChannel()
     const session = await bootSession(channel)

@@ -25,7 +25,12 @@ export class FakeChannel extends EventEmitter implements ShellChannel {
 
   /** 立即投递一段数据（绕过队列；string → Buffer 走 ShellChannel 真实形态）。 */
   feed(chunk: string): void {
-    this.emit('data', Buffer.from(chunk, 'utf8'))
+    this.feedBytes(Buffer.from(chunk, 'utf8'))
+  }
+
+  /** 立即投递原始字节 — 跨 chunk 断在多字节字符中间的回归测试用。 */
+  feedBytes(data: Buffer): void {
+    this.emit('data', data)
   }
 
   /** 回放队列中的下一段；队列空则 no-op。 */

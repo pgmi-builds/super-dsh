@@ -32,6 +32,7 @@
  *
  * @module dashr/remote/session
  */
+import { StringDecoder } from 'node:string_decoder'
 import { capTail, createFrameParser, stripAnsi, type FrameParser } from './framing.ts'
 
 /** ssh2 channel 的结构最小面（backend 负责适配）。 */
@@ -83,6 +84,8 @@ function withTruncationMarker(text: string, capped: { text: string; truncatedFro
 export class PtySession {
   private readonly channel: ShellChannel
   private readonly parser: FrameParser = createFrameParser()
+  /** 跨 chunk 持有残缺多字节尾 — 逐 chunk toString 会把断在字符中间的 UTF-8 变 U+FFFD 对。 */
+  private readonly decoder = new StringDecoder('utf8')
   private readonly timeoutMsDefault: number
   private readonly maxOutputChars: number
   private readonly graceMs: number
@@ -185,7 +188,7 @@ export class PtySession {
 
   private handleData = (chunk: Buffer): void => {
     if (this.disposed) return
-    for (const frame of this.parser.push(chunk.toString('utf8'))) {
+    for (const frame of this.parser.push(this.decoder.write(chunk))) {
       if (frame.kind === 'command-start') continue // 配对是 parser 的职责
       // command-end：OSC 7 缺席（无 cwd 键）= cwd 未知，绝不沿用旧值
       this.cwdValue = frame.cwd
@@ -265,6 +268,10 @@ export class PtySession {
     if (wait.kind === 'boot') {
       wait.reject(sessionError('E_BOOT', `channel closed before the first prompt${err ? `: ${err.message}` : ''}`))
     } else {
+      // 通道已死不会再有数据：冲掉 decoder 残尾，让已收输出尽可能完整
+      // （残缺序列按规范落替换符；无残尾时为空串，parser.push('') 是 no-op）
+      const tail = this.decoder.end()
+      if (tail !== '') this.parser.push(tail)
       wait.resolve({
         exitCode: null,
         output: this.takeOutput(),
