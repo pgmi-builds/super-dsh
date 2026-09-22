@@ -62,26 +62,35 @@ const OSC7_BODY = '7;file://'
 
 function isSevenBodyPrefix(body: string): boolean {
   if (body.length <= OSC7_BODY.length) return OSC7_BODY.startsWith(body)
-  return body.startsWith(OSC7_BODY) // 内嵌 BEL/ESC 的病态由 lastIndexOf-ESC 规则自愈
+  if (!body.startsWith(OSC7_BODY)) return false
+  // 字面完成后的自由段不得含 BEL/ESC：BEL 之前扫描已消费完整标记，ESC 只能是
+  // 半截 ST（由调用方 partialSt 分支剥离）——否则病态残余会永久滞留 carry
+  return !/[\x07\x1b]/.test(body.slice(OSC7_BODY.length))
 }
 
 /**
  * tail 的最长后缀是否可能是某个未完成标记的开头；是则返回该后缀长度（须滞留
- * carry 等下一个 chunk），否则 0。只查最后一个 ESC——任何更早的 ESC 若成为候
- * 选前缀，中间必然隔着一个 body 不允许的 ESC。宁可多滞留（下个 chunk 一到即
- * 重扫放行），绝不提前放走半截标记（那才是丢字节）。
+ * carry 等下一个 chunk），否则 0。标记 body 一律不含 ESC，故候选只能起于 tail
+ * 中最后一个 '\x1b]'——更早的 '\x1b]' 起的候选必把后一个 '\x1b]' 当体内 ESC，
+ * 不可能是任何标记的前缀。关键：半截 ST（body 已完整、只来了 \x1b 等 \）必须
+ * 与其 body 作为一个整体滞留——只扣住末尾孤 ESC 会把 body 当文本放走，标记永
+ * 不闭合（D 帧丢失、OSC 7 无处可挂、原始字节漏进模型可见输出，评审实证）。
+ * 宁可多滞留（下个 chunk 一到即重扫放行），绝不提前放走半截标记（那才是丢字节）。
  */
 function trailingPartialMarker(tail: string): number {
-  const esc = tail.lastIndexOf('\x1b')
-  if (esc === -1) return 0
-  const candidate = tail.slice(esc)
-  return isMarkerPrefix(candidate) ? candidate.length : 0
+  let hold = 0
+  const open = tail.lastIndexOf('\x1b]')
+  if (open !== -1) {
+    const candidate = tail.slice(open)
+    if (isMarkerPrefix(candidate)) hold = candidate.length
+  }
+  if (hold === 0 && tail.endsWith('\x1b')) hold = 1 // 裸 ESC（半截序列头）兜底
+  return hold
 }
 
 /** candidate 是某个完整标记的真前缀（含“body 已完整、终止符只来了一半”的形态）。 */
 function isMarkerPrefix(candidate: string): boolean {
-  if (candidate === '\x1b') return true
-  if (!candidate.startsWith('\x1b]')) return false
+  if (!candidate.startsWith('\x1b]')) return false // 裸 ESC 兜底已由调用方处理
   const rest = candidate.slice(2)
   const partialSt = rest.endsWith('\x1b') // 可能是 ST 终止符的前半（\x1b，等 \）
   const body = partialSt ? rest.slice(0, -1) : rest
@@ -90,7 +99,7 @@ function isMarkerPrefix(candidate: string): boolean {
   if (!bodyPrefix) return false
   if (!partialSt) return true // 纯 body 前缀，等余下字节
   // 带半截 ST 的：body 必须已完整，终止符才可能在途
-  return body === C_BODY || D_BODY_COMPLETE.test(body) || body.startsWith(OSC7_BODY)
+  return body === C_BODY || D_BODY_COMPLETE.test(body) || isSevenBodyPrefix(body)
 }
 
 class FrameParserImpl implements FrameParser {

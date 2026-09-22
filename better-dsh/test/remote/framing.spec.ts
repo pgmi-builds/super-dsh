@@ -92,6 +92,36 @@ describe('createFrameParser', () => {
       { kind: 'command-end', exitCode: 0, cwd: '/st' },
     ])
   })
+  it('splits an ST marker mid-terminator: half ST holds with its body', () => {
+    // 评审实证回归位：半截 ST 只扣 1 字节曾把 body 当文本放走 → D 帧丢失、
+    // exit code 丢失、OSC 7 无处可挂、原始标记字节漏进模型可见输出
+    const parser = createFrameParser()
+    expect(parser.push('\x1b]133;C\x07out\x1b]133;D;42\x1b')).toEqual([
+      { kind: 'command-start' },
+    ]) // D 的 ST 只来了一半（\x1b 等 \），body + 半截 ST 整体滞留
+    expect(parser.push('\\more')).toEqual([]) // \ 闭合 D 的 ST；'more' 是 D 后噪音
+    expect(parser.push('\x1b]7;file:///w\x07')).toEqual([
+      { kind: 'command-end', exitCode: 42, cwd: '/w' },
+    ])
+    expect(parser.takePendingOutput()).toBe('out') // 标记字节未漏进输出
+  })
+  it('splits an ST marker mid-body', () => {
+    const parser = createFrameParser()
+    expect(parser.push('\x1b]133;C\x07v')).toEqual([{ kind: 'command-start' }])
+    expect(parser.push('al\x1b]133;D;5\x1b')).toEqual([]) // D 头 + 半截 ST 整体滞留
+    expect(parser.push('\\\x1b]7;file:///x\x07')).toEqual([
+      { kind: 'command-end', exitCode: 5, cwd: '/x' },
+    ])
+    expect(parser.takePendingOutput()).toBe('val')
+  })
+  it('splits an ST-terminated OSC 7 across chunks', () => {
+    const parser = createFrameParser()
+    expect(parser.push('\x1b]133;C\x07w\x1b]133;D;3\x07\x1b]7;file:///u\x1b')).toEqual([
+      { kind: 'command-start' },
+    ]) // D 的 BEL 已闭合；OSC 7 只剩半截 ST，整体滞留
+    expect(parser.push('\\')).toEqual([{ kind: 'command-end', exitCode: 3, cwd: '/u' }])
+    expect(parser.takePendingOutput()).toBe('w')
+  })
   it('holds a D until its OSC 7 arrives in a later chunk', () => {
     const parser = createFrameParser()
     expect(parser.push('\x1b]133;C\x07out\x1b]133;D;3\x07')).toEqual([
