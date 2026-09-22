@@ -9,12 +9,17 @@
  *   (the initial prompt once the engine rc applied); no `D` within
  *   `timeoutMsDefault` → reject `[E_BOOT]` (nothing is written — there is no
  *   command to interrupt yet).
- * - **run** — {@link PtySession.run} writes `cmd + '\n'`, waits for the
- *   pairing `D` and resolves with the C→D output (ANSI-stripped, tail-capped
- *   over `maxOutputChars` with a truncation marker), the exit code carried by
- *   `D` and the cwd from the OSC 7 that follows it. A `D` **without** a cwd
- *   key (no OSC 7 seen) marks the cwd *unknown* — it never retains the
- *   previous value.
+ * - **run** — {@link PtySession.run} writes the cmd wrapped as ONE bash
+ *   compound ({@link wrapPtyCommand}: multi-line strings are a single
+ *   command-read → exactly one C…D pair, exit code = the last command's)
+ *   followed by `'\n'`, waits for the pairing `D` and resolves with the C→D
+ *   output (ANSI-stripped, tail-capped over `maxOutputChars` with a truncation
+ *   marker), the exit code carried by `D` and the cwd from the OSC 7 that
+ *   follows it. `opts.stdin` (when given) is written raw right after the
+ *   compound — newline-appended only if missing — so a process started by the
+ *   compound reads those lines from the PTY input buffer (REPL-style,
+ *   best-effort). A `D` **without** a cwd key (no OSC 7 seen) marks the cwd
+ *   *unknown* — it never retains the previous value.
  * - **watchdog** — `timeoutMs` elapsed with no `D` → write `\x03` (Ctrl-C),
  *   then wait `graceMs` (default 5000) for the `D`: within grace →
  *   `interrupted: true` with the interrupt's exit code; still no `D` → reject
@@ -33,7 +38,7 @@
  * @module dashr/remote/session
  */
 import { StringDecoder } from 'node:string_decoder'
-import { capTail, createFrameParser, stripAnsi, type FrameParser } from './framing.ts'
+import { capTail, createFrameParser, stripAnsi, wrapPtyCommand, type FrameParser } from './framing.ts'
 
 /** ssh2 channel 的结构最小面（backend 负责适配）。 */
 export interface ShellChannel {
@@ -116,8 +121,8 @@ export class PtySession {
     return promise.then(() => {})
   }
 
-  /** 单命令：write cmd+'\n'，C→D 取输出；同会话串行由调用方（engine）排队。 */
-  run(cmd: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<RunResult> {
+  /** 单命令：write wrapPtyCommand(cmd)+'\n'（单复合帧，多行不再拆轮），可选 stdin 紧随裸写；C→D 取输出；同会话串行由调用方（engine）排队。 */
+  run(cmd: string, opts: { timeoutMs?: number; signal?: AbortSignal; stdin?: string } = {}): Promise<RunResult> {
     if (this.dead) return Promise.reject(sessionError('E_CLOSED', 'session is dead (channel closed or wedged); rebuild before run()'))
     if (this.pending !== undefined) return Promise.reject(sessionError('E_BUSY', `command ${JSON.stringify(cmd)} rejected: another command is already in flight on this session; queue at the engine`))
     if (!this.booted) return Promise.reject(sessionError('E_BOOT', 'ready() must resolve (first prompt seen) before run()'))
@@ -125,7 +130,12 @@ export class PtySession {
     if (signal?.aborted) return Promise.reject(sessionError('E_ABORTED', 'signal already aborted; command not sent'))
     const { promise, wait } = this.startWait('run', opts.timeoutMs ?? this.timeoutMsDefault)
     wait.cmd = cmd
-    this.channel.write(cmd + '\n')
+    this.channel.write(wrapPtyCommand(cmd) + '\n')
+    if (opts.stdin !== undefined) {
+      // stdin = 复合命令后的裸写（无帧、无包装）：复合命令独占输入缓冲，由它启动
+      // 的进程从 PTY 缓冲读到这些行。缺尾换行时补一个——最后一行必须成行送达。
+      this.channel.write(opts.stdin.endsWith('\n') ? opts.stdin : opts.stdin + '\n')
+    }
     if (signal !== undefined) {
       wait.signal = signal
       wait.onAbort = () => this.interrupt()

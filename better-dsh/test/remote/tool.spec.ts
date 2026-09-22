@@ -14,7 +14,7 @@ import { createSshTool } from '../../src/remote/tool.ts'
 /** 内存 fake engine：与 RemoteEngine 公共面同形，记录调用序列供断言。 */
 class FakeEngine {
   readonly calls: string[] = []
-  readonly execs: Array<{ name: string; cmd: string; timeoutMs?: number; signal?: AbortSignal }> = []
+  readonly execs: Array<{ name: string; cmd: string; timeoutMs?: number; signal?: AbortSignal; stdin?: string }> = []
   readonly bindings: Array<{ sessionKey: string; target: string }> = []
   private readonly bound = new Map<string, string>()
   outcome: ExecOutcome = { exitCode: 0, output: 'hello\n', cwdAfter: '/srv/app', durationMs: 1_500 }
@@ -35,9 +35,9 @@ class FakeEngine {
     return Promise.resolve(`target : ${name} → u1@dev3.example:22`)
   }
 
-  exec(name: string, cmd: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<ExecOutcome> {
+  exec(name: string, cmd: string, opts?: { timeoutMs?: number; signal?: AbortSignal; stdin?: string }): Promise<ExecOutcome> {
     this.calls.push(`exec:${name}`)
-    this.execs.push({ name, cmd, timeoutMs: opts?.timeoutMs, signal: opts?.signal })
+    this.execs.push({ name, cmd, timeoutMs: opts?.timeoutMs, signal: opts?.signal, stdin: opts?.stdin })
     if (this.failure !== undefined) return Promise.reject(this.failure)
     return Promise.resolve(this.outcome)
   }
@@ -221,10 +221,11 @@ describe('createSshTool — render', () => {
 })
 
 describe('createSshTool — stdin', () => {
-  it('stdin lines queue right after cmd on the wire', async () => {
+  it('stdin is threaded to the engine uncomposed (raw post-compound write lives at the session layer)', async () => {
     const { engine, tool } = make()
     await tool.execute({ target: 'dev3', cmd: 'python3', stdin: 'print(1+1)\nexit()\n' }, makeExec())
-    expect(engine.execs[0]!.cmd).toBe('python3\nprint(1+1)\nexit()\n')
+    expect(engine.execs[0]!.cmd).toBe('python3')
+    expect(engine.execs[0]!.stdin).toBe('print(1+1)\nexit()\n')
   })
 
   it('stdin without cmd fails loud', async () => {

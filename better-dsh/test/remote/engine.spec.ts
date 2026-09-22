@@ -32,7 +32,7 @@ const DEFAULT_RUN: RunResult = { exitCode: 0, output: '', interrupted: false, du
 class ScriptedSession extends PtySession {
   /** 本会话的 enter/exit 序（trace 是跨会话共享的全局序）。 */
   readonly log: string[] = []
-  readonly seenRuns: Array<{ cmd: string; timeoutMs?: number; signal?: AbortSignal }> = []
+  readonly seenRuns: Array<{ cmd: string; timeoutMs?: number; signal?: AbortSignal; stdin?: string }> = []
   cwdFake: string | undefined = undefined
   private readonly trace: string[]
   private readonly steps: SessionStep[]
@@ -43,10 +43,10 @@ class ScriptedSession extends PtySession {
     this.steps = steps // 共享数组、全局消费：脚本跨会话续接（重建的会话不会重放旧步）
   }
 
-  override async run(cmd: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<RunResult> {
+  override async run(cmd: string, opts: { timeoutMs?: number; signal?: AbortSignal; stdin?: string } = {}): Promise<RunResult> {
     this.log.push(`enter:${cmd}`)
     this.trace.push(`enter:${cmd}`)
-    this.seenRuns.push({ cmd, timeoutMs: opts.timeoutMs, signal: opts.signal })
+    this.seenRuns.push({ cmd, timeoutMs: opts.timeoutMs, signal: opts.signal, stdin: opts.stdin })
     const step: SessionStep = this.steps.shift() ?? { kind: 'result' }
     let out: RunResult
     if (step.kind === 'error') {
@@ -476,5 +476,26 @@ describe('RemoteEngine capOutcome — stderr cap + 真原长 threading', () => {
     const outcome = await r.engine.exec('t1', 'x')
     expect(outcome.truncated).toBe(5_000)
     expect(outcome.output.startsWith('[truncated: showing last 30 of 5000 chars]\n')).toBe(true)
+  })
+})
+
+describe('stdin threading (raw post-compound write on PTY; compose stays on the degraded path)', () => {
+  it('PTY path: exec threads stdin to session.run uncomposed (additive opt, no default change without stdin)', async () => {
+    const r = rig()
+    await r.engine.exec('t1', 'head -1', { stdin: 'hello\n' })
+    const backend = r.factory.created[0]!
+    expect(backend.sessions[0]!.seenRuns[0]).toMatchObject({ cmd: 'head -1', stdin: 'hello\n' })
+    expect(backend.execCalls).toEqual([]) // PTY 路径不落 backend.exec
+    await r.engine.exec('t1', 'x')
+    expect(backend.sessions[0]!.seenRuns[1]).toMatchObject({ cmd: 'x', stdin: undefined })
+  })
+
+  it('degraded path: stdin composes into the backend.exec cmd (disclosed best-effort RM0 semantics)', async () => {
+    const r = rig()
+    const backend = new FakeBackend('t1', r.factory.trace, [])
+    backend.openError = coded('E_EXEC_FALLBACK', 'remote bash too old for OSC 133 session')
+    r.factory.seed(backend)
+    await r.engine.exec('t1', 'head -1', { stdin: 'hello\n' })
+    expect(backend.execCalls.map((c) => c.cmd)).toEqual(['head -1\nhello\n'])
   })
 })

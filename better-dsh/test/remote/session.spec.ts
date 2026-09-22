@@ -59,13 +59,13 @@ describe('PtySession.ready (boot)', () => {
 })
 
 describe('PtySession.run', () => {
-  it('writes cmd + \\n and returns the C→D output stripAnsi’d, exitCode from D, cwd from OSC 7', async () => {
+  it('writes the cmd wrapped as one `{…}` compound + \\n and returns the C→D output stripAnsi’d, exitCode from D, cwd from OSC 7', async () => {
     const channel = new FakeChannel()
     const session = await bootSession(channel)
     const pending = session.run('echo hello world')
     channel.feed(C + 'hello \x1b[31mworld\x1b[0m' + D(3) + OSC7('/next'))
     const result = await pending
-    expect(channel.writes).toEqual(['echo hello world\n'])
+    expect(channel.writes).toEqual(['{\necho hello world\n}\n'])
     expect(result).toEqual({
       exitCode: 3,
       output: 'hello world',
@@ -127,6 +127,87 @@ describe('PtySession.run', () => {
     const session = new PtySession(channel, BASE_OPTS)
     await expect(session.run('x')).rejects.toThrow('[E_BOOT]')
     expect(channel.writes).toEqual([])
+  })
+
+  // ── 多行命令 = 单复合帧（DEV2 复测 §4.1 HIGH 回归位）───────────────────────
+  // 修复前：多行 cmd 原样写入 PTY，每个换行各是一轮 PS0(C)/PROMPT_COMMAND(D)，
+  // run 在首个 D 提前 resolve（只见首行输出、exit 只反映首行），余下输出滞留
+  // pending、前挂到下一次调用的结果上（DEV2 ①②：静默错帧），末行失败谎报
+  // 成功（DEV2 ③：exit 0 假阳性）。
+  describe('multi-line compound framing', () => {
+    it('resolves a 3-line echo cmd as ONE RunResult carrying ALL lines (DEV2 ①/② no early-resolve split)', async () => {
+      const channel = new FakeChannel()
+      const session = await bootSession(channel)
+      const pending = session.run('echo L1\necho L2\necho L3')
+      // 真实 bash 行为（wrapPtyCommand 后）：整包复合命令一次读取 → 恰好一轮
+      // C…D，D 带复合命令（= 最后一条命令）的退出码
+      channel.feed(C + 'L1\r\nL2\r\nL3' + D(0) + OSC7('/w'))
+      const result = await pending
+      expect(result.exitCode).toBe(0)
+      expect(result.output).toBe('L1\r\nL2\r\nL3')
+      expect(result.interrupted).toBe(false)
+    })
+
+    it('carries the LAST line’s exit code — `echo ok\\nfalse` must not report success (DEV2 ③)', async () => {
+      const channel = new FakeChannel()
+      const session = await bootSession(channel)
+      const pending = session.run('echo ok\nfalse')
+      channel.feed(C + 'ok' + D(1) + OSC7('/w'))
+      const result = await pending
+      expect(result.exitCode).toBe(1) // 修复前：D 只等首行 → exit 0 假阳性
+      expect(result.output).toBe('ok')
+    })
+
+    it('leaves NO residual output for the follow-up run (next result is not prepended with leftovers)', async () => {
+      const channel = new FakeChannel()
+      const session = await bootSession(channel)
+      const first = session.run('echo L1\necho L2')
+      channel.feed(C + 'L1\r\nL2' + D(0) + OSC7('/w'))
+      await first
+      // 修复前症状 ②：后续 D 轮次的输出滞留 pending，前挂到下一次调用的 output
+      const second = session.run('echo MARKER')
+      channel.feed(C + 'MARKER' + D(0) + OSC7('/w'))
+      const result = await second
+      expect(result.output).toBe('MARKER') // 纯净 — 无 'L2' 残前缀
+      expect(result.exitCode).toBe(0)
+    })
+  })
+
+  // ── stdin = 复合命令后的裸写（DEV2 修复后续裁：不再在 tool 层拼进 cmd）─────
+  // 复合命令先占住整条输入缓冲，stdin 原样跟写——由复合命令启动的进程（REPL 式）
+  // 从 PTY 缓冲读到这些行。
+  describe('stdin raw write', () => {
+    it('writes the compound first, then stdin verbatim — `head -1` consumes the line, ONE frame, exit 0', async () => {
+      const channel = new FakeChannel()
+      const session = await bootSession(channel)
+      const pending = session.run('head -1', { stdin: 'hello\n' })
+      expect(channel.writes).toEqual(['{\nhead -1\n}\n', 'hello\n']) // 裸写：无帧、无包装
+      // head -1 从 PTY 读到该行、打印、退出 → 恰好一轮 C…D
+      channel.feed(C + 'hello' + D(0) + OSC7('/w'))
+      const result = await pending
+      expect(result.output).toBe('hello')
+      expect(result.exitCode).toBe(0)
+    })
+
+    it('appends a newline only when stdin lacks one (last line must arrive as a line)', async () => {
+      const channel = new FakeChannel()
+      const session = await bootSession(channel)
+      const pending = session.run('head -1', { stdin: 'hello' })
+      expect(channel.writes).toEqual(['{\nhead -1\n}\n', 'hello\n'])
+      channel.feed(C + 'hello' + D(0) + OSC7('/w'))
+      const result = await pending
+      expect(result.output).toBe('hello')
+    })
+
+    it('no stdin opt → no follow-up write (plain-call wire shape unchanged)', async () => {
+      const channel = new FakeChannel()
+      const session = await bootSession(channel)
+      const pending = session.run('true')
+      expect(channel.writes).toEqual(['{\ntrue\n}\n'])
+      channel.feed(C + D(0) + OSC7('/w'))
+      const result = await pending
+      expect(result.output).toBe('')
+    })
   })
 
   it('resolves exitCode null when the channel closes mid-run (outcome unknown)', async () => {

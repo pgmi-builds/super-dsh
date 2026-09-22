@@ -182,7 +182,7 @@ export class RemoteEngine {
    * （E_EXEC_FALLBACK 永久降级）→ run / degraded exec → 审计。错误恢复路径全部
    * 落到 closed 状态由下次调用重建（Step 3）。
    */
-  async exec(name: string, cmd: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<ExecOutcome> {
+  async exec(name: string, cmd: string, opts?: { timeoutMs?: number; signal?: AbortSignal; stdin?: string }): Promise<ExecOutcome> {
     const st = this.mustTarget(name) // 未知名 → rejection（async API 一致性）
     return this.enqueue(st, async () => {
       st.lastUsed = this.clock()
@@ -269,10 +269,11 @@ export class RemoteEngine {
   private async runCommand(
     st: TargetState,
     cmd: string,
-    opts: { timeoutMs?: number; signal?: AbortSignal } | undefined,
+    opts: { timeoutMs?: number; signal?: AbortSignal; stdin?: string } | undefined,
   ): Promise<ExecOutcome> {
     const timeoutMs = opts?.timeoutMs ?? this.execTimeoutMs
     const signal = opts?.signal
+    const stdin = opts?.stdin
     const { backend, fresh } = this.ensureBackend(st)
 
     // 断线重连（backend 重建）→ 快照回放断线前 cwd（④：失败大声报错）
@@ -286,7 +287,7 @@ export class RemoteEngine {
 
     if (st.sessionMode !== 'exec') {
       try {
-        return await this.runInSession(st, backend, cmd, timeoutMs, signal)
+        return await this.runInSession(st, backend, cmd, timeoutMs, signal, stdin)
       } catch (error) {
         if (codeOf(error) === 'E_EXEC_FALLBACK') {
           st.sessionMode = 'exec' // 永久降级（该 target 生命周期内不再尝试 PTY）
@@ -296,16 +297,17 @@ export class RemoteEngine {
         }
       }
     }
-    return this.runDegraded(st, backend, cmd, timeoutMs, signal)
+    return this.runDegraded(st, backend, cmd, timeoutMs, signal, stdin)
   }
 
-  /** PTY 路径：ensureSession（lazy open + 新会话定位）→ run → cwd 跟踪。 */
+  /** PTY 路径：ensureSession（lazy open + 新会话定位）→ run（stdin 紧随复合命令裸写）→ cwd 跟踪。 */
   private async runInSession(
     st: TargetState,
     backend: SshBackend,
     cmd: string,
     timeoutMs: number,
     signal: AbortSignal | undefined,
+    stdin: string | undefined,
   ): Promise<ExecOutcome> {
     let session = st.session
     if (session === undefined) {
@@ -314,7 +316,7 @@ export class RemoteEngine {
       st.sessionMode = 'pty'
       await this.positionSession(st, session, timeoutMs)
     }
-    const result = await session.run(cmd, { timeoutMs, signal })
+    const result = await session.run(cmd, { timeoutMs, signal, stdin })
     const cwd = session.snapshot().cwd
     if (cwd !== undefined) st.lastCwd = cwd
     if (result.exitCode === null) this.clearSession(st) // 通道半路死：部分结果照交，会话作废
@@ -345,18 +347,20 @@ export class RemoteEngine {
     st.lastCwd = session.snapshot().cwd ?? dir
   }
 
-  /** 降级路径：framing 哨兵协议的 backend.exec，cwd 由 outcome.cwdAfter 跟踪。 */
+  /** 降级路径：framing 哨兵协议的 backend.exec，cwd 由 outcome.cwdAfter 跟踪。stdin 无独立输入流可走：
+   *  保留既有的 wire 拼接（`cmd\nstdin`，bash -lc 引号串整体执行）——披露过的 RM0 best-effort 语义。 */
   private async runDegraded(
     st: TargetState,
     backend: SshBackend,
     cmd: string,
     timeoutMs: number,
     signal: AbortSignal | undefined,
+    stdin: string | undefined,
   ): Promise<ExecOutcome> {
     const cwd = st.lastCwd ?? st.spec.defaultCwd ?? '.'
     let outcome: ExecOutcome
     try {
-      outcome = await backend.exec(cmd, { cwd, timeoutMs, signal })
+      outcome = await backend.exec(stdin !== undefined ? `${cmd}\n${stdin}` : cmd, { cwd, timeoutMs, signal })
     } catch (error) {
       throw this.recover(st, error)
     }

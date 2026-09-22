@@ -8,15 +8,17 @@ import {
   parseDegradedOutput,
   shellQuote,
   stripAnsi,
+  wrapPtyCommand,
 } from '../../src/remote/framing.ts'
 
 describe('buildEngineRc', () => {
-  it('wires OSC 133 C/D, stty -echo, empty PS1 and TERM=dumb', () => {
+  it('wires OSC 133 C/D, stty -echo, empty PS1/PS2 and TERM=dumb', () => {
     const rc = buildEngineRc()
     expect(rc).toContain('133;C')
     expect(rc).toContain('133;D;%s')
     expect(rc).toContain('stty -echo')
     expect(rc).toContain("PS1=''")
+    expect(rc).toContain("PS2=''") // 多行复合命令的续行提示符必须哑掉（PS2 文本会打进 C 前输出流）
     expect(rc).toContain('TERM=dumb')
   })
   it('sources each of the three profiles only when present', () => {
@@ -44,6 +46,21 @@ describe('buildEngineRc — wire-baked env', () => {
   it('emits no export lines beyond TERM when env is absent (no wire change for env-less targets)', () => {
     const rc = buildEngineRc()
     expect(rc.split('\n').filter((line) => line.startsWith('export '))).toEqual(['export TERM=dumb'])
+  })
+})
+
+describe('wrapPtyCommand', () => {
+  it('wraps a single-line cmd as ONE `{\\ncmd\\n}` compound (one command-read → exactly one C…D pair)', () => {
+    expect(wrapPtyCommand('echo hello world')).toBe('{\necho hello world\n}')
+  })
+  it('embeds every line of a multi-line cmd inside the compound (newlines no longer split the framing)', () => {
+    expect(wrapPtyCommand('echo L1\necho L2\necho L3')).toBe('{\necho L1\necho L2\necho L3\n}')
+  })
+  it('keeps a trailing-; cmd correct: newline before } works with or without the final semicolon (no `;;` doubling)', () => {
+    expect(wrapPtyCommand('echo hi;')).toBe('{\necho hi;\n}')
+  })
+  it('empty cmd → bare compound frame (unreachable via the tool, which guards empty cmd; kept simple)', () => {
+    expect(wrapPtyCommand('')).toBe('{\n\n}')
   })
 })
 

@@ -15,7 +15,10 @@
  *   (feed through {@link stripAnsi} before handing it to the model). A `D`
  *   frame waits for its OSC 7 so `cwd` attaches even when it lands in a later
  *   chunk; a `D` without a preceding `C` (the first prompt of a fresh
- *   session) is a real frame but leaves no dangling output.
+ *   session) is a real frame but leaves no dangling output. Multi-line
+ *   commands are wrapped by {@link wrapPtyCommand} into ONE bash compound so
+ *   the whole string is a single command-read (exactly one C…D pair; the exit
+ *   code is the compound's = the last command's).
  * - **exec 退化路径（哨兵）**: {@link buildDegradedCommand} wraps a command
  *   with a cwd guard (`CWD_GONE` sentinel, exit 127) and a tail sentinel
  *   carrying `$?` and `$PWD`; {@link parseDegradedOutput} reads them back.
@@ -43,6 +46,9 @@ export function buildEngineRc(env?: Record<string, string>): string {
     ...bakeEnvExports(env),
     'stty -echo 2>/dev/null || true',
     `PS1=''`,
+    // PS2 也必须哑掉：wrapPtyCommand 的多行复合命令会触发续行提示符——stty -echo
+    // 只关回显，PS2 文本本身仍会打进输出流（读取阶段，位于 C 标记之前）
+    `PS2=''`,
     `PS0=$'\\033]133;C\\007'`,
     `PROMPT_COMMAND='printf "\\033]133;D;%s\\007" "$?" ; printf "\\033]7;file://%s\\007" "$PWD"'`,
     'export TERM=dumb',
@@ -60,6 +66,23 @@ function bakeEnvExports(env: Record<string, string> | undefined): string[] {
     lines.push(`export ${key}=${shellQuote(value)}`)
   }
   return lines
+}
+
+/**
+ * PTY 输入的多行合框（DEV2 复测 §4.1 HIGH 修复）：把整条 cmd 包成一个 bash
+ * 复合命令 `{ … }`，使其成为**单次命令读取**——多行串里的换行不再各自触发
+ * 一轮 PS0(C)/PROMPT_COMMAND(D)（那曾让 run 在首个 D 提前 resolve：只见首行
+ * 输出、exit 只反映首行、残输出前挂到下一次调用）。复合命令的退出码 = 列表
+ * 中最后一条命令的退出码（标准 shell 语义），恰为会话帧的 exit code 语义。
+ *
+ * 形状 `{\n<cmd>\n}`：`}` 前的分隔符用换行而非 `; }`——实证（bash 5.3，
+ * `bash -c $'{\necho hi\n; }'` → rc=2 `syntax error near unexpected token ';'`）
+ * 换行终止列表后行首 `;` 是语法错误；换行对已带尾分号的 cmd 同样成立（不会
+ * 造出 `;;`）。空 cmd 的裸复合帧是语法错误，但工具层 hasCmd 守卫使其不可达
+ * （保持简单，不加特例）。引擎在该串后补写 '\n'（会话层职责不变）。
+ */
+export function wrapPtyCommand(cmd: string): string {
+  return `{\n${cmd}\n}`
 }
 
 /**

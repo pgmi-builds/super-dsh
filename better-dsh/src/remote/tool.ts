@@ -16,9 +16,12 @@
  * resolved outcomes. Appends are wrapped: a session hiccup must never break
  * the command path.
  *
- * `stdin` composes onto the wire as `cmd + "\n" + stdin` (write-then-immediately-
- * write; the PTY input buffer queues it behind cmd). This only behaves when cmd
- * actually reads its input — documented as an RM0 limitation in the description.
+ * `stdin` is passed through to the engine uncomposed. On the PTY path the
+ * session writes it raw right after the compound command (the compound occupies
+ * the PTY input buffer first; a process it starts reads the stdin lines —
+ * REPL-style, best effort). On the degraded exec path the engine keeps the
+ * pre-existing wire composition (`cmd + "\n" + stdin` inside the bash -lc
+ * string) — the disclosed RM0 limitation.
  *
  * @module dashr/remote/tool
  */
@@ -36,7 +39,7 @@ import type { RemoteEngine } from './engine.ts'
 export interface SshExecAudit {
   /** Target the command ran on (absent when binding itself failed). */
   target?: string
-  /** The model's `cmd` as sent — not the stdin-composed wire form. */
+  /** The model's `cmd` as sent — stdin is threaded separately, never composed into it. */
   cmd?: string
   /** Working directory after the command (`cwdAfter`, when known). */
   cwd?: string
@@ -99,10 +102,11 @@ export function createSshTool(
       '(bash -lc) keeps its cwd and environment between calls, so `cd` once and later calls land in the same ' +
       'place. Dispatch: `ssh({})` lists known targets; `ssh({ target })` reports that target\'s status (user, ' +
       'cwd, toolchain versions, sudo capability, RTT) without running anything; `ssh({ target, cmd })` runs one ' +
-      'raw shell string parsed by the remote bash (multi-line allowed); `ssh({ cmd })` rides this session\'s ' +
+      'raw shell string parsed by the remote bash (multi-line allowed — it runs as a single compound and the ' +
+      'exit code is the last command\'s); `ssh({ cmd })` rides this session\'s ' +
       'bound default target — bind one first with `ssh({ target, bind: true })`. `timeout` (seconds) caps a ' +
-      'single command; `stdin` queues lines to the command\'s input right after cmd starts (REPL-style — only ' +
-      'works when cmd actually reads stdin; treated as best effort). This tool is an entry point, not a file ' +
+      'single command; `stdin` is fed as raw input right after the command on the persistent session (REPL-style ' +
+      '— only works when cmd actually reads stdin; treated as best effort). This tool is an entry point, not a file ' +
       'API: read and edit remote files through shell (`cat -n`, `sed -i`, `rg`) — searching and editing are ' +
       'your own skills. Hosts, keys and ports stay in the server-side registry and never appear here.',
     parameters: {
@@ -124,8 +128,8 @@ export function createSshTool(
       },
       stdin: {
         type: 'string',
-        description: 'Lines queued to the command\'s input right after cmd starts; requires cmd. RM0 limitation: ' +
-          'written behind cmd on the PTY input buffer, so only meaningful when cmd reads its stdin.',
+        description: 'Fed as raw input right after the command on the persistent session; requires cmd. Best effort: ' +
+          'only meaningful when cmd actually reads its stdin.',
       },
     },
     output: {
@@ -195,9 +199,12 @@ export function createSshTool(
               'first to bind one, or pass target explicitly — ssh({}) lists known targets',
           )
         }
-        const outcome = await engine.exec(execTarget, stdin !== undefined ? `${cmd}\n${stdin}` : cmd, {
+        // stdin 原样透传（不再在工具层拼进 cmd）：PTY 路径由会话层紧随复合命令裸写，
+        // 降级路径由 engine 保留既有的 wire 拼接（披露过的 best-effort 语义）。
+        const outcome = await engine.exec(execTarget, cmd, {
           timeoutMs: args.timeout !== undefined ? args.timeout * 1_000 : undefined,
           signal: exec.signal,
+          stdin,
         })
         appendAudit(exec, {
           target: execTarget,
