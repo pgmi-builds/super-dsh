@@ -39,8 +39,7 @@ import { OmpSdkClient } from "./sdk-client.js";
 import { LazyOmpRpc, type OmpAgentRpc } from "./lazy-rpc.js";
 import { OmpAgent } from "./agent.js";
 import { OmpLlmAdapter } from "./adapter.js";
-import { SingleOmpPresetRoster } from "./agent-preset-omp.js";
-import { ompAgentPresetProjection } from "./agent-preset-projection.js";
+import { registerOmpPreset } from "./agent-preset-omp.js";
 import { resolveEntryById } from "./pairing.js";
 import { cwdFromSessionFile, foreignWriterPid, OMP_SESSIONS_ROOT, parseSelector as parseModelSelector, readOmpDefaultModelFromConfig, sessionHeaderId } from "./omp-store.js";
 import { ompModelRoles, ompSetModelRoles } from "./omp-cli.js";
@@ -161,21 +160,12 @@ export class OmpProvider extends Service implements AgentFactory {
     // is the sole `sessionPersistence` — the plugin no longer provides a union
     // persistence. Session list/page/replay come from native components; omp-web
     // is only the producer (writes the dsh session log on live turns).
-    // The roster must be visible to the API gateway's root-level remote
-    // enumeration (dsh-host-apiproxy read it from the root service table);
-    // nesting it under a child fiber via ctx.plugin hides its @Remote routes
-    // from the gateway and every agentPresets/* call 404s. Register it on
-    // this plugin's own (top-level) fiber instead — its Service constructor
-    // ties teardown to this fiber via reflect.provide.
-    new SingleOmpPresetRoster(ctx);
-    // Drive the `agentPreset` session projection ourselves: the upstream
-    // registrant lives in the (disabled) dsh-agent-presets package, but the
-    // Web UI gates the preset chip and header label on
-    // `projectionValues.agentPreset`. Deferred via inject so the registry's
-    // service contract is honored (registers only once it exists).
-    ctx.inject(["sessionProjections"], (scoped: Context) => {
-      scoped.sessionProjections.register(ompAgentPresetProjection);
-    });
+    // 0.1.7: roster/selection/document RPC + the `agentPreset` session
+    // projection all live in the host AgentPresetRegistry (mounted by the
+    // dsh-web-app bundle's `agent-preset-registry` row; the adapter patch pins
+    // its `default` to the OMP preset). The bridge only registers its one
+    // fixed preset into the registry — no service of its own anymore.
+    registerOmpPreset(ctx);
     ctx.effect(() => () => closeBridgeStore(), "ompProvider.storeClose()");
     this.#reconcileWorkspaces();
     // Mobile page-config boot script (host half): sets `window.__OMP_WEB_MOBILE__`

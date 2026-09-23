@@ -43,6 +43,7 @@ declare module "@deepseek-ai/dsh-session/types" {
   }
 }
 import { randomUUID } from "node:crypto";
+import type {} from "@deepseek-ai/dsh-user-approval";
 import type { Context } from "@deepseek-ai/cordis";
 import type {
   Agent,
@@ -215,8 +216,13 @@ function userMessageText(message: UserMessage): string {
  * drop it.
  */
 function isApprovalNarration(message: UserMessage): boolean {
-  const source = message.source;
-  return source.kind === "plugin" && source.plugin === "user-approval";
+  // 0.1.7: the shared `plugin` source kind is gone (MessageSourceMap is
+  // merge-extensible; each producer declares its own kind) — user-approval
+  // now carries the dedicated `user-approval` kind.
+  // Type-only: loads the `user-approval` MessageSourceMap augmentation
+  // (0.1.7: producer-owned source kinds; the shared `plugin` kind is gone).
+  // noinspection JSValidateTypes
+  return message.source.kind === "user-approval";
 }
 
 /**
@@ -535,7 +541,7 @@ export class PiAgent implements Agent {
       {
         turn: this.#dashTurn,
         step: this.#step,
-        message: createSystemMessage(text, "aw.agent-adapter-pi"),
+        message: createSystemMessage(text),
       },
       { surfaceOp: "append" },
     );

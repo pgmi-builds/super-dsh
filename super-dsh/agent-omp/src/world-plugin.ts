@@ -102,6 +102,14 @@ export function apply(ctx: HostContext): void {
     // A failed world degrades to a not-ready roster row; a rejected provided
     // promise would fail the entire host boot (loader entry apply).
     console.error(`[super-dsh] ${KEY} world failed:`, cause)
+    // Startup diagnostics: the collector's warn/error records include the
+    // loader's own patch/import diagnostics for this world's include.
+    const startup = (cause as { startup?: { messages?: unknown } }).startup
+    if (startup?.messages !== undefined) {
+      for (const message of startup.messages as unknown[]) {
+        console.error(`[super-dsh] ${KEY} startup:`, JSON.stringify(message))
+      }
+    }
     return null
   })
   ctx.provide(`aw.world.${KEY}`, world)

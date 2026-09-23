@@ -34,9 +34,14 @@
   disabled: true
 
 # OMP is single-mode: its own RPC process drives tools, so no Dash preset
-# composition is needed.
-- id: agent-presets
-  disabled: true
+# composition is needed. 0.1.7: the host AgentPresetRegistry row (renamed
+# `agent-presets` → `agent-preset-registry`) stays MOUNTED — the bridge
+# registers its one fixed preset into it (src/agent-preset-omp.ts) and the
+# registry owns roster/selection/document RPC + the agentPreset projection.
+# Pin only the default; modeSelectionEnabled already defaults to true.
+- id: agent-preset-registry
+  config:
+    default: omp
 
 # Titles come from OMP, not from Dash. The stock `session-title-first-prompt-llm`
 # row would run a Dash-side LLM call (through whatever adapter serves ctx.llm)

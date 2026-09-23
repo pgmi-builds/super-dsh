@@ -10,7 +10,7 @@
 ## 〇、结论速览
 
 1. **行开关是热的**：写 profile 用户层 patch 的 `{id, disabled}` → 重算根 Include → 同进程 unmount/mount，**零重启**（`ChangeResult.application = "applied"`）。
-2. **热的范围只有"配置面"**：hmr 默认 `root: []`，只 watch profile patch 文件 / home patch 文件 / profile `package.json`。**改插件代码（`lib/*.js`）不热**，要重启。
+2. **代码热替换也热，只是默认没开**：hmr 默认 `root: []`（只 watch profile patch / home patch / profile `package.json`）。给 hmr 行配一个非空 `root` 后，**改插件 `lib/*.js` 会活得即时重载**——2026-09-22 在 4988 实测通过（§2.2）。唯一系统性障碍是**安装位置**：上游把 `node_modules` 里的模块排除在可重载图外（§2.3）。
 3. **每个 insert 行都独立可热开关**，无例外（better-dsh 六行逐个实测通过）。
 4. **行间无依赖边 ⇒ 无级联**：better-dsh 六行之间没有 cordis 服务依赖，关任一行不会影响其余行；真正的依赖边都指向 **host 服务**，不在组件之间。
 5. **若真存在 inject 边**：被关掉 provider 时，消费方 **自动挂起**（跑完 disposer、撤销全部注册、fiber 落到 `PENDING` = "waiting for service"），provider 回来 **自动 `_reload()` 复活** —— 不是"留在 active 里运行时崩"。
@@ -72,10 +72,64 @@ result.application = this.ownerContext.get('hmr') !== undefined ? 'applied' : 'r
 | profile patch 文件（`.dsh-test/profiles/web/cordis.patch.yml`） | ✅ 手改也热 | `hmr/src/index.ts:215` 的 `patchFiles` 精确路径 watch |
 | home patch 文件（`$DSH_HOME/cordis.patch.yml`） | ✅ | 同上 |
 | profile `package.json`（bundles 列表） | ✅（仅当 bundles 变化） | `refresh(manifestOnly=true)` 比对 |
-| **插件模块代码 `lib/*.js`** | ❌ **要重启** | `root: []`，模块 watch 是 opt-in |
+| **插件模块代码 `lib/*.js`** | ❌ 默认不热 / ✅ **配了 `root` 就热**（实测，见 §2.2） | `root: []` 关掉了模块 watch；模块 watch 是 opt-in |
 | client bundle | ⚠️ 另一条链 | `client-hmr` 是 host 侧 500ms stat-poll 每个 graph 行的 bundle + SSE `rebuilt`；**行开关不碰 client bundle**，它的更新来自重建产物（`dev:web` 之类） |
 
-推论：**行开关 = 配置面能力**。改 better-dsh 的源码行为，行开关救不了你，必须重启 profile。
+**两个维度，不是"热开关的等级"**：插件系统里热有两个独立动作面——
+
+- **组合面热插拔**：改"装了哪些插件"（行开关）。DSH 的 loader 原生支持：`entry.update` → dispose fiber → 重建。**热，零重启。**
+- **代码热替换（module HMR）**：改"某插件的实现代码"，让运行中的进程清掉模块缓存、重新 import、重新 apply。Cordis 的 hmr 插件就是干这个的，DSH 已经装了它（base bundle 的 `hmr` 行），只是默认没给模块 watch root。
+
+两者互不替代：行开关不会让代码更新，代码热替换也不会装卸行。
+
+### 2.1 为什么默认没开：平台默认，不是插件、也不是 base 入口的选择
+
+1. **`root: []` 是 base bundle 自己写死的**（`packages/bundle/base/cordis.patch.yml:28-32`），是**部署级默认**：web/desktop profile 下**所有**插件一视同仁（官方 `ui-*` 插件同样不在模块 watch 内）。没有任何 bundle 或 app 覆写出非空 `root`；`acp-app`/`headless`/`sdk-app` 干脆把 hmr 行 `disabled: true`（它们没有 profile 概念）。
+2. 所以"能不能代码热替换"是**部署配置问题**（一行 `root`），不是插件形态问题。better-dsh 换成任何插件，结论相同。
+
+### 2.2 实测：opt-in `root` 后，改 `lib/*.js` 即时生效（4988，2026-09-22）
+
+步骤与观测（全程无重启，`http=200`）：
+
+1. 往 profile 用户层 patch 追加一条 hmr 覆写：
+   ```yaml
+   - id: hmr
+     config:
+       root: [/home/u1/workspaces/dashr/upstream/deepseek-harness/packages/better-dsh/better-dsh/lib]
+   ```
+   （写入后 hmr 行自重配，组合照常收敛：served HTML 标记不变。）
+2. 在**构建产物** `lib/mobile/plugin.js` 里给注入脚本加一个可观测标记（`raw + "\n/*hmrprobe*/"`）。
+3. 不做任何重启，`curl` 鉴权页面：`hmrprobe` **0 → 1** —— 进程已清模块缓存并重新 import/apply 了该行插件。
+4. 还原该文件：`hmrprobe` **1 → 0**，文件字节一致。往返闭环。
+
+**结论：DSH 的代码热替换是可用的，一行配置即开。** 之前的"改代码必须重启"只在**没配 `root` 的默认部署**下成立。
+
+### 2.3 唯一系统性障碍：安装位置在 `node_modules`
+
+上游 hmr 把可重载单元定义为"**用户代码**"，显式排除依赖：
+
+- `loadDependencies` 遍历模块图时跳过 `job.url.includes('/node_modules/')`（`packages/boot/hmr/src/index.ts:70`，函数头注释即 "Skips node: builtins and node_modules to focus on user code"）；
+- 变更分类里同样是 `isExcluded = url.startsWith('node:') || url.includes('/node_modules/')`（`:357`）；
+- reload 判定（`:441-453`）只对"依赖树里含 accepted 文件"的插件重载——若插件自身模块 URL 落在 `node_modules`，其依赖列表为空 ⇒ **永远不会被重载**。
+
+这跟 `node_modules` 该不该装无关——**ESM 下 npm 包只能装在 `node_modules`**，没有第二个位置。这是上游"只热用户代码"这一取向的结果：
+
+| 部署形态 | 模块 realpath | 代码热替换 |
+|---|---|---|
+| prod profile（npm 装） | `~/.dsh/profiles/web/node_modules/better-dsh/…` | ❌ 不在可重载图内 |
+| dev/test rig（`node_modules/better-dsh` → monorepo symlink） | `<checkout>/packages/better-dsh/better-dsh/…`（realpath 无 `node_modules` 段） | ✅ 实测可用（§2.2） |
+
+> 反向印证：§2.2 的实验之所以成功，正是因为 Node ESM 把 symlink 解析成 realpath；若模块 URL 真含 `/node_modules/`，第 3 步不会出现 `hmrprobe=1`。
+
+**实践建议**：想在开发中享受代码热替换，就把被测插件以 symlink / `link:` 形式挂进 profile，并把 hmr `root` 指向其 realpath 目录（即 `packages/better-dsh/better-dsh/lib`）。不要为了热替换去改 `node_modules` 的布局——那是发行态的正常位置。
+
+### 2.4 两条仍属插件形态的限定
+
+- 模块 watcher 只监听 `'change'`（`:305`），不处理模块的新增/删除。
+- client 半是**整包一个 bundle**（`dsh.client`），组件在客户端不可分；client 侧更新走 `client-hmr` 的 stat-poll，不由行开关触发。
+- **partialReload 的粒度风险**：只有"accepted"的模块被重新 import，其余模块保持旧缓存。手工改单个 `lib/*.js` 很干净；但一次 `tsdown` 全量重建会改掉 chunk 文件名（如 `web-trust-<hash>.js`），可能出现新旧 chunk 混装的中间态。全量重建后建议重启，或让 hmr 走 full reload。
+
+**所以**：行开关之所以好用，是 better-dsh 的交付形态给的（`dsh.bundle.patch` 里 6 条 **insert** 行 → 每行在 Plugins 页可寻址、可单独开关）；代码热替换则是**平台默认配置 + 安装位置**决定的，与它选 base/profile 入口无关——换成任何插件都一样，开法也一样。
 
 ## 三、"组件"的定义与行结构
 
@@ -154,8 +208,9 @@ Cordis fiber 的依赖模型（`vendor/cordis/src/fiber.ts`）：
 
 ## 七、边界与未验证
 
-- **代码面不热**：改 `better-dsh/lib/*.js` 不触发 host 侧重载（hmr `root: []`）。本报告未实测该路径；需要热的话得给 hmr 行显式配非空 `root`。
+- **代码热替换**：已实测可用（§2.2），前提是 hmr 行配了非空 `root` **且**插件模块 realpath 不在 `node_modules` 里（§2.3）。prod 安装态（realpath 在 `node_modules`）未实测，按源码推导为不可热；若要下断言，需在 prod 或等价 npm 安装态复跑 §2.2 的探针。
 - **§5.2 的级联失败路径为源码推导**：本 profile 内不存在"两个都可开关、其一 inject 另一个"的行对（六组件互无边；host 侧 provider 行多为 `management-required`，关它会打断当前 session），故未做破坏性 live 验证。要做最小实验：造一对测试行（provider + `inject:[...]` 消费方）放进同一 bundle patch，关 provider 观察消费方 `fiberPhase` 与 `ChangeResult`。
+- **§2.4 partialReload 粒度风险**未实测（未做"tsdown 全量重建 → 观察混装"的实验）。
 - 实证在 Dev/Test 1（4988）；prod 3080 未动。
 - 若日后把此文档当"行开关行为"的权威，注意行开关的**持久形态是覆盖行**：`disabled: false` 覆盖行会长期留在用户的 profile patch 里。
 

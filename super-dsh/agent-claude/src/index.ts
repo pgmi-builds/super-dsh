@@ -66,8 +66,7 @@ import {
   type PermissionDecision,
 } from "./interaction.js";
 import { modelEntryFromSdk, readModelCatalog, setModelCatalog, CLAUDE_DEFAULT_MODEL } from "./models.js";
-import { SingleClaudePresetRoster } from "./agent-preset-claude.js";
-import { claudeAgentPresetProjection } from "./agent-preset-projection.js";
+import { registerClaudePreset } from "./agent-preset-claude.js";
 
 const CLAUDE_MODES: readonly string[] = ["default", "acceptEdits", "bypassPermissions", "plan", "auto", "dontAsk"];
 
@@ -179,14 +178,12 @@ export class ClaudeProvider extends Service implements AgentFactory {
     // @Remote routes from the gateway and every agentPresets/* call 404s (the
     // omp/pi registration lesson). Register it on this plugin's own
     // (top-level) fiber instead — next to setFactory, never under ctx.plugin.
-    new SingleClaudePresetRoster(ctx);
-    // Drive the `agentPreset` session projection ourselves: the upstream
-    // registrant lives in the (patch-disabled) dsh-agent-presets package, but
-    // the Web UI gates the preset chip and header label on
-    // `projectionValues.agentPreset`.
-    ctx.inject(["sessionProjections"], (scoped: Context) => {
-      scoped.sessionProjections.register(claudeAgentPresetProjection);
-    });
+    // 0.1.7: roster/selection/document RPC + the `agentPreset` session
+    // projection all live in the host AgentPresetRegistry (mounted by the
+    // dsh-web-app bundle's `agent-preset-registry` row; the adapter patch
+    // pins its `default` to the Claude preset). The adapter only registers
+    // its one fixed preset into the registry.
+    registerClaudePreset(ctx);
     this.#registerDefaultModel();
     this.#probeBootModels();
   }

@@ -47,8 +47,7 @@ import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session
 import { HermesGatewayClient, HERMES_SPAWN_GRACE_MS } from "./hermes-client.js";
 import { HermesAgent, type HermesAgentRuntimeInfo } from "./agent.js";
 import { HermesLlmAdapter, HERMES_PROVIDER_ID } from "./adapter.js";
-import { SingleHermesPresetRoster } from "./agent-preset-hermes.js";
-import { hermesAgentPresetProjection } from "./agent-preset-projection.js";
+import { registerHermesPreset } from "./agent-preset-hermes.js";
 import { sessionRecord, upsertSession } from "./hermes-store.js";
 import { hermesProviderSlugs, readHermesModelCatalog, type HermesCatalog } from "./models.js";
 import { envApprovalMode, defaultPermissionPreset, presetFromEvents } from "./permission.js";
@@ -126,11 +125,12 @@ export class HermesProvider extends Service implements AgentFactory {
     this.#registerDefaultModel();
     // The roster must be visible to the API gateway's root-level remote
     // enumeration; register it on this plugin's own (top-level) fiber.
-    new SingleHermesPresetRoster(ctx);
-    // Drive the `agentPreset` session projection ourselves.
-    ctx.inject(["sessionProjections"], (scoped: Context) => {
-      scoped.sessionProjections.register(hermesAgentPresetProjection);
-    });
+    // 0.1.7: roster/selection/document RPC + the `agentPreset` session
+    // projection all live in the host AgentPresetRegistry (mounted by the
+    // dsh-web-app bundle's `agent-preset-registry` row; the adapter patch
+    // pins its `default` to the Hermes preset). The adapter only registers
+    // its one fixed preset into the registry.
+    registerHermesPreset(ctx);
   }
 
   /**

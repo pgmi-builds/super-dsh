@@ -23,8 +23,12 @@
 
 # Single-preset roster like pi: launch-only permission mapping (headless bridge
 # has no per-action approval channel). Full 3-preset restatement per §4.1.
-- id: agent-presets
-  disabled: true
+# 0.1.7: the host AgentPresetRegistry row (renamed `agent-presets` ->
+# `agent-preset-registry`) stays MOUNTED — the adapter registers its one
+# fixed preset into it (src/agent-preset-agy.ts); pin only the default.
+- id: agent-preset-registry
+  config:
+    default: agy
 - id: permission
   config:
     presets:

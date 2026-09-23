@@ -4,21 +4,32 @@
  * Upstream's `RemoteStreamMuxServer` owns `/api/remote.mux` for the native
  * gateway and is NOT reachable from outside its package (root exports omit it;
  * `./src/*` cannot be imported at runtime). So this is our own wire-compatible
- * implementation of the same protocol, bound to the ADDRESSED world's
- * `openWireStream`:
+ * implementation of the same protocol (dsh 0.1.7 `stream-protocol.ts`), bound
+ * to the ADDRESSED world's `openWireStream`:
  *
  *   browser → server   { type:'open', streamId, endpoint, payload }
+ *                      { type:'item', streamId, value? }   (uplink)
+ *                      { type:'end', streamId }            (uplink half-close)
  *                      { type:'cancel', streamId }
  *   server → browser   { type:'item', streamId, value }
  *                      { type:'end', streamId }
  *                      { type:'error', streamId, error:{code,message,details} }
  *
- * Heartbeat: ping every interval, terminate after two missed pongs (same
- * policy as upstream).
+ * Dispatch semantics mirror upstream `RemoteStreamMuxConnection`: `item`,
+ * `end`, and `cancel` for a stream this connection no longer owns are dropped;
+ * a duplicate `open` is the one violation that closes the socket. Uplink items
+ * wait in a bounded inbox created before the opener resolves, so items sent
+ * right after `open` are never lost. Heartbeat: ping every interval, terminate
+ * after two missed pongs.
  */
 
 /** Open one world stream (the world gateway's `openWireStream`). */
-export type MuxOpen = (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>>
+export type MuxOpen = (
+  endpoint: string,
+  payload: unknown,
+  uplink: AsyncIterable<unknown>,
+  control: AbortController,
+) => Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
 
 /** Wire failure body (upstream `RemoteStreamFailure`). */
 export interface MuxFailure {
@@ -29,8 +40,10 @@ export interface MuxFailure {
 
 /** Options. */
 export interface WorldMuxOptions {
-  /** Ping interval; upstream default is 30s. */
+  /** Ping interval; upstream default is 2s. */
   heartbeatIntervalMs?: number
+  /** Buffered uplink frame bytes one logical stream may hold before it fails; upstream default 256KiB. */
+  streamInboxBytes?: number
   /** Error → wire failure mapper. */
   failure?: (error: unknown) => MuxFailure
 }
@@ -38,6 +51,8 @@ export interface WorldMuxOptions {
 /** One client request frame. */
 type ClientMessage =
   | { type: 'open'; streamId: string; endpoint: string; payload: unknown }
+  | { type: 'item'; streamId: string; value?: unknown }
+  | { type: 'end'; streamId: string }
   | { type: 'cancel'; streamId: string }
 
 /** Minimal structural view of the `ws` surface we use. */
@@ -63,7 +78,9 @@ interface WsModuleLike {
 /** Specifier is widened on purpose: `ws` is a runtime peer, not a typed dep. */
 const WS_MODULE: string = 'ws'
 const MAX_MISSED_HEARTBEATS = 2
-const DEFAULT_HEARTBEAT_MS = 30_000
+const DEFAULT_HEARTBEAT_MS = 2_000
+const DEFAULT_STREAM_INBOX_BYTES = 262_144
+const UPLINK_DONE: IteratorReturnResult<undefined> = { value: undefined, done: true }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -76,6 +93,11 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 function validId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
+}
+
+/** An abort reason carrying wire failure fields (upstream `remoteErrorOf`). */
+function isRemoteFailure(reason: unknown): boolean {
+  return isRecord(reason) && typeof reason['code'] === 'string'
 }
 
 /**
@@ -92,8 +114,16 @@ export function parseClientMessage(text: string): ClientMessage {
     throw new Error('world-mux: invalid client message')
   }
   if (!isRecord(raw)) throw new Error('world-mux: invalid client message')
-  if (raw['type'] === 'cancel' && exactKeys(raw, ['type', 'streamId']) && validId(raw['streamId'])) {
-    return { type: 'cancel', streamId: raw['streamId'] }
+  if ((raw['type'] === 'cancel' || raw['type'] === 'end')
+    && exactKeys(raw, ['type', 'streamId']) && validId(raw['streamId'])) {
+    return { type: raw['type'], streamId: raw['streamId'] }
+  }
+  if (raw['type'] === 'item'
+    && (exactKeys(raw, ['type', 'streamId']) || exactKeys(raw, ['type', 'streamId', 'value']))
+    && validId(raw['streamId'])) {
+    return Object.hasOwn(raw, 'value')
+      ? { type: 'item', streamId: raw['streamId'], value: raw['value'] }
+      : { type: 'item', streamId: raw['streamId'] }
   }
   if (raw['type'] === 'open'
     && exactKeys(raw, ['type', 'streamId', 'endpoint', 'payload'])
@@ -110,13 +140,122 @@ export function defaultFailure(error: unknown): MuxFailure {
   if (isRecord(error)) {
     const code = typeof error['code'] === 'string' ? error['code'] : undefined
     const message = typeof error['message'] === 'string' ? error['message'] : undefined
-    if (code !== undefined) return { code, message: message ?? code, details: {} }
+    if (code !== undefined) {
+      const details = isRecord(error['details']) ? error['details'] : {}
+      return { code, message: message ?? code, details }
+    }
   }
   return { code: 'gateway/stream-error', message: error instanceof Error ? error.message : String(error), details: {} }
 }
 
+/** One uplink violation: an abort reason that must reach the client as a failure frame. */
+function uplinkViolation(code: 'gateway/protocol' | 'gateway/uplink-overflow', message: string, endpoint: string): Error {
+  return Object.assign(new Error(message), { code, details: { endpoint } })
+}
+
+/**
+ * Bounded single-consumer uplink queue of one logical stream, the source the
+ * world method reads as its uplink iterable. Mirrors upstream `UplinkInbox`:
+ * overflow, and an item after the client's `end`, fail the queue and abort the
+ * logical stream with a wire failure.
+ */
+class UplinkInbox implements AsyncIterable<unknown>, AsyncIterator<unknown> {
+  private readonly queue: Array<{ value: unknown, bytes: number }> = []
+  private bytes = 0
+  private ended = false
+  private closed = false
+  private taken = false
+  private failure: Error | undefined
+  private wake: (() => void) | undefined
+
+  constructor(
+    private readonly maxBytes: number,
+    private readonly endpoint: string,
+    private readonly onViolation: (error: Error) => void,
+  ) { }
+
+  push(value: unknown, frameBytes: number): void {
+    if (this.failure !== undefined || this.closed) return
+    if (this.ended) {
+      this.violate(uplinkViolation('gateway/protocol', 'world-mux: Remote stream uplink item after end', this.endpoint))
+      return
+    }
+    if (this.bytes + frameBytes > this.maxBytes) {
+      this.violate(uplinkViolation(
+        'gateway/uplink-overflow',
+        `world-mux: Remote stream uplink exceeded ${String(this.maxBytes)} buffered bytes`,
+        this.endpoint,
+      ))
+      return
+    }
+    this.queue.push({ value, bytes: frameBytes })
+    this.bytes += frameBytes
+    this.signal()
+  }
+
+  /** Client half-close; idempotent. */
+  end(): void {
+    if (this.ended) return
+    this.ended = true
+    this.signal()
+  }
+
+  /** End the consumer's next read with `error`; idempotent, drops buffered items. */
+  fail(error: Error): void {
+    if (this.failure !== undefined) return
+    this.failure = error
+    this.queue.length = 0
+    this.bytes = 0
+    this.signal()
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<unknown> {
+    if (this.taken) throw new Error('world-mux: Remote stream uplink inbox already has a consumer')
+    this.taken = true
+    return this
+  }
+
+  async next(): Promise<IteratorResult<unknown>> {
+    while (true) {
+      if (this.closed) return UPLINK_DONE
+      const entry = this.queue.shift()
+      if (entry !== undefined) {
+        this.bytes -= entry.bytes
+        return { value: entry.value, done: false }
+      }
+      if (this.failure !== undefined) throw this.failure
+      if (this.ended) return UPLINK_DONE
+      if (this.wake !== undefined) throw new Error('world-mux: Remote stream uplink inbox has one pending read')
+      await new Promise<void>((resolve) => { this.wake = resolve })
+    }
+  }
+
+  /** Consumer stopped reading: later items are dropped, a pending read ends. */
+  return(): Promise<IteratorResult<unknown>> {
+    this.closed = true
+    this.queue.length = 0
+    this.bytes = 0
+    this.signal()
+    return Promise.resolve(UPLINK_DONE)
+  }
+
+  private violate(error: Error): void {
+    this.fail(error)
+    this.onViolation(error)
+  }
+
+  private signal(): void {
+    const wake = this.wake
+    this.wake = undefined
+    wake?.()
+  }
+}
+
 interface ActiveStream {
   readonly abort: AbortController
+  readonly inbox: UplinkInbox
+  /** Cancel the logical stream and end any world read still waiting on its uplink. */
+  readonly stop: (reason: Error) => void
   done: Promise<void>
 }
 
@@ -190,22 +329,44 @@ export class WorldMuxServer {
       writes = delivery.catch(() => undefined)
       return delivery
     }
-    const pump = async (streamId: string, endpoint: string, payload: unknown, active: ActiveStream): Promise<void> => {
+    const failureOf = this.options.failure ?? defaultFailure
+    const sendFailure = async (streamId: string, error: unknown): Promise<void> => {
+      if (client.readyState !== ws.WebSocket.OPEN) return
       try {
-        const source = await this.open(endpoint, payload, active.abort.signal)
+        await send({ type: 'error', streamId, error: failureOf(error) })
+      } catch {
+        client.close(1011, 'Remote stream failure could not be delivered')
+      }
+    }
+    const pump = async (streamId: string, endpoint: string, payload: unknown, active: ActiveStream): Promise<void> => {
+      let failed: { readonly error: unknown } | undefined
+      try {
+        const source = await this.open(endpoint, payload, active.inbox, active.abort)
         for await (const value of source) {
           await send({ type: 'item', streamId, value })
         }
-        if (!active.abort.signal.aborted) await send({ type: 'end', streamId })
       } catch (error) {
-        if (!active.abort.signal.aborted && client.readyState === ws.WebSocket.OPEN) {
-          const failure = (this.options.failure ?? defaultFailure)(error)
-          try {
-            await send({ type: 'error', streamId, error: failure })
-          } catch {
-            client.close(1011, 'Remote stream failure could not be delivered')
-          }
-        }
+        failed = { error }
+      }
+      // The downlink has settled; later uplink frames cannot change the outcome.
+      active.inbox.fail(new Error('world-mux: Remote stream ended'))
+      if (active.abort.signal.aborted) {
+        // A wire failure as the abort reason is this mux failing the stream (a
+        // rejected or overflowing uplink item, or an item after end); the client
+        // is still waiting for that terminal frame. Any other abort is a
+        // cancellation and stays silent.
+        const reason: unknown = active.abort.signal.reason
+        if (isRemoteFailure(reason)) await sendFailure(streamId, reason)
+        return
+      }
+      if (failed !== undefined) {
+        await sendFailure(streamId, failed.error)
+        return
+      }
+      try {
+        await send({ type: 'end', streamId })
+      } catch (error) {
+        await sendFailure(streamId, error)
       }
     }
     await new Promise<void>((resolve) => {
@@ -216,31 +377,58 @@ export class WorldMuxServer {
           client.close(1003, 'text messages required')
           return
         }
+        const text = String(data)
         let message: ClientMessage
         try {
-          message = parseClientMessage(String(data))
+          message = parseClientMessage(text)
         } catch {
           client.close(1008, 'invalid Remote stream request')
           return
         }
-        if (message.type === 'cancel') {
-          streams.get(message.streamId)?.abort.abort(new Error('Remote stream cancelled'))
+        if (message.type === 'open') {
+          if (streams.has(message.streamId)) {
+            client.close(1008, 'duplicate Remote stream id')
+            return
+          }
+          const abort = new AbortController()
+          // Created before the opener resolves so items the client sends right
+          // after `open` wait in the inbox instead of being lost.
+          const inbox = new UplinkInbox(
+            this.options.streamInboxBytes ?? DEFAULT_STREAM_INBOX_BYTES,
+            message.endpoint,
+            (error) => { abort.abort(error) },
+          )
+          const active: ActiveStream = {
+            abort,
+            inbox,
+            stop: (reason) => {
+              abort.abort(reason)
+              inbox.fail(reason)
+            },
+            done: Promise.resolve(),
+          }
+          streams.set(message.streamId, active)
+          const done = pump(message.streamId, message.endpoint, message.payload, active)
+          active.done = done
+          void done.then(() => streams.delete(message.streamId), () => streams.delete(message.streamId))
           return
         }
-        if (streams.has(message.streamId)) {
-          client.close(1008, 'duplicate Remote stream id')
+        // `item`, `end`, and `cancel` for a stream this connection no longer
+        // owns are dropped: a finished stream leaves the table while the
+        // client's in-flight frames are still arriving.
+        if (message.type === 'item') {
+          streams.get(message.streamId)?.inbox.push(message.value, Buffer.byteLength(text, 'utf8'))
           return
         }
-        const abort = new AbortController()
-        const active: ActiveStream = { abort, done: Promise.resolve() }
-        streams.set(message.streamId, active)
-        const done = pump(message.streamId, message.endpoint, message.payload, active)
-        active.done = done
-        void done.then(() => streams.delete(message.streamId), () => streams.delete(message.streamId))
+        if (message.type === 'end') {
+          streams.get(message.streamId)?.inbox.end()
+          return
+        }
+        streams.get(message.streamId)?.stop(new Error('world-mux: Remote stream cancelled'))
       })
     })
     const active = [...streams.values()]
-    for (const stream of active) stream.abort.abort(new Error('Remote stream socket closed'))
+    for (const stream of active) stream.stop(new Error('world-mux: Remote stream socket closed'))
     await Promise.all(active.map(stream => stream.done))
   }
 

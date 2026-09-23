@@ -88,6 +88,7 @@ systemd-run --user --unit="$UNIT" \
   --property=Environment="DSH_HOME=$DSH_HOME_DIR" \
   --property=Environment="SUPERD_DSH_ANCHOR=$ANCHOR" \
   --property=Environment="SUPERD_KEEP=1" \
+  --property=Environment="SUPERD_TRACE=${SUPERD_TRACE:-0}" \
   --property=Environment="AW_TRUSTED_HOSTS=192.0.2.130,192.0.2.130:4999" \
   --property=Environment="DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}" \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \

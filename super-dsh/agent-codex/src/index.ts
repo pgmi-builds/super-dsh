@@ -45,8 +45,7 @@ import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session
 import { CodexSdkClient } from "./codex-client.js";
 import { CodexAgent, type CodexAgentRuntimeInfo } from "./agent.js";
 import { CodexLlmAdapter, CODEX_PROVIDER_ID } from "./adapter.js";
-import { SingleCodexPresetRoster } from "./agent-preset-codex.js";
-import { codexAgentPresetProjection } from "./agent-preset-projection.js";
+import { registerCodexPreset } from "./agent-preset-codex.js";
 import { readRolloutHead, resolveCodexHome } from "./codex-store.js";
 import { CodexResumeError, sessionRecord, upsertSession, type CodexSessionRecord } from "./session-map.js";
 import { readCodexModelCatalog, CODEX_DEFAULT_MODEL_PLACEHOLDER } from "./models.js";
@@ -132,15 +131,12 @@ export class CodexProvider extends Service implements AgentFactory {
     // from the gateway and every agentPresets/* call 404s. Register it on
     // this plugin's own (top-level) fiber instead — its Service constructor
     // ties teardown to this fiber via reflect.provide.
-    new SingleCodexPresetRoster(ctx);
-    // Drive the `agentPreset` session projection ourselves: the upstream
-    // registrant lives in the (disabled) dsh-agent-presets package, but the
-    // Web UI gates the preset chip and header label on
-    // `projectionValues.agentPreset`. Deferred via inject so the registry's
-    // service contract is honored (registers only once it exists).
-    ctx.inject(["sessionProjections"], (scoped: Context) => {
-      scoped.sessionProjections.register(codexAgentPresetProjection);
-    });
+    // 0.1.7: roster/selection/document RPC + the `agentPreset` session
+    // projection all live in the host AgentPresetRegistry (mounted by the
+    // dsh-web-app bundle's `agent-preset-registry` row; the adapter patch
+    // pins its `default` to the Codex preset). The adapter only registers
+    // its one fixed preset into the registry.
+    registerCodexPreset(ctx);
   }
 
   /**

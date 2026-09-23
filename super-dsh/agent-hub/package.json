@@ -31,13 +31,14 @@
     "test": "node --test --test-force-exit test/*.test.mjs"
   },
   "dependencies": {
+    "js-yaml": "^4.3.2",
     "ws": "^8.21.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-api-gateway": "*",
-    "@deepseek-ai/dsh-host-webserver": "*",
-    "@deepseek-ai/dsh-typert-protocol": "*"
+    "@deepseek-ai/dsh-api-gateway": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -54,6 +55,7 @@
     }
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.5.1",
     "tsdown": "^0.15.12",
     "typescript": "5.9.3"

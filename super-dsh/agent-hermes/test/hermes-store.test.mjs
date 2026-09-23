@@ -60,9 +60,12 @@ test("resolveHermesAppDir: last-resort default is <cwd>/.tests/aw", () => {
   }
 });
 
-test("resolveHermesAppDir: prod homes are refused", () => {
-  assert.throws(() => resolveHermesAppDir(join(homedir(), ".dsh")));
-  assert.throws(() => resolveHermesAppDir(join(homedir(), ".superd")));
+test("resolveHermesAppDir: prod homes resolve as plain paths (zero in-code guards)", () => {
+  // 2026-09-22 ruling: test discipline is enforced by the launcher/fixtures,
+  // never by business code — the old in-code prod-home refusals are gone, and
+  // an explicit home passes through untouched regardless of whose home it is.
+  assert.equal(resolveHermesAppDir(join(homedir(), ".dsh")), join(homedir(), ".dsh", "agents", "hermes"));
+  assert.equal(resolveHermesAppDir(join(homedir(), ".superd")), join(homedir(), ".superd", "agents", "hermes"));
 });
 
 test("upsertSession round-trips a record through the map file", () => {

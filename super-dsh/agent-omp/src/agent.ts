@@ -197,8 +197,10 @@ function userMessageText(message: UserMessage): string {
  * echo it into history as a fake user prompt. Detect and drop it.
  */
 function isApprovalNarration(message: UserMessage): boolean {
-  const source = message.source;
-  return source.kind === "plugin" && source.plugin === "user-approval";
+  // 0.1.7: the shared `plugin` source kind is gone (MessageSourceMap is
+  // merge-extensible; each producer declares its own kind) — user-approval
+  // now carries the dedicated `user-approval` kind.
+  return message.source.kind === "user-approval";
 }
 
 /**
@@ -588,7 +590,9 @@ export class OmpAgent implements Agent {
         // events (`turn must be positive`); native fresh sessions use 1/1 for the
         // node-0 system prompt. 0/0 made the native jsonl writer reject the whole
         // live batch, stalling every append before turn/start.
-        this.session.append("system/message", { turn: 1, step: 1, message: createSystemMessage(systemPrompt, "omp-web") }, { surfaceOp: "append" });
+        // 0.1.7: createSystemMessage dropped its origin parameter (the source
+        // kind is fixed at `system-prompt`).
+        this.session.append("system/message", { turn: 1, step: 1, message: createSystemMessage(systemPrompt) }, { surfaceOp: "append" });
       }
     }
   }

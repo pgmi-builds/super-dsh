@@ -32,7 +32,7 @@ export const WORLD_HUB_PLUGIN = '@pgmi-builds/agent-hub'
 
 /** One patch layer understood by the loader (structural; no app-boot import). */
 export type WorldPatchLayer =
-  | { id: string; disabled?: boolean; inject?: readonly string[] }
+  | { id: string; disabled?: boolean; inject?: readonly string[]; config?: Record<string, unknown> }
   | { insert: ReadonlyArray<{ id: string; name: string; config?: Record<string, unknown> }> }
 
 /**
@@ -52,7 +52,20 @@ export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
     throw new Error(`world-mount: invalid key ${JSON.stringify(key)}`)
   }
   return [
-    { id: 'webserver', disabled: true },
+    // 0.1.7 belt-and-braces: the composition provably carries `disabled: true`
+    // (SUPERD_TRACE dump), yet the live world audit still saw the row activate
+    // and bind the default 3080 — so pin the config to an EPHEMERAL loopback
+    // port too (the audited AW fixture shape: loopback-only, never
+    // user-facing). Honored disables bind nothing; ignored disables bind a
+    // throwaway socket instead of colliding with a real deployment port.
+    { id: 'webserver', disabled: true, config: { host: '127.0.0.1', port: 0 } },
+    // 0.1.7: with a profileContext provided (settings requires it), the base
+    // hmr row ENABLES itself in world trees (`disabled: !!js
+    // !ctx.get('profileContext')`) and its config reload then recomposes the
+    // tree from the profile layers alone — DROPPING the spawn-time
+    // worldMountPatches (webserver re-enabled on 3080, world rows gone).
+    // Worlds must stay hmr-less: their composition is a spawn-time fact.
+    { id: 'hmr', disabled: true },
     { id: 'modules', inject: ['webServer'] },
     { insert: [
       { id: WORLD_MOUNT_ROW_ID, name: WORLD_MOUNT_PLUGIN, config: { key } },

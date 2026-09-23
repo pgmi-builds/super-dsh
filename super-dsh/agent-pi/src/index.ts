@@ -51,8 +51,7 @@ import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session
 import { PiSessionClient } from "./pi-client.js";
 import { PiAgent, type PiAgentRuntimeInfo } from "./agent.js";
 import { PiLlmAdapter } from "./adapter.js";
-import { SinglePiPresetRoster } from "./agent-preset-pi.js";
-import { piAgentPresetProjection } from "./agent-preset-projection.js";
+import { registerPiPreset } from "./agent-preset-pi.js";
 import { resolvePiStateDir } from "./pi-home.js";
 import { sessionRecord, upsertSession } from "./session-map.js";
 import { warmPiCatalog, readPiModelCatalog, piProviderIds, resolvePiSelection, PI_PROVIDER_ID } from "./models.js";
@@ -143,14 +142,12 @@ export class PiProvider extends Service implements AgentFactory {
     // nesting it under a child fiber via ctx.plugin hides its @Remote routes
     // from the gateway and every agentPresets/* call 404s. Register it on
     // this plugin's own (top-level) fiber instead.
-    new SinglePiPresetRoster(ctx);
-    // Drive the `agentPreset` session projection ourselves: the upstream
-    // registrant lives in the (disabled) dsh-agent-presets package, but the
-    // Web UI gates the preset chip and header label on
-    // `projectionValues.agentPreset`.
-    ctx.inject(["sessionProjections"], (scoped: Context) => {
-      scoped.sessionProjections.register(piAgentPresetProjection);
-    });
+    // 0.1.7: roster/selection/document RPC + the `agentPreset` session
+    // projection all live in the host AgentPresetRegistry (mounted by the
+    // dsh-web-app bundle's `agent-preset-registry` row; the adapter patch
+    // pins its `default` to the Pi preset). The adapter only registers
+    // its one fixed preset into the registry.
+    registerPiPreset(ctx);
   }
 
   /**

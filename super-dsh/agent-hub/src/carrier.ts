@@ -5,12 +5,17 @@
  *  - Task 4: unary RPC — `/<label>/api/<endpoint>` decodes the connection
  *    envelope and dispatches into the ADDRESSED world's gateway instance.
  *  - Task 6: mux — `/<label>/api/remote.mux` upgrade bridged to the same
- *    instance (no shared selection anywhere).
+ *    instance (no shared selection anywhere). Wire protocol is dsh 0.1.7's
+ *    stream protocol incl. the client uplink (`item`/`end` frames).
  *  - 2026-09-17 (H1): non-envelope GET/HEAD on `/<label>/api` forwards into
  *    the owning world's registered exact Fetch routes — the world connection's
  *    shared `/api` handler, published from `world-entry` via `world-host` —
  *    still behind ctx0's fence, so `HEAD /<label>/api/session.export?...`
  *    reaches the world's session-log-download route.
+ *  - 2026-09-24: `/<label>/open-in-app/*` GETs bridge the same way — the
+ *    world page's open-in-app feature polls its host routes relative to the
+ *    mount base (`/omp/open-in-app/apps`), which live on the WORLD's
+ *    connection, not ctx0's.
  *
  * The addressed world is the request's path. Nothing here reads a global.
  */
@@ -25,11 +30,24 @@ import { stripLabelFromUrl, type RealWebServerFace, type WorldRequest, type Worl
 import { worldFetchHandlerOf } from './world-host.js'
 import { WorldMuxServer, type MuxFailure } from './world-mux.js'
 
-/** The two-method face of a world's typertGateway service instance. */
+/** The three-method face of a world's typertGateway service instance. */
 export interface CarrierGatewayFace {
   dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
-  /** Streams return an async iterable (upstream face is synchronous-returning). */
-  openWireStream(endpoint: string, payload: unknown, signal: AbortSignal): Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
+  /**
+   * Streams return an async iterable (upstream face is synchronous-returning).
+   * Canonical order: (endpoint, payload, uplink, peer, signal, control) — the
+   * carrier passes no peer (ctx0's fence already authenticated the client),
+   * the mux controller's signal, and the controller itself, exactly as the
+   * native gateway's mux wires its own streams.
+   */
+  openWireStream(
+    endpoint: string,
+    payload: unknown,
+    uplink: AsyncIterable<unknown>,
+    peer: undefined,
+    signal: AbortSignal,
+    control: AbortController,
+  ): Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
 }
 
 /** Options for mounting one world. */
@@ -265,9 +283,33 @@ export function mountWorld(options: MountWorldOptions): MountedWorld {
     handler: handleUnary as never,
   }))
 
-  // Mux: the world's own stream face behind the same mount prefix.
+  // The world page's open-in-app feature polls its host routes relative to the
+  // mount base (`/omp/open-in-app/apps`); those exact routes live on the
+  // WORLD's connection, so they bridge exactly like the non-envelope `/api`
+  // GETs — behind ctx0's fence, answered by the owning world.
+  const openInAppPath = `${labelPath}/open-in-app`
+  disposers.push(options.real.register({
+    kind: 'prefix',
+    path: openInAppPath,
+    handler: (async (req: WorldRequest, res: WorldResponse): Promise<void> => {
+      const rejection = options.requestRejection?.(req)
+      if (rejection !== undefined) {
+        writeText(res, rejection, rejection === 401 ? 'unauthorized' : 'forbidden')
+        return
+      }
+      await bridgeWorldFetch(req, res)
+    }) as never,
+  }))
+
+  // Mux: the world's own stream face behind the same mount prefix. The wire
+  // protocol is dsh 0.1.7's stream protocol — including the client uplink —
+  // and the world call uses the gateway's canonical argument order
+  // (endpoint, payload, uplink, peer, signal, control): the mux's controller
+  // supplies both the request signal and the logical-stream control.
   const mux = new WorldMuxServer(
-    (endpoint, payload, signal) => Promise.resolve(options.gateway.openWireStream(endpoint, payload, signal)),
+    (endpoint, payload, uplink, control) => Promise.resolve(
+      options.gateway.openWireStream(endpoint, payload, uplink, undefined, control.signal, control),
+    ),
     {
       ...(options.heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs: options.heartbeatIntervalMs }),
       ...(options.failure === undefined ? {} : { failure: options.failure }),

@@ -853,7 +853,7 @@ export class ClaudeAgent implements Agent {
       {
         turn: this.dashTurn,
         step: this.step,
-        message: createSystemMessage(text, "aw.agent-adapter-claude"),
+        message: createSystemMessage(text),
       },
       { surfaceOp: "append" },
     );

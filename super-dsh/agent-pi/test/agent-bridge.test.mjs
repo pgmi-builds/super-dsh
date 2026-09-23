@@ -138,7 +138,9 @@ test("a full prompt turn synthesizes turn/step/user/assistant/tool events with s
   assert.equal(call.data.name, "bash");
   assert.equal(call.data.arguments, JSON.stringify({ command: "ls" }));
   const result = events.find((e) => e.type === "tool/result");
-  assert.equal(result.data.message.content[0].toolCallId, call.data.callId);
+  // 0.1.7: tool results are first-class tool-role messages — the call identity
+  // lives on the message (message.toolCallId), not inside a content block.
+  assert.equal(result.data.message.toolCallId, call.data.callId);
   assert.equal(events.find((e) => e.type === "turn/end").data.reason.kind, "completed");
 });
 

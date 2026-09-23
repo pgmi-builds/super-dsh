@@ -1,62 +1,67 @@
 #!/usr/bin/env node
 /**
- * SinglePiPresetRoster — the one "Pi" mode the dsh Web UI's agent-preset
- * surfaces render (omp/codex test port): single default row, read-only
- * rejections, agentPresets namespace registration.
+ * The adapter's fixed Agent preset — 0.1.7 registry model.
+ *
+ * 0.1.7 moved roster/selection/document RPC + the `agentPreset` session
+ * projection into the host AgentPresetRegistry
+ * (@deepseek-ai/dsh-agent-preset-registry, mounted by the dsh-web-app
+ * bundle's `agent-preset-registry` row; the adapter patch pins
+ * `default: "pi"`). The adapter no longer implements the `agentPresets`
+ * service — the 0.1.6 SinglePiPresetRoster and its remote face are retired — it only
+ * REGISTERS one fixed, composition-less preset into the host registry.
+ * Covers the contract the Web surfaces need:
+ *
+ *   - the fixed preset declares exactly { id, name, description, plugins: [] }
+ *     (mounting it composes nothing — the foreign agent drives its own tools);
+ *   - registerPiPreset wires through ctx.inject(["agentPresets"]) and
+ *     registers that definition, tying the registry disposer to the fiber;
+ *   - disposing the effect unregisters (roster membership is plugin-load
+ *     scoped, never ambient).
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Context } from "@deepseek-ai/cordis";
-import { remoteMethods } from "@deepseek-ai/dsh-typert-protocol";
+const { PI_PRESET, registerPiPreset } = await import("../dist/agent-preset-pi.js");
 
-const { SinglePiPresetRoster } = await import("../dist/agent-preset-pi.js");
-
-function makeRoster() {
-  return new SinglePiPresetRoster(new Context());
+function makeHarness() {
+  const calls = { inject: [], effect: [], registered: [], unregistered: 0 };
+  const fakeRegistry = {
+    register: async (definition) => {
+      calls.registered.push(definition);
+      return async () => { calls.unregistered += 1; };
+    },
+  };
+  const ctx = {
+    inject: (services, cb) => { calls.inject.push(services); cb({ agentPresets: fakeRegistry }); },
+    effect: (fn, label) => { calls.effect.push({ fn, label }); },
+  };
+  return { calls, ctx };
 }
 
-test("registers under the agentPresets namespace for ctx.remote.agentPresets", () => {
-  const roster = makeRoster();
-  assert.equal(roster.name, "agentPresets");
-  assert.equal(roster.typertRemote.namespace, "agentPresets");
-  assert.equal(roster.typertRemote.serviceKey, "agentPresets");
-  const methods = remoteMethods(roster).map((m) => m.exportName ?? m.method);
-  assert.deepEqual(methods, ["list", "read", "copy", "deletePreset", "select"]);
-});
-
-test("list returns exactly one Pi row marked default, not authorable", async () => {
-  const roster = makeRoster();
-  const result = await roster.remoteList();
-  assert.equal(result.authorable, false);
-  assert.equal(result.presets.length, 1);
-  assert.deepEqual(result.presets[0], {
+test("fixed preset: composition-less, id/name/description published", () => {
+  assert.deepEqual({ ...PI_PRESET }, {
     id: "pi",
-    trust: "system",
-    isDefault: true,
     name: "Pi",
     description: "Pi agent via the agent-pi adapter",
+    plugins: [],
   });
 });
 
-test("copy and deletePreset are refused as read-only RemoteErrors", async () => {
-  const roster = makeRoster();
-  for (const call of [() => roster.remoteCopy("pi", "fork"), () => roster.remoteDelete("fork")]) {
-    await assert.rejects(
-      call,
-      (error) => {
-        assert.equal(error.code, "agent-preset/read-only");
-        assert.equal(error.isDSHRemoteError, true);
-        assert.equal(error.details.agentPreset, "fork");
-        return true;
-      },
-    );
-  }
-});
-
-test("select resolves the single mode and rejects unknown ids", async () => {
-  const roster = makeRoster();
-  assert.equal(await roster.remoteSelect({}, "pi"), "pi");
-  await assert.rejects(() => roster.remoteSelect({}, "nope"), (error) => error.code === "agent-preset/not-found");
-  await assert.rejects(() => roster.resolve("nope"), (error) => error.code === "agent-preset/not-found");
+test("registerPiPreset injects agentPresets and registers the fixed definition", async () => {
+  const { calls, ctx } = makeHarness();
+  registerPiPreset(ctx);
+  assert.deepEqual(calls.inject, [["agentPresets"]]);
+  assert.equal(calls.effect.length, 1, "the disposer is fiber-tied via ctx.effect");
+  // registration fires synchronously through the inject callback
+  assert.equal(calls.registered.length, 1);
+  assert.equal(calls.registered[0], PI_PRESET);
+  // unregister only after the fiber effect disposes
+  assert.equal(calls.unregistered, 0);
+  // let the register() promise's `.then` land before disposing
+  await new Promise((r) => setImmediate(r));
+  // cordis effect semantics: the callback is a factory whose return value is
+  // the fiber's dispose closure.
+  const dispose = calls.effect[0].fn();
+  await dispose();
+  assert.equal(calls.unregistered, 1);
 });

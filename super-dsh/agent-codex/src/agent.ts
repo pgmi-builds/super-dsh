@@ -33,6 +33,7 @@
  * turn-token fold (`deriveTurnTokenUsage`) refuses cross-turn samples
  * (plan RC-6: the old one-turn lag made every usage sample unprovable).
  */
+import type {} from "@deepseek-ai/dsh-user-approval";
 import type { Context } from "@deepseek-ai/cordis";
 import type {
   Agent,
@@ -264,8 +265,13 @@ function userMessageText(message: UserMessage): string {
  * Detect and drop it.
  */
 function isApprovalNarration(message: UserMessage): boolean {
-  const source = message.source;
-  return source.kind === "plugin" && source.plugin === "user-approval";
+  // 0.1.7: the shared `plugin` source kind is gone (MessageSourceMap is
+  // merge-extensible; each producer declares its own kind) — user-approval
+  // now carries the dedicated `user-approval` kind.
+  // Type-only: loads the `user-approval` MessageSourceMap augmentation
+  // (0.1.7: producer-owned source kinds; the shared `plugin` kind is gone).
+  // noinspection JSValidateTypes
+  return message.source.kind === "user-approval";
 }
 
 /**
@@ -627,7 +633,7 @@ export class CodexAgent implements Agent {
       {
         turn: this.#dashTurn,
         step: this.#step,
-        message: createSystemMessage(text, "aw.agent-adapter-codex"),
+        message: createSystemMessage(text),
       },
       { surfaceOp: "append" },
     );

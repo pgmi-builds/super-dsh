@@ -154,7 +154,9 @@ test("pathToClaudeCodeExecutable defaults to the host binary and honors CLAUDE_E
   try {
     const c1 = new ClaudeSdkClient({ cwd: "/w", claudeSessionId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" });
     await c1.prompt("hi");
-    assert.equal(defaultCalls[0].options.pathToClaudeCodeExecutable, "/home/u1/.local/bin/claude");
+    // Deliberate contract (claude-client.ts): the default is the BARE name,
+    // PATH-resolved like any host CLI — not a probed absolute path.
+    assert.equal(defaultCalls[0].options.pathToClaudeCodeExecutable, "claude");
     c1.close();
   } finally {
     if (saved === undefined) delete process.env.CLAUDE_EXECUTABLE;

@@ -1,108 +1,67 @@
 #!/usr/bin/env node
 /**
- * SingleHermesPresetRoster — the one "Hermes" mode the dsh Web UI's agent-preset
- * surfaces render. Covers the P1 contract (codex test port):
+ * The adapter's fixed Agent preset — 0.1.7 registry model.
  *
- *   - `list` returns exactly one row (id "hermes", trust "system", isDefault
- *     true, name "Hermes") plus `authorable: false`;
- *   - The rejection methods (`copy`, `deletePreset`) fail as `RemoteError`s
- *     with the stable `agent-preset/read-only` code and typed details;
- *   - The service registers under the `agentPresets` namespace.
+ * 0.1.7 moved roster/selection/document RPC + the `agentPreset` session
+ * projection into the host AgentPresetRegistry
+ * (@deepseek-ai/dsh-agent-preset-registry, mounted by the dsh-web-app
+ * bundle's `agent-preset-registry` row; the adapter patch pins
+ * `default: "hermes"`). The adapter no longer implements the `agentPresets`
+ * service — the 0.1.6 SingleHermesPresetRoster and its remote face are retired — it only
+ * REGISTERS one fixed, composition-less preset into the host registry.
+ * Covers the contract the Web surfaces need:
+ *
+ *   - the fixed preset declares exactly { id, name, description, plugins: [] }
+ *     (mounting it composes nothing — the foreign agent drives its own tools);
+ *   - registerHermesPreset wires through ctx.inject(["agentPresets"]) and
+ *     registers that definition, tying the registry disposer to the fiber;
+ *   - disposing the effect unregisters (roster membership is plugin-load
+ *     scoped, never ambient).
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Context } from "@deepseek-ai/cordis";
-import { remoteMethods } from "@deepseek-ai/dsh-typert-protocol";
+const { HERMES_PRESET, registerHermesPreset } = await import("../dist/agent-preset-hermes.js");
 
-const { SingleHermesPresetRoster } = await import("../dist/agent-preset-hermes.js");
-
-function makeRoster() {
-  return new SingleHermesPresetRoster(new Context());
+function makeHarness() {
+  const calls = { inject: [], effect: [], registered: [], unregistered: 0 };
+  const fakeRegistry = {
+    register: async (definition) => {
+      calls.registered.push(definition);
+      return async () => { calls.unregistered += 1; };
+    },
+  };
+  const ctx = {
+    inject: (services, cb) => { calls.inject.push(services); cb({ agentPresets: fakeRegistry }); },
+    effect: (fn, label) => { calls.effect.push({ fn, label }); },
+  };
+  return { calls, ctx };
 }
 
-test("registers under the agentPresets namespace for ctx.remote.agentPresets", () => {
-  const roster = makeRoster();
-  assert.equal(roster.name, "agentPresets");
-  assert.equal(roster.typertRemote.namespace, "agentPresets");
-  assert.equal(roster.typertRemote.serviceKey, "agentPresets");
-  const methods = remoteMethods(roster).map((m) => m.exportName ?? m.method);
-  assert.deepEqual(methods, ["list", "read", "copy", "deletePreset", "select"]);
-});
-
-test("list returns exactly one Hermes row marked default, not authorable", async () => {
-  const roster = makeRoster();
-  const result = await roster.remoteList();
-  assert.equal(result.authorable, false);
-  assert.equal(result.presets.length, 1);
-  assert.deepEqual(result.presets[0], {
+test("fixed preset: composition-less, id/name/description published", () => {
+  assert.deepEqual({ ...HERMES_PRESET }, {
     id: "hermes",
-    trust: "system",
-    isDefault: true,
     name: "Hermes",
     description: "Hermes agent via the agent-hermes adapter",
+    plugins: [],
   });
 });
 
-test("copy is refused as a read-only RemoteError with typed details", async () => {
-  const roster = makeRoster();
-  await assert.rejects(
-    () => roster.remoteCopy("hermes", "fork"),
-    (error) => {
-      assert.equal(error.code, "agent-preset/read-only");
-      assert.equal(error.isDSHRemoteError, true);
-      assert.equal(error.details.agentPreset, "fork");
-      assert.equal(typeof error.details.reason, "string");
-      return true;
-    },
-  );
-});
-
-test("delete is refused as a read-only RemoteError with typed details", async () => {
-  const roster = makeRoster();
-  await assert.rejects(
-    () => roster.remoteDelete("hermes"),
-    (error) => {
-      assert.equal(error.code, "agent-preset/read-only");
-      assert.equal(error.isDSHRemoteError, true);
-      assert.equal(error.details.agentPreset, "hermes");
-      assert.equal(typeof error.details.reason, "string");
-      return true;
-    },
-  );
-});
-
-test("read serves the Hermes document and refuses an unknown id as not-found", async () => {
-  const roster = makeRoster();
-  const doc = await roster.remoteRead("hermes");
-  assert.equal(doc.agentPreset, "hermes");
-  assert.equal(doc.trust, "system");
-  assert.equal(doc.name, "Hermes");
-  assert.equal(doc.description, "Hermes agent via the agent-hermes adapter");
-  assert.equal(typeof doc.content, "string");
-
-  await assert.rejects(
-    () => roster.remoteRead("nope"),
-    (error) => error.code === "agent-preset/not-found",
-  );
-});
-
-test("select acks the single preset and refuses an unknown id as not-found", async () => {
-  const roster = makeRoster();
-  assert.equal(await roster.remoteSelect({}, "hermes"), "hermes");
-  await assert.rejects(
-    () => roster.remoteSelect({}, "nope"),
-    (error) => error.code === "agent-preset/not-found",
-  );
-});
-
-test("projection defaults every session to hermes and folds selection events", async () => {
-  const { hermesAgentPresetProjection } = await import("../dist/agent-preset-projection.js");
-  assert.equal(hermesAgentPresetProjection.key, "agentPreset");
-  assert.equal(hermesAgentPresetProjection.init({}, 0), "hermes");
-  assert.equal(hermesAgentPresetProjection.init({ agentPreset: "hermes" }, 0), "hermes");
-  const next = hermesAgentPresetProjection.apply(null, { type: "agent-preset/selected", data: { agentPreset: "hermes" } });
-  assert.equal(next, "hermes");
-  assert.equal(hermesAgentPresetProjection.apply("hermes", { type: "turn/start", data: {} }), "hermes", "unrelated events keep the reference");
-  assert.deepEqual(hermesAgentPresetProjection.wire.view("hermes"), "hermes");
+test("registerHermesPreset injects agentPresets and registers the fixed definition", async () => {
+  const { calls, ctx } = makeHarness();
+  registerHermesPreset(ctx);
+  assert.deepEqual(calls.inject, [["agentPresets"]]);
+  assert.equal(calls.effect.length, 1, "the disposer is fiber-tied via ctx.effect");
+  // registration fires synchronously through the inject callback
+  assert.equal(calls.registered.length, 1);
+  assert.equal(calls.registered[0], HERMES_PRESET);
+  // unregister only after the fiber effect disposes
+  assert.equal(calls.unregistered, 0);
+  // let the register() promise's `.then` land before disposing
+  await new Promise((r) => setImmediate(r));
+  // cordis effect semantics: the callback is a factory whose return value is
+  // the fiber's dispose closure.
+  const dispose = calls.effect[0].fn();
+  await dispose();
+  assert.equal(calls.unregistered, 1);
 });

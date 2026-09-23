@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawnWorld } from '../dist/index.js'
 import { boot } from '@deepseek-ai/dsh-app-boot'
 
@@ -18,15 +18,27 @@ const HOME = process.env.AW_TEST_HOME ?? join(REPO, '.tests', 'hub-test-home')
 const SRC_PROFILE = join(REPO, '.tests', 'profiles', 'ctx1-min')
 
 // bootstrap: ctx1-min profile into the isolated home; strip the fixture's
-// stale node_modules (self-referential farm links) and heal a fresh fallback
-// farm from the anchor — the same resolution shape every real boot uses.
+// stale node_modules (self-referential farm links). 0.1.7 alignment: the
+// heal family (healProfilesModuleFallback) is GONE from dsh-app-boot — the
+// launcher computes a runtime resolution table and intercepts imports
+// in-process, writing no links. This test drives boot() directly (no
+// launcher), and spawnWorld resolves bare plugin names as URLs under
+// HOME/profiles/node_modules, so project the resolution entries onto that
+// farm ourselves — the same package table the launcher would intercept with.
 if (!existsSync(SRC_PROFILE)) throw new Error(`source profile missing: ${SRC_PROFILE}`)
 mkdirSync(join(HOME, 'profiles'), { recursive: true })
 cpSync(SRC_PROFILE, join(HOME, 'profiles', 'ctx1-min'), { recursive: true, verbatimSymlinks: true })
-const { rmSync } = await import('node:fs')
+const { rmSync, symlinkSync } = await import('node:fs')
 rmSync(join(HOME, 'profiles', 'ctx1-min', 'node_modules'), { recursive: true, force: true })
-const { healProfilesModuleFallback } = await import('@deepseek-ai/dsh-app-boot')
-await healProfilesModuleFallback({ installAnchor: ANCHOR, home: HOME })
+const { createRuntimeResolution } = await import('@deepseek-ai/dsh-app-boot')
+const resolution = await createRuntimeResolution({ installAnchor: ANCHOR, home: HOME })
+const FARM = join(HOME, 'profiles', 'node_modules')
+for (const entry of resolution.entries) {
+  const dest = join(FARM, entry.name)
+  if (existsSync(dest)) rmSync(dest, { force: true })
+  mkdirSync(dirname(dest), { recursive: true })
+  symlinkSync(entry.packageDir, dest, 'dir')
+}
 // minimal cordis.yml for ctx0
 const { writeFileSync } = await import('node:fs')
 mkdirSync(join(HOME, 'profiles', 'ctx0-min'), { recursive: true })

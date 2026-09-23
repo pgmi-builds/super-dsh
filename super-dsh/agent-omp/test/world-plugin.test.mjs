@@ -2,18 +2,45 @@
 // target registration. Real dsh tree; requires SUPERD_DSH_ANCHOR.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, symlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
+// Red line: pin the ambient DSH home to the test tree BEFORE anything
+// resolves it (provision/join default to resolveDshHome() = ~/.dsh when the
+// env is unset — the 0.1.6-era tests silently provisioned into the prod home
+// farm; never again).
 const ANCHOR = process.env.SUPERD_DSH_ANCHOR
-const HOME = process.env.DSH_HOME ?? '/home/u1/workspaces/superd/.tests/aw'
+// An ambient DSH_HOME inherited from a host dsh.service session points at the
+// PROD home — treat that as unset (this suite runs from agent shells inside
+// dsh.service). Explicit non-prod values are honored.
+const __prodHomes = new Set(['/home/u1/.dsh', '/home/u1/.superd'])
+const HOME = !process.env.DSH_HOME || __prodHomes.has(process.env.DSH_HOME)
+  ? '/home/u1/workspaces/superd/.tests/aw'
+  : process.env.DSH_HOME
+if (process.env.DSH_HOME !== HOME) {
+  process.stderr.write(`[world-plugin] ignoring prod DSH_HOME=${process.env.DSH_HOME}; using ${HOME}\n`)
+}
+process.env.DSH_HOME = HOME
 const OMP_HOME = join(HOME, 'agents', 'omp')
 
-// provision @pgmi-builds scope beside heal's @deepseek-ai in the profile tree
+// provision @pgmi-builds scope in the profile tree (0.1.7: nothing heals a
+// profiles-level @deepseek-ai farm anymore — healProfilesModuleFallback is
+// gone — so project the runtime resolution there ourselves).
+const REPO = '/home/u1/workspaces/superd'
+const ANCHOR_PATH = ANCHOR ?? join(REPO, 'upstream/deepseek-harness/apps/cli/package.json')
 const pm = join(HOME, 'profiles', 'node_modules', '@pgmi-builds')
 mkdirSync(pm, { recursive: true })
 const dst = join(pm, 'agent-adapter-omp')
-if (!existsSync(dst)) symlinkSync('/home/u1/workspaces/superd/super-dsh/agent-omp', dst)
+rmSync(dst, { force: true })
+symlinkSync(join(REPO, 'super-dsh/agent-omp'), dst)
+const { createRuntimeResolution } = await import('@deepseek-ai/dsh-app-boot')
+const __resolution = await createRuntimeResolution({ installAnchor: ANCHOR_PATH, home: HOME })
+for (const entry of __resolution.entries) {
+  const dest = join(HOME, 'profiles', 'node_modules', entry.name)
+  if (existsSync(dest)) rmSync(dest, { force: true })
+  mkdirSync(dirname(dest), { recursive: true })
+  symlinkSync(entry.packageDir, dest, 'dir')
+}
 process.env.AW_BARE_BASE = join(HOME, 'profiles', 'node_modules') + '/'
 process.env.OMP_HOME = OMP_HOME
 mkdirSync(OMP_HOME, { recursive: true })
@@ -23,7 +50,26 @@ test('aw.agent-adapter-omp: activation = roster + world spawn + gateway target',
   assert.equal(name, 'aw.agent-adapter-omp')
   const routing = await import('@pgmi-builds/agent-hub')
   const provided = {}
-  apply({ provide: (k, v) => { provided[k] = v } })
+  // The plugin awaits `ctx.inject(['webServer', 'connection'], ...)` for the
+  // ctx0 listening stack; the test plays the host: a structural fake webServer
+  // (same shape as agent-hub/test/world-mount.test.mjs) + connection fences.
+  function fakeReal() {
+    return {
+      routes: new Map(), upgrades: new Map(), fallback: undefined,
+      register(route) { const id = `${route.kind}:${route.path}`; this.routes.set(id, route); return () => this.routes.delete(id) },
+      registerUpgrade(route) { this.upgrades.set(route.path, route); return () => this.upgrades.delete(route.path) },
+      registerFallback(handler) { this.fallback = handler; return () => { this.fallback = undefined } },
+    }
+  }
+  const fakeHost = {
+    webServer: fakeReal(),
+    connection: { authorizeIndex: () => true, requestRejection: () => undefined },
+  }
+  apply({
+    provide: (k, v) => { provided[k] = v },
+    inject: (_services, cb) => { cb(fakeHost) },
+    effect: () => {},
+  })
   // readiness flips only when the world's gateway is live — await it first
   const ctxW = await provided['aw.world.omp']
   try {

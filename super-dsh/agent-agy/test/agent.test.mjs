@@ -234,13 +234,15 @@ test("every tool_call gets the transparency placeholder result in DSH storage", 
   assert.equal(calls.length, 3);
   assert.equal(results.length, 3, "every call paired at turn end");
   for (const r of results) {
+    // 0.1.7: tool results are first-class tool-role messages — raw content
+    // blocks on the message, call identity on message.toolCallId (no
+    // wrapping `tool-result` block anymore).
     const msg = r.data.message;
-    const block = msg.content.find((b) => b.type === "tool-result");
-    const text = block.content.find((b) => b.type === "text").text;
+    const text = msg.content.find((b) => b.type === "text").text;
     assert.match(text, /Antigravity SDK does not expose tool execution results/);
-    assert.equal(block.isError, false);
+    assert.equal(msg.isError, false);
   }
   // every call's callId got a paired result
   const callIds = new Set(calls.map((e) => JSON.stringify(e.data.callId)));
-  for (const r of results) assert.ok(callIds.has(JSON.stringify(r.data.message.source.callId)), "pairing by callId");
+  for (const r of results) assert.ok(callIds.has(JSON.stringify(r.data.message.toolCallId)), "pairing by callId");
 });

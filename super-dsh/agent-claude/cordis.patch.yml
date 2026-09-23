@@ -9,8 +9,12 @@
   disabled: true
 - id: llm-pi-ai
   disabled: true
-- id: agent-presets
-  disabled: true
+# 0.1.7: the host AgentPresetRegistry row (renamed `agent-presets` ->
+# `agent-preset-registry`) stays MOUNTED — the adapter registers its one
+# fixed preset into it (src/agent-preset-claude.ts); pin only the default.
+- id: agent-preset-registry
+  config:
+    default: claude
 
 # The upstream jsonl persistence row STAYS MOUNTED: the provider owns the DSH
 # session log write channel, so list/read/replay are ordinary DSH services.

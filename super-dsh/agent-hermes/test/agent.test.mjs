@@ -111,7 +111,9 @@ test("convertContent maps text/thinking/toolCall and drops unknown blocks", () =
     { type: "image", url: "x" },
   ];
   const out = convertContent(blocks);
-  assert.deepEqual(out.map((b) => b.type), ["text", "reasoning", "tool-call"]);
+  // Deliberate 2026-09-23 behavior: reasoning hoists BEFORE text (the native
+  // stream emits thinking first; array order would draw it after the reply).
+  assert.deepEqual(out.map((b) => b.type), ["reasoning", "text", "tool-call"]);
   assert.deepEqual(out[2], { type: "tool-call", id: "t1", name: "bash", arguments: "{\"cmd\":\"ls\"}" });
   assert.deepEqual(convertContent(undefined), []);
 });

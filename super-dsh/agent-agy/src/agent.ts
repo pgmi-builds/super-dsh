@@ -419,7 +419,7 @@ export class AgyAgent implements Agent {
     if (!this.turnOpen) return;
     this.session.append(
       "system/message",
-      { turn: this.dashTurn, step: this.step, message: createSystemMessage(text, "aw.agent-adapter-agy") },
+      { turn: this.dashTurn, step: this.step, message: createSystemMessage(text) },
       { surfaceOp: "append" },
     );
   }

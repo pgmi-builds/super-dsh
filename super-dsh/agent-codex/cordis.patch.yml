@@ -31,8 +31,12 @@
 
 # Codex is single-mode: the SDK thread drives tools itself, so no Dash preset
 # composition is needed (the provider ships the fixed single-preset roster).
-- id: agent-presets
-  disabled: true
+# 0.1.7: the host AgentPresetRegistry row (renamed `agent-presets` ->
+# `agent-preset-registry`) stays MOUNTED — the adapter registers its one
+# fixed preset into it (src/agent-preset-codex.ts); pin only the default.
+- id: agent-preset-registry
+  config:
+    default: codex
 
 # The upstream jsonl persistence row STAYS MOUNTED (2026-09-16): the provider
 # writes the DSH session log through it (create/open/append/close), so

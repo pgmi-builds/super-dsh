@@ -14,8 +14,10 @@
  * `@deepseek-ai/*` fallback farm into `<home>/profiles/node_modules` from
  * the install anchor (single instance — same physical installation).
  */
-import { loadProfile, boot } from '@deepseek-ai/dsh-app-boot'
+import { loadProfile, boot, composeEntries, type ProfileContext } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
+import { dump } from 'js-yaml'
+import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -49,18 +51,39 @@ export interface SpawnWorldOptions {
   bareModuleBaseUrl?: string
 }
 
-const EMPTY_ROOT = '[]\n'
 
 export async function spawnWorld(opts: SpawnWorldOptions) {
   const profile = loadProfile(opts.appName, opts.profileName, opts.installAnchor, opts.home)
-  // Empty include root: the tree is composed entirely as patch layers
-  // (bundle rows in profile order + profile patch + extras).
-  writeFileSync(join(profile.dir, 'cordis.yml'), EMPTY_ROOT)
-  const patches = [
-    ...profile.layers.flatMap((l) => l.patches),
-    ...profile.patches,
-    ...(opts.extraPatches ?? []),
-  ]
+  // THE FILE IS THE COMPOSITION (0.1.7 alignment): compose every layer
+  // (bundle patches in profile order + profile patch + spawn extras like
+  // worldMountPatches) ONCE here and write the FINAL row list into the
+  // include file. Boot mounts it with NO patch stream. Rationale: the
+  // include's runtime patch application provably dropped the spawn-time
+  // worldMountPatches in nested boots (webserver re-enabled on 3080, world
+  // rows gone — 2026-09-24 alignment evidence), while the composition itself
+  // is deterministic and dumpable with the loader's own dialect (`!!js`
+  // preserved via entryListSchema).
+  const composed = composeEntries(profile.layers.map((l) => l.patches).concat([profile.patches, ...(opts.extraPatches ?? [])]), () => {})
+  writeFileSync(
+    join(profile.dir, 'cordis.yml'),
+    dump(composed, { schema: entryListSchema, noRefs: true, lineWidth: -1 }) + '\n',
+  )
+  const patches: Parameters<typeof boot>[2] = []
+  if (process.env.SUPERD_TRACE === '1') {
+    // Alignment diagnostics: what the world tree will actually compose.
+    try {
+      const rows = composed
+      const pick = (id: string) => rows.find((r) => r.id === id)
+      for (const id of ['webserver', 'hmr', 'modules', 'aw-world-mount', 'aw-agent-hub', 'agent-preset-registry']) {
+        const row = pick(id)
+        process.stderr.write(`[spawn-world:${opts.appName}] ${id}: ${row === undefined ? 'ABSENT' : JSON.stringify({ disabled: row.disabled, inject: 'inject' in row ? row.inject : undefined, name: row.name })}\n`)
+      }
+      process.stderr.write(`[spawn-world:${opts.appName}] composed rows: ${rows.length}\n`)
+      process.stderr.write(`[spawn-world:${opts.appName}] patches tail: ${JSON.stringify(patches.slice(-3).map((p) => p.id ?? (Array.isArray(p.insert) ? `insert(${p.insert.length})` : '?')))}\n`)
+    } catch (cause) {
+      process.stderr.write(`[spawn-world:${opts.appName}] trace compose failed: ${String(cause)}\n`)
+    }
+  }
   // Bare plugin names resolve from the installation's node_modules (the
   // anchor owns the complete plugin closure). Same cordis on both sides —
   // no cross-copy Symbol split.
@@ -79,10 +102,35 @@ export async function spawnWorld(opts: SpawnWorldOptions) {
     .split(/[\s,]+/).filter(Boolean)
     .flatMap((h) => ['--trusted-host', h])
   let fiber: { dispose(): unknown } | undefined
+  // Launcher parity (0.1.7): a profileContext-carrying tree runs the profile
+  // HMR row, whose init REQUIRES the appReady service (otherwise "Profile HMR
+  // requires application readiness"). The launcher owns the readiness signal
+  // and commits it after boot settles — worlds do the same inline.
+  let appReadyCommitted = false
+  const appReadyListeners = new Set<() => void>()
+  const appReady = {
+    service: {
+      onReady(listener: () => void): () => void {
+        if (appReadyCommitted) {
+          listener()
+          return () => {}
+        }
+        appReadyListeners.add(listener)
+        return () => { appReadyListeners.delete(listener) }
+      },
+    },
+    commit(): void {
+      if (appReadyCommitted) return
+      appReadyCommitted = true
+      for (const listener of [...appReadyListeners]) listener()
+      appReadyListeners.clear()
+    },
+  }
   const ctxW = await boot(opts.appName, join(profile.dir, 'cordis.yml'), patches, (ctx) => {
     provideCmdline(ctx, {
       args: ['--no-open', ...trusted],
       exit: () => { void fiber?.dispose() },
+      ready: appReady.service,
     })
     // This tree reads its own home from here on: sessions, settings.yaml,
     // workspace store — all under the world's nested root.
@@ -97,7 +145,27 @@ export async function spawnWorld(opts: SpawnWorldOptions) {
       const dataHome = opts.dataHome
       ctx.set('dshHomePath', (...segments: string[]) => join(dataHome, ...segments))
     }
+    // 0.1.7: profile-mounted services (settings …) inject `profileContext`,
+    // which only runProfile's prepare slot used to provide. Worlds boot
+    // directly, so provide the equivalent here — without it every world's
+    // provider row pends on `waiting for service: settings`. This also arms
+    // the row-admission compatibility preflight inside world trees (it no-ops
+    // without a profileContext, which would leave world rows unjudged).
+    ctx.provide('profileContext', {
+      name: opts.appName,
+      dir: profile.dir,
+      patchPath: profile.patchPath,
+      installAnchor: opts.installAnchor,
+      cwd: process.cwd(),
+      home: opts.home,
+      startedBundles: profile.layers.map((l) => l.packageName),
+      overlays: profile.patches,
+      telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED,
+    })
   }, bareModuleBaseUrl)
   fiber = ctxW.fiber
+  // Launcher parity: commit readiness only when the world tree actually
+  // settled with a Loader (runProfile's same condition).
+  if (ctxW.get('loader') !== undefined) appReady.commit()
   return ctxW
 }

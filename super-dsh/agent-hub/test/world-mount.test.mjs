@@ -4,8 +4,8 @@
 // webServer — while the RPC channel (/api*) stays with the hub.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cpSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { spawnWorld, registerHostMount, worldServerOf, worldMountPatches } from '../dist/index.js'
 import { WorldWebServer } from '../dist/world-web-server.js'
 
@@ -46,6 +46,50 @@ async function waitFor(check, timeoutMs = 5000) {
 test('a world with no listener mounts its whole surface under /<label> on ctx0', async () => {
   mkdirSync(join(HOME, 'profiles'), { recursive: true })
   cpSync(FIXTURE, join(HOME, 'profiles', PROFILE), { recursive: true })
+  // 0.1.7: resolveBundleDir consults only the installation anchor and the
+  // profile's own directory — materialize the fixture's `file:` dependency
+  // profile-locally (what `dsh plugin --profile X install` would do).
+  const scopeDir = join(HOME, 'profiles', PROFILE, 'node_modules', '@pgmi-builds')
+  mkdirSync(scopeDir, { recursive: true })
+  const adapterLink = join(scopeDir, 'agent-adapter-omp')
+  rmSync(adapterLink, { recursive: true, force: true })
+  symlinkSync(join(REPO, 'super-dsh', 'agent-omp'), adapterLink, 'dir')
+  // 0.1.7 boots the credentials file eagerly — pin every home-reading row to
+  // the test home (the same list provisionWorldProfile writes for real
+  // worlds; without this the world root would touch the PROD ~/.dsh).
+  appendFileSync(
+    join(HOME, 'profiles', PROFILE, 'cordis.patch.yml'),
+    ['# test-home pinning (provision parity): keep the world out of prod homes.',
+     ...['settings', 'credentials', 'attachment-local', 'shell-env', 'skill-filesystem']
+       .flatMap((id) => [`- id: ${id}`, '  config:', `    dshHome: ${HOME}`]),
+     '',
+    ].join('\n'),
+  )
+  // The row imports (`@pgmi-builds/agent-hub[/world]`, the adapter) resolve as
+  // URLs under the bare module base — the profiles-level farm provisionWorld
+  // maintains on the real line; this test bypasses provision, so link here.
+  const bareScope = join(HOME, 'profiles', 'node_modules', '@pgmi-builds')
+  mkdirSync(bareScope, { recursive: true })
+  for (const [name, target] of [
+    ['agent-adapter-omp', join(REPO, 'super-dsh', 'agent-omp')],
+    ['agent-hub', join(REPO, 'super-dsh', 'agent-hub')],
+  ]) {
+    const dst = join(bareScope, name)
+    rmSync(dst, { recursive: true, force: true })
+    symlinkSync(target, dst, 'dir')
+  }
+  // 0.1.7: the launcher no longer heals a profiles-level @deepseek-ai farm
+  // (healProfilesModuleFallback is gone; interception replaced it), but this
+  // test's spawnWorld resolves bare plugin names as URLs under
+  // HOME/profiles/node_modules — project the runtime resolution there.
+  const { createRuntimeResolution } = await import('@deepseek-ai/dsh-app-boot')
+  const resolution = await createRuntimeResolution({ installAnchor: ANCHOR, home: HOME })
+  for (const entry of resolution.entries) {
+    const dest = join(HOME, 'profiles', 'node_modules', entry.name)
+    if (existsSync(dest)) rmSync(dest, { force: true })
+    mkdirSync(dirname(dest), { recursive: true })
+    symlinkSync(entry.packageDir, dest, 'dir')
+  }
   const real = fakeReal()
   const dropMount = registerHostMount({ key: 'omp', labelPath: '/omp', real })
 

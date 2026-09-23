@@ -41,8 +41,7 @@ import {
 import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session-persistence";
 import { AgyBridgeClient } from "./agy-client.js";
 import { AgyCliClient } from "./agy-cli-client.js";
-import { SingleAgyPresetRoster } from "./agent-preset-agy.js";
-import { agyAgentPresetProjection } from "./agent-preset-projection.js";
+import { registerAntigravityPreset } from "./agent-preset-agy.js";
 import type { LiveAgyClient } from "./agent.js";
 import { readAdapterState, writeAdapterState, readNativeDefaultModel, hasAdcEvidence, readGcloudProject } from "./agy-store.js";
 import { AgyLlmAdapter, AGY_PROVIDER_ID } from "./adapter.js";
@@ -145,11 +144,12 @@ export class AgyProvider extends Service implements AgentFactory {
     ctx.effect(() => ctx.agents.setFactory(this), "agyProvider.setFactory()");
     // The roster must be visible to the API gateway's root-level remote
     // enumeration; register it on this plugin's own (top-level) fiber.
-    new SingleAgyPresetRoster(ctx);
-    // Drive the `agentPreset` session projection ourselves.
-    ctx.inject(["sessionProjections"], (scoped: Context) => {
-      scoped.sessionProjections.register(agyAgentPresetProjection);
-    });
+    // 0.1.7: roster/selection/document RPC + the `agentPreset` session
+    // projection all live in the host AgentPresetRegistry (mounted by the
+    // dsh-web-app bundle's `agent-preset-registry` row; the adapter patch
+    // pins its `default` to the Antigravity preset). The adapter only registers
+    // its one fixed preset into the registry.
+    registerAntigravityPreset(ctx);
     this.registerModelCatalog();
     this.registerDefaultModel();
   }

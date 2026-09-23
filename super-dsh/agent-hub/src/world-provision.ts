@@ -182,6 +182,13 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): string | n
   // attachments, shell env and skills all land inside `agents/<key>/`.
   // (`agent-instructions` keeps its base `maxBytes` home — instruction
   // discovery root, not agent data.)
+  //
+  // 0.1.7: the profile hmr row arms itself wherever a profileContext exists,
+  // and its config reload recomposes the tree from THE PROFILE LAYERS ALONE —
+  // spawn-time extraPatches do not survive it. The zero-listener posture is
+  // therefore PERSISTED in this layer (webserver disabled + ephemeral port,
+  // hmr itself off — a world's composition is a spawn-time fact and must not
+  // be re-derived), exactly mirroring worldMountPatches.
   writeFileSync(
     join(profDir, 'cordis.patch.yml'),
     [
@@ -189,24 +196,41 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): string | n
       ...['settings', 'credentials', 'attachment-local', 'shell-env', 'skill-filesystem'].flatMap(
         (id) => [`- id: ${id}`, '  config:', '    dshHome: !!js dshHomePath()'],
       ),
+      '# Zero-listener posture (0.1.7): persisted so hmr/launcher recomposition',
+      '# cannot re-enable the world\'s own listener (default port 3080).',
+      '- id: webserver',
+      '  disabled: true',
+      '  config:',
+      '    host: 127.0.0.1',
+      '    port: 0',
+      '- id: hmr',
+      '  disabled: true',
       '',
     ].join('\n'),
   )
-  // @pgmi-builds links for the world tree's bare-name resolution (profile
-  // bundles + the inserted mount rows). Dangling links first (lstat:
-  // existsSync is false for them, which skipped rmSync and crashed
-  // symlinkSync with EEXIST after repo moves).
-  const linkRoot = join(opts.worldHome, 'profiles', 'node_modules')
-  mkdirSync(join(linkRoot, HUB_SCOPE), { recursive: true })
+  // @pgmi-builds links: adapter + hub, one pair into the world profile's OWN
+  // node_modules (0.1.7: resolveBundleDir consults ONLY the installation
+  // anchor and the profile directory — the old profiles-level farm fallback
+  // is gone, so the adapter's bundle layer must resolve profile-locally), one
+  // pair into the profiles-level farm for the bareModuleBaseUrl row surface.
+  // Dangling links first (lstat: existsSync is false for them, which skipped
+  // rmSync and crashed symlinkSync with EEXIST after repo moves).
   const links: ReadonlyArray<readonly [string, string]> = [
     [opts.adapterPkg.slice(HUB_SCOPE.length + 1), adapterDir],
     ['agent-hub', hubRoot],
   ]
-  for (const [name, target] of links) {
-    const dst = join(linkRoot, HUB_SCOPE, name)
-    const st = lstatSync(dst, { throwIfNoEntry: false })
-    if (st) rmSync(dst, { recursive: true, force: true })
-    symlinkSync(target, dst)
+  const linkRoots = [
+    join(profDir, 'node_modules'),
+    join(opts.worldHome, 'profiles', 'node_modules'),
+  ]
+  for (const root of linkRoots) {
+    mkdirSync(join(root, HUB_SCOPE), { recursive: true })
+    for (const [name, target] of links) {
+      const dst = join(root, HUB_SCOPE, name)
+      const st = lstatSync(dst, { throwIfNoEntry: false })
+      if (st) rmSync(dst, { recursive: true, force: true })
+      symlinkSync(target, dst)
+    }
   }
   // The harness scope for the world tree is a REAL scope directory of
   // per-package symlinks UNIONED from two authoritative sources (farm first,
@@ -222,7 +246,7 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): string | n
     join(dirname(ANCHOR), 'node_modules', HARNESS_SCOPE),
     ...workspaceHarnessScopes(dirname(ANCHOR)),
   ]
-  const scopeDst = join(linkRoot, HARNESS_SCOPE)
+  const scopeDst = join(opts.worldHome, 'profiles', 'node_modules', HARNESS_SCOPE)
   rmSync(scopeDst, { recursive: true, force: true })
   mkdirSync(scopeDst, { recursive: true })
   const linked = new Set<string>()

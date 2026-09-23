@@ -11,15 +11,22 @@
 // and setReady.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
-const REPO = join(new URL('../../../..', import.meta.url).pathname)
-const HOME = process.env.DSH_HOME ?? join(REPO, '.tests')
-// Red line: never boot a world against the prod home.
-if (HOME === join(homedir(), '.dsh') || HOME === join(homedir(), '.superd')) {
-  throw new Error(`world-plugin smoke refuses prod DSH_HOME: ${HOME}`)
+// Three levels up: test/ -> agent-hermes -> super-dsh -> repo root.
+// (Four was the apps/agent-worlds era depth; stale since the 2026-09-22 reshuffle.)
+const REPO = join(new URL('../../..', import.meta.url).pathname)
+// Red line: never boot a world against the prod home. An ambient DSH_HOME
+// inherited from a host dsh.service session points at prod — treat that as
+// unset (the suite runs from agent shells inside dsh.service).
+const __prodHomes = new Set([join(homedir(), '.dsh'), join(homedir(), '.superd')])
+const HOME = !process.env.DSH_HOME || __prodHomes.has(process.env.DSH_HOME)
+  ? join(REPO, '.tests')
+  : process.env.DSH_HOME
+if (process.env.DSH_HOME !== HOME) {
+  process.stderr.write(`[world-plugin] ignoring prod DSH_HOME=${process.env.DSH_HOME}; using ${HOME}\n`)
 }
 process.env.DSH_HOME = HOME
 const HERMES_WORLD = join(HOME, 'agents', 'hermes')
@@ -41,7 +48,19 @@ for (const [name, target] of Object.entries({
   'agent-adapter-hermes': join(REPO, 'super-dsh/agent-hermes'),
 })) {
   const dst = join(pm, name)
-  if (!existsSync(dst)) symlinkSync(target, dst)
+  rmSync(dst, { force: true })
+  symlinkSync(target, dst)
+}
+// 0.1.7: nothing heals a profiles-level @deepseek-ai farm anymore — project
+// the runtime resolution there (the world root resolves upstream rows and
+// their imports through AW_BARE_BASE).
+const { createRuntimeResolution } = await import('@deepseek-ai/dsh-app-boot')
+const __resolution = await createRuntimeResolution({ installAnchor: ANCHOR, home: HOME })
+for (const entry of __resolution.entries) {
+  const dest = join(HOME, 'profiles', 'node_modules', entry.name)
+  if (existsSync(dest)) rmSync(dest, { force: true })
+  mkdirSync(dirname(dest), { recursive: true })
+  symlinkSync(entry.packageDir, dest, 'dir')
 }
 process.env.AW_BARE_BASE = join(HOME, 'profiles', 'node_modules') + '/'
 

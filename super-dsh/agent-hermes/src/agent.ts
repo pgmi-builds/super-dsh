@@ -47,6 +47,7 @@
  * synthesizes the exact per-attempt total `input + output` (what the DSH
  * token-meter fold can prove for this attempt) instead of trusting `total`.
  */
+import type {} from "@deepseek-ai/dsh-user-approval";
 import type { Context } from "@deepseek-ai/cordis";
 import type {
   Agent,
@@ -276,8 +277,13 @@ function userMessageText(message: UserMessage): string {
  * work) and echo it into history as a fake user prompt. Detect and drop it.
  */
 function isApprovalNarration(message: UserMessage): boolean {
-  const source = message.source;
-  return source.kind === "plugin" && source.plugin === "user-approval";
+  // 0.1.7: the shared `plugin` source kind is gone (MessageSourceMap is
+  // merge-extensible; each producer declares its own kind) — user-approval
+  // now carries the dedicated `user-approval` kind.
+  // Type-only: loads the `user-approval` MessageSourceMap augmentation
+  // (0.1.7: producer-owned source kinds; the shared `plugin` kind is gone).
+  // noinspection JSValidateTypes
+  return message.source.kind === "user-approval";
 }
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -710,7 +716,7 @@ export class HermesAgent implements Agent {
       {
         turn: this.#dashTurn,
         step: this.#step,
-        message: createSystemMessage(text, "aw.agent-adapter-hermes"),
+        message: createSystemMessage(text),
       },
       { surfaceOp: "append" },
     );

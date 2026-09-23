@@ -253,7 +253,11 @@ test("cordis.patch.yml parses and carries the exact standalone row table", {
   assert.ok(Array.isArray(rows), "the patch must be a top-level sequence of rows");
 
   const disabled = rows.filter((row) => row?.disabled === true).map((row) => row.id);
-  assert.deepEqual(disabled, ["agent-loop", "llm-deepseek", "llm-pi-ai", "agent-presets", "directory-picker"]);
+  // 0.1.7: agent-presets is retired — the host agent-preset-registry row is
+  // kept MOUNTED with the default pinned to the Claude preset.
+  assert.deepEqual(disabled, ["agent-loop", "llm-deepseek", "llm-pi-ai", "directory-picker"]);
+  const registry = rows.find((row) => row.id === "agent-preset-registry");
+  assert.deepEqual(registry?.config, { default: "claude" });
 
   const inserted = rows.filter((row) => Array.isArray(row.insert)).flatMap((row) => row.insert);
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
