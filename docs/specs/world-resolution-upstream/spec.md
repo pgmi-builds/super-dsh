@@ -58,6 +58,13 @@ successor = {
   resolve parent 重写为 `pathToFileURL(route.entry.declarer)`，填包名会炸；
 - **忠实重建**：服务不暴露 `current`，按 `profileContext` 事实 `loadProfile` +
   `createRuntimeResolution` 重算（plugin add 后的磁盘态被下次 spawn 自动拾取）。
+- **实施期发现④（跨 spawn 累加）**：重建从净底座出发，successor 若**丢掉先前世界的 additions**
+  → 合同 throw（"replacing X requires a process restart"）→ 首个世界存活、其余全灭（dev3 0.1.3-t
+  实证 1/6）。修法 = 进程级累加器，successor 恒携带并集。
+- **实施期发现⑤（共享名 + 并发）**：每个世界都发布 `@pgmi-builds/superd-hub`，unconditional
+  覆盖会漂移 declarer（dev3 0.1.3-u 实证仍 5/6 失败）；且六 spawn 并发互踩。修法 = **首写保留**
+  （共享名保持首发布者的 entry——任何 manifest 路径都满足 ESM 重定向，peer 门读的是 importer
+  祖先而非 declarer）+ **发布串行化**（队列化，失败不阻塞后续）。dev3 0.1.3-v 实证 6/6 全绿。
 
 ### 2.2 否决的替代
 

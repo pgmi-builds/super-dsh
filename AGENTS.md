@@ -128,7 +128,7 @@
 **命令与热插拔**
 
 - `dsh plugin --profile <n> …` = **pnpm 透传**（仅 `allow-version` / `revoke-version` / `version-exemptions` 由 DSH 处理）；tarball / 本地路径**一等支持**（相对路径锚**调用者 cwd**，不是 profile 目录）；子命令是 **`remove`** 不是 `delete`；成功后 `reconcile()` **自动维护 `dsh.profile.bundles`**（勿手改）；失败自动回滚（试装安全）。
-- **热插拔 Comply or Explain（2026-09-24 实测修订）**：行为改动应能用「client bundle 重建 + 刷新」「配置热重载」或「`plugin add`/`remove` 热装卸」验证**而不重启**——profile 依赖面（manifest / bundle 增删）**热生效 ≈5–15s**（HMR 连 `package.json` 都 watch）；**不热的只有**：`node_modules` 内**代码替换**（module 层显式 ignore `**/node_modules`）与 installation-scope 表变更（`replace()` throw，进程内冻结）。结论必须在刷新链窗口（**≥15s**）后下、用每请求信号验证活树再读数。**允许重启 ≠ 允许停实例**——4999 整机共享，他人/其他 agent 在用时不碰；重启后必须复验端口 + boot graph（`--dump-config` 看行真挂上）+ 挂载/认证探针。解析表语义（重定向+兜底）与 world 树含义见 `docs/07` §5.3–5.4。
+- **热插拔 Comply or Explain（2026-09-24 实测修订；2026-09-25 dev3 边界补录）**：行为改动应能用「client bundle 重建 + 刷新」「配置热重载」或「`plugin add`/`remove` 热装卸」验证**而不重启**——profile 依赖面（manifest / bundle 增删）**热生效 ≈5–15s**（HMR 连 `package.json` 都 watch；home_pc 首个 add 的热装载实测 ~70s——窗口读数宁长勿短）；**不热的只有**：`node_modules` 内**代码替换**（module 层显式 ignore `**/node_modules`）与 installation-scope 表变更（`replace()` throw，进程内冻结）。**remove→add 循环不是重启替代**（2026-09-25 dev3 实证）：`remove` 热卸载成立（世界路由即死、ctx0 存活），但随后的 `add` **不回装 rows**（25s+60s+手动 patch 触发均无效，树停在无插件态直到重启）。结论必须在刷新链窗口（**≥15s**）后下、用每请求信号验证活树再读数。**允许重启 ≠ 允许停实例**——4999 整机共享，他人/其他 agent 在用时不碰；**prod 3080 重启只凭 user 明确下令**（§三红线）；重启后必须复验端口 + boot graph（`--dump-config` 看行真挂上）+ 挂载/认证探针。解析表语义（重定向+兜底）与 world 树含义见 `docs/07` §5.3–5.4。
 - 启动一律走**产物面**（`apps/cli/lib/bin.js` + 裸 node；tsx 源码启动 = 双平面 symbol split，根因见 §三）；daemon 一律 `systemd-run --user`。
 
 **测试环境**
