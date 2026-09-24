@@ -265,11 +265,17 @@ export class WorldWebServer {
    * happily re-root them under this world's label.
    */
   renderIndex(html: string): string {
+    // Injection rows FIRST, the client shim LAST: index-inject rows may need
+    // to own the transport global before anything else materializes — the
+    // page-trust component's `window.__DSH_TRANSPORT__ = { ownsHost: true }`
+    // guards on absence, while the shim MERGES into an existing object
+    // (`globalThis.__DSH_TRANSPORT__ = globalThis.__DSH_TRANSPORT__ || {}`).
+    // Shim-first would create the object and silently eat the verdict.
     const rows: IndexInjection[] = [
-      { kind: 'script', placement: 'head', text: renderClientShim(this.labelPath) },
       // No hub-invented widget here: the world composes the hub's own client
       // plugin (see worldMountPatches), so its selector IS the native one.
       ...this.collectIndexInjections(),
+      { kind: 'script', placement: 'head', text: renderClientShim(this.labelPath) },
     ]
     const rendered = this.applyIndexTaps(renderIndexInjections(html, rows))
     // The roster rides the outbound pass (htmlRewrite), not this one: the mount

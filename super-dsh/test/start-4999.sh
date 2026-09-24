@@ -83,14 +83,33 @@ if [ -n "$BUN_DIR" ] && [ -d "$BUN_DIR" ]; then
 fi
 
 # ---- 3. boot via the repo build's dsh CLI (no custom boot code) ----
+# ---- test preparation (2026-09-24 user ruling; see super-dsh/AGENTS.md
+# 「测试准备」) — the line must see the world production sees, or the test
+# tests the wrong thing:
+#   1. provider keys: copy the prod home's .env into the line home (the
+#      launcher's env layering is inherited > invoking-dir > HOME .env; an
+#      inherited EMPTY value would BLOCK the file layer, so we deliberately
+#      do NOT pass DEEPSEEK_API_KEY through the unit env);
+#   2. trusted authorities: one AW_TRUSTED_HOSTS declaration feeds the server
+#      fence legs (worlds' --trusted-host) AND the page-trust component's
+#      default authorities (bare hostnames only — the portful entry below
+#      covers the fence, the bare ones cover the pages).
+if [ ! -f "$HOME/.dsh/.env" ]; then
+  echo "refusing: $HOME/.dsh/.env missing — test preparation cannot provide provider keys" >&2
+  exit 1
+fi
+cp -f "$HOME/.dsh/.env" "$DSH_HOME_DIR/.env"
+chmod 600 "$DSH_HOME_DIR/.env"
+
+# systemd parses space-separated tokens as separate assignments — a
+# space-containing value needs its own inner quoting.
 systemd-run --user --unit="$UNIT" \
   --property=WorkingDirectory="$REPO" \
   --property=Environment="DSH_HOME=$DSH_HOME_DIR" \
   --property=Environment="SUPERD_DSH_ANCHOR=$ANCHOR" \
   --property=Environment="SUPERD_KEEP=1" \
   --property=Environment="SUPERD_TRACE=${SUPERD_TRACE:-0}" \
-  --property=Environment="AW_TRUSTED_HOSTS=192.0.2.130,192.0.2.130:4999" \
-  --property=Environment="DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}" \
+  --property='Environment="AW_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:4999"' \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
   --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   --property=StandardOutput=append:"$LOG" \

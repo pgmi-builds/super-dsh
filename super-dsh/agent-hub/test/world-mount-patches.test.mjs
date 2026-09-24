@@ -1,8 +1,14 @@
-// World composition patches (AW-B Task 9 part 2): the three layers that turn a
+// World composition patches (AW-B Task 9 part 2): the layers that turn a
 // listener-owning world into a mounted one — pure data, no boot needed.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { worldMountPatches, WORLD_MOUNT_PLUGIN, WORLD_MOUNT_ROW_ID } from '../dist/index.js'
+import {
+  worldMountPatches,
+  WORLD_MOUNT_PLUGIN,
+  WORLD_MOUNT_ROW_ID,
+  WORLD_WEB_TRUST_PLUGIN,
+  WORLD_WEB_TRUST_ROW_ID,
+} from '../dist/index.js'
 
 test('worldMountPatches disables the listener, makes modules wait, and inserts the world row', () => {
   const patches = worldMountPatches('omp')
@@ -20,6 +26,13 @@ test('worldMountPatches disables the listener, makes modules wait, and inserts t
     id: WORLD_MOUNT_ROW_ID,
     name: WORLD_MOUNT_PLUGIN,
     config: { key: 'omp' },
+  })
+  // The page-trust row rides every world mount: world pages emit
+  // index-inject on their own root, so ctx0's row alone would never reach
+  // them.
+  assert.deepEqual(insert.insert[2], {
+    id: WORLD_WEB_TRUST_ROW_ID,
+    name: WORLD_WEB_TRUST_PLUGIN,
   })
 })
 

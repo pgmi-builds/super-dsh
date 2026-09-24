@@ -125,10 +125,15 @@ test('renderIndex emits a mount-ready page (base pinned, root-absolute strings r
   assert.match(out, /<script>x<\/script>/)
 })
 
-test('renderIndex injects the client mount shim as the first head row', () => {
+test('renderIndex runs index-inject rows before the client mount shim', () => {
   const real = fakeReal()
-  const world = new WorldWebServer('/omp', real)
+  const world = new WorldWebServer('/omp', real, { onIndexInject: (table) => table.push({ kind: 'script', placement: 'head', text: 'INJECTED_SENTINEL' }) })
   const out = world.renderIndex('<head></head>')
+  // Injection rows own the transport global first (the page-trust component
+  // guards on absence); the shim MERGES into the existing object afterwards
+  // (`globalThis.__DSH_TRANSPORT__ = globalThis.__DSH_TRANSPORT__ || {}`) —
+  // shim-first would create the object and silently eat the ownsHost verdict.
+  assert.ok(out.indexOf('INJECTED_SENTINEL') < out.indexOf('__DSH_TRANSPORT__'), 'injections precede the shim')
   assert.match(out, /__DSH_TRANSPORT__/)
   assert.match(out, /__DSH_FILE_UPLOAD__/)
   assert.ok(out.indexOf('__DSH_TRANSPORT__') < out.indexOf('</head>'), 'shim runs before the app entry')

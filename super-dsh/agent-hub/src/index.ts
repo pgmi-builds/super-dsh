@@ -23,7 +23,20 @@ export { renderClientShim } from './client-shim.js'
 export { agentLinks, agentRosterRow, AGENT_ROSTER_GLOBAL, type AgentLink } from './agent-roster.js'
 export { createOwnershipIndex, type OwnershipIndex, type OwnershipRow } from './ownership.js'
 export { registerHostMount, takeHostMount, listHostMounts, noteWorldServer, worldServerOf, type HostMount } from './world-host.js'
-export { worldMountPatches, WORLD_MOUNT_PLUGIN, WORLD_MOUNT_ROW_ID, type WorldPatchLayer } from './world-mount.js'
+export {
+  worldMountPatches,
+  WORLD_MOUNT_PLUGIN,
+  WORLD_MOUNT_ROW_ID,
+  WORLD_WEB_TRUST_PLUGIN,
+  WORLD_WEB_TRUST_ROW_ID,
+  type WorldPatchLayer,
+} from './world-mount.js'
+export {
+  buildTrustScript,
+  deriveDefaultPageAuthorities,
+  type BootScriptRow,
+  type TrustConfig,
+} from './web-trust.js'
 export { default as worldApply, name as worldPluginName, type Config as WorldEntryConfig } from './world-entry.js'
 export { default as joinApply, name as worldJoinPluginName, type Config as WorldJoinConfig } from './world-join.js'
 export { default } from './gateway.js'

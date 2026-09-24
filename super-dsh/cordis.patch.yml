@@ -12,6 +12,15 @@
 #                              zero-port sibling root, mounted under /<label>
 #   - super-dsh/join           the generic hub joiner for the standalone
 #                              claude adapter (R2)
+#   - super-dsh/web-trust      the page-trust component (ported from
+#                              better-dsh web-trust, authorities leg): the
+#                              browser-side twin of the server trustedHosts
+#                              fence — declares trusted page authorities so
+#                              the Web UI treats a non-loopback page (Caddy
+#                              domain / LAN IP) as loopback-equivalent.
+#                              On/off: row `disabled: true`, or config
+#                              `trustedPageAuthorities: []` (inert). Default
+#                              derives from the trusted-hosts env.
 #
 # Profile-layer values (webserver port/host, settings path) stay in the USER's
 # profile patch layer, never here.
@@ -21,6 +30,8 @@
     # what registers the package's client half — the sidebar selector.
     - id: agent-hub
       name: 'super-dsh'
+    - id: aw-web-trust
+      name: 'super-dsh/web-trust'
     - id: aw-agent-adapter-omp
       name: 'super-dsh/world/omp'
     - id: aw-agent-adapter-codex

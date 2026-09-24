@@ -30,6 +30,12 @@ export const WORLD_HUB_ROW_ID = 'aw-agent-hub'
 /** Plugin name of the hub itself — one UI, one roster, every runtime. */
 export const WORLD_HUB_PLUGIN = '@pgmi-builds/agent-hub'
 
+/** Id of the inserted page-trust row (world trees; ctx0 composes its own). */
+export const WORLD_WEB_TRUST_ROW_ID = 'aw-web-trust'
+
+/** Page-trust component subpath — world pages emit index-inject on their own root. */
+export const WORLD_WEB_TRUST_PLUGIN = '@pgmi-builds/agent-hub/web-trust'
+
 /** One patch layer understood by the loader (structural; no app-boot import). */
 export type WorldPatchLayer =
   | { id: string; disabled?: boolean; inject?: readonly string[]; config?: Record<string, unknown> }
@@ -43,7 +49,10 @@ export type WorldPatchLayer =
  *   3. the entry row itself (the world's mount identity);
  *   4. the HUB ROW — the same `@pgmi-builds/agent-hub` native ctx0 composes, so
  *      the foreign agent gets the *identical* selector UI, and the roster it
- *      renders is read from the hub over the world's own `/api` channel.
+ *      renders is read from the hub over the world's own `/api` channel;
+ *   5. the PAGE-TRUST row — the same component ctx0 composes through the
+ *      composite bundle, so a trusted non-loopback page (Caddy domain / LAN
+ *      IP) keeps its loopback-equivalent verdict in the WORLD's UI too.
  * @param key - runtime key (`omp`, `codex`, …) — the mount label.
  * @returns patch layers to append to the world's composition.
  */
@@ -70,6 +79,7 @@ export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
     { insert: [
       { id: WORLD_MOUNT_ROW_ID, name: WORLD_MOUNT_PLUGIN, config: { key } },
       { id: WORLD_HUB_ROW_ID, name: WORLD_HUB_PLUGIN },
+      { id: WORLD_WEB_TRUST_ROW_ID, name: WORLD_WEB_TRUST_PLUGIN },
     ] },
   ]
 }

@@ -7,7 +7,8 @@
     ".": "./dist/index.js",
     "./client": "./lib/client/index.js",
     "./world": "./dist/world-entry.js",
-    "./join": "./dist/world-join.js"
+    "./join": "./dist/world-join.js",
+    "./web-trust": "./dist/web-trust.js"
   },
   "files": [
     "dist",
