@@ -47,4 +47,6 @@ Thumbs.db
 
 # --- ACP test home (shared test-profile data) ---
 .dsh-acp/
-dashr/port/
+release/
+dashr/release/
+dashr/
