@@ -68,12 +68,14 @@
 - **典型启动链（历史参考：`archive/multi-agent/test/start-4999.sh`，ma 线已存档；现役以 `super-dsh/test/start-4999.sh` 为准）**：`bash start-<port>.sh` → ① `ss` 预检占用即拒 → ② 线自带 bootstrap 幂等生成 `.tests/profiles/<name>/`（`package.json` 的 `dsh.profile.bundles` + `cordis.patch.yml` 端口/host + `pnpm-workspace.yaml`）并 `pnpm install`（hoisted；`@deepseek-ai/*` 靠 fallback 不在 profile 树里）→ ③ `systemd-run --user --unit=<线>-<port>-test -p WorkingDirectory=<仓根> -p Environment=DSH_HOME=<仓根>/.tests -p Environment=PATH=… -p StandardOutput/Error=append:<log> <node> <dsh> --profile <name> --no-open [--trusted-host …]`——argv = **`node <dsh launcher js>`**（`node=/opt/node-v22.23.2/bin/node`；`dsh` = **repo build** `$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js`，`SUPERD_DSH` 可覆盖，缺 build 才回落 `/home/u1/.local/bin/dsh`；shebang 被显式 node 调用绕过）→ ④ 轮询 `ss` 等监听 + 只取本次日志水位后的 token → 打印 local/lan/wan URL。（历史链中的 `scripts/profiles/ma.mjs` 与 `scripts/heal-modules.mjs` 重链步骤已随 2026-09-22 housekeeping 移除。）**进程内接着**：`runCli()` → `runProfile()` → `loadProfile()`（读每个 bundle 的 `dsh.bundle.patch`）→ `healProfilesModuleFallback()`（**这一步把 `$DSH_HOME/profiles/node_modules` 钉到当前 installation**）→ `composeEntries()`（bundle patch 依序拍平 + profile patch + `--patch`）→ `boot()` 挂**唯一的 `cordis:include` 根** → Loader 按 `name` 逐个 import/apply → `webserver` 行绑定端口并打印 token（`--no-open` 抑制开浏览器）。
 - **token / 认证**：token 每次启动轮换；从 append 日志取时先记 `wc -l` 水位，只在水位之后 grep `?token=…`（否则抓到上一轮）。curl 冒烟 `curl -c jar -L '<token-url>'`（303 靠 cookie 保认证）。存活探针：GET `/` 无 token/cookie → 401 `dsh web authentication required`。
 - **验收模式（2026-09-09 user 裁决）**：起了 Web 服务器就停下来交给用户——给出 token URL（+ LAN/WAN URL）、**保持运行**，等用户亲手测完再收尾；不得自行 kill 完才报告。
-- 测试/调试：各线 `npm test`；组合查看 `dsh --profile <name> --dump-config`（与 boot 共用同一 patch 算法）。
+- 测试/调试：各线 `npm test`；组合查看 `dsh --profile <name> --dump-config`（与 boot 共用同一 patch 算法）。**插件开发/测试的通用规范（组合平面、供给三分桶、依赖归属、client 半边、命令语义、热插拔）见 §七**，机制细节与本仓 adoption 偏差见 [`docs/07-cordis-dsh-dev-test-guides.md`](./docs/07-cordis-dsh-dev-test-guides.md)。
 
 ---
 
 ## 四、规划与执行工作流（Superpowers）
 
+- **入口纪律（2026-09-24 与 dashr 同源）**：任何任务开始前先读 `.agents/skills/superpowers/using-superpowers/SKILL.md` 并遵循其路由——**只要存在可能适用的技能（哪怕 1% 可能），先调用再行动**。常用路由：「做/设计 X」→ `brainstorming` 先行；「修 bug」→ `systematic-debugging` 先行；带计划执行 → `writing-plans` → `executing-plans`（配 `test-driven-development` + `verification-before-completion`）；分支收尾 → `finishing-a-development-branch`；评审 → `requesting-code-review` / `receiving-code-review`。**优先级：user 指令 > 本仓 AGENTS.md > 技能 > 默认行为**。
+- **规格落盘**：变更规格写 `docs/specs/<topic>/spec.md`（纯文档、格式自明，按需创建）；历史提案底稿在 dashr 仓 `openspec/changes/archive/`。
 - 流程链：brainstorming（已完成：grilling 4 轮 → 蓝图 v0.4a + ADR 0001–0007）→ **writing-plans**（当前）→ executing-plans / subagent-driven-development。
 - 计划落位：`docs/superpowers/plans/YYYY-MM-DD-<feature>.md`；TDD bite-size 任务，每任务独立可测交付 + commit。
 - M1 计划序列：**P1 骨架+宿主（计划就绪）** → P2 Machine/Pairing/Selector → P3 DSH adapter 全透传 → P4 OMP adapter → P5 DEV3 remote + 半构建验收。
@@ -98,3 +100,39 @@
 - **作用范围（Scope）**：每个 `AGENTS.md` 只管辖其所在目录及所有子目录（subtree），不约束兄弟目录、不反向影响上层。
 - **优先级（Precedence）**：对某文件，生效规则 = 从根到该文件路径上所有 `AGENTS.md` 的叠加；冲突时离文件最近的胜出（nearest wins）；用户在会话中显式给出的指令优先级高于任何 `AGENTS.md`。
 - **定位写法（不写层级号）**：子目录 `AGENTS.md` 声明自身路径并指向上一层（无中间层则直指根目录），不写绝对层级号；后续更深的子模块若有本地需要，由其自行创建。
+
+---
+
+## 七、通用插件开发 / 测试规范（与 dashr 同源，2026-09-24 移植）
+
+> 规范母本 = dashr 仓 `Cordis-dsh-dev-test-guides.md`（user 提供的现行规范）。本仓移植版（含落点映射、源码锚点、**adoption 偏差记账**）见 [`docs/07-cordis-dsh-dev-test-guides.md`](./docs/07-cordis-dsh-dev-test-guides.md)。本节只放**必须照做**的条目；§〇 红线优先于本节。
+
+**组合与插件面**
+
+- **一切皆插件行**：patch 行按 id **整行重述**（非深合并）——改一个字段也要写全该行；插件顺序由 **`inject`** 决定，不看 YAML 位置。
+- **两个平面**：跨会话共享的东西放 **host composition**；单 session 贡献放 **agent preset**。**发布服务的行不得裸放 preset**（进程全局 realm，第二个 session 挂载即硬错）；preset 自有的服务必须把**提供者与所有消费者**包进同一个 `isolate` realm group。
+- **供给三分桶**：会被组合替换的服务 = **`inject`**（顶多 import 类型做结构镜像）；宿主 API 的库函数/类型 = **`import`** + optional peer；自带真依赖 = **`import`** + `dependencies`。
+- **override 三条硬边界**：① 浏览器 module table 同 id = 双侧硬错（无 last-wins）；② cordis 同 scope 同名 service = 硬错（仅祖先 / `isolate` 可遮蔽）；③ 官方 UI 组件遮蔽 = slot 同 cell **更低 priority** 注册（同 priority 报错）。
+
+**client 半边**
+
+- 纯逻辑层写成**可脱离浏览器单测的纯函数**；UI 注入层**只寻址官方表面**（服务方法 / 语义 `data-*` / 官方控件）——**第三方插件 DOM 永不作状态输入**。
+- 运行期 = 浏览器 module table：`CLIENT_EXTERNALS` 名单只决定「内联 or 留 `require`」，**不是 `declare`**；官方 UI 原语与宿主**同一模块实例**，**绝不自行 vendor**（本仓名单 + purity gate 在 `superd-hub/scripts/build-client.mjs`）。
+- **client lane 门**：client 半边不得被 tsconfig `exclude` 到零类型检查。（❗本仓两处缺 lane，见 `docs/07` §6。）
+
+**依赖与版本**
+
+- 归属三分：消费者会装 = `dependencies`；宿主提供 = `peerDependencies` + `optional:true`；仅开发期 = `devDependencies`。
+- **版本同源门**：dev 期类型解析源必须与运行期提供者同源。⚠ 预发布 tuple 坑：`>=0.1.5-0 <0.3.0-0` 在 pnpm 解析时**不匹配** `0.1.7-rc.1`，auto-install 会回落三代前的 `0.1.5-rc.3`——**永不子包内 `npm install @deepseek-ai/*`**（物化物理副本 → 双模块实例 → `kScope` 分裂）。
+
+**命令与热插拔**
+
+- `dsh plugin --profile <n> …` = **pnpm 透传**（仅 `allow-version` / `revoke-version` / `version-exemptions` 由 DSH 处理）；tarball / 本地路径**一等支持**（相对路径锚**调用者 cwd**，不是 profile 目录）；子命令是 **`remove`** 不是 `delete`；成功后 `reconcile()` **自动维护 `dsh.profile.bundles`**（勿手改）；失败自动回滚（试装安全）。
+- **热插拔 Comply or Explain**：行为改动应能用「client bundle 重建 + 刷新」或「配置热重载」验证**而不重启**；host 代码热重载默认**关**（`hmr.config.root` 显式 opt-in）；**组合结构变化必须重启**。**允许重启 ≠ 允许停实例**——4999 整机共享，他人/其他 agent 在用时不碰；重启后必须复验端口 + boot graph（`--dump-config` 看行真挂上）+ 挂载/认证探针。
+- 启动一律走**产物面**（`apps/cli/lib/bin.js` + 裸 node；tsx 源码启动 = 双平面 symbol split，根因见 §三）；daemon 一律 `systemd-run --user`。
+
+**测试环境**
+
+- 端口**候选表不得写死、归属不得假定**（4999 整机共享）：起线前 `ss` 动态探测，占用即拒。
+- **种子（入库、可重生成）与运行 home（gitignored）分离**：本仓 seed = `super-dsh/test/start-4999.sh`，home = `.tests/superd/`。
+- **compat / clean 双 home 配对**：长寿命 home 专测「旧 session log 对新版本可读」，可弃 home 专测干净启动；rig README 记 session schema 版本。（❗clean 角色本仓未立，见 `docs/07` §6。）

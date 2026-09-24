@@ -29,6 +29,7 @@
 - **agent-omp 的 OMP home 属 adapter 级自由**（2026-09-15 user 裁决保留）：`OMP_HOME` env 重定向仍是 adapter 的可选项（隔离微调），但**默认已改为原生 `~/.omp`**（2026-09-17 裁定，见 dev-rules §5）。
 - 端口 4998（本线默认）；**4999 = 本线共用测试口（2026-09-16 user 裁决，接替已冻结的 multi-agent-ctx；Caddy `test.pc.internal.test` → 127.0.0.1:4999，WAN 可见，同一时间只能一条线占用）**；避开 3080/3081（prod）；拉起前 `ss` 预检；daemon 一律 `systemd-run --user`，关停 `systemctl --user stop`。当前 4999 在役 unit：`superd-4999-test`（`test/start-4999.sh`）。
 - 测试约定：`node --test test/*.test.mjs`；测试导入 `dist/`，先 build 后 test；测试 home 一律隔离（`.tests/hub-test-home` 等），**绝不写进在役线 home**。
+- **通用开发/测试规范**（2026-09-24 移植）：仓根 `AGENTS.md` §七 是必做条目，机制细节 + 本线 adoption 偏差见 `docs/07-cordis-dsh-dev-test-guides.md`。**本线待办（docs/07 §6）**：两处 client 半边**无类型检查 lane**（`superd-hub/tsconfig.json` exclude `src/client`；`agent-omp/tsconfig.json` exclude `src/client`+`src/mobile/client`）——实测 hub client 22 错（缺 `react` 类型）、omp client 2 个真实错误；修复路径已写在 docs/07（每包 `tsconfig.client.json` + 串进 `build-client`，hub 另需 devDep `@types/react`）。
 
 ## 开发形态 = 交付形态（2026-09-22 转型，user 裁决）
 
