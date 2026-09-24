@@ -91,15 +91,13 @@ export interface SpawnWorldOptions {
  * spawn re-publishes; worlds are spawn-time facts and never recompose, so a
  * later host-side replace can only affect the next spawn).
  */
-async function publishWorldInHostResolution(
-  host: WorldHostSurface,
+async function publishWorldInHostResolutionTurn(
+  packages: { replace(successor: RuntimeResolution): void },
+  launcher: ProfileContext,
   opts: SpawnWorldOptions,
   worldProfileDir: string,
   peerNames: ReadonlySet<string>,
 ): Promise<void> {
-  const packages = host.get('pluginPackages') as { replace(successor: RuntimeResolution): void } | undefined
-  const launcher = host.get('profileContext') as ProfileContext | undefined
-  if (packages === undefined || launcher?.installAnchor === undefined || launcher.home === undefined || launcher.name === undefined) return
   const profile = loadProfile('dsh', launcher.name, launcher.installAnchor, launcher.home)
   const base = await createRuntimeResolution({ installAnchor: launcher.installAnchor, profile, home: launcher.home })
   // routeLinked's peer gate: the gate reads ancestor manifests of the
@@ -133,10 +131,19 @@ async function publishWorldInHostResolution(
     if (baseNames.has(pkgName)) continue
     const packageDir = realpathSync(join(worldScope, name.name))
     const pkgManifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as { version?: string }
-    publishedEntries.set(pkgName, { name: pkgName, packageDir, version: pkgManifest.version, declarer, scope: 'profile' as const })
+    // FIRST-WRITE-WINS: shared names (every world publishes superd-hub) must
+    // keep the first publisher's declarer — overwriting it with another
+    // world's manifest path trips "replacing X requires a process restart"
+    // (dev3 0.1.3-u evidence). Any manifest path satisfies the ESM redirect;
+    // the peer gate reads the IMPORTER's ancestors, not the declarer.
+    if (!publishedEntries.has(pkgName)) {
+      publishedEntries.set(pkgName, { name: pkgName, packageDir, version: pkgManifest.version, declarer, scope: 'profile' as const })
+    }
   }
   const rootName = `superd-world-${opts.appName}`
-  publishedRoots.set(rootName, { name: rootName, realPath: opts.home })
+  if (!publishedRoots.has(rootName)) {
+    publishedRoots.set(rootName, { name: rootName, realPath: opts.home })
+  }
   packages.replace({
     ...base,
     entries: [...base.entries, ...publishedEntries.values()],
@@ -167,6 +174,28 @@ function barePackageNameOf(specifier: string): string | undefined {
 const publishedEntries = new Map<string, RuntimeResolution['entries'][number]>()
 const publishedRoots = new Map<string, { name: string; realPath: string }>()
 
+/**
+ * Serializes table publishing: the six world spawns run concurrently, and
+ * interleaved reconstruct→replace cycles assert divergent successors against
+ * a mid-flight current (dev3 0.1.3-u evidence). One publish at a time; a
+ * failed turn never blocks the next (the caller's fail-soft handles it).
+ */
+let publishQueue: Promise<void> = Promise.resolve()
+
+async function publishWorldInHostResolution(
+  host: WorldHostSurface,
+  opts: SpawnWorldOptions,
+  worldProfileDir: string,
+  peerNames: ReadonlySet<string>,
+): Promise<void> {
+  const packages = host.get('pluginPackages') as { replace(successor: RuntimeResolution): void } | undefined
+  const launcher = host.get('profileContext') as ProfileContext | undefined
+  if (packages === undefined || launcher?.installAnchor === undefined || launcher.home === undefined || launcher.name === undefined) return
+  const turn = publishQueue.catch(() => {}).then(() =>
+    publishWorldInHostResolutionTurn(packages, launcher, opts, worldProfileDir, peerNames))
+  publishQueue = turn
+  await turn
+}
 
 export async function spawnWorld(opts: SpawnWorldOptions) {
   const profile = loadProfile(opts.appName, opts.profileName, opts.installAnchor, opts.home)
