@@ -81,11 +81,21 @@ export function resolveInstallAnchor(): string {
  *  resolved to its REALPATH — farm and pnpm links must not leak into the
  *  ancestor walk (the install tree only exists behind the symlink). */
 function resolveHostPackageDir(spec: string): string {
-  for (const searchPath of createRequire(import.meta.url).resolve.paths(`${spec}/x`) ?? []) {
+  const require = createRequire(import.meta.url)
+  // Interception first: under the launcher's resolution table the profile
+  // tree holds NO physical @deepseek-ai, but require.resolve goes through
+  // the patched Module._resolveFilename and lands on the installation's
+  // copy directly. resolve.paths() cannot see the table — it only lists
+  // physical walk-up candidates (the retired profiles-level farm is what
+  // used to plug this gap on consumer machines; 0.1.3-r prod evidence).
+  try {
+    return realpathSync(dirname(require.resolve(`${spec}/package.json`)))
+  } catch { /* not intercepted or ./package.json not exported — walk */ }
+  for (const searchPath of require.resolve.paths(`${spec}/x`) ?? []) {
     const candidate = join(searchPath, spec)
     if (existsSync(join(candidate, 'package.json'))) return realpathSync(candidate)
   }
-  throw new Error(`super-dsh: cannot resolve ${spec} from the running host`)
+  throw new Error(`super-dsh: cannot resolve ${spec} from the running host (set SUPERD_DSH_ANCHOR)`)
 }
 
 export interface ProvisionWorldOptions {
