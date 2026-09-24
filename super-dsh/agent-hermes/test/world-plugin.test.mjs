@@ -23,7 +23,7 @@ const REPO = join(new URL('../../..', import.meta.url).pathname)
 // unset (the suite runs from agent shells inside dsh.service).
 const __prodHomes = new Set([join(homedir(), '.dsh'), join(homedir(), '.superd')])
 const HOME = !process.env.DSH_HOME || __prodHomes.has(process.env.DSH_HOME)
-  ? join(REPO, '.tests')
+  ? join(REPO, '.tests', 'hermes-world-test')
   : process.env.DSH_HOME
 if (process.env.DSH_HOME !== HOME) {
   process.stderr.write(`[world-plugin] ignoring prod DSH_HOME=${process.env.DSH_HOME}; using ${HOME}\n`)
@@ -45,7 +45,7 @@ const pm = join(HOME, 'profiles', 'node_modules', '@pgmi-builds')
 mkdirSync(pm, { recursive: true })
 for (const [name, target] of Object.entries({
   'superd-hub': join(REPO, 'super-dsh/superd-hub'),
-  'agent-adapter-hermes': join(REPO, 'super-dsh/agent-hermes'),
+  'agent-hermes': join(REPO, 'super-dsh/agent-hermes'),
 })) {
   const dst = join(pm, name)
   rmSync(dst, { force: true })
