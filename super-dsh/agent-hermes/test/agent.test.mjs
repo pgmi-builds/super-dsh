@@ -372,6 +372,17 @@ test("session_title wire event → session/title mirror (provider source, dedupe
   const userSeq = session.events.find((e) => e.type === "user/message").seq;
   assert.deepEqual(titles[0].data, { title: "Reply with exactly: ok", messageSeqs: [userSeq], source: { kind: "provider", provider: "hermes" } });
   assert.deepEqual(titles[1].data.title, "Better title");
+
+  // close the opened turn (canonical wire terminal) — whenIdle() is
+  // event-driven (resolves on agent_end) and would otherwise pend forever,
+  // draining the event loop and cancelling every test queued after this one
+  // (node:test reports them as cancelled, not failed — 2026-09-24 incident).
+  client.emit({ type: "agent_start" });
+  client.emit({ type: "turn_start" });
+  client.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok" }] }, usage: { input: 1, output: 1 } });
+  client.emit({ type: "turn_end", data: { status: "complete" } });
+  client.emit({ type: "agent_end" });
+  client.settlePrompt();
   await agent.whenIdle().catch(() => {});
   await agent.dispose();
 });
