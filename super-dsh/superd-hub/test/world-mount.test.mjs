@@ -4,7 +4,7 @@
 // webServer — while the RPC channel (/api*) stays with the hub.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { spawnWorld, registerHostMount, worldServerOf, worldMountPatches } from '../dist/index.js'
 import { WorldWebServer } from '../dist/world-web-server.js'
@@ -13,7 +13,6 @@ const REPO = join(new URL('../../..', import.meta.url).pathname)
 const HOME = process.env.SUPERD_TEST_HOME ?? join(REPO, '.tests', 'superd')
 const FIXTURE = new URL('./fixtures/superd-omp-world/', import.meta.url).pathname
 const ANCHOR = process.env.SUPERD_DSH_ANCHOR ?? join(REPO, 'upstream/deepseek-harness/apps/cli/package.json')
-const BARE = join(HOME, 'profiles', 'node_modules') + '/'
 const PROFILE = 'superd-omp-world-mounted'
 
 function fakeReal() {
@@ -44,52 +43,67 @@ async function waitFor(check, timeoutMs = 5000) {
 }
 
 test('a world with no listener mounts its whole surface under /<label> on ctx0', async () => {
-  mkdirSync(join(HOME, 'profiles'), { recursive: true })
-  cpSync(FIXTURE, join(HOME, 'profiles', PROFILE), { recursive: true })
+  // PROD SHAPE: the world tree lives under `<home>/agents/<label>` — OUTSIDE
+  // the host table's profiles tree — so row imports must ride the linked-root
+  // route (spec §2.1), exactly like a consumer machine's world.
+  const WORLD_HOME = join(HOME, 'agents', 'omp')
+  mkdirSync(join(WORLD_HOME, 'profiles'), { recursive: true })
+  cpSync(FIXTURE, join(WORLD_HOME, 'profiles', PROFILE), { recursive: true })
   // 0.1.7: resolveBundleDir consults only the installation anchor and the
   // profile's own directory — materialize the fixture's `file:` dependency
-  // profile-locally (what `dsh plugin --profile X install` would do).
-  const scopeDir = join(HOME, 'profiles', PROFILE, 'node_modules', '@pgmi-builds')
+  // profile-locally (what `dsh plugin --profile X install` would do). Both
+  // rebranded names: the adapter (fixture manifest + provision shape) and
+  // the hub (worldMountPatches rows inject @pgmi-builds/superd-hub/*).
+  const scopeDir = join(WORLD_HOME, 'profiles', PROFILE, 'node_modules', '@pgmi-builds')
   mkdirSync(scopeDir, { recursive: true })
-  const adapterLink = join(scopeDir, 'agent-adapter-omp')
-  rmSync(adapterLink, { recursive: true, force: true })
-  symlinkSync(join(REPO, 'super-dsh', 'agent-omp'), adapterLink, 'dir')
+  for (const [name, target] of [
+    ['agent-omp', join(REPO, 'super-dsh', 'agent-omp')],
+    ['superd-hub', join(REPO, 'super-dsh', 'superd-hub')],
+  ]) {
+    const dst = join(scopeDir, name)
+    rmSync(dst, { recursive: true, force: true })
+    symlinkSync(target, dst, 'dir')
+  }
   // 0.1.7 boots the credentials file eagerly — pin every home-reading row to
   // the test home (the same list provisionWorldProfile writes for real
   // worlds; without this the world root would touch the PROD ~/.dsh).
   appendFileSync(
-    join(HOME, 'profiles', PROFILE, 'cordis.patch.yml'),
+    join(WORLD_HOME, 'profiles', PROFILE, 'cordis.patch.yml'),
     ['# test-home pinning (provision parity): keep the world out of prod homes.',
      ...['settings', 'credentials', 'attachment-local', 'shell-env', 'skill-filesystem']
        .flatMap((id) => [`- id: ${id}`, '  config:', `    dshHome: ${HOME}`]),
      '',
     ].join('\n'),
   )
-  // The row imports (`@pgmi-builds/superd-hub[/world]`, the adapter) resolve as
-  // URLs under the bare module base — the profiles-level farm provisionWorld
-  // maintains on the real line; this test bypasses provision, so link here.
-  const bareScope = join(HOME, 'profiles', 'node_modules', '@pgmi-builds')
-  mkdirSync(bareScope, { recursive: true })
-  for (const [name, target] of [
-    ['agent-adapter-omp', join(REPO, 'super-dsh', 'agent-omp')],
-    ['superd-hub', join(REPO, 'super-dsh', 'superd-hub')],
-  ]) {
-    const dst = join(bareScope, name)
-    rmSync(dst, { recursive: true, force: true })
-    symlinkSync(target, dst, 'dir')
-  }
-  // 0.1.7: the launcher no longer heals a profiles-level @deepseek-ai farm
-  // (healProfilesModuleFallback is gone; interception replaced it), but this
-  // test's spawnWorld resolves bare plugin names as URLs under
-  // HOME/profiles/node_modules — project the runtime resolution there.
-  const { createRuntimeResolution } = await import('@deepseek-ai/dsh-app-boot')
-  const resolution = await createRuntimeResolution({ installAnchor: ANCHOR, home: HOME })
-  for (const entry of resolution.entries) {
-    const dest = join(HOME, 'profiles', 'node_modules', entry.name)
-    if (existsSync(dest)) rmSync(dest, { force: true })
-    mkdirSync(dirname(dest), { recursive: true })
-    symlinkSync(entry.packageDir, dest, 'dir')
-  }
+  // The row imports (`@pgmi-builds/superd-hub[/world]`, the adapter) ride the
+  // HOST TABLE now: this test stands up the launcher's own surface (a mini
+  // context with PluginPackages + profileContext facts) and lets spawnWorld
+  // widen it (spec §2.1) — the profiles-level farm projection is gone, and
+  // the profile-local @pgmi-builds links below serve the local-physical leg.
+  const { createRuntimeResolution, loadProfile, PluginPackages } = await import('@deepseek-ai/dsh-app-boot')
+  const { Context } = await import('@deepseek-ai/cordis')
+  // The host's OWN profile: a minimal empty-bundles profile in the host tree
+  // (installation-only resolution), like a bare consumer's ctx0.
+  mkdirSync(join(HOME, 'profiles', 'host-min'), { recursive: true })
+  writeFileSync(
+    join(HOME, 'profiles', 'host-min', 'package.json'),
+    JSON.stringify({ name: 'host-min', private: true, dsh: { profile: { bundles: [] } } }, null, 2) + '\n',
+  )
+  const hostProfile = loadProfile('dsh', 'host-min', ANCHOR, HOME)
+  const host = new Context()
+  await host.plugin(PluginPackages, {
+    resolution: await createRuntimeResolution({ installAnchor: ANCHOR, profile: hostProfile, home: HOME }),
+  })
+  host.provide('profileContext', {
+    name: 'host-min',
+    dir: join(HOME, 'profiles', 'host-min'),
+    patchPath: join(HOME, 'profiles', 'host-min', 'cordis.patch.yml'),
+    installAnchor: ANCHOR,
+    cwd: process.cwd(),
+    home: HOME,
+    startedBundles: [],
+    overlays: [],
+  })
   const real = fakeReal()
   const dropMount = registerHostMount({ key: 'omp', labelPath: '/omp', real })
 
@@ -97,8 +111,8 @@ test('a world with no listener mounts its whole surface under /<label> on ctx0',
     appName: PROFILE,
     profileName: PROFILE,
     installAnchor: ANCHOR,
-    home: HOME,
-    bareModuleBaseUrl: BARE,
+    home: WORLD_HOME,
+    host,
     extraPatches: worldMountPatches('omp'),
   })
 

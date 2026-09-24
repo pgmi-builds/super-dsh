@@ -12,16 +12,17 @@
  * layout THEMSELVES or every world spawn fails on a missing profile.
  *
  * This module is the library form of that bootstrap, called by all six spawn
- * sites. Layout invariants (super-dsh/AGENTS.md S7, smoke.mjs parity):
+ * sites. Layout invariants (super-dsh/AGENTS.md S7):
  *
  *   - `<worldHome>/profiles/web/package.json` — bundles `[dsh-base, dsh-web-app,
  *     adapterPkg]`; the world tree is a full sibling root, nothing shared.
  *   - `<worldHome>/profiles/web/cordis.patch.yml` — per-world home pinning:
  *     every home-resolving DSH plugin reads THIS tree's nested root.
- *   - `<worldHome>/profiles/node_modules/@pgmi-builds/{adapter,hub}` — links
- *     for the profile's bundle resolution and the inserted mount rows (the
- *     `@deepseek-ai/*` scope beside them WE build below — 0.1.7 loadProfile
- *     heals nothing; a boot() world has no resolution table).
+ *   - `<worldHome>/profiles/web/node_modules/@pgmi-builds/{adapter,hub}` —
+ *     the plugin-add shape: with the host table widened (spawnWorld, spec
+ *     §2.1), these profile-local links serve the local-physical leg for the
+ *     world's own packages. No `@deepseek-ai` scope anywhere — those names
+ *     ride the host's installation entries.
  *
  * Link identity rule: both links point INSIDE the running line tree — the hub
  * at this module's own package root, the adapter at its sibling
@@ -29,17 +30,16 @@
  * published single `super-dsh` package, so ctx0 and every world root share
  * one hub/adapter instance with zero registry involvement.
  *
- * Returns the bare module base for `spawnWorld` (`…/profiles/node_modules/`),
- * or null when the adapter sibling does not exist next to the hub (a foreign
- * composition this module does not own — keep the caller's env/fallback path).
+ * Returns whether the layout was provisioned; false (logged) when the
+ * adapter sibling does not exist next to the hub — a foreign composition
+ * this module does not own.
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
 const HUB_SCOPE = '@pgmi-builds'
-const HARNESS_SCOPE = '@deepseek-ai'
 
 /** The profile bundles every world tree composes besides its adapter. */
 const WORLD_BASE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] as const
@@ -57,7 +57,12 @@ const WORLD_BASE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
  * machine-specific path ships in code.
  * @throws when neither yields an installation (mis-launched composition).
  */
-export function resolveInstallAnchor(): string {
+export function resolveInstallAnchor(host?: { get(name: string): unknown }): string {
+  // Spec §2.3: the host's launcher facts win — a world plugin runs in ctx0,
+  // where `profileContext` carries the exact anchor the live table was
+  // computed from. Env and the realpath walk remain for table-less harnesses.
+  const launcher = host?.get('profileContext') as { installAnchor?: string } | undefined
+  if (launcher?.installAnchor !== undefined) return launcher.installAnchor
   const fromEnv = process.env.SUPERD_DSH_ANCHOR
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv
   let dir = dirname(resolveHostPackageDir('@deepseek-ai/dsh-app-boot'))
@@ -111,59 +116,23 @@ export interface ProvisionWorldOptions {
 
 /**
  * Provision one world's nested profile (idempotent: rewrites profile files,
- * re-links packages — lstat-safe against dangling links). Returns the
- * `bareModuleBaseUrl` for {@link spawnWorld}, or null when unresolvable.
+ * re-links packages — lstat-safe against dangling links). Returns whether
+ * the layout landed.
  *
- * Never throws: any provisioning failure is logged and returns null so the
+ * Never throws: any provisioning failure is logged and returns false so the
  * calling world plugin degrades to a not-ready roster row instead of failing
  * the loader entry — a failed apply would take down the whole host boot.
  */
-export function provisionWorldProfile(opts: ProvisionWorldOptions): string | null {
+export function provisionWorldProfile(opts: ProvisionWorldOptions): boolean {
   try {
     return provisionWorldProfileUnchecked(opts)
   } catch (cause) {
     console.error(`[super-dsh] provisioning world '${opts.key}' failed:`, cause)
-    return null
+    return false
   }
 }
 
-
-/**
- * A source-checkout (pnpm workspace) splits the @deepseek-ai closure across
- * the workspace packages' OWN node_modules (apps/cli links only its direct
- * deps; bundle/web-app carries the UI closure, bundle/base the runtimes).
- * When the anchor sits inside a pnpm workspace, every package-level scope is
- * a union source. Packaged installs have no pnpm-workspace.yaml and return
- * nothing — their single install tree is already complete (dev3 evidence).
- */
-function workspaceHarnessScopes(anchorDir: string): string[] {
-  let root: string | undefined = anchorDir
-  while (root !== undefined && !existsSync(join(root, 'pnpm-workspace.yaml'))) {
-    const parent = dirname(root)
-    root = parent === root ? undefined : parent
-  }
-  if (root === undefined) return []
-  const scopes: string[] = []
-  const collect = (base: string, depth: number): void => {
-    if (!existsSync(base)) return
-    const scope = join(base, 'node_modules', HARNESS_SCOPE)
-    if (existsSync(scope)) scopes.push(scope)
-    if (depth === 0) return
-    for (const entry of readdirSync(base)) {
-      if (entry === 'node_modules' || entry.startsWith('.')) continue
-      // Bare files under group dirs (packages/AGENTS.md — the docs/06 §2.1
-      // phantom-package trap) must not abort the whole enumeration.
-      if (!statSync(join(base, entry), { throwIfNoEntry: false })?.isDirectory()) continue
-      collect(join(base, entry), depth - 1)
-    }
-  }
-  collect(join(root, 'packages'), 2)
-  collect(join(root, 'vendor'), 1)
-  collect(join(root, 'apps'), 1)
-  return scopes
-}
-
-function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): string | null {
+function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): boolean {
   // Single-pack topology: this module lives at `<line>/superd-hub/dist/`, and
   // every adapter is a SIBLING directory (`<line>/agent-<key>`) — the same
   // layout in the repo (dev link: lines) and inside the published `super-dsh`
@@ -172,7 +141,7 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): string | n
   const hubRoot = dirname(dirname(fileURLToPath(import.meta.url))) // <line>/superd-hub
   const lineRoot = dirname(hubRoot) // monolith root / repo super-dsh/
   const adapterDir = join(lineRoot, `agent-${opts.key}`)
-  if (!existsSync(join(adapterDir, 'package.json'))) return null
+  if (!existsSync(join(adapterDir, 'package.json'))) return false
   const profileName = opts.profileName ?? 'web'
   const profDir = join(opts.worldHome, 'profiles', profileName)
   mkdirSync(profDir, { recursive: true })
@@ -218,58 +187,30 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): string | n
       '',
     ].join('\n'),
   )
-  // @pgmi-builds links: adapter + hub, one pair into the world profile's OWN
-  // node_modules (0.1.7: resolveBundleDir consults ONLY the installation
-  // anchor and the profile directory — the old profiles-level farm fallback
-  // is gone, so the adapter's bundle layer must resolve profile-locally), one
-  // pair into the profiles-level farm for the bareModuleBaseUrl row surface.
-  // Dangling links first (lstat: existsSync is false for them, which skipped
-  // rmSync and crashed symlinkSync with EEXIST after repo moves).
+  // @pgmi-builds links, plugin-add shape: adapter + hub into the world
+  // profile's OWN node_modules (resolveBundleDir consults the profile
+  // directory; the local-physical leg of the widened host table consumes
+  // the same links for row imports — spec §2.1). Dangling links first
+  // (lstat: existsSync is false for them, which skipped rmSync and crashed
+  // symlinkSync with EEXIST after repo moves).
   const links: ReadonlyArray<readonly [string, string]> = [
     [opts.adapterPkg.slice(HUB_SCOPE.length + 1), adapterDir],
     ['superd-hub', hubRoot],
   ]
-  const linkRoots = [
-    join(profDir, 'node_modules'),
-    join(opts.worldHome, 'profiles', 'node_modules'),
-  ]
-  for (const root of linkRoots) {
-    mkdirSync(join(root, HUB_SCOPE), { recursive: true })
-    for (const [name, target] of links) {
-      const dst = join(root, HUB_SCOPE, name)
-      const st = lstatSync(dst, { throwIfNoEntry: false })
-      if (st) rmSync(dst, { recursive: true, force: true })
-      symlinkSync(target, dst)
-    }
+  const linkRoot = join(profDir, 'node_modules')
+  mkdirSync(join(linkRoot, HUB_SCOPE), { recursive: true })
+  for (const [name, target] of links) {
+    const dst = join(linkRoot, HUB_SCOPE, name)
+    const st = lstatSync(dst, { throwIfNoEntry: false })
+    if (st) rmSync(dst, { recursive: true, force: true })
+    symlinkSync(target, dst)
   }
-  // The harness scope for the world tree is a REAL scope directory of
-  // per-package symlinks UNIONED from the installation's own scope and, for
-  // a source checkout, every workspace package-level scope. The old third
-  // source — the home-level `<dshHome>/profiles/node_modules` farm — was
-  // retired 2026-09-24 (user ruling, after deleting the prod farm proved it
-  // inert): it was a redundant projection of the same install tree (dev3
-  // evidence: farm 244 entries ⊂ install's 260) and only ever fed this
-  // union. ctx0 survives via the app-boot install-anchored resolver
-  // fallback, but a tree with an explicit bare base gets no such fallback —
-  // hence this explicit union. A single scope-level link cannot express it,
-  // and a resolve.paths() walk from this module can pick the PROFILE's own
-  // partial pnpm scope (2 entries on dev3) — never use it.
-  const ANCHOR = resolveInstallAnchor()
-  const scopeSources = [
-    join(dirname(ANCHOR), 'node_modules', HARNESS_SCOPE),
-    ...workspaceHarnessScopes(dirname(ANCHOR)),
-  ]
-  const scopeDst = join(opts.worldHome, 'profiles', 'node_modules', HARNESS_SCOPE)
-  rmSync(scopeDst, { recursive: true, force: true })
-  mkdirSync(scopeDst, { recursive: true })
-  const linked = new Set<string>()
-  for (const scopeSrc of scopeSources) {
-    if (!existsSync(scopeSrc)) continue
-    for (const name of readdirSync(scopeSrc)) {
-      if (name.startsWith('.') || linked.has(name)) continue
-      symlinkSync(join(scopeSrc, name), join(scopeDst, name))
-      linked.add(name)
-    }
-  }
-  return join(opts.worldHome, 'profiles', 'node_modules') + '/'
+  // Retired machinery (spec §3): scrub the profiles-level farm this function
+  // wrote before 2026-09-25. Stale links there sit inside the widened
+  // local-physical walk and would shadow the host table's installation
+  // entries with frozen-generation targets.
+  const staleFarm = join(opts.worldHome, 'profiles', 'node_modules')
+  rmSync(join(staleFarm, '@deepseek-ai'), { recursive: true, force: true })
+  rmSync(join(staleFarm, HUB_SCOPE), { recursive: true, force: true })
+  return true
 }

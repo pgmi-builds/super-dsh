@@ -32,6 +32,7 @@ interface HostContext {
   provide(name: string, value: unknown): void
   inject(deps: string[], callback: (ctx: unknown) => void): unknown
   effect?(callback: () => () => void, label?: string): unknown
+  get(name: string): unknown
 }
 
 export function apply(ctx: HostContext): void {
@@ -46,10 +47,8 @@ export function apply(ctx: HostContext): void {
   const worldHome = join(root, 'agents', KEY)
   mkdirSync(join(worldHome, 'profiles'), { recursive: true })
   // Publish story: a foreign install has no line bootstrap, so the nested
-  // profile + @pgmi-builds links are provisioned HERE (idempotent; dev lines
-  // keep parity — smoke.mjs wrote the same layout, and SUPERD_BARE_BASE still
-  // overrides the resolved base).
-  const bareBase = provisionWorldProfile({
+  // profile + @pgmi-builds links are provisioned HERE (idempotent).
+  provisionWorldProfile({
     key: KEY,
     adapterPkg: '@pgmi-builds/agent-codex',
     worldHome,
@@ -73,14 +72,13 @@ export function apply(ctx: HostContext): void {
     const ctxW = await spawnWorld({
       appName: `superd-${KEY}`,
       profileName: 'web',
-      installAnchor: resolveInstallAnchor(), // lazy: never at module scope — import must stay side-effect-free
+      installAnchor: resolveInstallAnchor(ctx), // lazy: never at module scope — import must stay side-effect-free
       home: worldHome,
       dataHome: worldHome,
-      // Adapter-local bundle names resolve from the profile's own
-      // node_modules (heal owns @deepseek-ai there; @pgmi-builds links are
-      // provisioned by provisionWorldProfile above, or by the line bootstrap
-      // when the adapter package was not resolvable — env wins over both).
-      bareModuleBaseUrl: process.env.SUPERD_BARE_BASE ?? bareBase ?? undefined,
+      // The host's live table carries this world: spawnWorld republishes a
+      // widened successor before boot imports anything (spec §2.1), and
+      // @pgmi-builds rows resolve from the profile-local links written above.
+      host: ctx,
       extraPatches: worldMountPatches(KEY) as never,
     })
     const gateway = ctxW.get('typertGateway') as never

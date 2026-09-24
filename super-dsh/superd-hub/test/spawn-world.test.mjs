@@ -19,26 +19,34 @@ const SRC_PROFILE = join(REPO, '.tests', 'profiles', 'ctx1-min')
 
 // bootstrap: ctx1-min profile into the isolated home; strip the fixture's
 // stale node_modules (self-referential farm links). 0.1.7 alignment: the
-// heal family (healProfilesModuleFallback) is GONE from dsh-app-boot — the
-// launcher computes a runtime resolution table and intercepts imports
-// in-process, writing no links. This test drives boot() directly (no
-// launcher), and spawnWorld resolves bare plugin names as URLs under
-// HOME/profiles/node_modules, so project the resolution entries onto that
-// farm ourselves — the same package table the launcher would intercept with.
+// heal family is GONE — the launcher computes a runtime resolution table and
+// intercepts imports in-process, writing no links. This test drives boot()
+// directly (no launcher), so it stands up the SAME host surface the launcher
+// does — a mini context with PluginPackages (the base table) + profileContext
+// facts — and lets spawnWorld widen the table itself (spec §2.1 end-to-end:
+// the world's bare rows must resolve through the interception, not a farm).
 if (!existsSync(SRC_PROFILE)) throw new Error(`source profile missing: ${SRC_PROFILE}`)
 mkdirSync(join(HOME, 'profiles'), { recursive: true })
 cpSync(SRC_PROFILE, join(HOME, 'profiles', 'ctx1-min'), { recursive: true, verbatimSymlinks: true })
-const { rmSync, symlinkSync } = await import('node:fs')
+const { rmSync } = await import('node:fs')
 rmSync(join(HOME, 'profiles', 'ctx1-min', 'node_modules'), { recursive: true, force: true })
-const { createRuntimeResolution } = await import('@deepseek-ai/dsh-app-boot')
-const resolution = await createRuntimeResolution({ installAnchor: ANCHOR, home: HOME })
-const FARM = join(HOME, 'profiles', 'node_modules')
-for (const entry of resolution.entries) {
-  const dest = join(FARM, entry.name)
-  if (existsSync(dest)) rmSync(dest, { force: true })
-  mkdirSync(dirname(dest), { recursive: true })
-  symlinkSync(entry.packageDir, dest, 'dir')
-}
+const { createRuntimeResolution, loadProfile, PluginPackages } = await import('@deepseek-ai/dsh-app-boot')
+const { Context } = await import('@deepseek-ai/cordis')
+const hostProfile = loadProfile('dsh', 'ctx1-min', ANCHOR, HOME)
+const host = new Context()
+await host.plugin(PluginPackages, {
+  resolution: await createRuntimeResolution({ installAnchor: ANCHOR, profile: hostProfile, home: HOME }),
+})
+host.provide('profileContext', {
+  name: 'ctx1-min',
+  dir: join(HOME, 'profiles', 'ctx1-min'),
+  patchPath: join(HOME, 'profiles', 'ctx1-min', 'cordis.patch.yml'),
+  installAnchor: ANCHOR,
+  cwd: process.cwd(),
+  home: HOME,
+  startedBundles: hostProfile.layers.map((l) => l.packageName),
+  overlays: hostProfile.patches,
+})
 // minimal cordis.yml for ctx0
 const { writeFileSync } = await import('node:fs')
 mkdirSync(join(HOME, 'profiles', 'ctx0-min'), { recursive: true })
@@ -51,7 +59,7 @@ test('spawnWorld: dsh-base sibling root, full service face, no web surface', asy
     profileName: 'ctx1-min',
     installAnchor: ANCHOR,
     home: HOME,
-    bareModuleBaseUrl: join(HOME, 'profiles', 'node_modules') + '/',
+    host,
   })
   assert.notEqual(ctx0, ctxW)
   for (const name of ['llm', 'sessions', 'agents', 'sessionQuery', 'typert']) {
