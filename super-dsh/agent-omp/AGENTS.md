@@ -89,12 +89,12 @@ OMP 进程内 SDK（sidecar）是 live runtime；**dsh 原生 session log 是 of
 - **不变量**：`STORAGE_RECONCILE_INTERVAL_MS` 的 tick（workspace attach + default-model sync）绝不触碰 sidecar。周期性目录读取唯一入口 = `callSharedIfLive`（`sdk-client.ts`）：sidecar 不在 → 直接 `undefined`，**零进程**。`callShared`（允许 spawn）只许出现在「真实需要」路径：modelRoles get/set（DSH 侧默认变了才触发）与 `LazyOmpRpc` 首次派发。源级+运行时回归：`test/sidecar-decouple.test.mjs`（含 ps+environ 作用域化进程断言——全套并行跑时全局 `ps` 会看到别的测试文件的 sidecar，必须按 OMP_HOME 过滤）。
 - **boot 目录优先**：模型目录 boot 读 `models.db`∪`models.yml`（`loadOmpModels` 磁盘回落）；`ompAvailableModelsSync`/`ompModelRolesSync` 是 **memo-only**（warm 函数已删）；provider 排序的 modelRoles 读 `config.yml` 磁盘（`readOmpModelRolesFromConfig`，mini-YAML 扫描，零 YAML 依赖）。sidecar 活着时 tick 的 `refreshOmpModelsCli` 才搭便车换 memo。
 - **skills + slash commands 全磁盘**：`discovery.ts` 不再 import sdk-client；`readSlashCommands`/`readSkills`（`omp-disk-discovery.ts`）扫 omp+claude 的 user/project 根。v1 保真度边界（已裁决接受）：无 embedded 内置命令、无 codex/opencode/cursor 等外来 provider、无 capability 语义（at-imports/managed skills）。命令 boot 挂一次 + `OMP_DISCOVERY_REFRESH_INTERVAL_MS`（knobs，默认 1h，0 禁用）重挂（dispose-then-register，先卸旧集再挂新集）。
-- **已知环境坑**：`test/sdk-client.test.mjs` / `test/sidecar-smoke.test.mjs` 真 spawn sidecar 写 DB，沙箱下报 `attempt to write a readonly database`；且 sidecar-smoke 还在用已删除的 `ompHome` 选项（陈旧测试）。stash 验证 HEAD 同挂——环境性失败，待清理。
+- ~~**已知环境坑**：`sdk-client.test.mjs` / `sidecar-smoke.test.mjs` 真 spawn sidecar~~（2026-09-24 关闭）：这两个真 sidecar spawn 测试已随 **per-agent 场景退役**删除；lazy 不变量仍由 `sidecar-{singleton,decouple}.test.mjs` 把守（fakes + 源级断言，零真 runtime）。
 
 ---
 
-## 六、测试/冒烟锚点
+## 六、测试锚点（2026-09-24 场景退役后）
 
-见根 `AGENTS.md` §二。要点：`DSH_HOME=<repo>/.omp-web-test`、profile `omp-web-test`（`link:` 指向本目录）、4999 端口、`systemd-run --user` 拉起（沙箱内直拉 daemon 会 `SANDBOX_UNAVAILABLE`）、token 每次轮换从 `.scratch/*.log` 取水位之后那条。
+**场景退役（user 裁决）**：本目录不再有 per-agent 场景 rig——standalone 线、真 sidecar spawn 测试（`sdk-client`/`sidecar-smoke` 已删）、下方旧冒烟清单一律退役；**整包验证只走 superd 的 4999 pack 线 + dev3 实装**（`super-dsh/AGENTS.md`）。原「冒烟九查」的覆盖面（fresh create 全事件落盘 / resume 含 blank draft / eager-spawn 禁令 / idle-exit / tick 零 spawn / 磁盘扫描菜单）由 **pack 线上的 per-runtime 会话面验收**承载（根 AGENTS §二.5 对齐验收程序）。
 
-冒烟必查：① fresh create → 原生 log 全事件落盘；② 重启后 resume（含 blank draft）；③ `session/list` 原生读回；④ `directoryPicker/list` 走 browse；⑤ resume（含**有映射**分支）**没有 eager spawn**；⑥ 浏览/回放旧会话 → 零 `sidecar/main.ts` 进程（`ps -ef | grep sidecar/main.ts`）；⑦ 首 prompt 恰好一次 spawn，idle-exit（10min 默认）后进程消失；⑧ 跨一个 tick（30s）周期零 spawn；⑨ `/` 菜单与技能清单来自磁盘扫描，1h 后自动刷新。
+保留的单元测试面（`npm test`，全 fakes、零真 runtime）：session log 生产者契约（`appendUnstoredSuffix`/v3 坐标）、bridge 映射（`bridge-store`）、模型面（`models`/`model-roles`）、`sidecar-{singleton,decouple}` lazy 不变量、store/discovery、mobile 纯函数。

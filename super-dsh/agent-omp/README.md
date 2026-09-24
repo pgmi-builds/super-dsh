@@ -34,7 +34,7 @@ dsh 宿主 (Node 22, 本包 dist/)            Bun sidecar (本包 sidecar/)
 - `sidecar/main.ts`（bun 入口）：ready 握手 + JSON-lines 请求/响应/事件三帧协议；app 级共享单例 `authStorage`/`modelRegistry`；session 池（create/dispose/事件转发）。
 - `src/protocol.ts`：协议与方法表类型（sys.ping / models.list / settings.get / session.create|info|prompt|steer|followUp|abort|dispose / sessions.list）。
 - `src/sidecar-client.ts`：Node 侧 spawn/关联/事件分发/优雅关停；`src/index.ts` 暂导出 client。
-- 冒烟 `test/sidecar-smoke.test.mjs`：ready 0.9s，全链路（ping→50 模型→session create/info/dispose→sessions.list）2.4s，`npm test` 1.8s 绿。
+- ~~冒烟 `test/sidecar-smoke.test.mjs`~~（2026-09-24 场景退役删除；整包验证走 superd 的 4999 pack 线 + dev3）。
 - 坑已修：`ModelRegistry.refreshInBackground()` 此版本返回 void（非 Promise），可选链后接 `.catch` 会炸；ready-timeout 定时器必须 clear 否则 Node 进程挂 60s。
 
 ## As-built：衔接层移植（2026-09-09，已完成 ✅）

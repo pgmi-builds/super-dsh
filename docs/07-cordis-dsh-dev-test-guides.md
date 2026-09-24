@@ -102,6 +102,8 @@
 
 好处：重置 profile 不动 user data；克隆仓库即得可复现种子。
 
+**ground 0 对照（prod ↔ 测试；2026-09-24 user 澄清）**：prod 的物理 `@deepseek-ai/*` 节点在**全局安装**（`~/.local`）；**逻辑包树 ground 0 = `~/.dsh/profiles/<name>`**——dsh web app 入口从此解析，指向全局树的 symlink 与逐 profile / post-install 插件的**物理文件**都在这一层。测试与此同构：**repo checkout build 扮「全局」**（= installation anchor），`<test-home>/profiles/<name>`（如 `superd-pub`）= ground 0——整包 tarball **物理**装在这里（`dsh plugin add` 同形），harness 导入经 launcher 进程内表重定向到 anchor（§5.3）；世界树由 `provisionWorldProfile` 按生产形状自备。**测试代码不再自带 farm 投影 / `@pgmi-builds` 链接物流**——那套 per-agent 场景 rig 已于 2026-09-24 场景退役整体删除，场景级验证只走整包 pack 线。
+
 ### 3.3 持久化与格式兼容性
 
 - 会话数据默认持久化在 `$DSH_HOME/sessions/`。长寿命 home 的价值 = **持续验证旧 session log 对未来版本可读**。
@@ -171,7 +173,7 @@
 
 ## 6. 本仓 adoption 状态（实测，2026-09-24）
 
-**已符合**：交付形态测试（tarball 而非 symlink farm）；端口动态预检 + 外来占用拒绝；**产物面启动**（repo build 的 `apps/cli/lib/bin.js` + 裸 node；禁止 tsx 源码启动——双平面 symbol split，仓根 AGENTS §三有根因）；种子/运行 home 分离；LAN 只走用户态中继；daemon 一律 `systemd-run --user`（沙箱内直拉 = `SANDBOX_UNAVAILABLE`）；**client lane**（hub + omp 各一条，串进 build——见下）；**compat/clean 双 rig**（`super-dsh/test/README.md`）。
+**已符合**：交付形态测试（tarball 而非 symlink farm）；端口动态预检 + 外来占用拒绝；**产物面启动**（repo build 的 `apps/cli/lib/bin.js` + 裸 node；禁止 tsx 源码启动——双平面 symbol split，仓根 AGENTS §三有根因）；种子/运行 home 分离；LAN 只走用户态中继；daemon 一律 `systemd-run --user`（沙箱内直拉 = `SANDBOX_UNAVAILABLE`）；**client lane**（hub + omp 各一条，串进 build——见下）；**compat/clean 双 rig**（`super-dsh/test/README.md`）；**场景级测试唯一入口 = 整包 pack 线**（2026-09-24 user 裁决「场景退役」：per-agent 场景 rig 全删——world-plugin 集成测试 ×2、standalone app 线 ×5、verify/live/spike/smoke/probe、omp 真 sidecar spawn 测试、standalone bootstrap 脚本；adapter 侧只留单元测试）。
 
 **修复记录（2026-09-24 reform 轮，user 指令 "reform the repo to align the guidelines"；原两条 ❗ 偏差关闭）**：
 

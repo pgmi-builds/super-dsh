@@ -128,8 +128,9 @@ DSH_HOME=<repo>/.tests node --test test/*.test.mjs
 ```
 
 All unit/fixture tests fake the gateway child (`setGatewayFactory`) — no real
-python child in tests except the opt-in live suite
-(`hermes-client.live.test.mjs`, skips without a live gateway).
+python child in any test (the opt-in live suite was retired with the
+2026-09-24 scenario retirement; whole-plugin scenarios run on the superd
+4999 pack line).
 
 ## Trap: `npm install` materializes the hub link
 

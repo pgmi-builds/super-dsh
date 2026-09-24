@@ -34,7 +34,7 @@ systemctl --user stop superd-codex-app-<port>-test superd-codex-app-<port>-relay
 | 位置 | 内容 |
 |---|---|
 | `$DSH_HOME`（测试 = `<repo>/.tests`） | 测试 DSH home |
-| `$DSH_HOME/agents/codex` | **Codex app home**：`config.toml` / `auth.json` / 模型 catalog（由 `scripts/setup-codex-home.mjs` 从 `~/.codex` **单向**拷入）+ Codex 自己的 rollout/state |
+| `$DSH_HOME/agents/codex` | **Codex app home**：`config.toml` / `auth.json` / 模型 catalog（standalone 时代的 `setup-codex-home.mjs` 拷入已随 2026-09-24 场景退役删除）+ Codex 自己的 rollout/state |
 | `$DSH_HOME/profiles/codex` | 本 app 的 dsh profile（bundles + `cordis.patch.yml`） |
 | `$DSH_HOME/sessions/...` | **DSH 会话日志**（上游 `session-persistence-jsonl`，zstd）——list/replay 都由此提供 |
 

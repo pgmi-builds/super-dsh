@@ -13,3 +13,4 @@
 - **端口纪律**：4999 = 共用测试口（整机共享；脚本 `ss` 预检，占用即拒，他人/其他 agent 在用时不碰）；clean rig 自选空闲端口（非 4999 无 Caddy 映射，LAN 暴露走 socat，脚本输出有提示）。
 - **重置**：compat rig 只动 `profiles/superd-pub`（脚本每次 `rm -rf` 重建），user data 不动；clean rig 整个 home 可弃。
 - 脚本旋钮：`SUPERD_PORT` / `SUPERD_HOME_DIR` / `SUPERD_PROFILE`（默认 `4999` / `.tests/superd` / `superd-pub`；unit、日志、profile patch 端口、trusted-hosts 端口形 entry 全部派生）。
+- **场景退役（2026-09-24 user 裁决）**：per-agent 场景 rig（standalone app 线、world-plugin 集成测试、live/spike/verify/smoke/probe、真 sidecar spawn）已全部删除——**场景级验证只走本 README 的整包 rigs + dev3 实装**；adapter 侧只留单元测试（fakes / 映射 / 事件转译 / lazy 不变量）。
