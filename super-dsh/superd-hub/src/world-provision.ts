@@ -19,8 +19,9 @@
  *   - `<worldHome>/profiles/web/cordis.patch.yml` — per-world home pinning:
  *     every home-resolving DSH plugin reads THIS tree's nested root.
  *   - `<worldHome>/profiles/node_modules/@pgmi-builds/{adapter,hub}` — links
- *     for the profile's bundle resolution and the inserted mount rows
- *     (`@deepseek-ai/*` is loadProfile's heal farm, not ours).
+ *     for the profile's bundle resolution and the inserted mount rows (the
+ *     `@deepseek-ai/*` scope beside them WE build below — 0.1.7 loadProfile
+ *     heals nothing; a boot() world has no resolution table).
  *
  * Link identity rule: both links point INSIDE the running line tree — the hub
  * at this module's own package root, the adapter at its sibling
@@ -36,7 +37,6 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
 const HUB_SCOPE = '@pgmi-builds'
 const HARNESS_SCOPE = '@deepseek-ai'
@@ -233,16 +233,19 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): string | n
     }
   }
   // The harness scope for the world tree is a REAL scope directory of
-  // per-package symlinks UNIONED from two authoritative sources (farm first,
-  // installation fills the gaps — dev3 evidence: farm 244 entries missing 16
-  // newer packages the install's 260 has; ctx0 survives via the app-boot
-  // install-anchored resolver fallback, but a tree with an explicit bare
-  // base gets no such fallback). A single scope-level link cannot express
-  // that union, and a resolve.paths() walk from this module can pick the
-  // PROFILE's own partial pnpm scope (2 entries on dev3) — never use it.
+  // per-package symlinks UNIONED from the installation's own scope and, for
+  // a source checkout, every workspace package-level scope. The old third
+  // source — the home-level `<dshHome>/profiles/node_modules` farm — was
+  // retired 2026-09-24 (user ruling, after deleting the prod farm proved it
+  // inert): it was a redundant projection of the same install tree (dev3
+  // evidence: farm 244 entries ⊂ install's 260) and only ever fed this
+  // union. ctx0 survives via the app-boot install-anchored resolver
+  // fallback, but a tree with an explicit bare base gets no such fallback —
+  // hence this explicit union. A single scope-level link cannot express it,
+  // and a resolve.paths() walk from this module can pick the PROFILE's own
+  // partial pnpm scope (2 entries on dev3) — never use it.
   const ANCHOR = resolveInstallAnchor()
   const scopeSources = [
-    join(resolveDshHome(), 'profiles', 'node_modules', HARNESS_SCOPE),
     join(dirname(ANCHOR), 'node_modules', HARNESS_SCOPE),
     ...workspaceHarnessScopes(dirname(ANCHOR)),
   ]

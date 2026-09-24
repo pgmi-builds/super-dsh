@@ -165,7 +165,7 @@
 ### 5.4 对 super-dsh 的直接含义
 
 - **ctx0**（launcher 起，吃拦截表）：`@pgmi-builds/*` 必须启动前就进 profile scope（profile `dependencies`/bundles → pnpm 装）或在 profile `node_modules` 物理在场。
-- **六个 world**（`spawnWorld` 进程内 `boot()`，**不经 launcher → 没有表**）：裸 URL 解析 ⇒ 世界树必须自带 farm（`provisionWorldProfile` 的 `@pgmi-builds` links + `@deepseek-ai` scope 并集）——这就是台账「测试走 `boot()` 直调须自己投影 resolution entries」的根因。
+- **六个 world**（`spawnWorld` 进程内 `boot()`，**不经 launcher → 没有表**）：裸 URL 解析 ⇒ 世界树必须自带 farm（`provisionWorldProfile` 的 `@pgmi-builds` links + `@deepseek-ai` scope 并集；scope sources = **安装树 scope ∪ 工作区枚举**——home farm 源料 2026-09-24 退役，user 删 prod `~/.dsh/profiles/node_modules` 实证无害）——这就是台账「测试走 `boot()` 直调须自己投影 resolution entries」的根因。
 - **改 adapter 源码 → 世界页要重启才生效**。dev 免重启的两条路：① YAML 加/改行（entry 层，零重启）；② 让插件以**非 node_modules 路径**被加载——Node ESM 默认 realpath，symlink 进 `node_modules` 但真实文件在仓内的包，其模块 URL **不带** `/node_modules/`，若落入 `hmr.config.root` 监视范围（roots 按 profile dir 相对解析）即可真热替换（可实测验证）。
 - **「文件即 composition」与 HMR 一致**：配置刷新 = 重读 include 文件再 `update()`，所以把 spawn 期事实（如 world 零监听姿态）**持久化进 profile 层文件**后，refresh 重算出的树与启动时一致——这正是 `world-provision` 把零监听 posture 写进 `cordis.patch.yml` 的机制原因。
 

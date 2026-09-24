@@ -10,9 +10,11 @@
  * from the adapter side (foreign app-home redirection, spec §七).
  *
  * Profile resolution: loadProfile(name, profileName, installAnchor, home)
- * reads profiles under `<home>/profiles/<profileName>` and heals the
- * `@deepseek-ai/*` fallback farm into `<home>/profiles/node_modules` from
- * the install anchor (single instance — same physical installation).
+ * reads profiles under `<home>/profiles/<profileName>`. Since 0.1.7 it
+ * writes NOTHING to disk (the heal-farm family is gone — the launcher's
+ * in-process resolution table replaced it), and a boot() world gets no such
+ * table: bare-name imports resolve as URLs under bareModuleBaseUrl, so the
+ * caller provisions the world tree's own farm (provisionWorldProfile).
  */
 import { loadProfile, boot, composeEntries, type ProfileContext } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
