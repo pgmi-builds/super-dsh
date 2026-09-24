@@ -45,7 +45,7 @@ function providerContext(home, { persistence = true } = {}) {
 
 /** Write a minimal rollout for `threadId` under `codexHome` and point CODEX_HOME at it. */
 function withCodexHome(threadHeads) {
-  const codexHome = mkdtempSync(join(tmpdir(), "aw-codex-resume-home-"));
+  const codexHome = mkdtempSync(join(tmpdir(), "superd-codex-resume-home-"));
   const dir = join(codexHome, "sessions", "2026", "09", "17");
   mkdirSync(dir, { recursive: true });
   for (const head of threadHeads) {
@@ -85,7 +85,7 @@ function userMessageEvent(text) {
 }
 
 test("resume fails closed when the DSH session id has no recorded Codex thread", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   const ctx = providerContext(home);
   const provider = new CodexProvider(ctx);
   await assert.rejects(
@@ -95,7 +95,7 @@ test("resume fails closed when the DSH session id has no recorded Codex thread",
 });
 
 test("resume fails closed when the recorded thread never materialized", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   upsertSession(home, "session-blank", { threadId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
   const provider = new CodexProvider(ctx);
@@ -106,8 +106,8 @@ test("resume fails closed when the recorded thread never materialized", async ()
 });
 
 test("resume pre-validates the rollout at RESUME time and fails with ROLLOUT_MISSING before spawning", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
-  const workspace = mkdtempSync(join(tmpdir(), "aw-codex-workspace-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
+  const workspace = mkdtempSync(join(tmpdir(), "superd-codex-workspace-"));
   upsertSession(home, "session-pruned", { threadId: THREAD, cwd: workspace, createdAt: Date.now(), preset: "workspace-write" });
   // CODEX_HOME points at an EMPTY current home: the rollout is gone/pruned.
   const restore = withCodexHome([]);
@@ -127,8 +127,8 @@ test("resume pre-validates the rollout at RESUME time and fails with ROLLOUT_MIS
 });
 
 test("a session marked not resumable fails fast with NATIVE_REJECTED", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
-  const workspace = mkdtempSync(join(tmpdir(), "aw-codex-workspace-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
+  const workspace = mkdtempSync(join(tmpdir(), "superd-codex-workspace-"));
   upsertSession(home, "session-rejected", { threadId: THREAD, cwd: workspace, createdAt: Date.now(), preset: null, resumable: false });
   const restore = withCodexHome([{ id: THREAD, cwd: workspace }]);
   try {
@@ -145,8 +145,8 @@ test("a session marked not resumable fails fast with NATIVE_REJECTED", async () 
 });
 
 test("resume requires session persistence once the thread is known", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
-  const workspace = mkdtempSync(join(tmpdir(), "aw-codex-workspace-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
+  const workspace = mkdtempSync(join(tmpdir(), "superd-codex-workspace-"));
   upsertSession(home, "session-known", { threadId: THREAD, cwd: workspace, createdAt: Date.now(), preset: "danger-full-access" });
   const restore = withCodexHome([{ id: THREAD, cwd: workspace }]);
   try {
@@ -162,7 +162,7 @@ test("resume requires session persistence once the thread is known", async () =>
 });
 
 test("create requires session persistence before anything is spawned", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   const ctx = providerContext(home, { persistence: false });
   const provider = new CodexProvider(ctx);
   await assert.rejects(
@@ -172,7 +172,7 @@ test("create requires session persistence before anything is spawned", async () 
 });
 
 test("resume re-validates the recorded cwd and refuses a vanished directory", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   upsertSession(home, "session-gone", {
     threadId: THREAD,
     cwd: join(home, "no-such-directory"),
@@ -195,7 +195,7 @@ test("resume re-validates the recorded cwd and refuses a vanished directory", as
 // ── C6: followThreadId re-arms on thread change ─────────────────────────────
 
 test("followThreadId re-arms on change: newSession() thread swaps keep the map current", () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   // Production order: create() seeds the full record (with cwd) BEFORE the
   // follow loop patches the thread id in.
   upsertSession(home, "session-swap", { threadId: null, cwd: home, createdAt: Date.now(), preset: null });
@@ -225,7 +225,7 @@ test("followThreadId re-arms on change: newSession() thread swaps keep the map c
 });
 
 test("followThreadId ignores null observations and repeats (idempotent upserts)", () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-codex-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   upsertSession(home, "session-null", { threadId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
   const provider = new CodexProvider(ctx);

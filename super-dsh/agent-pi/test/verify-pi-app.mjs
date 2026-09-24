@@ -6,11 +6,11 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const jar = readFileSync(process.env.AW_JAR ?? "/tmp/aw-pi-app.jar", "utf8");
+const jar = readFileSync(process.env.SUPERD_JAR ?? "/tmp/superd-pi-app.jar", "utf8");
 const line = jar.split("\n").filter((l) => l && (!l.startsWith("#") || l.startsWith("#HttpOnly_"))).pop();
 const cookie = line.split("\t").slice(-2).join("=");
-const base = process.env.AW_BASE ?? "http://192.0.2.130:4987";
-const CWD = process.env.AW_CWD ?? "/home/u1/workspaces/superd/.scratch/aw-pi";
+const base = process.env.SUPERD_BASE ?? "http://192.0.2.130:4987";
+const CWD = process.env.SUPERD_CWD ?? "/home/u1/workspaces/superd/.scratch/superd-pi";
 let n = 0;
 
 const rpc = async (method, payload, timeoutMs = 15000) => {

@@ -56,7 +56,7 @@ export type HermesSessionMap = Record<string, HermesSessionRecord>;
  * then the line's historical test-home default.
  */
 export function resolveHermesAppDir(home?: string): string {
-  const base = resolve(home ?? process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw"));
+  const base = resolve(home ?? process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd"));
   // Form-B world home is already `<root>/agents/hermes` — never double-nest.
   const dir = basename(base) === "hermes" && basename(dirname(base)) === "agents" ? base : join(base, "agents", "hermes");
   return dir;

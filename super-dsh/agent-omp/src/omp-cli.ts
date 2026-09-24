@@ -27,7 +27,7 @@
  * (reads) or `false` (write), so the provider never fails to boot on a down
  * sidecar.
  *
- * @module omp-web/omp-cli
+ * @module agent-omp/omp-cli
  */
 import { callShared, callSharedIfLive } from "./sdk-client.js";
 

@@ -30,7 +30,7 @@ function providerContext(home, { persistence = true } = {}) {
 }
 
 test("resume fails closed when the DSH session id has no recorded Hermes gateway session", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
   const ctx = providerContext(home);
   const provider = new HermesProvider(ctx);
   await assert.rejects(
@@ -40,7 +40,7 @@ test("resume fails closed when the DSH session id has no recorded Hermes gateway
 });
 
 test("resume fails closed when the record has no durable gateway session id (predates durable-id capture)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
   upsertSession(home, "session-blank", { gatewaySessionId: null, gatewayStoredSessionId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
   const provider = new HermesProvider(ctx);
@@ -51,7 +51,7 @@ test("resume fails closed when the record has no durable gateway session id (pre
 });
 
 test("resume requires session persistence once the gateway session is known", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
   upsertSession(home, "session-known", { gatewaySessionId: "deadbeef12345678", gatewayStoredSessionId: "20260917_084602_389e64", cwd: home, createdAt: Date.now(), preset: "danger-full-access" });
   const ctx = providerContext(home, { persistence: false });
   const provider = new HermesProvider(ctx);
@@ -62,7 +62,7 @@ test("resume requires session persistence once the gateway session is known", as
 });
 
 test("create requires session persistence before anything is spawned", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
   const ctx = providerContext(home, { persistence: false });
   const provider = new HermesProvider(ctx);
   await assert.rejects(
@@ -72,7 +72,7 @@ test("create requires session persistence before anything is spawned", async () 
 });
 
 test("resume re-validates the recorded cwd and refuses a vanished directory", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
   upsertSession(home, "session-gone", {
     gatewaySessionId: "deadbeef12345678",
     gatewayStoredSessionId: "20260917_084602_389e64",
@@ -118,7 +118,7 @@ function adoptionClient({ liveId = null, storedId = null } = {}) {
 }
 
 test("adopted gateway session ids are upserted into the map (create path)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-follow-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-follow-"));
   // The real create flow persists the record (with cwd) before following.
   upsertSession(home, "session-follow", { gatewaySessionId: null, gatewayStoredSessionId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
@@ -133,7 +133,7 @@ test("adopted gateway session ids are upserted into the map (create path)", asyn
 });
 
 test("stored_session_id drift: a reminted durable key REPLACES the map entry", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-drift-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-drift-"));
   upsertSession(home, "session-drift", {
     gatewaySessionId: "old-live",
     gatewayStoredSessionId: "old-stored",
@@ -157,7 +157,7 @@ test("stored_session_id drift: a reminted durable key REPLACES the map entry", a
 });
 
 test("followGatewaySessionId unsubscribes after the first adoption (one materialization per client)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-hermes-unsub-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-unsub-"));
   upsertSession(home, "session-unsub", { gatewaySessionId: null, gatewayStoredSessionId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
   const provider = new HermesProvider(ctx);

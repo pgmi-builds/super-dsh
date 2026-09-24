@@ -48,7 +48,7 @@ import type { OmpAgentRpc } from "./lazy-rpc.js";
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
 import { getBridgeStore } from "./store/index.js";
-import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
+import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 
 /**
  * v2 live assistant-stream publication for the OMP bridge — the same frame

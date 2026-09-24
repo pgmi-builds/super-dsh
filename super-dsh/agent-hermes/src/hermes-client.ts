@@ -197,9 +197,9 @@ export function setGatewayFactory(factory: GatewayProcessFactory | null): void {
   gatewayFactory = factory ?? defaultGatewayFactory;
 }
 
-/** Brief-pinned order: AW_HERMES_PYTHON → <root>/venv/bin/python → <root>/.venv/bin/python → PATH python3. */
+/** Brief-pinned order: SUPERD_HERMES_PYTHON → <root>/venv/bin/python → <root>/.venv/bin/python → PATH python3. */
 export function resolveHermesPython(root: string): string {
-  const configured = process.env.AW_HERMES_PYTHON?.trim();
+  const configured = process.env.SUPERD_HERMES_PYTHON?.trim();
   if (configured) return configured;
   for (const p of [resolve(root, "venv/bin/python"), resolve(root, ".venv/bin/python")]) {
     if (existsSync(p)) return p;
@@ -207,9 +207,9 @@ export function resolveHermesPython(root: string): string {
   return "python3";
 }
 
-/** Hermes root: AW_HERMES_ROOT → ~/.hermes/hermes-agent (native home — never redirected). */
+/** Hermes root: SUPERD_HERMES_ROOT → ~/.hermes/hermes-agent (native home — never redirected). */
 export function resolveHermesRoot(): string {
-  return process.env.AW_HERMES_ROOT?.trim() || resolve(homedir(), ".hermes/hermes-agent");
+  return process.env.SUPERD_HERMES_ROOT?.trim() || resolve(homedir(), ".hermes/hermes-agent");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1061,7 +1061,7 @@ export class HermesGatewayClient {
   }
 
   #trace(line: string): void {
-    if (process.env.AW_HERMES_TRACE === "1") {
+    if (process.env.SUPERD_HERMES_TRACE === "1") {
       process.stderr.write(`[hermes-client] ${line}\n`);
     }
   }

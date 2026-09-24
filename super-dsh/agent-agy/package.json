@@ -1,5 +1,5 @@
 {
-  "name": "@pgmi-builds/agent-adapter-agy",
+  "name": "@pgmi-builds/agent-agy",
   "version": "0.1.0",
   "description": "Google Antigravity (Gemini) provider for DeepSeek Harness (dsh) — drives the google-antigravity Python SDK through a JSONL stdio bridge (bridge/agy_bridge.py, localharness embedded). Consumer-first auth: Gemini API key stored adapter-side; ADC picked up transparently by the SDK. The agy CLI is never invoked.",
   "type": "module",

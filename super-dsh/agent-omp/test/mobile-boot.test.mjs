@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Mobile boot script + zoom-guard pure functions (host half, omp-web).
+ * Mobile boot script + zoom-guard pure functions (host half, agent-omp).
  * Minimal port of dashr's `test/zoom-guard.spec.ts` + `test/web-trust.spec.ts`
  * pure-function tiers, retargeted at the renamed page global
- * (`window.__OMP_WEB_MOBILE__`) and plugin identity (`omp-web`).
+ * (`window.__AGENT_OMP_MOBILE__`) and plugin identity (`agent-omp`).
  *
  * No DOM stub here: the strongest tier (running the real script against a
  * stub DOM) belongs to the dashr checkout's heavier suite; this file pins the
@@ -75,9 +75,9 @@ test("buildZoomGuardSection embeds predicates as ES5 and carries the renamed ide
   for (const fragment of ["var ZI=", "var ZM=", "var ZS=", "var ZD=", "var ZF="]) {
     assert.ok(text.includes(fragment), `missing ${fragment}`);
   }
-  assert.ok(text.includes("window.__OMP_WEB_MOBILE__"), "reads the renamed page global");
-  assert.ok(text.includes("omp-web/zoom-font-floor"), "carries the plugin-owned css tag id");
-  assert.ok(text.includes("omp-web"), "carries the plugin identity");
+  assert.ok(text.includes("window.__AGENT_OMP_MOBILE__"), "reads the renamed page global");
+  assert.ok(text.includes("agent-omp/zoom-font-floor"), "carries the plugin-owned css tag id");
+  assert.ok(text.includes("agent-omp"), "carries the plugin identity");
   assert.ok(!text.includes("__DASHR_MOBILE__"), "no residual dashr global");
   assert.ok(!text.includes("=>"), "ES5: no arrow functions");
   assert.ok(!text.includes("`"), "ES5: no template literals");
@@ -85,7 +85,7 @@ test("buildZoomGuardSection embeds predicates as ES5 and carries the renamed ide
 
 test("buildMobileBootScript ships the default-ON global plus the zoom guard in a non-throwing IIFE", () => {
   const text = buildMobileBootScript();
-  assert.ok(text.includes('window.__OMP_WEB_MOBILE__={"enabled":true};'));
+  assert.ok(text.includes('window.__AGENT_OMP_MOBILE__={"enabled":true};'));
   assert.ok(text.includes("var ZI="), "zoom-guard section present");
   assert.ok(text.startsWith("(function(){try{"));
   assert.ok(text.endsWith("}catch(e){}})();"));
@@ -97,5 +97,5 @@ test("buildMobileBootScript ships the default-ON global plus the zoom guard in a
   // eslint-disable-next-line no-new-func
   const fn = new Function("window", "navigator", text);
   fn(window, { userAgent: ANDROID_UA, maxTouchPoints: 5 });
-  assert.deepEqual(window.__OMP_WEB_MOBILE__, { enabled: true });
+  assert.deepEqual(window.__AGENT_OMP_MOBILE__, { enabled: true });
 });

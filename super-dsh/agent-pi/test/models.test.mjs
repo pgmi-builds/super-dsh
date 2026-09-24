@@ -24,7 +24,7 @@ const {
 } = models;
 
 function tempPiAgentDir(settings) {
-  const dir = mkdtempSync(join(tmpdir(), "aw-pi-models-"));
+  const dir = mkdtempSync(join(tmpdir(), "superd-pi-models-"));
   mkdirSync(dir, { recursive: true });
   if (settings !== undefined) writeFileSync(join(dir, "settings.json"), JSON.stringify(settings));
   return dir;

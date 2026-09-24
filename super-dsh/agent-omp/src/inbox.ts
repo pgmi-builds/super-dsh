@@ -10,7 +10,7 @@
  * (empty) semantics: `nextTurn`/`nextStep` stay empty and every mutation is
  * a faithful in-memory splice.
  *
- * @module omp-web/inbox
+ * @module agent-omp/inbox
  */
 import type { Inbox as InboxContract, InboxTarget } from "@deepseek-ai/dsh-agent";
 import type { UserMessage } from "@deepseek-ai/dsh-session";

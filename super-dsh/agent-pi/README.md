@@ -1,4 +1,4 @@
-# @pgmi-builds/agent-adapter-pi (Agent Worlds AW-F)
+# @pgmi-builds/agent-pi (Super D)
 
 pi coding agent provider for DeepSeek Harness — an `AgentFactory` dsh plugin that embeds the
 **pi coding agent** (`@earendil-works/pi-coding-agent@0.84.2`) **in-process via its SDK**
@@ -57,11 +57,11 @@ world form (form B) via the hub.
 
 ## Trap: `npm install` materializes the hub link
 
-`dependencies["file:../agent-hub"]` gets materialized by `npm install` as a
-**physical copy** under `node_modules/@pgmi-builds/agent-hub` — a second hub
+`dependencies["file:../superd-hub"]` gets materialized by `npm install` as a
+**physical copy** under `node_modules/@pgmi-builds/superd-hub` — a second hub
 module instance whose rosters/mount-registry are dead. Symptom in world form:
 the world's virtual webServer never appears (`9 entries did not activate`,
 everything pending on webServer). After ANY `npm install` in this package,
-re-link: `rm -rf node_modules/@pgmi-builds/agent-hub && ln -sfn ../../../agent-hub
-node_modules/@pgmi-builds/agent-hub` (codex symlink discipline; same class as
+re-link: `rm -rf node_modules/@pgmi-builds/superd-hub && ln -sfn ../../../superd-hub
+node_modules/@pgmi-builds/superd-hub` (codex symlink discipline; same class as
 the `@deepseek-ai/*` heal).

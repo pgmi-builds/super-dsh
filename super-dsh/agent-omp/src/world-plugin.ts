@@ -1,5 +1,5 @@
 /**
- * aw.agent-adapter-omp — the adapter's world plugin (spec S2): activation IS
+ * agent-omp — the adapter's world plugin (spec S2): activation IS
  * roster membership.
  *
  * AW-B (DL1–DL5): the world is spawned as a sibling ROOT context with NO
@@ -18,9 +18,9 @@ import { join } from 'node:path'
 import {
   spawnWorld, registerAgent, setReady, registerForeignTarget,
   registerHostMount, mountWorld, worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
-} from '../../agent-hub/dist/index.js'
+} from '../../superd-hub/dist/index.js'
 
-export const name = 'aw.agent-adapter-omp'
+export const name = 'agent-omp'
 
 /** Runtime key — also the mount label. */
 const KEY = 'omp'
@@ -47,11 +47,11 @@ export function apply(ctx: HostContext): void {
   mkdirSync(join(worldHome, 'profiles'), { recursive: true })
   // Publish story: a foreign install has no line bootstrap, so the nested
   // profile + @pgmi-builds links are provisioned HERE (idempotent; dev lines
-  // keep parity — smoke.mjs wrote the same layout, and AW_BARE_BASE still
+  // keep parity — smoke.mjs wrote the same layout, and SUPERD_BARE_BASE still
   // overrides the resolved base).
   const bareBase = provisionWorldProfile({
     key: KEY,
-    adapterPkg: '@pgmi-builds/agent-adapter-omp',
+    adapterPkg: '@pgmi-builds/agent-omp',
     worldHome,
   })
   const world = (async () => {
@@ -71,7 +71,7 @@ export function apply(ctx: HostContext): void {
       authorize: (req, res) => (connection as { authorizeIndex(req: unknown, res: unknown): boolean }).authorizeIndex(req, res),
     })
     const ctxW = await spawnWorld({
-      appName: `aw-${KEY}`,
+      appName: `superd-${KEY}`,
       profileName: 'web',
       installAnchor: resolveInstallAnchor(), // lazy: never at module scope — import must stay side-effect-free
       home: worldHome,
@@ -80,7 +80,7 @@ export function apply(ctx: HostContext): void {
       // node_modules (heal owns @deepseek-ai there; @pgmi-builds links are
       // provisioned by provisionWorldProfile above, or by the line bootstrap
       // when the adapter package was not resolvable — env wins over both).
-      bareModuleBaseUrl: process.env.AW_BARE_BASE ?? bareBase ?? undefined,
+      bareModuleBaseUrl: process.env.SUPERD_BARE_BASE ?? bareBase ?? undefined,
       extraPatches: worldMountPatches(KEY) as never,
     })
     const gateway = ctxW.get('typertGateway') as never
@@ -96,7 +96,7 @@ export function apply(ctx: HostContext): void {
     ctx.effect?.(() => () => {
       mounted.dispose()
       dropHostMount()
-    }, `aw.agent-adapter-${KEY}: mount`)
+    }, `agent-${KEY}: mount`)
     return ctxW
   })().catch((cause: unknown) => {
     // A failed world degrades to a not-ready roster row; a rejected provided
@@ -112,5 +112,5 @@ export function apply(ctx: HostContext): void {
     }
     return null
   })
-  ctx.provide(`aw.world.${KEY}`, world)
+  ctx.provide(`superd.world.${KEY}`, world)
 }

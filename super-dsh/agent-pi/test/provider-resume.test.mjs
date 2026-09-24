@@ -51,7 +51,7 @@ function logContext(home, events) {
 }
 
 test("resume tolerates a blank session with NO record (empty log) — the identity gate passes", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-pi-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-pi-provider-"));
   const ctx = logContext(home, []);
   const provider = new PiProvider(ctx);
   // The gate must NOT fail-closed anymore: construction proceeds past the
@@ -64,7 +64,7 @@ test("resume tolerates a blank session with NO record (empty log) — the identi
 });
 
 test("resume fails LOUD for a conversation-bearing orphan (missing record + content in the log)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-pi-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-pi-provider-"));
   const ctx = logContext(home, [{ type: "turn/start", data: { turn: 1 } }]);
   const provider = new PiProvider(ctx);
   await assert.rejects(
@@ -74,7 +74,7 @@ test("resume fails LOUD for a conversation-bearing orphan (missing record + cont
 });
 
 test("resume tolerates a never-materialized record (sessionFile null) — fresh lazy shell", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-pi-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-pi-provider-"));
   upsertSession(home, "session-blank", { sessionFile: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = logContext(home, []);
   const provider = new PiProvider(ctx);
@@ -85,7 +85,7 @@ test("resume tolerates a never-materialized record (sessionFile null) — fresh 
 });
 
 test("resume requires session persistence once the session file is known", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-pi-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-pi-provider-"));
   upsertSession(home, "session-known", {
     sessionFile: "/pi/agent/sessions/--x--/s1.jsonl",
     cwd: home,
@@ -101,7 +101,7 @@ test("resume requires session persistence once the session file is known", async
 });
 
 test("create requires session persistence before anything is started", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-pi-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-pi-provider-"));
   const ctx = providerContext(home, { persistence: false });
   const provider = new PiProvider(ctx);
   await assert.rejects(
@@ -111,7 +111,7 @@ test("create requires session persistence before anything is started", async () 
 });
 
 test("resume re-validates the recorded cwd and refuses a vanished directory", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-pi-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-pi-provider-"));
   upsertSession(home, "session-gone", {
     sessionFile: "/pi/agent/sessions/--x--/s1.jsonl",
     cwd: join(home, "no-such-directory"),

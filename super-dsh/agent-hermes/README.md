@@ -1,10 +1,10 @@
-# @pgmi-builds/agent-adapter-hermes
+# @pgmi-builds/agent-hermes
 
 Hermes provider for DeepSeek Harness (dsh) — an AgentFactory that embeds the
 Nous Research Hermes Agent via the TUI gateway JSON-RPC (`python -m
 tui_gateway.entry`) and bridges its session surface into Dash Agent/Session
-contracts (Agent Worlds AW-H; parity round 2026-09-17 = Task M1 of
-`docs/superpowers/plans/2026-09-17-aw-five-adapter-parity-fixes.md`).
+contracts (Super D; parity round 2026-09-17 = Task M1 of
+`docs/superpowers/plans/2026-09-17-superd-five-adapter-parity-fixes.md`).
 
 ## Layout
 
@@ -133,12 +133,12 @@ python child in tests except the opt-in live suite
 
 ## Trap: `npm install` materializes the hub link
 
-This package depends on `@pgmi-builds/agent-hub` via `file:../agent-hub`. A
+This package depends on `@pgmi-builds/superd-hub` via `file:../superd-hub`. A
 bare `npm install` replaces the symlink with a PHYSICAL copy → a second hub
 instance in the same process → every world webServer stays `pending` forever.
 After any `npm install` here, re-link it:
 
 ```bash
-rm -rf node_modules/@pgmi-builds/agent-hub
-ln -s ../../../../agent-worlds/agent-hub node_modules/@pgmi-builds/agent-hub
+rm -rf node_modules/@pgmi-builds/superd-hub
+ln -s ../../../../super-dsh/superd-hub node_modules/@pgmi-builds/superd-hub
 ```

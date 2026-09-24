@@ -20,7 +20,7 @@ const {
 } = await import("../dist/hermes-store.js");
 
 function tempHome() {
-  return mkdtempSync(join(tmpdir(), "aw-hermes-map-"));
+  return mkdtempSync(join(tmpdir(), "superd-hermes-map-"));
 }
 
 test("resolveHermesAppDir: explicit DSH-root home nests agents/hermes (Form-A)", () => {
@@ -50,11 +50,11 @@ test("resolveHermesAppDir: $DSH_HOME env fallback when no home is passed", () =>
   }
 });
 
-test("resolveHermesAppDir: last-resort default is <cwd>/.tests/aw", () => {
+test("resolveHermesAppDir: last-resort default is <cwd>/.tests/superd", () => {
   const previous = process.env.DSH_HOME;
   delete process.env.DSH_HOME;
   try {
-    assert.equal(resolveHermesAppDir(), join(process.cwd(), ".tests", "aw", "agents", "hermes"));
+    assert.equal(resolveHermesAppDir(), join(process.cwd(), ".tests", "superd", "agents", "hermes"));
   } finally {
     if (previous !== undefined) process.env.DSH_HOME = previous;
   }

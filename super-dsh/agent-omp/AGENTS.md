@@ -1,6 +1,6 @@
-# apps/omp-web — AGENTS.md
+# agent-omp — AGENTS.md
 
-本文件是 `apps/omp-web`（`@pgmi-builds/omp-web` 插件）的 AGENTS.md。上层为仓库根 `AGENTS.md`；其规则对本目录仍有效，冲突时以本文件为准。
+本文件是 `agent-omp`（`@pgmi-builds/agent-omp` 插件）的 AGENTS.md。上层为仓库根 `AGENTS.md`；其规则对本目录仍有效，冲突时以本文件为准。
 
 **本文件只记「坑」**——踩过一次、复发过、或反直觉的契约。改这里任何代码**之前先读本文件**；踩到新坑**当场回写**（就地 inline comment + 本文件；计划层写进 `openspec/changes/<change>/`）。
 

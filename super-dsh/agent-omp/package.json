@@ -1,5 +1,5 @@
 {
-  "name": "@pgmi-builds/agent-adapter-omp",
+  "name": "@pgmi-builds/agent-omp",
   "version": "0.1.0",
   "description": "OMP Web: OMP provider for DeepSeek Harness (dsh) — an AgentFactory that embeds OMP via the @oh-my-pi/pi-coding-agent SDK (Bun sidecar) and bridges OMP's session surface into Dash Agent/Session contracts.",
   "type": "module",
@@ -45,7 +45,7 @@
     "@deepseek-ai/dsh-session-persistence": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-home-paths": ">=0.1.5-0 <0.3.0-0",
-    "@pgmi-builds/agent-hub": "*"
+    "@pgmi-builds/superd-hub": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -75,7 +75,7 @@
     "@deepseek-ai/dsh-home-paths": {
       "optional": true
     },
-    "@pgmi-builds/agent-hub": {
+    "@pgmi-builds/superd-hub": {
       "optional": true
     }
   },
@@ -92,7 +92,7 @@
   "main": "dist/index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pgmi-builds/omp-web.git"
+    "url": "git+https://github.com/pgmi-builds/superd.git"
   },
   "engines": {
     "node": ">=22.18"

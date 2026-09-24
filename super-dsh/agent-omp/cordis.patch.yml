@@ -1,7 +1,7 @@
-# @pgmi-builds/omp-web bundle patch. This file is the `dsh.bundle.patch` layer
+# @pgmi-builds/agent-omp bundle patch. This file is the `dsh.bundle.patch` layer
 # of the published npm package: when installed via
 #
-#   dsh plugin --profile <name> add @pgmi-builds/omp-web
+#   dsh plugin --profile <name> add @pgmi-builds/agent-omp
 #
 # the profile boot merges THIS patch — mount the OMP provider plus disable the
 # native components OMP replaces — exactly like a manual cordis.patch.yml.
@@ -18,7 +18,7 @@
 # served by an OMP-backed LlmAdapter.
 - insert:
     - id: omp-provider
-      name: '@pgmi-builds/agent-adapter-omp'
+      name: '@pgmi-builds/agent-omp'
 
 # OMP owns the live agent transcript; disable the built-in loop so it does not
 # double-run alongside the OMP RPC process.
@@ -55,7 +55,7 @@
   disabled: true
 
 # dsh-shape-session-log: the native jsonl backend is the ONLY sessionPersistence.
-# omp-web feeds it (producer role); native components serve list/page/replay.
+# agent-omp feeds it (producer role); native components serve list/page/replay.
 # The plugin no longer provides a union persistence (OmpUnionSessionPersistence
 # is retired) — keep the stock row mounted.
 #

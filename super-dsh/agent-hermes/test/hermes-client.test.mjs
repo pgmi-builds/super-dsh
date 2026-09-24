@@ -141,7 +141,7 @@ async function startReady(spawnOpts = {}) {
 /** startReady + session.create answered with live sid "s1". */
 async function withSession(spawnOpts = {}) {
   const client = await startReady(spawnOpts);
-  const createP = client.createSession({ cwd: "/w/proj", title: "dsh-aw unit" });
+  const createP = client.createSession({ cwd: "/w/proj", title: "dsh-superd unit" });
   await delay(5);
   assert.equal(lastChild.lastRequest.method, "session.create");
   lastChild.respond(lastChild.lastRequest.id, {
@@ -186,17 +186,17 @@ const APPROVAL_PAYLOAD = {
 test("spawn: python resolution order and child env hygiene (never HERMES_HOME)", async () => {
   installFake();
   try {
-    const prevPython = process.env.AW_HERMES_PYTHON;
-    const prevRoot = process.env.AW_HERMES_ROOT;
-    process.env.AW_HERMES_PYTHON = "/custom/python";
-    process.env.AW_HERMES_ROOT = "/custom/root";
+    const prevPython = process.env.SUPERD_HERMES_PYTHON;
+    const prevRoot = process.env.SUPERD_HERMES_ROOT;
+    process.env.SUPERD_HERMES_PYTHON = "/custom/python";
+    process.env.SUPERD_HERMES_ROOT = "/custom/root";
     const client = HermesGatewayClient.spawn({
       cwd: "/w/cwd",
       env: { PATH: "/usr/bin", HERMES_HOME: "/must-not-survive", HERMES_TUI_GATEWAY_URL: "http://x", HERMES_TUI_SIDECAR_URL: "http://y", PYTHONPATH: "/prev" },
     });
     assert.equal(factoryCalls.length, 1);
     const call = factoryCalls[0];
-    assert.equal(call.command, "/custom/python"); // AW_HERMES_PYTHON wins
+    assert.equal(call.command, "/custom/python"); // SUPERD_HERMES_PYTHON wins
     assert.deepEqual(call.args, ["-m", "tui_gateway.entry"]);
     assert.equal(call.cwd, "/w/cwd");
     assert.equal(call.env.HERMES_HOME, undefined); // NEVER set / always stripped
@@ -206,18 +206,18 @@ test("spawn: python resolution order and child env hygiene (never HERMES_HOME)",
     assert.equal(call.env.PYTHONPATH, "/custom/root:/prev"); // root prepended
     assert.equal(call.env.PATH, "/usr/bin"); // full pass-through of the base env
     client.close();
-    delete process.env.AW_HERMES_PYTHON;
-    delete process.env.AW_HERMES_ROOT;
-    if (prevPython !== undefined) process.env.AW_HERMES_PYTHON = prevPython;
-    if (prevRoot !== undefined) process.env.AW_HERMES_ROOT = prevRoot;
+    delete process.env.SUPERD_HERMES_PYTHON;
+    delete process.env.SUPERD_HERMES_ROOT;
+    if (prevPython !== undefined) process.env.SUPERD_HERMES_PYTHON = prevPython;
+    if (prevRoot !== undefined) process.env.SUPERD_HERMES_ROOT = prevRoot;
   } finally {
     restoreFactory();
   }
 });
 
 test("resolveHermesPython: venv before .venv before PATH python3", () => {
-  const prev = process.env.AW_HERMES_PYTHON;
-  delete process.env.AW_HERMES_PYTHON;
+  const prev = process.env.SUPERD_HERMES_PYTHON;
+  delete process.env.SUPERD_HERMES_PYTHON;
   try {
     const dir = mkdtempSync(join(tmpdir(), "hermes-py-"));
     try {
@@ -232,14 +232,14 @@ test("resolveHermesPython: venv before .venv before PATH python3", () => {
       writeFileSync(join(dir, "venv/bin/python"), "#!/bin/sh\n");
       assert.equal(resolveHermesPython(dir), join(dir, "venv/bin/python"));
       // explicit override wins over everything
-      process.env.AW_HERMES_PYTHON = "/opt/special/python";
+      process.env.SUPERD_HERMES_PYTHON = "/opt/special/python";
       assert.equal(resolveHermesPython(dir), "/opt/special/python");
-      delete process.env.AW_HERMES_PYTHON;
+      delete process.env.SUPERD_HERMES_PYTHON;
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   } finally {
-    if (prev !== undefined) process.env.AW_HERMES_PYTHON = prev;
+    if (prev !== undefined) process.env.SUPERD_HERMES_PYTHON = prev;
   }
 });
 
@@ -357,11 +357,11 @@ test("createSession: params shape (cwd/title/model/provider/cols) + single-sessi
   installFake();
   try {
     const client = await startReady();
-    const createP = client.createSession({ cwd: "/w/proj", title: "dsh-aw t", model: "deepseek-v4-pro", provider: "deepseek" });
+    const createP = client.createSession({ cwd: "/w/proj", title: "dsh-superd t", model: "deepseek-v4-pro", provider: "deepseek" });
     await delay(5);
     const req = lastChild.lastRequest;
     assert.equal(req.method, "session.create");
-    assert.deepEqual(req.params, { cwd: "/w/proj", title: "dsh-aw t", model: "deepseek-v4-pro", provider: "deepseek", cols: 120 });
+    assert.deepEqual(req.params, { cwd: "/w/proj", title: "dsh-superd t", model: "deepseek-v4-pro", provider: "deepseek", cols: 120 });
     lastChild.respond(req.id, { session_id: "s1", stored_session_id: "k1", message_count: 0 });
     const session = await createP;
     assert.equal(session.session_id, "s1");

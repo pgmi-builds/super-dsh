@@ -65,7 +65,7 @@ import type {
 } from "@deepseek-ai/dsh-session";
 import type { AssistantMessage, AssistantStreamRecord, ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { LlmAttemptId, ToolCallId, QUOTA_EXCEEDED_CODE, createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
-import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
+import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
 import type { WireAssistantMessageEvent, WireContentBlock, WireEvent, WireMessage } from "./pi-events.js";
 import type { PiSessionClient } from "./pi-client.js";

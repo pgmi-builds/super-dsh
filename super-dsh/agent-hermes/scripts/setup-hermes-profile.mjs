@@ -8,7 +8,7 @@
  *
  * Files (re)written every run — the exact codex standalone profile file set:
  *   package.json         dsh.profile.bundles = dsh-base + dsh-web-app +
- *                        @pgmi-builds/agent-adapter-hermes, plus a `link:`
+ *                        @pgmi-builds/agent-hermes, plus a `link:`
  *                        dependency pointing at the adapter package dir.
  *   cordis.patch.yml     profile user layer: webserver 127.0.0.1:4985 (the
  *                        provider rows live in the adapter bundle's own patch).
@@ -16,15 +16,15 @@
  *
  * Links ensured (created when missing, relinked only when stale or a physical
  * copy, kept untouched when already correct):
- *   $DSH_HOME/profiles/node_modules/@pgmi-builds/agent-adapter-hermes → this package
- *   $DSH_HOME/profiles/node_modules/@pgmi-builds/agent-hub            → ../agent-hub
+ *   $DSH_HOME/profiles/node_modules/@pgmi-builds/agent-hermes → this package
+ *   $DSH_HOME/profiles/node_modules/@pgmi-builds/superd-hub            → ../superd-hub
  *                        (hub is not in this profile's bundles — mirroring the
  *                        codex standalone profile — but the shared dir serves
  *                        the world lines, so the link is verified, not owned)
- *   <pkg>/node_modules/@pgmi-builds/agent-hub → ../../../agent-hub
+ *   <pkg>/node_modules/@pgmi-builds/superd-hub → ../../../superd-hub
  *                        (npm `file:` deps materialize physical copies → hub
  *                        double instance → world webServer all pending; the
- *                        symlink is the sanctioned fix, agent-worlds AGENTS.md)
+ *                        symlink is the sanctioned fix, super-dsh AGENTS.md)
  *
  * After any linking the @deepseek-ai single-instance check runs (repo AGENTS.md
  * 三): `find <repo>/node_modules/@deepseek-ai -maxdepth 1 -mindepth 1 ! -type l`
@@ -48,9 +48,9 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), ".."); // …/agent-worlds/agent-hermes
-const LINE_DIR = dirname(PKG_DIR); // …/agent-worlds
-const REPO = dirname(dirname(LINE_DIR)); // repo root (agent-worlds → apps → repo)
+const PKG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), ".."); // …/super-dsh/agent-hermes
+const LINE_DIR = dirname(PKG_DIR); // …/super-dsh
+const REPO = dirname(dirname(LINE_DIR)); // repo root (super-dsh → repo)
 const LABEL = "hermes-standalone";
 const PORT = 4985;
 // The repo's own physical packages under node_modules/@deepseek-ai — expected
@@ -74,19 +74,19 @@ writeFileSync(
   join(prof, "package.json"),
   `${JSON.stringify(
     {
-      name: "aw-hermes-app-profile",
+      name: "superd-hermes-app-profile",
       private: true,
       dsh: {
         profile: {
           bundles: [
             "@deepseek-ai/dsh-base",
             "@deepseek-ai/dsh-web-app",
-            "@pgmi-builds/agent-adapter-hermes",
+            "@pgmi-builds/agent-hermes",
           ],
         },
       },
       dependencies: {
-        "@pgmi-builds/agent-adapter-hermes": `link:${PKG_DIR}`,
+        "@pgmi-builds/agent-hermes": `link:${PKG_DIR}`,
       },
     },
     null,
@@ -127,10 +127,10 @@ function ensureLink(linkPath, target) {
 
 const PGMB = join(home, "profiles", "node_modules", "@pgmi-builds");
 const r1 = ensureLink(join(PGMB, "agent-adapter-hermes"), PKG_DIR);
-const r2 = ensureLink(join(PGMB, "agent-hub"), join(LINE_DIR, "agent-hub"));
+const r2 = ensureLink(join(PGMB, "superd-hub"), join(LINE_DIR, "superd-hub"));
 const r3 = ensureLink(
-  join(PKG_DIR, "node_modules", "@pgmi-builds", "agent-hub"),
-  "../../../agent-hub",
+  join(PKG_DIR, "node_modules", "@pgmi-builds", "superd-hub"),
+  "../../../superd-hub",
 );
 
 // ---- @deepseek-ai single-instance check (informational, fail-soft) ----

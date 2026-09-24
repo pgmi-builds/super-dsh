@@ -11,7 +11,7 @@ import { test } from "node:test";
 const { sessionMapPath, readSessionMap, sessionRecord, upsertSession, forgetSession } = await import("../dist/session-map.js");
 
 function tempHome() {
-  return mkdtempSync(join(tmpdir(), "aw-codex-map-"));
+  return mkdtempSync(join(tmpdir(), "superd-codex-map-"));
 }
 
 test("upsertSession round-trips a record through the map file", () => {

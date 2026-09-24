@@ -31,7 +31,7 @@ export const OMP_PRESET_ID = "omp";
 export const OMP_PRESET: PresetDefinition = Object.freeze({
   id: OMP_PRESET_ID,
   name: "OMP",
-  description: "OMP agent via the omp-web bridge",
+  description: "OMP agent via the agent-omp bridge",
   plugins: Object.freeze([]),
 });
 

@@ -1,9 +1,9 @@
 /**
- * aw.agent-adapter-agy — the Antigravity (agy) adapter's WORLD plugin (spec S2):
+ * agent-agy — the Antigravity (agy) adapter's WORLD plugin (spec S2):
  * activation IS roster membership.
  *
- * AW-B URL scheme (DL1–DL5), mirroring `@pgmi-builds/agent-adapter-omp/world`
- * and `@pgmi-builds/agent-adapter-codex/world` so the hub sees every foreign
+ * AW-B URL scheme (DL1–DL5), mirroring `@pgmi-builds/agent-omp/world`
+ * and `@pgmi-builds/agent-codex/world` so the hub sees every foreign
  * runtime through one shape: the world is spawned as a sibling ROOT context
  * with NO listener (`worldMountPatches`) and mounts itself under `/agy`.
  *
@@ -19,9 +19,9 @@ import { join } from 'node:path'
 import {
   spawnWorld, registerAgent, setReady, registerForeignTarget,
   registerHostMount, mountWorld, worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
-} from '../../agent-hub/dist/index.js'
+} from '../../superd-hub/dist/index.js'
 
-export const name = 'aw.agent-adapter-agy'
+export const name = 'agent-agy'
 
 /** Runtime key — also the mount label. */
 const KEY = 'agy'
@@ -48,11 +48,11 @@ export function apply(ctx: HostContext): void {
   mkdirSync(join(worldHome, 'profiles'), { recursive: true })
   // Publish story: a foreign install has no line bootstrap, so the nested
   // profile + @pgmi-builds links are provisioned HERE (idempotent; dev lines
-  // keep parity — smoke.mjs wrote the same layout, and AW_BARE_BASE still
+  // keep parity — smoke.mjs wrote the same layout, and SUPERD_BARE_BASE still
   // overrides the resolved base).
   const bareBase = provisionWorldProfile({
     key: KEY,
-    adapterPkg: '@pgmi-builds/agent-adapter-agy',
+    adapterPkg: '@pgmi-builds/agent-agy',
     worldHome,
   })
   const world = (async () => {
@@ -72,7 +72,7 @@ export function apply(ctx: HostContext): void {
       authorize: (req: unknown, res: unknown) => (connection as { authorizeIndex(req: unknown, res: unknown): boolean }).authorizeIndex(req, res),
     })
     const ctxW = await spawnWorld({
-      appName: `aw-${KEY}`,
+      appName: `superd-${KEY}`,
       profileName: 'web',
       installAnchor: resolveInstallAnchor(), // lazy: never at module scope — import must stay side-effect-free
       home: worldHome,
@@ -81,7 +81,7 @@ export function apply(ctx: HostContext): void {
       // node_modules (heal owns @deepseek-ai there; @pgmi-builds links are
       // provisioned by provisionWorldProfile above, or by the line bootstrap
       // when the adapter package was not resolvable — env wins over both).
-      bareModuleBaseUrl: process.env.AW_BARE_BASE ?? bareBase ?? undefined,
+      bareModuleBaseUrl: process.env.SUPERD_BARE_BASE ?? bareBase ?? undefined,
       extraPatches: worldMountPatches(KEY) as never,
     })
     const gateway = ctxW.get('typertGateway') as never
@@ -97,7 +97,7 @@ export function apply(ctx: HostContext): void {
     ctx.effect?.(() => () => {
       mounted.dispose()
       dropHostMount()
-    }, `aw.agent-adapter-${KEY}: mount`)
+    }, `agent-${KEY}: mount`)
     return ctxW
   })().catch((cause: unknown) => {
     // A failed world degrades to a not-ready roster row; a rejected provided
@@ -105,5 +105,5 @@ export function apply(ctx: HostContext): void {
     console.error(`[super-dsh] ${KEY} world failed:`, cause)
     return null
   })
-  ctx.provide(`aw.world.${KEY}`, world)
+  ctx.provide(`superd.world.${KEY}`, world)
 }

@@ -1,6 +1,6 @@
 /**
  * agent-hermes provider — Hermes provider plugin for DeepSeek Harness
- * (Agent Worlds AW-H, TUI gateway line).
+ * (Super D, TUI gateway line).
  *
  * Replaces the built-in agent loop with an `AgentFactory` that drives a
  * `HermesGatewayClient` (one spawned `python -m tui_gateway.entry` child per
@@ -261,7 +261,7 @@ export class HermesProvider extends Service implements AgentFactory {
       const resolved = (fromBoot as () => string)();
       if (typeof resolved === "string" && resolved !== "") return resolved;
     }
-    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw");
+    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd");
   }
 
   /**

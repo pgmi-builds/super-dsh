@@ -10,14 +10,14 @@
  * cc-switch-model-catalog.json (model catalog referenced by config.toml).
  *
  * Env:
- *   DSH_HOME            — test home root (default <cwd>/.tests/aw)
+ *   DSH_HOME            — test home root (default <cwd>/.tests/superd)
  *   CODEX_HOME          — override of the nested home (default <DSH_HOME>/agents/codex)
  *   SOURCE_CODEX_HOME   — override of the copy source (default ~/.codex; READ-ONLY)
  */
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-const home = resolve(process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw"));
+const home = resolve(process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd"));
 // Red line guard (repo AGENTS.md): never resolve into the prod homes. An
 // ambient DSH_HOME from the interactive environment must never win by accident.
 const PROD_HOMES = [join(homedir(), ".dsh"), join(homedir(), ".superd")];

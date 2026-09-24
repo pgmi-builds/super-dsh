@@ -46,7 +46,7 @@
  * No DOM here: these are pure predicates over gesture facts plus the
  * panel state the caller reads off live DOM.
  *
- * @module omp-web/mobile/gesture
+ * @module agent-omp/mobile/gesture
  */
 
 /** Recognition thresholds, resolved from the host-injected page config. */
@@ -167,7 +167,7 @@ export interface MobilePageConfig {
  * (host feature off, or an old cached page) resolves to enabled=false — the
  * client half is inert unless the host opted the page in.
  *
- * @param pageConfig - `window.__OMP_WEB_MOBILE__` as left by the boot script.
+ * @param pageConfig - `window.__AGENT_OMP_MOBILE__` as left by the boot script.
  * @returns resolved thresholds plus the enable flag.
  */
 export function resolveMobileConfig(pageConfig: MobilePageConfig | undefined): { enabled: boolean } & SwipeThresholds {

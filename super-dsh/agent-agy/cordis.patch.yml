@@ -1,4 +1,4 @@
-# @pgmi-builds/agent-adapter-agy bundle patch (AW-G SDK line, pi/hermes form).
+# @pgmi-builds/agent-agy bundle patch (AW-G SDK line, pi/hermes form).
 # The `dsh.bundle.patch` layer of the adapter package: mounts the agy provider
 # and disables the native components it replaces. Port/webserver posture is
 # NOT here (worldMountPatches owns it); the world profile patch pins the home.
@@ -9,7 +9,7 @@
 
 - insert:
     - id: agy-provider
-      name: '@pgmi-builds/agent-adapter-agy'
+      name: '@pgmi-builds/agent-agy'
 
 # The SDK bridge owns the live transcript; disable the built-in loop so it
 # does not double-run alongside the bridge session.

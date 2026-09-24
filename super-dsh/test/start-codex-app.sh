@@ -4,20 +4,20 @@
 # bundle (codex-provider + codex routes + the pinned browse directory picker).
 # LAN via a socat relay bound to the LAN IP only (never 0.0.0.0).
 set -euo pipefail
-PORT="${AW_APP_PORT:-4988}"
-UNIT="aw-codex-app-${PORT}-test"
-RELAY_UNIT="aw-codex-app-${PORT}-relay"
+PORT="${SUPERD_APP_PORT:-4988}"
+UNIT="superd-codex-app-${PORT}-test"
+RELAY_UNIT="superd-codex-app-${PORT}-relay"
 LAN_HOST="${SUPERD_LAN_HOST:-192.0.2.130}"
 MAIN_REPO="$HOME/workspaces/superd"
 WT="$MAIN_REPO"   # main checkout: the adapter lives at super-dsh/agent-codex
-LOG="$MAIN_REPO/.scratch/aw-codex-app-${PORT}.log"
+LOG="$MAIN_REPO/.scratch/superd-codex-app-${PORT}.log"
 # Dedicated app home: the adapter pack under test owns ALL DSH-level state
-# (workspace registry, settings, session logs) — the shared .tests/aw
+# (workspace registry, settings, session logs) — the shared .tests/superd
 # home carries other lines' leftovers (17 workspaces, stale settings).
 # Test $DSH_HOME (repo convention): the agent APP home is
 # $DSH_HOME/agents/<label> and its dsh profile packages live in
 # $DSH_HOME/profiles/<label>. No per-app bespoke home.
-HOME_DIR="${AW_APP_HOME:-$WT/.tests}"
+HOME_DIR="${SUPERD_APP_HOME:-$WT/.tests}"
 LABEL="codex"
 NODE_BIN="/usr/bin/node"
 LAUNCHER="$MAIN_REPO/upstream/deepseek-harness/apps/cli/lib/bin.js"
@@ -36,14 +36,14 @@ PROF="$HOME_DIR/profiles/$LABEL"
 mkdir -p "$PROF"
 cat > "$PROF/package.json" <<JSON
 {
-  "name": "aw-codex-app-profile",
+  "name": "superd-codex-app-profile",
   "private": true,
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-        "@pgmi-builds/agent-adapter-codex"
+        "@pgmi-builds/agent-codex"
       ]
     }
   }
@@ -69,7 +69,7 @@ YML
 PGMB="$HOME_DIR/profiles/node_modules/@pgmi-builds"
 mkdir -p "$PGMB"
 # package name → worktree directory (they differ: the adapter package
-# @pgmi-builds/agent-adapter-codex lives in super-dsh/agent-codex)
+# @pgmi-builds/agent-codex lives in super-dsh/agent-codex)
 ln -sfn "$WT/super-dsh/agent-codex" "$PGMB/agent-adapter-codex"
 
 systemctl --user reset-failed "$UNIT" 2>/dev/null || true
@@ -105,7 +105,7 @@ systemd-run --user --unit="$RELAY_UNIT" \
   /usr/bin/socat "TCP-LISTEN:${PORT},fork,reuseaddr,bind=${LAN_HOST}" "TCP:127.0.0.1:${PORT}"
 
 sleep 1
-curl -s -c /tmp/aw-codex-app.jar -L -o /dev/null -w "LAN follow → %{http_code}\n" "http://${LAN_HOST}:${PORT}/?token=${TOKEN}" || true
+curl -s -c /tmp/superd-codex-app.jar -L -o /dev/null -w "LAN follow → %{http_code}\n" "http://${LAN_HOST}:${PORT}/?token=${TOKEN}" || true
 
 echo "loopback : http://127.0.0.1:${PORT}/?token=${TOKEN}"
 echo "LAN      : http://${LAN_HOST}:${PORT}/?token=${TOKEN}"

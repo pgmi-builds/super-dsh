@@ -9,33 +9,33 @@
 # (2026-09-17 native-home ruling; OMP_HOME env remains a test-only isolation knob).
 set -euo pipefail
 PORT=4998
-UNIT="aw-world-omp-${PORT}"
-RELAY="aw-world-lan-${PORT}-relay"
+UNIT="superd-world-omp-${PORT}"
+RELAY="superd-world-lan-${PORT}-relay"
 REPO="$HOME/workspaces/superd"
-WORLD_HOME="$REPO/.tests/aw-worlds/omp"
-LOG="$REPO/.scratch/aw-world-omp-${PORT}.log"
+WORLD_HOME="$REPO/.tests/superd-worlds/omp"
+LOG="$REPO/.scratch/superd-world-omp-${PORT}.log"
 DSH_BIN="$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js"
 NODE_BIN="/usr/bin/node"
 LAN_IP="192.0.2.130"
 ADAPTER="$REPO/super-dsh/agent-omp"
 
-mkdir -p "$WORLD_HOME/profiles/aw-world-omp" "$REPO/.scratch"
-cat > "$WORLD_HOME/profiles/aw-world-omp/package.json" <<EOF
+mkdir -p "$WORLD_HOME/profiles/superd-world-omp" "$REPO/.scratch"
+cat > "$WORLD_HOME/profiles/superd-world-omp/package.json" <<EOF
 {
-  "name": "aw-world-omp-profile",
+  "name": "superd-world-omp-profile",
   "private": true,
-  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@pgmi-builds/agent-adapter-omp"] } },
-  "dependencies": { "@pgmi-builds/agent-adapter-omp": "file:$ADAPTER" }
+  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@pgmi-builds/agent-omp"] } },
+  "dependencies": { "@pgmi-builds/agent-omp": "file:$ADAPTER" }
 }
 EOF
-cat > "$WORLD_HOME/profiles/aw-world-omp/cordis.patch.yml" <<EOF
+cat > "$WORLD_HOME/profiles/superd-world-omp/cordis.patch.yml" <<EOF
 # the world's own listener (own home => own sessions/workspace/settings)
 - id: webserver
   config:
     host: 127.0.0.1
     port: ${PORT}
 EOF
-cat > "$WORLD_HOME/profiles/aw-world-omp/pnpm-workspace.yaml" <<'EOF'
+cat > "$WORLD_HOME/profiles/superd-world-omp/pnpm-workspace.yaml" <<'EOF'
 nodeLinker: hoisted
 autoInstallPeers: false
 EOF
@@ -53,7 +53,7 @@ systemd-run --user --unit="$UNIT" \
   --property=Environment="SUPERD_KEEP=1" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
-  "$NODE_BIN" "$DSH_BIN" --profile aw-world-omp --no-open --trusted-host "$LAN_IP"
+  "$NODE_BIN" "$DSH_BIN" --profile superd-world-omp --no-open --trusted-host "$LAN_IP"
 
 ok=""
 for _ in $(seq 1 90); do

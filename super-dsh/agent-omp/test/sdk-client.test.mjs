@@ -7,7 +7,7 @@ import { join } from "node:path";
 // Native-home ruling (2026-09-17): the adapter's default OMP home is the
 // operator's native ~/.omp. Tests pin an isolated home via the env knob
 // BEFORE the dist import — knobs freezes OMP_HOME at module load.
-process.env.OMP_HOME = mkdtempSync(join(tmpdir(), "aw-omp-sdk-"));
+process.env.OMP_HOME = mkdtempSync(join(tmpdir(), "superd-omp-sdk-"));
 
 const { OmpSdkClient } = await import("../dist/sdk-client.js");
 

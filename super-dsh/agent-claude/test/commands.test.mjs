@@ -210,7 +210,7 @@ test("the built module has no import or require at all (structural type only, no
 
 test("package.json points the bundle loader at cordis.patch.yml and the row resolves to this package", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(pkg.name, "@pgmi-builds/agent-adapter-claude");
+  assert.equal(pkg.name, "@pgmi-builds/agent-claude");
   assert.equal(pkg.dsh?.bundle?.patch, "./cordis.patch.yml");
   assert.ok(Array.isArray(pkg.files) && pkg.files.includes("cordis.patch.yml"), "cordis.patch.yml must ship in files[]");
   assert.ok(existsSync(new URL("../cordis.patch.yml", import.meta.url)));

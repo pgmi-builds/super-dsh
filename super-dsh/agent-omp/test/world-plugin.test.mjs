@@ -15,7 +15,7 @@ const ANCHOR = process.env.SUPERD_DSH_ANCHOR
 // dsh.service). Explicit non-prod values are honored.
 const __prodHomes = new Set(['/home/u1/.dsh', '/home/u1/.superd'])
 const HOME = !process.env.DSH_HOME || __prodHomes.has(process.env.DSH_HOME)
-  ? '/home/u1/workspaces/superd/.tests/aw'
+  ? '/home/u1/workspaces/superd/.tests/superd'
   : process.env.DSH_HOME
 if (process.env.DSH_HOME !== HOME) {
   process.stderr.write(`[world-plugin] ignoring prod DSH_HOME=${process.env.DSH_HOME}; using ${HOME}\n`)
@@ -41,18 +41,18 @@ for (const entry of __resolution.entries) {
   mkdirSync(dirname(dest), { recursive: true })
   symlinkSync(entry.packageDir, dest, 'dir')
 }
-process.env.AW_BARE_BASE = join(HOME, 'profiles', 'node_modules') + '/'
+process.env.SUPERD_BARE_BASE = join(HOME, 'profiles', 'node_modules') + '/'
 process.env.OMP_HOME = OMP_HOME
 mkdirSync(OMP_HOME, { recursive: true })
 
-test('aw.agent-adapter-omp: activation = roster + world spawn + gateway target', { skip: !ANCHOR && 'SUPERD_DSH_ANCHOR not set' }, async () => {
+test('agent-omp: activation = roster + world spawn + gateway target', { skip: !ANCHOR && 'SUPERD_DSH_ANCHOR not set' }, async () => {
   const { name, apply } = await import('../dist/world-plugin.js')
-  assert.equal(name, 'aw.agent-adapter-omp')
-  const routing = await import('@pgmi-builds/agent-hub')
+  assert.equal(name, 'agent-omp')
+  const routing = await import('@pgmi-builds/superd-hub')
   const provided = {}
   // The plugin awaits `ctx.inject(['webServer', 'connection'], ...)` for the
   // ctx0 listening stack; the test plays the host: a structural fake webServer
-  // (same shape as agent-hub/test/world-mount.test.mjs) + connection fences.
+  // (same shape as superd-hub/test/world-mount.test.mjs) + connection fences.
   function fakeReal() {
     return {
       routes: new Map(), upgrades: new Map(), fallback: undefined,
@@ -71,7 +71,7 @@ test('aw.agent-adapter-omp: activation = roster + world spawn + gateway target',
     effect: () => {},
   })
   // readiness flips only when the world's gateway is live — await it first
-  const ctxW = await provided['aw.world.omp']
+  const ctxW = await provided['superd.world.omp']
   try {
     assert.deepEqual(routing.listAgents(), [{ key: 'omp', label: 'OMP', ready: true }])
     assert.ok(existsSync(OMP_HOME), 'nested home created')

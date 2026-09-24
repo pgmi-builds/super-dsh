@@ -10,7 +10,7 @@
  * commands mount once at boot and re-mount on the hourly discovery refresh —
  * never a sidecar spawn.
  *
- * @module omp-web/discovery
+ * @module agent-omp/discovery
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { readFile } from "node:fs/promises";

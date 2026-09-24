@@ -1,6 +1,6 @@
 /**
  * agent-claude provider — Claude Code provider plugin for DeepSeek Harness
- * (Agent Worlds, standalone SDK line).
+ * (Super D, standalone SDK line).
  *
  * Replaces the built-in agent loop with an `AgentFactory` that drives one
  * `ClaudeSdkClient` (a per-session Claude Agent SDK bridge) and bridges the
@@ -220,7 +220,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
       const resolved = (fromBoot as () => string)();
       if (typeof resolved === "string" && resolved !== "") return resolved;
     }
-    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw");
+    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd");
   }
 
   /**

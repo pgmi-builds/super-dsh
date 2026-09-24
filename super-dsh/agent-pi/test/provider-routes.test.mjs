@@ -14,7 +14,7 @@ const { setPiModelRuntimeFactory, clearPiCatalogForTests, PI_PROVIDER_ID } = mod
 const { PiProvider } = await import("../dist/index.js");
 
 function tempPiAgentDir(settings) {
-  const dir = mkdtempSync(join(tmpdir(), "aw-pi-routes-"));
+  const dir = mkdtempSync(join(tmpdir(), "superd-pi-routes-"));
   mkdirSync(dir, { recursive: true });
   if (settings !== undefined) writeFileSync(join(dir, "settings.json"), JSON.stringify(settings));
   return dir;
@@ -39,7 +39,7 @@ function fakeLlm() {
 
 function providerContext(llm) {
   const ctx = new Context();
-  ctx.provide("dshHomePath", mkdtempSync(join(tmpdir(), "aw-pi-routes-home-")));
+  ctx.provide("dshHomePath", mkdtempSync(join(tmpdir(), "superd-pi-routes-home-")));
   ctx.provide("agents", { setFactory() { } });
   ctx.provide("llm", llm);
   return ctx;

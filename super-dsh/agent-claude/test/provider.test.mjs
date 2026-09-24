@@ -86,7 +86,7 @@ function providerContext(home, { persistence = true } = {}) {
 }
 
 test("create fails closed when the DSH id carries no UUID (route B is not wired in V1)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-claude-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-provider-"));
   const ctx = providerContext(home);
   const provider = new ClaudeProvider(ctx);
   await assert.rejects(
@@ -96,7 +96,7 @@ test("create fails closed when the DSH id carries no UUID (route B is not wired 
 });
 
 test("create rejects a fork (fork is not wired in V1)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-claude-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-provider-"));
   const ctx = providerContext(home);
   const provider = new ClaudeProvider(ctx);
   await assert.rejects(
@@ -106,7 +106,7 @@ test("create rejects a fork (fork is not wired in V1)", async () => {
 });
 
 test("create requires session persistence before anything is spawned", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-claude-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-provider-"));
   const ctx = providerContext(home, { persistence: false });
   const provider = new ClaudeProvider(ctx);
   await assert.rejects(
@@ -116,7 +116,7 @@ test("create requires session persistence before anything is spawned", async () 
 });
 
 test("resume fails closed when the DSH session has no recorded Claude session", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-claude-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-provider-"));
   const ctx = providerContext(home);
   const provider = new ClaudeProvider(ctx);
   await assert.rejects(
@@ -126,7 +126,7 @@ test("resume fails closed when the DSH session has no recorded Claude session", 
 });
 
 test("resume re-validates the recorded cwd and refuses a vanished directory", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-claude-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-provider-"));
   upsertSession(home, "session-gone", {
     claudeSessionId: "01a0a5cb-e919-7480-81ee-7dcf758aa0aa",
     claudeMode: "default",

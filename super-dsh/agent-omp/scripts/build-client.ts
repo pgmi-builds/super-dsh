@@ -1,6 +1,6 @@
 /**
  * Client bundle build: emits the closure-factory CJS artifact the dsh web
- * loader consumes — `window.__ModuleLoader__.load({ id: '@pgmi-builds/omp-web',
+ * loader consumes — `window.__ModuleLoader__.load({ id: '@pgmi-builds/agent-omp',
  * factory: (require) => { … return module.exports; } })`. Externals resolve
  * through the loader module table (platform seed entries); everything else
  * inlines.
@@ -16,13 +16,13 @@
  * (mirroring the dsh `dsh-client-bundle-purity` plugin): a stray value import
  * of a non-external `@deepseek-ai/*` module throws at resolution time.
  *
- * @module omp-web/scripts/build-client
+ * @module agent-omp/scripts/build-client
  */
 import { build } from 'tsdown'
 import { join } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 
-const ID = '@pgmi-builds/omp-web'
+const ID = '@pgmi-builds/agent-omp'
 const ENTRY = 'src/client/index.ts'
 const OUT_DIR = 'lib/client'
 const OUT_FILE = 'index.js'

@@ -1,4 +1,4 @@
-# @pgmi-builds/agent-adapter-pi bundle patch (AW-F SDK line, codex form).
+# @pgmi-builds/agent-pi bundle patch (AW-F SDK line, codex form).
 # This file is the `dsh.bundle.patch` layer of the adapter package: when the pi
 # world profile mounts the bundle, the boot merges THIS patch — mount the pi
 # provider plus disable the native components it replaces.
@@ -18,7 +18,7 @@
 # the shared ModelRuntime catalog (auth/models-store from ~/.pi).
 - insert:
     - id: pi-provider
-      name: '@pgmi-builds/agent-adapter-pi'
+      name: '@pgmi-builds/agent-pi'
 
 # pi owns the live agent transcript (its native session JSONL under
 # ~/.pi/agent/sessions); disable the built-in loop so it does not double-run

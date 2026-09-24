@@ -1,5 +1,5 @@
 /**
- * Node-side client for the omp-web bun sidecar.
+ * Node-side client for the agent-omp bun sidecar.
  * Spawns `bun run sidecar/main.ts`, speaks the v0 JSON-lines protocol,
  * correlates requests by id and dispatches pushed event frames.
  */

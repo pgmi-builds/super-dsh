@@ -11,7 +11,7 @@
     ],
     "child_cwd": "/home/u1/workspaces/superd/.scratch/hermes-spike-cwd",
     "session_id": "c18c09ab",
-    "session_title": "dsh-aw spike",
+    "session_title": "dsh-superd spike",
     "prompt_text": "Reply with exactly: ok",
     "t0_wall": "2026-09-16T21:23:47.614Z",
     "turn_captured": true,
@@ -32,7 +32,7 @@
     "session.create": {
       "params": {
         "cwd": "/home/u1/workspaces/superd/.scratch/hermes-spike-cwd",
-        "title": "dsh-aw spike",
+        "title": "dsh-superd spike",
         "cols": 120
       },
       "latency_ms": 342,

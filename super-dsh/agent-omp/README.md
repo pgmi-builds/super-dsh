@@ -1,4 +1,4 @@
-# omp-web（新线，0.0.1-alpha.0）
+# @pgmi-builds/agent-omp（OMP adapter，SDK 线）
 
 OMP Web 的 SDK 线：**衔接层（DSH 契约/术语/类形状）沿用 `apps/omp-web` 现行源码，内核从 `omp --mode rpc` 子进程换成 `@oh-my-pi/pi-coding-agent` SDK**。数据面目标 = `docs/plans/sdk-data-surface-assessment.md` 的 A1–A8 / S1–S10。
 

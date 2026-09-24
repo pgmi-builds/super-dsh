@@ -1,10 +1,10 @@
-# @pgmi-builds/agent-adapter-codex bundle patch (AW-E SDK line, omp-web form).
+# @pgmi-builds/agent-codex bundle patch (SDK line, standalone form).
 # This file is the `dsh.bundle.patch` layer of the adapter package: when the
 # codex world profile mounts the bundle, the boot merges THIS patch — mount
 # the Codex provider plus disable the native components it replaces.
 #
 # Profile-specific values are deliberately NOT here: `webserver.port` (port
-# choice) belongs to the world/profile patch layer (the aw-codex-world
+# choice) belongs to the world/profile patch layer (the superd-codex-world
 # fixture carries the 127.0.0.1:0 listener posture).
 
 # Mount the Codex provider: a Cordis Service that registers an AgentFactory
@@ -14,7 +14,7 @@
 # config.toml + model_catalog_json.
 - insert:
     - id: codex-provider
-      name: '@pgmi-builds/agent-adapter-codex'
+      name: '@pgmi-builds/agent-codex'
 
 # Codex owns the live agent transcript (the rollout JSONL); disable the
 # built-in loop so it does not double-run alongside the SDK thread.

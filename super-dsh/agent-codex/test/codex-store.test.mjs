@@ -22,7 +22,7 @@ test("resolveCodexHome defaults to the native ~/.codex (never redirected)", () =
 
 test("resolveCodexHome honors CODEX_HOME when no home is passed", () => {
   const previous = process.env.CODEX_HOME;
-  const explicit = mkdtempSync(join(tmpdir(), "aw-codex-env-"));
+  const explicit = mkdtempSync(join(tmpdir(), "superd-codex-env-"));
   process.env.CODEX_HOME = explicit;
   try {
     assert.equal(resolveCodexHome(), explicit);
@@ -35,7 +35,7 @@ test("resolveCodexHome honors CODEX_HOME when no home is passed", () => {
 
 
 function rolloutFixture(threadId, meta) {
-  const codexHome = mkdtempSync(join(tmpdir(), "aw-codex-store-"));
+  const codexHome = mkdtempSync(join(tmpdir(), "superd-codex-store-"));
   const dir = join(codexHome, "sessions", "2026", "09", "16");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `rollout-2026-09-16T00-00-00-${threadId}.jsonl`);
@@ -70,7 +70,7 @@ test("readRolloutHead is memoized per thread id (the head line never changes)", 
 
 test("readRolloutHead fail-softs on unknown threads, garbage heads and junk lines", () => {
   clearRolloutHeadCache();
-  const codexHome = mkdtempSync(join(tmpdir(), "aw-codex-store-"));
+  const codexHome = mkdtempSync(join(tmpdir(), "superd-codex-store-"));
   assert.equal(readRolloutHead(codexHome, "01a0aaa1-3333-7000-8000-000000000003"), undefined);
 
   const threadId = "01a0aaa1-4444-7000-8000-000000000004";

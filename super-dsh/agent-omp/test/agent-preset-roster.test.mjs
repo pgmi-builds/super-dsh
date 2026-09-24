@@ -42,7 +42,7 @@ test("fixed preset: composition-less, id/name/description published", () => {
   assert.deepEqual({ ...OMP_PRESET }, {
     id: "omp",
     name: "OMP",
-    description: "OMP agent via the omp-web bridge",
+    description: "OMP agent via the agent-omp bridge",
     plugins: [],
   });
 });

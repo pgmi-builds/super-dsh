@@ -1,7 +1,7 @@
-# Agent Adapter 开发规则（superd / agent-worlds 线）
+# Agent Adapter 开发规则（superd / super-dsh 线）
 
-> 状态：2026-09-15 user 裁定成文（对话记录于 `.scratch/aw-codex` AW-E 轮次）。
-> 适用范围：所有 `@pgmi-builds/agent-adapter-*` 包（本线现役 `agent-codex`、`agent-omp`；曾用形态 `multi-agent-registry`（搁置）、`multi-agent-ctx`（冻结））。
+> 状态：2026-09-15 user 裁定成文（对话记录于 `.scratch/superd-codex` codex 轮次）。
+> 适用范围：所有 `@pgmi-builds/agent-*` 包（本线现役 `agent-codex`、`agent-omp`；曾用形态 `multi-agent-registry`（搁置）、`multi-agent-ctx`（冻结））。
 > 用语：**adapter** = per-agent 适配包；**foreign runtime** = 上游原生 agent 运行时（codex / omp / …）；**DSH** = 上游 DeepSeek Harness；**superd** = dsh 之上的自研壳。
 
 ---
@@ -9,16 +9,16 @@
 ## 0. 定位（Position）
 
 - 一个 **agent adapter 是 superd 壳下的一个自有包**，其**本身就是一个 dsh plugin**（带 `dsh.bundle.patch` 的 bundle patch 层 + 可选 `dsh.client` 呈现面）。
-- superd 侧的路线史：`multi-agent-registry`（2026-09-10 搁置）→ `multi-agent-ctx`（冻结保留）→ **`agent-worlds`（现役）**。三条路线的**同一目标**：把 foreign agent runtime 引进 DSH native 面（会话/事件/模型/工作区都按 DSH 语义呈现）。
-- **adapter 的核心职责**：把上游 foreign runtime **接线成一个完整、自洽的 dsh ctx**。接线完成度判据：**`dsh + 该 adapter` 自身就是一个 omp-web 式的可用 web app**（standalone 形态，见 §1-A）。
-- agent-worlds 专属注入（`world-plugin` / `spawnWorld` / roster / hub 桥）只是**与 agent-worlds hub 对话的桥**，不是 adapter 的必要条件：adapter 不得把 hub、selector、spawn 机制当作自身存在前提。
+- superd 侧的路线史：`multi-agent-registry`（2026-09-10 搁置）→ `multi-agent-ctx`（冻结保留）→ **`super-dsh`（现役）**。三条路线的**同一目标**：把 foreign agent runtime 引进 DSH native 面（会话/事件/模型/工作区都按 DSH 语义呈现）。
+- **adapter 的核心职责**：把上游 foreign runtime **接线成一个完整、自洽的 dsh ctx**。接线完成度判据：**`dsh + 该 adapter` 自身就是一个 standalone 可用 web app**（standalone 形态，见 §1-A）。
+- super-dsh 专属注入（`world-plugin` / `spawnWorld` / roster / hub 桥）只是**与 super-dsh hub 对话的桥**，不是 adapter 的必要条件：adapter 不得把 hub、selector、spawn 机制当作自身存在前提。
 
 ## 1. 两种形态（两种都必须能跑）
 
 | 形态 | 组成 | 用途 |
 |---|---|---|
-| **A. standalone app**（首选开发/测试形态） | `dsh(完整 composition: base + web-app + adapter bundle patch)`，单进程、自有 home、真实监听端口 | 开发、验收、单包测试；`dsh + adapter` ≈ omp-web |
-| **B. world ctx**（agent-worlds 桥） | hub `spawnWorld()` 在 CTX0 进程内 `boot()` 出的 ctxN，adapter 挂在其中；roster/selector/委托由 hub 提供 | 多 runtime 并存、UI 内切换 |
+| **A. standalone app**（首选开发/测试形态） | `dsh(完整 composition: base + web-app + adapter bundle patch)`，单进程、自有 home、真实监听端口 | 开发、验收、单包测试；`dsh + adapter` ≈ standalone app |
+| **B. world ctx**（super-dsh 桥） | hub `spawnWorld()` 在 CTX0 进程内 `boot()` 出的 ctxN，adapter 挂在其中；roster/selector/委托由 hub 提供 | 多 runtime 并存、UI 内切换 |
 
 - 差异**只允许**来自 patch 层注入（端口、home、注入行），**不允许**出现两份代码路径。
 - 形态 B 的 client surface 也必须能在形态 A 正确交付（见 §4 客户端面交付层）。
@@ -30,7 +30,7 @@
    - 真 runtime turn（**不得**以注入 fake factory 的 turn 作为验收证据；fake 仅限管道测试）；
    - HTTP wire（`POST /api/<ns>/<method>`，envelope `{type:"client-request",rpcId,method,payload}`）走一遍 create→prompt→readback；
    - 包自身测试套件在**该 app 的 home** 全绿（不是只在共享 home 绿）。
-3. **专属 home**：adapter 单测/单跑时用自有 home（如 `AW_APP_HOME`），其 DSH 级状态（workspace 注册表、settings、session 日志）不与别条线共享；共享 home 里的残留（别线的 workspace、陈旧 settings）会污染结论。
+3. **专属 home**：adapter 单测/单跑时用自有 home（如 `SUPERD_APP_HOME`），其 DSH 级状态（workspace 注册表、settings、session 日志）不与别条线共享；共享 home 里的残留（别线的 workspace、陈旧 settings）会污染结论。
 4. adapter 自有 app 数据与 DSH 数据分账：见 §5。
 
 ## 3. 接线域（Wiring domains）—— 逐项，缺项必须显式记录为“未接/降级”
@@ -86,7 +86,7 @@
 - **占位/降级值禁止外流**：fail-soft 的占位模型（如 `codex-default`）不得写进 settings、不得传给真实 runtime；降级必须显式 skip。
 - **事件词汇**：映射到 DSH wire 词汇（`agent_start/turn_start/message_*/tool_execution_*/turn_end/agent_end`），保持与既有 adapter 一致，便于 agent.ts 平移。
 - **fail-soft 与可观测**：readiness/目录/rollout 读取失败要降级且留痕（trace/logger），不得静默假成功。
-- **测试 env 三件套**：`DSH_HOME=<专属 home>`、`SUPERD_DSH_ANCHOR=<install anchor package.json>`、必要时 `AW_BARE_BASE=<home>/profiles/node_modules/`。
+- **测试 env 三件套**：`DSH_HOME=<专属 home>`、`SUPERD_DSH_ANCHOR=<install anchor package.json>`、必要时 `SUPERD_BARE_BASE=<home>/profiles/node_modules/`。
 
 ## 7. agent-codex 现状（SDK-first 调查结论，2026-09-15）
 
@@ -243,7 +243,7 @@ CLI/TUI 形态的 foreign app（codex/claude 有 GUI app，但尚无 agent-*-gui
 
 ## 15. Hub client-shim 拦截面清单（world 页面注入；ctx0 页面零注入）
 
-`agent-hub/src/client-shim.ts`（`renderClientShim(labelPath)`，world index 的第一个 head script）共 **6 个拦截面**，全部窄域、幂等（`__DSH_*` 哨兵防重入）：
+`superd-hub/src/client-shim.ts`（`renderClientShim(labelPath)`，world index 的第一个 head script）共 **6 个拦截面**，全部窄域、幂等（`__DSH_*` 哨兵防重入）：
 
 | # | 面 | 规则 |
 |---|---|---|

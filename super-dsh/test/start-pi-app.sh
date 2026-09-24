@@ -9,14 +9,14 @@
 # exist for pi). The adapter's DSH-side state (dsh-sessions.json mapping)
 # lands under $DSH_HOME/agents/pi automatically.
 set -euo pipefail
-PORT="${AW_APP_PORT:-4987}"
-UNIT="aw-pi-app-${PORT}-test"
-RELAY_UNIT="aw-pi-app-${PORT}-relay"
+PORT="${SUPERD_APP_PORT:-4987}"
+UNIT="superd-pi-app-${PORT}-test"
+RELAY_UNIT="superd-pi-app-${PORT}-relay"
 LAN_HOST="${SUPERD_LAN_HOST:-192.0.2.130}"
 MAIN_REPO="$HOME/workspaces/superd"
 WT="$MAIN_REPO"
-LOG="$MAIN_REPO/.scratch/aw-pi-app-${PORT}.log"
-HOME_DIR="${AW_APP_HOME:-$WT/.tests}"
+LOG="$MAIN_REPO/.scratch/superd-pi-app-${PORT}.log"
+HOME_DIR="${SUPERD_APP_HOME:-$WT/.tests}"
 LABEL="pi"
 NODE_BIN="/usr/bin/node"
 LAUNCHER="$MAIN_REPO/upstream/deepseek-harness/apps/cli/lib/bin.js"
@@ -32,14 +32,14 @@ PROF="$HOME_DIR/profiles/$LABEL"
 mkdir -p "$PROF"
 cat > "$PROF/package.json" <<JSON
 {
-  "name": "aw-pi-app-profile",
+  "name": "superd-pi-app-profile",
   "private": true,
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-        "@pgmi-builds/agent-adapter-pi"
+        "@pgmi-builds/agent-pi"
       ]
     }
   }
@@ -65,7 +65,7 @@ mkdir -p "$PGMB"
 ln -sfn "$WT/super-dsh/agent-pi" "$PGMB/agent-adapter-pi"
 # the adapter's own node_modules link for the hub (world plugin import)
 mkdir -p "$WT/super-dsh/agent-pi/node_modules/@pgmi-builds"
-ln -sfn ../../../agent-hub "$WT/super-dsh/agent-pi/node_modules/@pgmi-builds/agent-hub"
+ln -sfn ../../../superd-hub "$WT/super-dsh/agent-pi/node_modules/@pgmi-builds/superd-hub"
 
 systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 touch "$LOG"
@@ -100,9 +100,9 @@ systemd-run --user --unit="$RELAY_UNIT" \
   /usr/bin/socat "TCP-LISTEN:${PORT},fork,reuseaddr,bind=${LAN_HOST}" "TCP:127.0.0.1:${PORT}"
 
 sleep 1
-curl -s -c /tmp/aw-pi-app.jar -L -o /dev/null -w "LAN follow → %{http_code}\n" "http://${LAN_HOST}:${PORT}/?token=${TOKEN}" || true
+curl -s -c /tmp/superd-pi-app.jar -L -o /dev/null -w "LAN follow → %{http_code}\n" "http://${LAN_HOST}:${PORT}/?token=${TOKEN}" || true
 
 echo "loopback : http://127.0.0.1:${PORT}/?token=${TOKEN}"
 echo "LAN      : http://${LAN_HOST}:${PORT}/?token=${TOKEN}"
-echo "jar      : /tmp/aw-pi-app.jar   (verify: AW_BASE=http://${LAN_HOST}:${PORT} node super-dsh/agent-pi/test/verify-pi-app.mjs)"
+echo "jar      : /tmp/superd-pi-app.jar   (verify: SUPERD_BASE=http://${LAN_HOST}:${PORT} node super-dsh/agent-pi/test/verify-pi-app.mjs)"
 echo "unit     : $UNIT   (stop: systemctl --user stop $UNIT $RELAY_UNIT)"

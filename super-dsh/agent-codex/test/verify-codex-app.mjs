@@ -2,10 +2,10 @@
 // own wire. create → prompt → ride the cursor to the real reply.
 import { readFileSync } from "node:fs";
 
-const jar = readFileSync(process.env.AW_JAR ?? "/tmp/aw-codex-app.jar", "utf8");
+const jar = readFileSync(process.env.SUPERD_JAR ?? "/tmp/superd-codex-app.jar", "utf8");
 const line = jar.split("\n").filter((l) => l && (!l.startsWith("#") || l.startsWith("#HttpOnly_"))).pop();
 const cookie = line.split("\t").slice(-2).join("=");
-const base = process.env.AW_BASE ?? "http://192.0.2.130:4989";
+const base = process.env.SUPERD_BASE ?? "http://192.0.2.130:4989";
 let n = 0;
 
 const rpc = async (method, payload, timeoutMs = 15000) => {
@@ -29,7 +29,7 @@ const rpc = async (method, payload, timeoutMs = 15000) => {
 console.log("providers:", JSON.stringify(await rpc("llm/listProviders", { args: {} })));
 console.log("presets:", JSON.stringify(await rpc("agentPresets/list", { args: {} })).slice(0, 160));
 
-const created = await rpc("session/create", { args: { request: { cwd: "/home/u1/workspaces/superd/.scratch/aw-codex" } } });
+const created = await rpc("session/create", { args: { request: { cwd: "/home/u1/workspaces/superd/.scratch/superd-codex" } } });
 console.log("create:", JSON.stringify(created).slice(0, 160));
 const sessionId = created?.sessionId;
 if (!sessionId) { console.error("no session"); process.exit(1); }

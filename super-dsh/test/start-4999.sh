@@ -14,12 +14,12 @@
 # business code never does.
 set -euo pipefail
 PORT=4999
-UNIT="aw-4999-test"
+UNIT="superd-4999-test"
 REPO="$HOME/workspaces/superd"
 LINE="$REPO/super-dsh"
-DSH_HOME_DIR="$REPO/.tests/aw"
-PROFILE="aw-pub"
-LOG="$REPO/.scratch/aw-4999.log"
+DSH_HOME_DIR="$REPO/.tests/superd"
+PROFILE="superd-pub"
+LOG="$REPO/.scratch/superd-4999.log"
 NODE_BIN="/usr/bin/node"
 PNPM="corepack pnpm@10.33.2"   # consumer-parity installer (store v10)
 PNPM_STORE="$REPO/.npm-cache/pnpm-store-v10"
@@ -41,7 +41,7 @@ WATERMARK=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 
 # ---- 1. build + pack the delivery artifact ----
 "$NODE_BIN" "$LINE/scripts/pack.mjs"
-TARBALL="$REPO/.scratch/aw-pack/super-dsh-$("$NODE_BIN" -p "require('$LINE/package.json').version").tgz"
+TARBALL="$REPO/.scratch/superd-pack/super-dsh-$("$NODE_BIN" -p "require('$LINE/package.json').version").tgz"
 
 # ---- 2. fresh profile consuming the tarball (consumer manifest shape) ----
 PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
@@ -49,7 +49,7 @@ rm -rf "$PROFILE_DIR"
 mkdir -p "$PROFILE_DIR"
 cat > "$PROFILE_DIR/package.json" <<EOF
 {
-  "name": "aw-pub-profile",
+  "name": "superd-pub-profile",
   "private": true,
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "super-dsh"] } },
   "dependencies": { "super-dsh": "file:$TARBALL" }
@@ -90,7 +90,7 @@ fi
 #      launcher's env layering is inherited > invoking-dir > HOME .env; an
 #      inherited EMPTY value would BLOCK the file layer, so we deliberately
 #      do NOT pass DEEPSEEK_API_KEY through the unit env);
-#   2. trusted authorities: one AW_TRUSTED_HOSTS declaration feeds the server
+#   2. trusted authorities: one SUPERD_TRUSTED_HOSTS declaration feeds the server
 #      fence legs (worlds' --trusted-host) AND the page-trust component's
 #      default authorities (bare hostnames only — the portful entry below
 #      covers the fence, the bare ones cover the pages).
@@ -109,7 +109,7 @@ systemd-run --user --unit="$UNIT" \
   --property=Environment="SUPERD_DSH_ANCHOR=$ANCHOR" \
   --property=Environment="SUPERD_KEEP=1" \
   --property=Environment="SUPERD_TRACE=${SUPERD_TRACE:-0}" \
-  --property='Environment="AW_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:4999"' \
+  --property='Environment="SUPERD_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:4999"' \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
   --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   --property=StandardOutput=append:"$LOG" \

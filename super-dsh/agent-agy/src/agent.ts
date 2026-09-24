@@ -41,7 +41,7 @@ import { LlmAttemptId, ToolCallId, createAssistantMessage, createSystemMessage, 
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
 import type { AgyBridgeClient } from "./agy-client.js";
 import type { AgyCliClient } from "./agy-cli-client.js";
-import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
+import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 
 /** Structural union of the two live transports (SDK bridge | CLI stream). */
 export type LiveAgyClient = Pick<

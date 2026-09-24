@@ -37,7 +37,7 @@ export function resolvePiStateDir(home?: string): string {
     const dir = join(resolved, "agents", "pi");
     return dir;
   }
-  const fallbackHome = resolve(process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw"));
+  const fallbackHome = resolve(process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd"));
   const dir = join(fallbackHome, "agents", "pi");
   return dir;
 }

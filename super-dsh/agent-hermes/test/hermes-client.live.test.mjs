@@ -42,7 +42,7 @@ test("live: spawn → ready → session.create → read RPCs → close (NO promp
     await client.ensureStarted(); // gateway.ready (15s timeout, TUI parity)
     const session = await client.createSession({
       cwd: SPIKE_CWD,
-      title: "dsh-aw client-smoke", // dsh-aw prefix mandated by the constraints
+      title: "dsh-superd client-smoke", // dsh-superd prefix mandated by the constraints
     });
     assert.equal(typeof session.session_id, "string", "live session_id");
     // Read-only surface — none of these performs a model call.
@@ -70,7 +70,7 @@ test("live: ONE prompt turn through the client (FORBIDDEN until Task 9 grants bu
   const off = client.on((event) => wire.push(event.type));
   try {
     await client.ensureStarted();
-    await client.createSession({ cwd: SPIKE_CWD, title: "dsh-aw client-prompt" });
+    await client.createSession({ cwd: SPIKE_CWD, title: "dsh-superd client-prompt" });
     // Resolves on the settled pair (message.complete → session.info running=false).
     await client.prompt("Reply with exactly: ok");
     assert.ok(wire.includes("agent_start") && wire.includes("message_end") && wire.includes("agent_end"));

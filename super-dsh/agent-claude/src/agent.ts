@@ -78,7 +78,7 @@ import type { ClaudeSdkClient } from "./claude-client.js";
 import { CLAUDE_PROVIDER_ID } from "./adapter.js";
 import { claudePermissionMode, presetFromEvents, type ClaudePermissionMode, type PresetName } from "./permission.js";
 import { catalogFromInit, modelEntryFromSdk, readModelCatalog, setModelCatalog } from "./models.js";
-import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
+import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 import {
   registerClaudeCommands,
   slashCommandsFromReported,

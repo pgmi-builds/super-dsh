@@ -1,6 +1,6 @@
 /**
  * agent-agy provider — Google Antigravity (Gemini) provider plugin for DeepSeek
- * Harness (Agent Worlds, consumer-first line, 2026-09-18).
+ * Harness (Super D, consumer-first line, 2026-09-18).
  *
  * An `AgentFactory` that drives an `AgyBridgeClient` (the Python google-
  * antigravity SDK bridge child — localharness materializes inside it on the
@@ -162,7 +162,7 @@ export class AgyProvider extends Service implements AgentFactory {
       const resolved = (fromBoot as () => string)();
       if (typeof resolved === "string" && resolved !== "") return resolved;
     }
-    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw");
+    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd");
   }
 
   /** Effective Gemini API key: adapter state first, then the environment. */

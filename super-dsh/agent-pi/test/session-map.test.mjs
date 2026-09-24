@@ -12,7 +12,7 @@ const { readSessionMap, sessionRecord, upsertSession, forgetSession } = await im
 const { piMappingPath } = await import("../dist/pi-home.js");
 
 function tempHome() {
-  return mkdtempSync(join(tmpdir(), "aw-pi-map-"));
+  return mkdtempSync(join(tmpdir(), "superd-pi-map-"));
 }
 
 test("upsertSession round-trips a record through the map file", () => {

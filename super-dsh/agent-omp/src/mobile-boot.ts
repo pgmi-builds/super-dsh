@@ -4,7 +4,7 @@
  * `webserver/index-inject` event (every index render re-emits; row data is
  * read fresh at emit time).
  *
- * The script sets `window.__OMP_WEB_MOBILE__` — the dual-half plugin's client
+ * The script sets `window.__AGENT_OMP_MOBILE__` — the dual-half plugin's client
  * half carries no loader config, so the page global IS the config channel —
  * then appends the iOS focus auto-zoom suppression section
  * ({@link buildZoomGuardSection}). Both legs ship default-ON; there is no
@@ -16,7 +16,7 @@
  * composition without a `webServer` service leaves the feature dormant
  * (the `ctx.inject` callback never fires).
  *
- * @module omp-web/mobile-boot
+ * @module agent-omp/mobile-boot
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { buildZoomGuardSection } from './mobile/zoom-guard.js'
@@ -50,7 +50,7 @@ export function buildMobileBootScript(): string {
   const parts: string[] = ['(function(){try{']
   // Ship default ON: a bare page carries the mobile global (the client's
   // `resolveMobileConfig` merges the threshold defaults over `enabled: true`).
-  parts.push(`window.__OMP_WEB_MOBILE__=${JSON.stringify({ enabled: true })};`)
+  parts.push(`window.__AGENT_OMP_MOBILE__=${JSON.stringify({ enabled: true })};`)
   // The zoom guard rides the mobile leg (default 'meta' mode): emitted always.
   parts.push(buildZoomGuardSection())
   parts.push('}catch(e){}})();')
@@ -71,7 +71,7 @@ export function installMobileBootScript(ctx: Context): void {
       try {
         table.push({ kind: 'script', placement: 'head', text: buildMobileBootScript() })
       } catch (error) {
-        ctx.logger.warn(`omp-web: mobile boot script injection failed: ${String(error)}`)
+        ctx.logger.warn(`agent-omp: mobile boot script injection failed: ${String(error)}`)
       }
     })
   })

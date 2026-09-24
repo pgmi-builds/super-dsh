@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { CodexSdkClient, codexClientRefCount, setCodexFactory } from "../dist/codex-client.js";
 import { resetProjectionState } from "../dist/codex-events.js";
 
-const FAKE_HOME = "/aw-codex-client-test/.codex";
+const FAKE_HOME = "/superd-codex-client-test/.codex";
 // Native-home ruling (2026-09-17): the client never injects CODEX_HOME; tests
 // redirect the runtime home via the ambient env before the instance spawns.
 process.env.CODEX_HOME = FAKE_HOME;

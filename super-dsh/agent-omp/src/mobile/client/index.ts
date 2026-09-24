@@ -5,7 +5,7 @@
  * the one addition: the average-velocity gate.
  *
  * Two coordinated pieces, both config-gated by the host half's injected
- * boot script (`window.__OMP_WEB_MOBILE__` — the client half of a dual-half
+ * boot script (`window.__AGENT_OMP_MOBILE__` — the client half of a dual-half
  * plugin carries no loader config, so the page global IS the config
  * channel):
  *
@@ -32,7 +32,7 @@
  *   input. Absent right panel (pre-0.1.5 hosts, no session): right
  *   actions no-op silently; LEFT gestures keep working regardless.
  *
- * @module omp-web/mobile/client
+ * @module agent-omp/mobile/client
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
@@ -107,8 +107,8 @@ function closeRightPanel(): void {
 }
 
 /** Page global left by the host half's boot script (see `src/web-trust.ts`). */
-interface OmpWebMobileGlobal {
-  __OMP_WEB_MOBILE__?: {
+interface AgentOmpMobileGlobal {
+  __AGENT_OMP_MOBILE__?: {
     enabled?: boolean
     swipeDistancePx?: number
     dominanceRatio?: number
@@ -145,14 +145,14 @@ function mobileCss(): string {
  * @returns the effect disposer (style tag + listeners removed on unload).
  */
 export function setupMobileLayout(ctx: ClientContext): void {
-  const pageConfig = (globalThis as OmpWebMobileGlobal).__OMP_WEB_MOBILE__
+  const pageConfig = (globalThis as AgentOmpMobileGlobal).__AGENT_OMP_MOBILE__
   const config = resolveMobileConfig(pageConfig)
   if (!config.enabled) return
 
-  const styleTagId = 'omp-web/mobile'
+  const styleTagId = 'agent-omp/mobile'
   ctx.effect(() => {
     const tag = document.createElement('style')
-    tag.dataset.plugin = 'omp-web'
+    tag.dataset.plugin = 'agent-omp'
     tag.dataset.pluginCss = styleTagId
     tag.textContent = mobileCss()
     document.head.append(tag)
@@ -225,5 +225,5 @@ export function setupMobileLayout(ctx: ClientContext): void {
       tag.remove()
       void Promise.resolve(offLayout.dispose())
     }
-  }, 'omp-web: mobile layout')
+  }, 'agent-omp: mobile layout')
 }

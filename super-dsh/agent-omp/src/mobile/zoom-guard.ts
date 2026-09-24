@@ -34,7 +34,7 @@
  *   eval-style tests in `test/web-trust.spec.ts` execute the real generated
  *   script against a stub DOM, so any such leak fails the suite.
  *
- * @module omp-web/mobile/zoom-guard
+ * @module agent-omp/mobile/zoom-guard
  */
 
 /** The two zoom tokens the guard merges into the stock viewport content. */
@@ -109,7 +109,7 @@ export function mergeViewportTokens(content: string, tokens: Record<string, stri
  * `'off'` disarms the guard. Unknown non-`off` values read as `'meta'`
  * (schema validation makes them unreachable in production; benign here).
  *
- * @param config - the `__OMP_WEB_MOBILE__` payload (only `zoomGuard` is read).
+ * @param config - the `__AGENT_OMP_MOBILE__` payload (only `zoomGuard` is read).
  * @param isIOS - {@link isIOSClassUA} verdict for this page load.
  * @param isNarrow - `matchMedia('(max-width: breakpoint-0.02px)')` verdict.
  * @returns `true` when the viewport rewrite should be applied.
@@ -233,13 +233,13 @@ export function buildZoomGuardSection(): string {
     `var ZD=${isStandaloneDisplay.toString()};`,
     `var ZF=${buildFontFloorCss.toString()};`,
     '(function(){',
-    'var m=window.__OMP_WEB_MOBILE__;',
+    'var m=window.__AGENT_OMP_MOBILE__;',
     'var ios=ZI(navigator.userAgent,(navigator.maxTouchPoints||0));',
     'if(!ios)return;',
     "var bpx=(m&&typeof m.breakpoint==='number'&&m.breakpoint>0)?m.breakpoint:768;",
     'var bp=bpx-0.02;',
     "var sa=ZD((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches),(navigator.standalone===true));",
-    "if(sa){var f=document.createElement('style');f.setAttribute('id','ios-zoom-font-floor');f.setAttribute('data-plugin','omp-web');f.setAttribute('data-plugin-css','omp-web/zoom-font-floor');f.textContent=ZF(bpx);headEl().appendChild(f);return}",
+    "if(sa){var f=document.createElement('style');f.setAttribute('id','ios-zoom-font-floor');f.setAttribute('data-plugin','agent-omp');f.setAttribute('data-plugin-css','agent-omp/zoom-font-floor');f.textContent=ZF(bpx);headEl().appendChild(f);return}",
     "var mq=(typeof window.matchMedia==='function')?window.matchMedia('(max-width:'+bp+'px)'):null;",
     "var T={'maximum-scale':'1','user-scalable':'no'};",
     'var meta=null,stock=null,mine=false,applied=false,obs=null,lad=null,lN=0;',

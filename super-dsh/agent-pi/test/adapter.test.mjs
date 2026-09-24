@@ -12,7 +12,7 @@ const { setPiModelRuntimeFactory, warmPiCatalog, clearPiCatalogForTests } = mode
 const { PiLlmAdapter } = await import("../dist/adapter.js");
 
 function tempPiAgentDir(settings) {
-  const dir = mkdtempSync(join(tmpdir(), "aw-pi-adapter-"));
+  const dir = mkdtempSync(join(tmpdir(), "superd-pi-adapter-"));
   mkdirSync(dir, { recursive: true });
   if (settings !== undefined) writeFileSync(join(dir, "settings.json"), JSON.stringify(settings));
   return dir;

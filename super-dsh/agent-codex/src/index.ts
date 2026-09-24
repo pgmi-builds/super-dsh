@@ -1,6 +1,6 @@
 /**
  * agent-codex provider — Codex provider plugin for DeepSeek Harness
- * (Agent Worlds AW-E, SDK line).
+ * (Super D, SDK line).
  *
  * Replaces the built-in agent loop with an `AgentFactory` that drives
  * `@openai/codex-sdk` threads (one `CodexSdkClient` per session) and bridges
@@ -239,7 +239,7 @@ export class CodexProvider extends Service implements AgentFactory {
       const resolved = (fromBoot as () => string)();
       if (typeof resolved === "string" && resolved !== "") return resolved;
     }
-    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw");
+    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd");
   }
 
   /**

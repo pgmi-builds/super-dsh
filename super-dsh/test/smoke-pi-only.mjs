@@ -1,4 +1,4 @@
-// AW-A smoke (Task 7): CTX0 = web face on the line port + agent-hub gateway
+// AW-A smoke (Task 7): CTX0 = web face on the line port + superd-hub gateway
 // + the adapter's WORLD PLUGIN (ctx0 does NOT compose the adapter bundle —
 // omp rows belong to the world). The plugin spawns ctx-omp itself (S2).
 // SUPERD_KEEP: process stays up for first-person acceptance.
@@ -9,26 +9,26 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const REPO = '/home/u1/workspaces/superd'
-const HOME = process.env.DSH_HOME ?? join(REPO, '.tests', 'aw')
+const HOME = process.env.DSH_HOME ?? join(REPO, '.tests', 'superd')
 const ANCHOR = process.env.SUPERD_DSH_ANCHOR ?? join(REPO, 'upstream/deepseek-harness/package.json')
-const BARE = pathToFileURL(process.env.AW_BARE_BASE ?? join(HOME, 'profiles/node_modules') + '/').href
-const PORT = process.env.AW_PORT ?? '4999'
+const BARE = pathToFileURL(process.env.SUPERD_BARE_BASE ?? join(HOME, 'profiles/node_modules') + '/').href
+const PORT = process.env.SUPERD_PORT ?? '4999'
 
 // ---- provision the ctx0 profile + @pgmi-builds links (idempotent) ----
 const profDir = join(HOME, 'profiles')
-mkdirSync(join(profDir, 'aw-ctx0'), { recursive: true })
-writeFileSync(join(profDir, 'aw-ctx0/package.json'), JSON.stringify({
-  name: 'aw-ctx0-profile', private: true,
-  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@pgmi-builds/agent-hub'] } },
+mkdirSync(join(profDir, 'superd-ctx0'), { recursive: true })
+writeFileSync(join(profDir, 'superd-ctx0/package.json'), JSON.stringify({
+  name: 'superd-ctx0-profile', private: true,
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@pgmi-builds/superd-hub'] } },
   dependencies: {
-    '@pgmi-builds/agent-hub': `file:${join(REPO, 'super-dsh/agent-hub')}`,
+    '@pgmi-builds/superd-hub': `file:${join(REPO, 'super-dsh/superd-hub')}`,
     // SCOPE (2026-09-16 user ruling): this line composes NO native-runtime
     // capability bundles (compaction etc.) — Native Dash Runtime functionality
-    // ships with Dash, not agent-worlds. The compaction-tuning probe package
+    // ships with Dash, not super-dsh. The compaction-tuning probe package
     // proved the per-world WebUI separation and was removed; see
     // docs/superpowers/plans/2026-09-16-compaction-tuning-native-only-acceptance-report.md.
   } }, null, 2))
-writeFileSync(join(profDir, 'aw-ctx0/cordis.patch.yml'), `# ctx0 web face on the line port (loopback; LAN only via socat/Caddy, per repo port discipline)
+writeFileSync(join(profDir, 'superd-ctx0/cordis.patch.yml'), `# ctx0 web face on the line port (loopback; LAN only via socat/Caddy, per repo port discipline)
 - id: webserver
   config:
     host: 127.0.0.1
@@ -36,11 +36,11 @@ writeFileSync(join(profDir, 'aw-ctx0/cordis.patch.yml'), `# ctx0 web face on the
 - insert:
     # AW-B: the adapter's WORLD plugin row (NOT its bundle patch — that patch
     # belongs to the world root and would disable ctx0's native agent loop).
-    - id: aw-agent-adapter-pi
-      name: '@pgmi-builds/agent-adapter-pi/world'
+    - id: agent-pi
+      name: '@pgmi-builds/agent-pi/world'
     # R2 (2026-09-16): the claude adapter ships STANDALONE only — its /world
     # entry is inert. The HUB side joins it: one generic joiner row with the
-    # key; spawn/roster/mount wiring lives in @pgmi-builds/agent-hub/join.
+    # key; spawn/roster/mount wiring lives in @pgmi-builds/superd-hub/join.
     - id: directory-picker-browse
       name: '@deepseek-ai/dsh-host-directory-picker-browse'
     - id: directory-picker-browse-surface
@@ -51,10 +51,10 @@ writeFileSync(join(profDir, 'aw-ctx0/cordis.patch.yml'), `# ctx0 web face on the
 const pgmb = join(profDir, 'node_modules', '@pgmi-builds')
 mkdirSync(pgmb, { recursive: true })
 // Package name -> source directory (they differ: agent-omp/ ships
-// @pgmi-builds/agent-adapter-omp). Both the line home and every nested world
+// @pgmi-builds/agent-omp). Both the line home and every nested world
 // home need these links: profile bundles resolve from the profile directory.
 const PGMB_PACKAGES = [
-  ['agent-hub', 'agent-hub'],
+  ['superd-hub', 'superd-hub'],
   ['agent-adapter-omp', 'agent-omp'],
   ['agent-adapter-codex', 'agent-codex'],
   ['agent-adapter-pi', 'agent-pi'],
@@ -88,7 +88,7 @@ for (const [label, adapter, adapterDir] of [
   const worldProf = join(worldHome, 'profiles', 'web')
   mkdirSync(worldProf, { recursive: true })
   writeFileSync(join(worldProf, 'package.json'), JSON.stringify({
-    name: `aw-${label}-world-profile`, private: true,
+    name: `superd-${label}-world-profile`, private: true,
     dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', `@pgmi-builds/${adapter}`] } },
     dependencies: { [`@pgmi-builds/${adapter}`]: `file:${join(REPO, 'super-dsh', adapterDir)}` },
   }, null, 2))
@@ -111,19 +111,19 @@ for (const [label, adapter, adapterDir] of [
 }
 
 // ---- boot ctx0 ----
-const profile = loadProfile('aw-ctx0', 'aw-ctx0', ANCHOR, HOME)
+const profile = loadProfile('superd-ctx0', 'superd-ctx0', ANCHOR, HOME)
 writeFileSync(join(profile.dir, 'cordis.yml'), '[]\n')
 const patches = [...profile.layers.flatMap((l) => l.patches), ...profile.patches]
 // Embedding-host facts for ctx0 too (same public API as spawnWorld): worlds
 // and ctx0 alike take no flags and never open a browser.
 let fiber0
-const ctx0 = await boot('aw-ctx0', join(profile.dir, 'cordis.yml'), patches, (ctx) => {
+const ctx0 = await boot('superd-ctx0', join(profile.dir, 'cordis.yml'), patches, (ctx) => {
   provideCmdline(ctx, { args: ['--no-open', '--trusted-host', '192.0.2.130', '--trusted-host', '192.0.2.130:4998'], exit: () => { void fiber0?.dispose() } })
 }, BARE)
 fiber0 = ctx0.fiber
 
 // ---- wait for the world targets (spawned by the adapter world plugins) ----
-const routing = await import('/home/u1/workspaces/superd/super-dsh/agent-hub/dist/index.js')
+const routing = await import('/home/u1/workspaces/superd/super-dsh/superd-hub/dist/index.js')
 const wanted = ['omp', 'codex', 'claude']
 const ready = {}
 for (let i = 0; i < 240; i++) {
@@ -131,5 +131,5 @@ for (let i = 0; i < 240; i++) {
   if (wanted.every((key) => ready[key] === true)) break
   await new Promise((r) => setTimeout(r, 500))
 }
-console.log(`[aw-smoke] roster=${JSON.stringify(routing.listAgents())} targets=${JSON.stringify(ready)}`)
-console.log('[aw-smoke] SUPERD_KEEP=1 — servers stay up for acceptance')
+console.log(`[superd-smoke] roster=${JSON.stringify(routing.listAgents())} targets=${JSON.stringify(ready)}`)
+console.log('[superd-smoke] SUPERD_KEEP=1 — servers stay up for acceptance')

@@ -1,6 +1,6 @@
 /**
  * agent-pi provider — Pi provider plugin for DeepSeek Harness
- * (Agent Worlds AW-F, SDK line).
+ * (Super D, SDK line).
  *
  * Replaces the built-in agent loop with an `AgentFactory` that drives pi
  * `AgentSession`s in-process (one `PiSessionClient` per session, through the
@@ -231,7 +231,7 @@ export class PiProvider extends Service implements AgentFactory {
       const resolved = (fromBoot as () => string)();
       if (typeof resolved === "string" && resolved !== "") return resolved;
     }
-    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw");
+    return process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd");
   }
 
   /**
@@ -413,7 +413,7 @@ export class PiProvider extends Service implements AgentFactory {
     const id = options.resumeSessionId;
 
     // Identity ("mapping only") with BLANK-SESSION TOLERANCE (2026-09-18,
-    // dev-rules §14 i / omp-web doctrine): a session whose pi side never
+    // dev-rules §14 i doctrine): a session whose pi side never
     // materialized (no record, or `sessionFile: null`) resumes AS FRESH —
     // the lazy shell waits for the first prompt, exactly like create (the
     // Dash host eagerly resumes on view/model-change, so failing here broke

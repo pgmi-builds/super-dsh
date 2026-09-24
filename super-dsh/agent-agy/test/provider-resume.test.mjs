@@ -48,7 +48,7 @@ const CONVERSATION_EVENTS = [
 ];
 
 test("blank resume: no record at all → tolerated as fresh (mapping gate must not throw)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-agy-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-agy-provider-"));
   const ctx = providerContext(home); // empty log → blank
   const provider = new AgyProvider(ctx);
   await assert.rejects(
@@ -58,7 +58,7 @@ test("blank resume: no record at all → tolerated as fresh (mapping gate must n
 });
 
 test("blank resume: record with conversationId null (never a turn) → fresh, not fail-closed", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-agy-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-agy-provider-"));
   upsertSession(home, "session-blank", { conversationId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
   const provider = new AgyProvider(ctx);
@@ -69,7 +69,7 @@ test("blank resume: record with conversationId null (never a turn) → fresh, no
 });
 
 test("orphan: missing record but DSH log carries conversation content → fail closed", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-agy-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-agy-provider-"));
   const ctx = providerContext(home, { events: CONVERSATION_EVENTS });
   const provider = new AgyProvider(ctx);
   await assert.rejects(
@@ -79,7 +79,7 @@ test("orphan: missing record but DSH log carries conversation content → fail c
 });
 
 test("create requires session persistence before anything is spawned", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-agy-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-agy-provider-"));
   const ctx = providerContext(home, { persistence: false });
   const provider = new AgyProvider(ctx);
   await assert.rejects(
@@ -89,7 +89,7 @@ test("create requires session persistence before anything is spawned", async () 
 });
 
 test("resume re-validates the recorded cwd and refuses a vanished directory", async () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-agy-provider-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-agy-provider-"));
   upsertSession(home, "session-gone", {
     conversationId: "cid-1",
     cwd: join(home, "no-such-directory"),
@@ -105,7 +105,7 @@ test("resume re-validates the recorded cwd and refuses a vanished directory", as
 });
 
 test("mapping round-trip: upsert then sessionRecord returns the conversation id", () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-agy-map-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-agy-map-"));
   upsertSession(home, "session-a", { conversationId: null, cwd: home, createdAt: Date.now(), preset: null });
   upsertSession(home, "session-a", { conversationId: "conv-9" });
   const record = sessionRecord(home, "session-a");

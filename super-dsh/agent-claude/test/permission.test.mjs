@@ -81,7 +81,7 @@ test("modeChangePatch upserts {claudeMode, preset} together; an extra tier chang
 });
 
 test("onModeChange keeps the session map consistent with the log fold (skeleton switch, then extra tier)", () => {
-  const home = mkdtempSync(join(tmpdir(), "aw-claude-perm-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-perm-"));
   const id = "session-mode-map";
   // Create: the record carries the resolved preset + mode (single source).
   upsertSession(home, id, {

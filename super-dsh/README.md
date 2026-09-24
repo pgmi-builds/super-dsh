@@ -1,4 +1,4 @@
-# super-dsh — Agent Worlds for the DeepSeek Harness
+# super-dsh — Super D agent hub for the DeepSeek Harness
 
 One [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) plugin that joins local
 foreign-agent runtimes into the DSH Web UI: a runtime selector in the sidebar,
@@ -17,8 +17,8 @@ the foreign store.
 dsh plugin --profile <name> add super-dsh@0.1.0
 ```
 
-That single package composes the whole line (`@pgmi-builds/agent-hub` plus the
-six `@pgmi-builds/agent-adapter-*` packages). Restart the profile and the
+That single package composes the whole line (`@pgmi-builds/superd-hub` plus the
+six `@pgmi-builds/agent-*` packages). Restart the profile and the
 sidebar gains the runtime selector; each world provisions its own nested DSH
 home under `<DSH_HOME>/agents/<label>/` on first boot.
 

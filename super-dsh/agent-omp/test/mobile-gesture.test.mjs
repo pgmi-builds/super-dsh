@@ -4,7 +4,7 @@
  * dashr's `test/mobile-gesture.spec.ts`. The gesture thresholds and state
  * machine live in `src/mobile/gesture.ts` (compiled to `dist/mobile/gesture.js`);
  * this file pins the start-admission gate, the fire conditions, and the
- * page-config resolution over the renamed `__OMP_WEB_MOBILE__` channel.
+ * page-config resolution over the renamed `__AGENT_OMP_MOBILE__` channel.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

@@ -1,5 +1,5 @@
 /**
- * omp-web sidecar protocol (v0).
+ * agent-omp sidecar protocol (v0).
  *
  * Transport: JSON lines over stdio of the bun sidecar process.
  *  - Node → sidecar: request  frame  { id, method, params }

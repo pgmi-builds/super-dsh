@@ -35,7 +35,7 @@ export type AgySessionMap = Record<string, AgySessionRecord>;
  * `agents/agy`; Form-B (already `<root>/agents/agy`) passes through.
  */
 export function resolveAgyWorldHome(home?: string): string {
-  const base = resolve(home ?? process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw"));
+  const base = resolve(home ?? process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd"));
   const dir = basename(base) === "agy" && basename(dirname(base)) === "agents" ? base : join(base, "agents", "agy");
   return dir;
 }

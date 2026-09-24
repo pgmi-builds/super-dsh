@@ -16,11 +16,11 @@
 # Teardown: systemctl --user stop hermes-4985-test   (never kill)
 set -euo pipefail
 
-PORT="${AW_APP_PORT:-4985}"
+PORT="${SUPERD_APP_PORT:-4985}"
 UNIT="hermes-${PORT}-test"
 WT="$(cd "$(dirname "$0")/../.." && pwd)"   # repo root (test/ → super-dsh → repo)
 LOG="$WT/.scratch/hermes-${PORT}.log"
-HOME_DIR="${AW_APP_HOME:-$WT/.tests}"
+HOME_DIR="${SUPERD_APP_HOME:-$WT/.tests}"
 LABEL="hermes-standalone"
 NODE_BIN="/opt/node-v22.23.2/bin/node"
 # dev base: prefer the self-contained repo build; SUPERD_DSH overrides; machine-global is the fallback

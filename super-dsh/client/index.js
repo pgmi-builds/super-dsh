@@ -232,7 +232,7 @@ function apply(ctx) {
 		scope.effect(() => scope.slots.inject("sidebar.footer.action", () => scope.slots.register({
 			name: "sidebar.footer.action",
 			id: "agent-runtime"
-		}, RuntimeSeat)), "agent-hub: runtime footer action");
+		}, RuntimeSeat)), "superd-hub: runtime footer action");
 	});
 }
 

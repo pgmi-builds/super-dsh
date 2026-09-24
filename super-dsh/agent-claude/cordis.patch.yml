@@ -1,7 +1,7 @@
-# @pgmi-builds/agent-adapter-claude bundle patch (standalone web app form).
+# @pgmi-builds/agent-claude bundle patch (standalone web app form).
 - insert:
     - id: claude-provider
-      name: '@pgmi-builds/agent-adapter-claude'
+      name: '@pgmi-builds/agent-claude'
 
 - id: agent-loop
   disabled: true

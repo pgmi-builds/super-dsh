@@ -75,7 +75,7 @@ import { GatewayRpcError, HERMES_SPAWN_ATTEMPTS, type HermesGatewayClient, type 
 import { approvalChoiceFromOutcome } from "./permission.js";
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
-import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
+import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 
 /**
  * v2 live assistant-stream publication for the Hermes bridge — the same frame

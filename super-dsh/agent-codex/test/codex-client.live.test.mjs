@@ -1,6 +1,6 @@
 // Task 3 Step 3: live integration test — REAL codex turn through CodexSdkClient
 // under the worktree's nested CODEX_HOME. GATED: runs only with
-// AW_CODEX_LIVE=1 because a real turn costs provider tokens (glm via
+// SUPERD_CODEX_LIVE=1 because a real turn costs provider tokens (glm via
 // cc-switch). Kept to ONE short turn ("Reply with exactly: ok"); the
 // fixture/fake-driven path in codex-client.test.mjs validates the seam
 // otherwise.
@@ -15,7 +15,7 @@ const HOME = process.env.DSH_HOME ?? join(WT, ".tests");
 
 test(
   "live: real codex turn through CodexSdkClient under the nested CODEX_HOME",
-  { skip: process.env.AW_CODEX_LIVE !== "1" && "set AW_CODEX_LIVE=1" },
+  { skip: process.env.SUPERD_CODEX_LIVE !== "1" && "set SUPERD_CODEX_LIVE=1" },
   async () => {
     const client = await CodexSdkClient.spawn([], PKG);
     let assistantText = "";

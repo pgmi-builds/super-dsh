@@ -3,10 +3,10 @@
 // the slash-command mirror (R12) and the model catalog (Task 9) live.
 import { readFileSync } from "node:fs";
 
-const jar = readFileSync(process.env.AW_JAR ?? "/tmp/aw-claude-app.jar", "utf8");
+const jar = readFileSync(process.env.SUPERD_JAR ?? "/tmp/superd-claude-app.jar", "utf8");
 const line = jar.split("\n").filter((l) => l && (!l.startsWith("#") || l.startsWith("#HttpOnly_"))).pop();
 const cookie = line.split("\t").slice(-2).join("=");
-const base = process.env.AW_BASE ?? "http://127.0.0.1:4989";
+const base = process.env.SUPERD_BASE ?? "http://127.0.0.1:4989";
 let n = 0;
 
 const rpc = async (method, payload, timeoutMs = 15000) => {
@@ -46,7 +46,7 @@ if (!presetIds.includes("claude")) {
   process.exit(1);
 }
 
-const created = await rpc("session/create", { args: { request: { cwd: "/home/u1/workspaces/superd/.scratch/aw-claude" } } });
+const created = await rpc("session/create", { args: { request: { cwd: "/home/u1/workspaces/superd/.scratch/superd-claude" } } });
 console.log("create:", JSON.stringify(created).slice(0, 160));
 const sessionId = created?.sessionId;
 if (!sessionId) { console.error("no session"); process.exit(1); }

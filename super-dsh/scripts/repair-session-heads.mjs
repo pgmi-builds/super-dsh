@@ -8,7 +8,7 @@
  * (the protected head) or replace one. Bridge-era logs wrote the user message
  * at turn level and appended the system prompt mid-surface later — every such
  * session fails history validation after a restart. The writer fix
- * (agent-hub `withSystemHead`) covers NEW sessions; this script rewrites
+ * (superd-hub `withSystemHead`) covers NEW sessions; this script rewrites
  * EXISTING ones into the native shape by reordering three events:
  *
  *   before: turn/start … user/message … [maybe session/title] … step/start … system/message

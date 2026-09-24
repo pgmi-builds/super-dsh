@@ -1,5 +1,5 @@
 /**
- * omp-web sidecar entry — run under bun.
+ * agent-omp sidecar entry — run under bun.
  *
  *   OMP_HOME=~/.omp bun run sidecar/main.ts
  *
@@ -83,7 +83,7 @@ let nextHandle = 0;
  */
 let nextAgentSeq = 0;
 function nextAgentId(): string {
-  return `omp-web-${process.pid}-${++nextAgentSeq}`;
+  return `agent-omp-${process.pid}-${++nextAgentSeq}`;
 }
 
 function hold(session: HeldSession["session"]): string {

@@ -1,7 +1,7 @@
 // Task 6: activation = roster membership + zero-port world spawn + gateway
 // target registration (S2 gate). Mirrors agent-omp/test/world-plugin.test.mjs
 // (adapter-side world smoke) with the hub-side anchor default from
-// agent-hub/test/world-mount.test.mjs: the shared `.tests`
+// superd-hub/test/world-mount.test.mjs: the shared `.tests`
 // `@deepseek-ai` farm is healed to the REPO BUILD, so the smoke must anchor
 // there too — booting the world with the plugin's global-install default
 // would flip the farm between installations (one DSH_HOME, one installation).
@@ -16,7 +16,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 // Three levels up: test/ -> agent-hermes -> super-dsh -> repo root.
-// (Four was the apps/agent-worlds era depth; stale since the 2026-09-22 reshuffle.)
+// (Four was the old layout era depth; stale since the 2026-09-22 reshuffle.)
 const REPO = join(new URL('../../..', import.meta.url).pathname)
 // Red line: never boot a world against the prod home. An ambient DSH_HOME
 // inherited from a host dsh.service session points at prod — treat that as
@@ -31,7 +31,7 @@ if (process.env.DSH_HOME !== HOME) {
 process.env.DSH_HOME = HOME
 const HERMES_WORLD = join(HOME, 'agents', 'hermes')
 
-// Repo-build anchor (same default as agent-hub/test/world-mount.test.mjs);
+// Repo-build anchor (same default as superd-hub/test/world-mount.test.mjs);
 // the world-plugin honors SUPERD_DSH_ANCHOR at module scope, so set it before
 // importing dist/world-plugin.js.
 const ANCHOR = process.env.SUPERD_DSH_ANCHOR
@@ -39,12 +39,12 @@ const ANCHOR = process.env.SUPERD_DSH_ANCHOR
 process.env.SUPERD_DSH_ANCHOR = ANCHOR
 
 // provision @pgmi-builds scope beside heal's @deepseek-ai in the profile tree:
-// the world's loader resolves the hub rows (`@pgmi-builds/agent-hub` and its
-// `/world` entry, inserted by worldMountPatches) through AW_BARE_BASE.
+// the world's loader resolves the hub rows (`@pgmi-builds/superd-hub` and its
+// `/world` entry, inserted by worldMountPatches) through SUPERD_BARE_BASE.
 const pm = join(HOME, 'profiles', 'node_modules', '@pgmi-builds')
 mkdirSync(pm, { recursive: true })
 for (const [name, target] of Object.entries({
-  'agent-hub': join(REPO, 'super-dsh/agent-hub'),
+  'superd-hub': join(REPO, 'super-dsh/superd-hub'),
   'agent-adapter-hermes': join(REPO, 'super-dsh/agent-hermes'),
 })) {
   const dst = join(pm, name)
@@ -53,7 +53,7 @@ for (const [name, target] of Object.entries({
 }
 // 0.1.7: nothing heals a profiles-level @deepseek-ai farm anymore — project
 // the runtime resolution there (the world root resolves upstream rows and
-// their imports through AW_BARE_BASE).
+// their imports through SUPERD_BARE_BASE).
 const { createRuntimeResolution } = await import('@deepseek-ai/dsh-app-boot')
 const __resolution = await createRuntimeResolution({ installAnchor: ANCHOR, home: HOME })
 for (const entry of __resolution.entries) {
@@ -62,10 +62,10 @@ for (const entry of __resolution.entries) {
   mkdirSync(dirname(dest), { recursive: true })
   symlinkSync(entry.packageDir, dest, 'dir')
 }
-process.env.AW_BARE_BASE = join(HOME, 'profiles', 'node_modules') + '/'
+process.env.SUPERD_BARE_BASE = join(HOME, 'profiles', 'node_modules') + '/'
 
 // ctx0's real webServer, structural: the carrier registers translated routes
-// on it (same fake shape as agent-hub/test/world-mount.test.mjs).
+// on it (same fake shape as superd-hub/test/world-mount.test.mjs).
 function fakeReal() {
   return {
     routes: new Map(),
@@ -84,10 +84,10 @@ function fakeReal() {
   }
 }
 
-test('aw.agent-adapter-hermes: activation = roster + zero-port world spawn + /hermes mount', { skip: !existsSync(ANCHOR) && `dsh install anchor not found: ${ANCHOR}` }, async () => {
+test('agent-hermes: activation = roster + zero-port world spawn + /hermes mount', { skip: !existsSync(ANCHOR) && `dsh install anchor not found: ${ANCHOR}` }, async () => {
   const { name, apply } = await import('../dist/world-plugin.js')
-  assert.equal(name, 'aw.agent-adapter-hermes')
-  const routing = await import('@pgmi-builds/agent-hub')
+  assert.equal(name, 'agent-hermes')
+  const routing = await import('@pgmi-builds/superd-hub')
   const provided = {}
   const real = fakeReal()
   const connection = {
@@ -100,7 +100,7 @@ test('aw.agent-adapter-hermes: activation = roster + zero-port world spawn + /he
     inject: (deps, cb) => cb({ webServer: real, connection }),
   })
   // readiness flips only when the world's gateway is live — await it first
-  const ctxW = await provided['aw.world.hermes']
+  const ctxW = await provided['superd.world.hermes']
   try {
     assert.deepEqual(routing.listAgents(), [{ key: 'hermes', label: 'Hermes', ready: true }])
     assert.ok(existsSync(join(HERMES_WORLD, 'profiles')), 'world DSH home created')

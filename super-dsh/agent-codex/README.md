@@ -1,6 +1,6 @@
-# @pgmi-builds/agent-adapter-codex
+# @pgmi-builds/agent-codex
 
-superd 外壳下的 **Codex adapter**（agent-worlds 线，AW-E）：把 Codex CLI 经由
+superd 外壳下的 **Codex adapter**（super-dsh 线，AW-E）：把 Codex CLI 经由
 `@openai/codex-sdk` 接进 DSH —— 会话、事件、模型目录、持久化全部按 DSH 语义呈现，
 WebUI 消费的是 DSH 服务提供的数据面。
 
@@ -14,19 +14,19 @@ WebUI 消费的是 DSH 服务提供的数据面。
 - 一个 **AgentFactory**：`src/index.ts` 里的 `CodexProvider` 在 `ctx.agents` 注册工厂，
   每个会话一个 `CodexSdkClient`（真 `@openai/codex-sdk` 线程）；`src/agent.ts` 把 Codex 线程事件
   投影成 DSH 会话事件。
-- **不包含** 任何 hub 耦合：世界挂载由 hub 侧驱动（AW-B 用 `@pgmi-builds/agent-hub/world` 的
+- **不包含** 任何 hub 耦合：世界挂载由 hub 侧驱动（AW-B 用 `@pgmi-builds/superd-hub/world` 的
   mount carrier）。本包自己就足以点亮一个完整的 web app。
 
 ## 单独跑起来（首选开发/验收形态）
 
 ```bash
 # 在仓根执行；端口默认 4988，LAN 走只绑 LAN IP 的 socat relay
-AW_APP_PORT=4989 bash super-dsh/test/start-codex-app.sh
+SUPERD_APP_PORT=4989 bash super-dsh/test/start-codex-app.sh
 # 脚本会打印 loopback / LAN token URL；停止：
-systemctl --user stop aw-codex-app-<port>-test aw-codex-app-<port>-relay
+systemctl --user stop superd-codex-app-<port>-test superd-codex-app-<port>-relay
 ```
 
-环境变量：`AW_APP_PORT`（端口）、`AW_APP_HOME`（默认 `$WT/.tests`）、
+环境变量：`SUPERD_APP_PORT`（端口）、`SUPERD_APP_HOME`（默认 `$WT/.tests`）、
 `SUPERD_LAN_HOST`（默认 `192.0.2.130`）、`CODEX_TRACE=1`（provider/agent 追踪）。
 
 ## Home 与 profile 布局（user 裁定）
@@ -63,7 +63,7 @@ SUPERD_DSH_ANCHOR=<repo>/upstream/deepseek-harness/package.json \
 node --test test/*.test.mjs
 ```
 
-live 门控：`AW_CODEX_LIVE=1`（会真跑一次 Codex turn）。
+live 门控：`SUPERD_CODEX_LIVE=1`（会真跑一次 Codex turn）。
 
 ## 已知边界（V1）
 

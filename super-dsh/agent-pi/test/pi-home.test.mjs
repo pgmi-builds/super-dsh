@@ -11,7 +11,7 @@ import { test } from "node:test";
 const { resolvePiStateDir, piMappingPath } = await import("../dist/pi-home.js");
 
 function tempHome() {
-  return mkdtempSync(join(tmpdir(), "aw-pi-home-"));
+  return mkdtempSync(join(tmpdir(), "superd-pi-home-"));
 }
 
 test("resolvePiStateDir nests agents/pi under an explicit dsh home", () => {

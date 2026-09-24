@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 
 const LINE = join(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO = dirname(LINE)
-const PACK_DIR = join(REPO, '.scratch/aw-pack')
+const PACK_DIR = join(REPO, '.scratch/superd-pack')
 
 const run = (cmd, cwd) => execSync(cmd, {
   cwd,
@@ -21,10 +21,10 @@ const run = (cmd, cwd) => execSync(cmd, {
   env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim() },
 })
 
-console.log('[pack] building agent-hub (tsc + client halves)')
-run('npm run build', join(LINE, 'agent-hub'))
-run('npm run build-client', join(LINE, 'agent-hub'))
-run('node scripts/build-superd-client.mjs', join(LINE, 'agent-hub'))
+console.log('[pack] building superd-hub (tsc + client halves)')
+run('npm run build', join(LINE, 'superd-hub'))
+run('npm run build-client', join(LINE, 'superd-hub'))
+run('node scripts/build-superd-client.mjs', join(LINE, 'superd-hub'))
 
 for (const pkg of ['agent-omp', 'agent-codex', 'agent-claude', 'agent-pi', 'agent-hermes', 'agent-agy']) {
   console.log(`[pack] building ${pkg} (tsc)`)

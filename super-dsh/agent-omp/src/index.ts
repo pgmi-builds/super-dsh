@@ -158,7 +158,7 @@ export class OmpProvider extends Service implements AgentFactory {
     void this.#syncModelDefaultTick();
     // dsh-shape-session-log: the native jsonl backend (re-enabled in the patch)
     // is the sole `sessionPersistence` — the plugin no longer provides a union
-    // persistence. Session list/page/replay come from native components; omp-web
+    // persistence. Session list/page/replay come from native components; agent-omp
     // is only the producer (writes the dsh session log on live turns).
     // 0.1.7: roster/selection/document RPC + the `agentPreset` session
     // projection all live in the host AgentPresetRegistry (mounted by the
@@ -168,7 +168,7 @@ export class OmpProvider extends Service implements AgentFactory {
     registerOmpPreset(ctx);
     ctx.effect(() => () => closeBridgeStore(), "ompProvider.storeClose()");
     this.#reconcileWorkspaces();
-    // Mobile page-config boot script (host half): sets `window.__OMP_WEB_MOBILE__`
+    // Mobile page-config boot script (host half): sets `window.__AGENT_OMP_MOBILE__`
     // + the iOS zoom-guard section. Fail-open — a missing webServer leaves the
     // feature dormant, and an injection failure is logged, never thrown.
     installMobileBootScript(ctx);

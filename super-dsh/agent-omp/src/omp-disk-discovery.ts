@@ -21,7 +21,7 @@
  * omp project → claude project. All readers are fail-soft: missing roots or
  * unreadable files are skipped, never thrown.
  *
- * @module omp-web/omp-disk-discovery
+ * @module agent-omp/omp-disk-discovery
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";

@@ -1,4 +1,4 @@
-# @pgmi-builds/agent-adapter-hermes bundle patch (AW-H TUI-gateway line, omp-web form).
+# @pgmi-builds/agent-hermes bundle patch (TUI-gateway line, standalone form).
 # This file is the `dsh.bundle.patch` layer of the adapter package: when the
 # hermes world profile mounts the bundle, the boot merges THIS patch — mount
 # the Hermes provider plus disable the native components it replaces.
@@ -15,7 +15,7 @@
 # single `hermes` route (gateway model.options, TTL-cached).
 - insert:
     - id: hermes-provider
-      name: '@pgmi-builds/agent-adapter-hermes'
+      name: '@pgmi-builds/agent-hermes'
 
 # Hermes owns the live agent transcript (the gateway's session state); the
 # built-in loop must not double-run alongside the gateway child — the

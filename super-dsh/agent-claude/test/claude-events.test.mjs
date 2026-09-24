@@ -210,7 +210,7 @@ test("session map: resumable is sticky, round-trips, and an explicit true clears
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const home = mkdtempSync(join(tmpdir(), "aw-claude-map-"));
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-map-"));
   try {
     upsertSession(home, "session-a", { claudeSessionId: "a", cwd: "/w", createdAt: 1 });
     assert.equal(sessionRecord(home, "session-a").resumable, undefined, "absent = resumable");

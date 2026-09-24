@@ -2,7 +2,7 @@
  * Mobile responsiveness — client half entry (the first client surface of this
  * plugin). Mounts {@link setupMobileLayout}: CSS breakpoint override + the
  * document-level CAPTURE swipe gesture, both config-gated by the host half's
- * injected page global (`window.__OMP_WEB_MOBILE__`). The client half of a
+ * injected page global (`window.__AGENT_OMP_MOBILE__`). The client half of a
  * dual-half plugin carries no loader config, so the page global IS the config
  * channel.
  *
@@ -12,7 +12,7 @@
  * provided by `@deepseek-ai/dsh-client-ui-layout`) is required — the feature
  * degrades to CSS-only when that peer is absent from the composition.
  *
- * @module omp-web/client
+ * @module agent-omp/client
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { setupMobileLayout } from '../mobile/client/index.js'
@@ -22,7 +22,7 @@ export const inject = ['layout']
 
 /**
  * Mount the mobile feature. Inert unless the host's boot script opted the
- * page in via `window.__OMP_WEB_MOBILE__`.
+ * page in via `window.__AGENT_OMP_MOBILE__`.
  *
  * @param ctx - client root context.
  */

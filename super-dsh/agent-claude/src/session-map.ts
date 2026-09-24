@@ -61,7 +61,7 @@ export function resolveClaudeStateDir(home?: string): string {
     const dir = resolve(home);
     return dir;
   }
-  const fallbackHome = resolve(process.env.DSH_HOME ?? join(process.cwd(), ".tests", "aw"));
+  const fallbackHome = resolve(process.env.DSH_HOME ?? join(process.cwd(), ".tests", "superd"));
   const dir = join(fallbackHome, "agents", "claude");
   return dir;
 }

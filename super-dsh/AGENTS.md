@@ -1,45 +1,45 @@
-# super-dsh — 局部规则（Agent Worlds 第三路线）
+# super-dsh — 局部规则（Super D 主线）
 
 - 本文件管辖本目录及子目录；上层为仓根 `AGENTS.md`（最近者胜，中间无其他层）。
-- 第三路线：Multi-Context 拓扑 × M0-Fork 数据面哲学的融合线（foreign agent deep integration and detachment）。设计正本：`docs/superpowers/plans/2026-09-14-agent-worlds-fusion-design.md`（S1–S6 裁决）；现役实现计划：`docs/superpowers/plans/2026-09-14-agent-worlds-aw-a-plan.md`。
-- **Agent Adapter 开发规则（必读）**：`agent-adapter-dev-rules.md`（本目录）——adapter 定位/两形态/测试准则/接线域、per-agent 定制权、home 与 profile 布局（`$DSH_HOME` / `agents/<label>` / `profiles/<label>`）、通用纪律。新写或改动任何 `agent-adapter-*` 前先读它。
-- 本线 adapter 记录：`docs/superpowers/plans/2026-09-15-agent-worlds-agent-codex-adapter-plan.md`（AW-E 计划）、`docs/superpowers/plans/2026-09-15-agent-codex-4985-acceptance-report.md`（实现与验收实录）。
-- **agent-pi adapter（AW-F，2026-09-17）**：`agent-pi/`（`@pgmi-builds/agent-adapter-pi`，in-process `@earendil-works/pi-coding-agent` SDK，无 sidecar）。**per-adapter home 裁决（2026-09-17 user）**：pi 运行时数据保持**原生 `~/.pi`**（不建 app home、不重定向 `PI_CODING_AGENT_DIR`——dev-rules §5/§13 对 pi 的运行时数据不适用）；`<dshHome>/agents/pi/` 只放 adapter 自己的 DSH 态（`dsh-sessions.json` 映射）；会话双份存储显式接受。记录：`docs/superpowers/plans/2026-09-17-agent-pi-adapter-plan.md` + `2026-09-17-agent-pi-adapter-acceptance-report.md`。（`file:../agent-hub` 物化坑已随 2026-09-22 转型消亡——adapter 对 hub 只有 optional peer，hub 由单包内嵌提供。）
+- 第三路线：Multi-Context 拓扑 × M0-Fork 数据面哲学的融合线（foreign agent deep integration and detachment）。设计正本：`docs/superpowers/plans/2026-09-14-super-dsh-fusion-design.md`（S1–S6 裁决）；现役实现计划：`docs/superpowers/plans/2026-09-14-super-dsh-superd-a-plan.md`。
+- **Agent Adapter 开发规则（必读）**：`agent-adapter-dev-rules.md`（本目录）——adapter 定位/两形态/测试准则/接线域、per-agent 定制权、home 与 profile 布局（`$DSH_HOME` / `agents/<label>` / `profiles/<label>`）、通用纪律。新写或改动任何 `agent-*` 前先读它。
+- 本线 adapter 记录：`docs/superpowers/plans/2026-09-15-super-dsh-agent-codex-adapter-plan.md`（codex 轮次计划）、`docs/superpowers/plans/2026-09-15-agent-codex-4985-acceptance-report.md`（实现与验收实录）。
+- **agent-pi adapter（2026-09-17）**：`agent-pi/`（`@pgmi-builds/agent-pi`，in-process `@earendil-works/pi-coding-agent` SDK，无 sidecar）。**per-adapter home 裁决（2026-09-17 user）**：pi 运行时数据保持**原生 `~/.pi`**（不建 app home、不重定向 `PI_CODING_AGENT_DIR`——dev-rules §5/§13 对 pi 的运行时数据不适用）；`<dshHome>/agents/pi/` 只放 adapter 自己的 DSH 态（`dsh-sessions.json` 映射）；会话双份存储显式接受。记录：`docs/superpowers/plans/2026-09-17-agent-pi-adapter-plan.md` + `2026-09-17-agent-pi-adapter-acceptance-report.md`。（`file:../superd-hub` 物化坑已随 2026-09-22 转型消亡——adapter 对 hub 只有 optional peer，hub 由单包内嵌提供。）
 - 本线记录：`docs/superpowers/plans/2026-09-16-compaction-tuning-native-only-acceptance-report.md`。**范围裁决（2026-09-16 user）**：本线纯粹是 multi-agent 功能，**不涉及 Native Dash Runtime 的 functionality**（compaction 等）——那属于 Dash 开发项目的 shipment 范畴；曾为验证 WebUI 世界分隔而临时挂入的 compaction-tuning 探针包**已拔除删除**。**留存结论（活体分隔证据）**：设置行只在原生 DSH WebUI 渲染、omp / codex 世界 UI 连节点都没有（该世界 ctx 未 compose 此 bundle → namespace 不在 → 行画 null）——同一浏览器壳、同一认证域，UI 内容按被寻址世界的 composition 投影，即**世界分隔连 WebUI 层也成立**（§4.1 + §12；证据细节见该报告，机制不可作为本线新增 native 功能的理由）。
 - 姊妹线 `archive/multi-agent/`（2026-09-10 搁置）、`archive/multi-agent-ctx/`（冻结保留；2026-09-22 仓重排 apps/ 退役，姊妹线迁入 `archive/`）——**拷贝或引用，永不反向依赖；冻结线永不因本线被迫改动**。
 
 ## 职责分界（2026-09-14 定案）
 
-- cordis/dsh patches（UI 或后端）、存储适配、adapter runtime **一律 per agent**（`agent-adapter-*` / `agent-ui-*` 包自持）。
-- **本线自身只建设 switch 与 gateway**：`agent-hub/`（selector + V5 实例委托导流门 + roster + spawnWorld）。mostly, at least now；adapter 专属物永不上提到线。
+- cordis/dsh patches（UI 或后端）、存储适配、adapter runtime **一律 per agent**（`agent-*` / `agent-ui-*` 包自持）。
+- **本线自身只建设 switch 与 gateway**：`superd-hub/`（selector + V5 实例委托导流门 + roster + spawnWorld）。mostly, at least now；adapter 专属物永不上提到线。
 
 ## 核心不变量（违反即设计缺陷，详见设计文档 S1–S6）
 
 1. **S1**：selector 一跳 handoff；dispatcher 从不在请求路径寻址 sessionId；错误 sessionId 由当前世界 sessionController 独占应答（原生 not-found 语义），零跨 context 探测。
 2. **S2**：roster = adapter 插件加载态投影，无配置文件；spawn 由插件自带 composition（引用上游 bundle 名）在 CTX0 树上 `boot()` 派生——**绝不经 `runProfile()`**（ADR 0008 约束 1）。
-3. **S3/S7**（2026-09-17 改版）：`<dshHomePath>/agents/<runtime>/` = 该 agent world 的 **DSH home**（DSH 会话日志副本、storages、adapter 自有 DSH 态）；native app 数据留在**原生 home**（`~/.omp` / `~/.codex` / `~/.claude` / `~/.pi`），spawn 零重定向、零 config 拷贝；原生 session log 留原生格式，DSH log（AW-C1 起）与之 duplicate 显式接受；单向阀 = 不回读。
+3. **S3/S7**（2026-09-17 改版）：`<dshHomePath>/agents/<runtime>/` = 该 agent world 的 **DSH home**（DSH 会话日志副本、storages、adapter 自有 DSH 态）；native app 数据留在**原生 home**（`~/.omp` / `~/.codex` / `~/.claude` / `~/.pi`），spawn 零重定向、零 config 拷贝；原生 session log 留原生格式，DSH log 与之 duplicate 显式接受；单向阀 = 不回读。
 4. **S4**：零端口 ctxN（不喂 bind 参数 / disable web 行）；委托 = `typertGateway` 实例两方法进程内委托，零 HTTP、零字节代理；单一认证域（ctx0 cookie）。
-5. **S5**：行表深度 agent-specific；omp-web 形态起步不 suppress `ctx.llm`；数据路径归 adapter 所有；会话 log 单一主笔仅在采纳转译（AW-C1）时为准入判据。
+5. **S5**：行表深度 agent-specific；standalone 形态起步不 suppress `ctx.llm`；数据路径归 adapter 所有；会话 log 单一主笔仅在采纳转译时为准入判据。
 6. **S6**：router 是哑的——只管 consumer 切换 + 新会话 generator 指向；生命周期归 owner context；零 HMR / 零 Drain。
 
 ## 运维红线
 
 - 上游源码零修改；`@deepseek-ai/*` 单实例纪律——任何 install 后 `find <scope>/node_modules/@deepseek-ai -maxdepth 1 -mindepth 1 ! -type l` 检查（2026-09-22 housekeeping：仓根 `node_modules` farm 已删除；现存 scope = `.tests/profiles/node_modules/@deepseek-ai`，指向 repo build）。
-- DSH 侧 dev/test 一律 `DSH_HOME=<仓根>/.tests`（agent world DSH home = `$DSH_HOME/agents/<label>`、agent profile = `$DSH_HOME/profiles/<label>`；foreign runtime app home = 原生 `~/.omp` / `~/.codex` / `~/.claude`，spawn 不重定向——见 dev-rules §5/§13；`<仓根>/.tests/aw` 是历史线 home）；**绝不触碰 `~/.dsh`、`~/.superd`（DSH prod home）**——该红线由 **launcher 强制**（`test/start-4999.sh` 拒绝非 `.tests` home），**业务代码零守卫**（2026-09-22 转型：13 处 `assertNotProdHome` 已全数删除，教训见根 AGENTS §〇.0.c）。
+- DSH 侧 dev/test 一律 `DSH_HOME=<仓根>/.tests`（agent world DSH home = `$DSH_HOME/agents/<label>`、agent profile = `$DSH_HOME/profiles/<label>`；foreign runtime app home = 原生 `~/.omp` / `~/.codex` / `~/.claude`，spawn 不重定向——见 dev-rules §5/§13；`.tests/superd` = 交付形态线（4999 pack 线）专属 home，`.tests/hub-test-home` 等为测试隔离 home）；**绝不触碰 `~/.dsh`、`~/.superd`（DSH prod home）**——该红线由 **launcher 强制**（`test/start-4999.sh` 拒绝非 `.tests` home），**业务代码零守卫**（2026-09-22 转型：13 处 `assertNotProdHome` 已全数删除，教训见根 AGENTS §〇.0.c）。
 - **agent-omp 的 OMP home 属 adapter 级自由**（2026-09-15 user 裁决保留）：`OMP_HOME` env 重定向仍是 adapter 的可选项（隔离微调），但**默认已改为原生 `~/.omp`**（2026-09-17 裁定，见 dev-rules §5）。
-- 端口 4998（本线默认）；**4999 = 本线共用测试口（2026-09-16 user 裁决，接替已冻结的 multi-agent-ctx；Caddy `test.pc.internal.test` → 127.0.0.1:4999，WAN 可见，同一时间只能一条线占用）**；避开 3080/3081（prod）；拉起前 `ss` 预检；daemon 一律 `systemd-run --user`，关停 `systemctl --user stop`。当前 4999 在役 unit：`aw-4999-test`（`test/start-4999.sh`）。
+- 端口 4998（本线默认）；**4999 = 本线共用测试口（2026-09-16 user 裁决，接替已冻结的 multi-agent-ctx；Caddy `test.pc.internal.test` → 127.0.0.1:4999，WAN 可见，同一时间只能一条线占用）**；避开 3080/3081（prod）；拉起前 `ss` 预检；daemon 一律 `systemd-run --user`，关停 `systemctl --user stop`。当前 4999 在役 unit：`superd-4999-test`（`test/start-4999.sh`）。
 - 测试约定：`node --test test/*.test.mjs`；测试导入 `dist/`，先 build 后 test；测试 home 一律隔离（`.tests/hub-test-home` 等），**绝不写进在役线 home**。
 
 ## 开发形态 = 交付形态（2026-09-22 转型，user 裁决）
 
-- **单一交付物**：`super-dsh`（unscoped npm 包，better-dsh 模型）。全部组件内嵌为兄弟目录（`agent-hub/dist+lib`、`agent-*/dist`、`sidecar`、`bridge`、各子 `package.json` + `cordis.patch.yml`）；composite patch 行自指 subpath（`super-dsh/hub`、`super-dsh/world/<label>`、`super-dsh/join`），**外加一条裸名行 `super-dsh` 承载 client half**（client-modules 只认裸包名 row；client bundle 的注册 id 必须 build 时烧成 `super-dsh`——见 `agent-hub/scripts/build-superd-client.mjs`）。adapter 对 hub 的 import 走相对路径 `'../../agent-hub/dist/index.js'`（repo 与内嵌布局同构）。
-- **构建/打包唯一入口**：`node super-dsh/scripts/pack.mjs`（全组件 tsc + client halves + `npm pack` → `.scratch/aw-pack/`）。禁止手搓 dist 或 tarball。
-- **4999 线 = 交付形态运行**：`test/start-4999.sh` = pack → tarball `corepack pnpm@10.33.2 add file:` 装进全新 profile（`dependencies: {super-dsh: file:<tarball>}`，manifest 与消费者 `dsh plugin add` 同形）→ repo build 的 dsh CLI（`upstream/.../apps/cli/lib/bin.js --profile aw-pub`）启动。**无手工 composition、无 @pgmi-builds 链接 farm、无库式 boot 脚本**（`smoke.mjs`/`plugin-acc-boot.mjs` 已退役删除）；worlds 由包内 `provisionWorldProfile` 自举。
+- **单一交付物**：`super-dsh`（unscoped npm 包，better-dsh 模型）。全部组件内嵌为兄弟目录（`superd-hub/dist+lib`、`agent-*/dist`、`sidecar`、`bridge`、各子 `package.json` + `cordis.patch.yml`）；composite patch 行自指 subpath（`super-dsh/hub`、`super-dsh/agents/<label>`、`super-dsh/join`），**外加一条裸名行 `super-dsh` 承载 client half**（client-modules 只认裸包名 row；client bundle 的注册 id 必须 build 时烧成 `super-dsh`——见 `superd-hub/scripts/build-superd-client.mjs`）。adapter 对 hub 的 import 走相对路径 `'../../superd-hub/dist/index.js'`（repo 与内嵌布局同构）。
+- **构建/打包唯一入口**：`node super-dsh/scripts/pack.mjs`（全组件 tsc + client halves + `npm pack` → `.scratch/superd-pack/`）。禁止手搓 dist 或 tarball。
+- **4999 线 = 交付形态运行**：`test/start-4999.sh` = pack → tarball `corepack pnpm@10.33.2 add file:` 装进全新 profile（`dependencies: {super-dsh: file:<tarball>}`，manifest 与消费者 `dsh plugin add` 同形）→ repo build 的 dsh CLI（`upstream/.../apps/cli/lib/bin.js --profile superd-pub`）启动。**无手工 composition、无 @pgmi-builds 链接 farm、无库式 boot 脚本**（`smoke.mjs`/`plugin-acc-boot.mjs` 已退役删除）；worlds 由包内 `provisionWorldProfile` 自举。
 - **锚与解析契约**：`SUPERD_DSH_ANCHOR` env 优先（repo 线 = checkout build 的 `apps/cli/package.json`，launcher 设置）；缺省从宿主 `@deepseek-ai/dsh-app-boot` 的 **realpath** 上溯到名为 `@deepseek-ai/dsh` 的包根（消费机安装形态两跳即中；0.1.3-d 实证）。world 树的 `@deepseek-ai` scope = 真目录逐包链接的并集（home farm ∪ 安装树 scope——0.1.6 host 的 farm 缺新包、ctx0 靠 app-boot 安装锚回退活着而显式 bare base 的 world 没有；0.1.3-a/c 实证）。
 - **验收（根 AGENTS §〇.0.a）**：本地 4999 形态冒烟（mount 6×200 + client 面 `super-dsh/client.js` 在 combo 列表 + `world failed` 计数 0）→ **dev3 目标机实装**（tarball → restart → journalctl 计数 → mount 探针）→ 报告 → user 放行 → publish（版本纪律：字母迭代，见根 §〇.1.d）。
 - **测试准备（2026-09-24 user 裁决，写死在 `test/start-4999.sh`，缺一不可）**：测试线必须「看到被测者看到的世界」，否则测的是别的东西。三条准备：
   1. **provider keys**：把 prod home 的 `~/.dsh/.env` **copy 进线 home**（`$DSH_HOME/.env`；launcher 的 env 分层 = 继承 env > 调用目录 `.env` > home `.env`，接受值不覆盖继承值）。**禁止** `--property=Environment="DEEPSEEK_API_KEY=…"` 形式的透传——从 agent shell 拉起时该值是**空串但已设置**，继承层会**挡掉** home `.env` 层的值，比不传更糟（2026-09-24 实证：create+prompt 拿不到模型回复的根因）。`.env` 缺失时脚本 fail-loud 拒绝起线。
-  2. **trusted authorities**：一条 `AW_TRUSTED_HOSTS` 声明同时喂两侧——世界 fence 腿（spawnWorld 的 `--trusted-host`，收端口形 entry）与 page-trust 组件的默认 authorities（`super-dsh/web-trust`，只收 bare hostname，端口形自动丢弃）。当前值：`test.pc.internal.test 192.0.2.130 192.0.2.130:4999`。
+  2. **trusted authorities**：一条 `SUPERD_TRUSTED_HOSTS` 声明同时喂两侧——世界 fence 腿（spawnWorld 的 `--trusted-host`，收端口形 entry）与 page-trust 组件的默认 authorities（`super-dsh/web-trust`，只收 bare hostname，端口形自动丢弃）。当前值：`test.pc.internal.test 192.0.2.130 192.0.2.130:4999`。
   3. **环境自身觉察**：agent 会话 env 自带 `DSH_HOME=~/.dsh`（跑在 prod dsh.service 里）——任何「我看到的环境变量」都是 **prod instance 的**，不是测试线的；拉线脚本必须显式设置全部 env，不依赖继承。
-- **page-trust 组件（2026-09-24，移植自 better-dsh `web-trust` authorities leg）**：`agent-hub/src/web-trust.ts`，ctx0 经 composite 行 `super-dsh/web-trust`、各世界经 worldMountPatches 行 `@pgmi-builds/agent-hub/web-trust`（世界页在自己的 root 上 emit `webserver/index-inject`，ctx0 一条行覆盖不到）。作用：operator 声明的非 loopback 页面 authority（Caddy 域 / LAN IP）上，页面在应用 bundle 物化前设 `window.__DSH_TRANSPORT__ = { ownsHost: true }` → connection client 的 `isLoopback` 判定为真，恢复 trusted authority 的 upstream 文档行为（否则 Host 设置持久化呈终端 `memory` 不可用）。开关两级：行级 `disabled: true`；config 级 `trustedPageAuthorities: []`（全惰性）。默认值从 `DSH_TRUSTED_HOSTS ?? AW_TRUSTED_HOSTS` 派生（schema 级 default，穿透所有 overlay 层；显式配置恒胜）。
+- **page-trust 组件（2026-09-24，移植自 better-dsh `web-trust` authorities leg）**：`superd-hub/src/web-trust.ts`，ctx0 经 composite 行 `super-dsh/web-trust`、各世界经 worldMountPatches 行 `@pgmi-builds/superd-hub/web-trust`（世界页在自己的 root 上 emit `webserver/index-inject`，ctx0 一条行覆盖不到）。作用：operator 声明的非 loopback 页面 authority（Caddy 域 / LAN IP）上，页面在应用 bundle 物化前设 `window.__DSH_TRANSPORT__ = { ownsHost: true }` → connection client 的 `isLoopback` 判定为真，恢复 trusted authority 的 upstream 文档行为（否则 Host 设置持久化呈终端 `memory` 不可用）。开关两级：行级 `disabled: true`；config 级 `trustedPageAuthorities: []`（全惰性）。默认值从 `DSH_TRUSTED_HOSTS ?? SUPERD_TRUSTED_HOSTS` 派生（schema 级 default，穿透所有 overlay 层；显式配置恒胜）。
 - `test/start-{codex,claude,hermes,pi}-app.sh` = standalone legacy 线（link: era），仅存档参考；新工作一律走 4999 交付形态。
