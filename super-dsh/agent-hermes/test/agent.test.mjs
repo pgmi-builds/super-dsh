@@ -238,7 +238,9 @@ test("fixture replay: wire sequence → DSH event ordering + stream records + us
   const t = types(session.events);
   const idx = (x) => t.indexOf(x);
   assert.ok(idx("turn/start") >= 0 && idx("user/message") > idx("turn/start"));
-  assert.ok(idx("step/start") > idx("user/message"), "step/start after user/message");
+  // v4 native shape: the head co-writer opens step 1 BEFORE the first user
+  // message (the adapter's own step/start for it is dropped as a duplicate).
+  assert.ok(idx("step/start") >= 0 && idx("user/message") > idx("step/start"), "step/start precedes the user message");
   assert.ok(idx("assistant/message") > idx("step/start"), "assistant/message after step/start");
   assert.ok(idx("step/end") > idx("assistant/message"), "step/end after assistant/message");
   assert.ok(idx("turn/end") > idx("step/end"), "turn/end closes last");
@@ -354,6 +356,11 @@ test("session_title wire event → session/title mirror (provider source, dedupe
   const client = makeFakeClient();
   const agent = new HermesAgent(new Context(), "s1", { provider: "hermes" }, session, client, undefined, makeRuntimeInfo());
 
+  client.emit({ type: "session_title", name: "Before any user message" }); // v4: unmappable → dropped
+  // v4: a provider-kind title must cite the user message it titles — the
+  // mirror skips titles that arrive before any user message exists.
+  agent.send(makeUserMessage("hi"), "next-turn", true);
+  await delay(10);
   client.emit({ type: "session_title", name: "Reply with exactly: ok" });
   client.emit({ type: "session_title", name: "Reply with exactly: ok" }); // duplicate → dropped
   client.emit({ type: "session_title", name: "Better title" });
@@ -361,10 +368,12 @@ test("session_title wire event → session/title mirror (provider source, dedupe
   client.emit({ type: "session_title" }); // missing name → dropped
 
   const titles = session.events.filter((e) => e.type === "session/title");
-  assert.equal(titles.length, 2, "empty and duplicate titles are ignored");
-  assert.deepEqual(titles[0].data, { title: "Reply with exactly: ok", messageSeqs: [], source: { kind: "provider", provider: "hermes" } });
+  assert.equal(titles.length, 2, "empty, duplicate, and pre-user titles are ignored");
+  const userSeq = session.events.find((e) => e.type === "user/message").seq;
+  assert.deepEqual(titles[0].data, { title: "Reply with exactly: ok", messageSeqs: [userSeq], source: { kind: "provider", provider: "hermes" } });
   assert.deepEqual(titles[1].data.title, "Better title");
-  void agent;
+  await agent.whenIdle().catch(() => {});
+  await agent.dispose();
 });
 
 test("todo_updated wire event → log-only todo/write whole-list snapshot (open turn only)", async () => {

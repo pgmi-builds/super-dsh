@@ -41,6 +41,7 @@ import { LlmAttemptId, ToolCallId, createAssistantMessage, createSystemMessage, 
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
 import type { AgyBridgeClient } from "./agy-client.js";
 import type { AgyCliClient } from "./agy-cli-client.js";
+import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
 
 /** Structural union of the two live transports (SDK bridge | CLI stream). */
 export type LiveAgyClient = Pick<
@@ -142,7 +143,7 @@ const ONBOARDING_PROMPT =
 export class AgyAgent implements Agent {
   readonly id: SessionId;
   readonly options: AgentOptions;
-  readonly session: Session;
+  readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
   private readonly client: LiveAgyClient;
@@ -172,7 +173,7 @@ export class AgyAgent implements Agent {
     this.loopCtx = loopCtx;
     this.id = id;
     this.options = options;
-    this.session = session;
+    this.session = withSystemHead(session, () => createSystemMessage(""));
     this.client = client;
     this.onIdleExit = onIdleExit;
     this.runtimeInfo = runtimeInfo;

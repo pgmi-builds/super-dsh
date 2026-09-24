@@ -48,6 +48,7 @@ import type { OmpAgentRpc } from "./lazy-rpc.js";
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
 import { getBridgeStore } from "./store/index.js";
+import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
 
 /**
  * v2 live assistant-stream publication for the OMP bridge — the same frame
@@ -308,7 +309,7 @@ interface SystemPromptSlice {
 export class OmpAgent implements Agent {
   readonly id: SessionId;
   readonly options: AgentOptions;
-  readonly session: Session;
+  readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
   readonly #rpc: OmpAgentRpc;
@@ -363,7 +364,7 @@ export class OmpAgent implements Agent {
     this.#loopCtx = loopCtx;
     this.id = id;
     this.options = options;
-    this.session = session;
+    this.session = withSystemHead(session, () => createSystemMessage(""));
     this.#rpc = rpc;
     this.#onIdleExit = onIdleExit;
     this.#dispatch = agentEvents(loopCtx, this);
@@ -583,7 +584,7 @@ export class OmpAgent implements Agent {
     if (!this.session.snapshotEvents().some((event) => event.type === "agent-preset/selected" && event.data?.agentPreset === "omp")) {
       this.session.append("agent-preset/selected", { agentPreset: "omp" });
     }
-    if (!this.session.snapshotEvents().some((event) => event.type === "system/message")) {
+    {
       const systemPrompt = await this.#rpc.getSystemPrompt();
       if (systemPrompt !== undefined && systemPrompt !== "") {
         // dsh session v3 requires positive turn/step coordinates on surface
@@ -592,7 +593,10 @@ export class OmpAgent implements Agent {
         // live batch, stalling every append before turn/start.
         // 0.1.7: createSystemMessage dropped its origin parameter (the source
         // kind is fixed at `system-prompt`).
-        this.session.append("system/message", { turn: 1, step: 1, message: createSystemMessage(systemPrompt) }, { surfaceOp: "append" });
+        // v4 protected-head posture: node-0 on a fresh surface (append), or a
+        // replacement of the placeholder when a user message raced the async
+        // prompt fetch — both shapes the 0.1.7 reader accepts.
+        this.session.stampSystemPrompt(1, 1, createSystemMessage(systemPrompt));
       }
     }
   }

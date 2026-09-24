@@ -65,6 +65,7 @@ import type {
 } from "@deepseek-ai/dsh-session";
 import type { AssistantMessage, AssistantStreamRecord, ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { LlmAttemptId, ToolCallId, QUOTA_EXCEEDED_CODE, createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
+import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
 import type { WireAssistantMessageEvent, WireContentBlock, WireEvent, WireMessage } from "./pi-events.js";
 import type { PiSessionClient } from "./pi-client.js";
@@ -267,7 +268,7 @@ export interface PiAgentRuntimeInfo {
 export class PiAgent implements Agent {
   readonly id: SessionId;
   readonly options: AgentOptions;
-  readonly session: Session;
+  readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
   readonly #client: PiSessionClient;
@@ -326,7 +327,7 @@ export class PiAgent implements Agent {
     this.#loopCtx = loopCtx;
     this.id = id;
     this.options = options;
-    this.session = session;
+    this.session = withSystemHead(session, () => createSystemMessage(""));
     this.#client = client;
     this.#onIdleExit = onIdleExit;
     this.#runtimeInfo = runtimeInfo;
@@ -529,22 +530,17 @@ export class PiAgent implements Agent {
     if (this.#systemMessageDone) return;
     if (this.#runtimeInfo === undefined || !this.#turnOpen) return;
     this.#commitStepStart();
+    // commitStepStart re-enters #emitSystemMessage (step open → stamp); the
+    // outer call must re-check the one-shot flag after the recursion.
+    if (this.#systemMessageDone) return;
     if (this.#step === 0) return;
-    if (this.session.snapshotEvents().some((event) => event.type === "system/message")) {
-      this.#systemMessageDone = true;
-      return;
-    }
     const text = this.#runtimeInfo.systemPrompt();
     if (text === undefined || text.trim() === "") return;
-    this.session.append(
-      "system/message",
-      {
-        turn: this.#dashTurn,
-        step: this.#step,
-        message: createSystemMessage(text),
-      },
-      { surfaceOp: "append" },
-    );
+    // v4 protected-head posture: the placeholder head (stamped before the
+    // first user message) is REPLACED with the real prompt — an append here
+    // would land after user surface nodes and corrupt the log for the 0.1.7
+    // reader ("system/message requires a protected first surface head").
+    this.session.stampSystemPrompt(this.#dashTurn, this.#step, createSystemMessage(text));
     this.#systemMessageDone = true;
     trace(`system/message stamped (${text.length} chars)`);
   }

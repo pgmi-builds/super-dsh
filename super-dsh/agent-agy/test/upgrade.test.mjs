@@ -23,9 +23,9 @@ function makeFakeSession() {
     id: "session-test",
     events,
     snapshotEvents: () => [...events],
-    append: (type, data) => {
+    append: (type, data, opts) => {
       seq += 1;
-      const event = { type, seq, time: Date.now(), data };
+      const event = { type, seq, time: Date.now(), data, ...(opts ?? {}) };
       events.push(event);
       return event;
     },

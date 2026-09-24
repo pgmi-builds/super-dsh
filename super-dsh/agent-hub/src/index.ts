@@ -37,6 +37,7 @@ export {
   type BootScriptRow,
   type TrustConfig,
 } from './web-trust.js'
+export { withSystemHead, type HeadAwareSessionFace, type HeadPlaceholder, type WithSystemHead } from './system-head.js'
 export { default as worldApply, name as worldPluginName, type Config as WorldEntryConfig } from './world-entry.js'
 export { default as joinApply, name as worldJoinPluginName, type Config as WorldJoinConfig } from './world-join.js'
 export { default } from './gateway.js'

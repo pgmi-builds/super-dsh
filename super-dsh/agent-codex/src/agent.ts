@@ -61,6 +61,7 @@ import type { CodexSdkClient } from "./codex-client.js";
 // Type-only: pulls dsh-commands' `Context.commands` augmentation into this
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
+import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
 
 /**
  * v2 live assistant-stream publication for the Codex bridge — the same frame
@@ -342,7 +343,7 @@ export interface CodexAgentRuntimeInfo {
 export class CodexAgent implements Agent {
   readonly id: SessionId;
   readonly options: AgentOptions;
-  readonly session: Session;
+  readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
   readonly #client: CodexSdkClient;
@@ -406,7 +407,7 @@ export class CodexAgent implements Agent {
     this.#loopCtx = loopCtx;
     this.id = id;
     this.options = options;
-    this.session = session;
+    this.session = withSystemHead(session, () => createSystemMessage(""));
     this.#client = client;
     this.#onIdleExit = onIdleExit;
     this.#runtimeInfo = runtimeInfo;
@@ -621,22 +622,16 @@ export class CodexAgent implements Agent {
     if (this.#systemMessageDone) return;
     if (this.#runtimeInfo === undefined || !this.#turnOpen) return;
     this.#commitStepStart();
+    // commitStepStart re-enters #emitSystemMessage (step open → stamp); the
+    // outer call must re-check the one-shot flag after the recursion.
+    if (this.#systemMessageDone) return;
     if (this.#step === 0) return;
-    if (this.session.snapshotEvents().some((event) => event.type === "system/message")) {
-      this.#systemMessageDone = true;
-      return;
-    }
     const text = this.#runtimeInfo.systemPrompt();
     if (text === undefined || text.trim() === "") return;
-    this.session.append(
-      "system/message",
-      {
-        turn: this.#dashTurn,
-        step: this.#step,
-        message: createSystemMessage(text),
-      },
-      { surfaceOp: "append" },
-    );
+    // v4 protected-head posture: replace the placeholder head (stamped before
+    // the first user message); an append here would corrupt the log for the
+    // 0.1.7 reader ("system/message requires a protected first surface head").
+    this.session.stampSystemPrompt(this.#dashTurn, this.#step, createSystemMessage(text));
     this.#systemMessageDone = true;
     trace(`system/message stamped (${text.length} chars)`);
   }

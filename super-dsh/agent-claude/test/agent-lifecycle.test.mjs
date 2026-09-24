@@ -21,8 +21,8 @@ function recordingSession(seed = []) {
     events,
     snapshotEvents: () => events.slice(),
     requestHeader: () => undefined,
-    append(type, data) {
-      const event = { type, seq: seq++, time: Date.now(), data: structuredClone(data) };
+    append(type, data, opts) {
+      const event = { type, seq: seq++, time: Date.now(), data: structuredClone(data), ...(opts ?? {}) };
       events.push(event);
       return event;
     },
@@ -94,11 +94,15 @@ test("a text-only turn emits a system/message once, then one usage-carrying assi
   assert.equal(types[1], "permission/preset");
   assert.equal(types[2], "turn/start");
   assert.ok(types.includes("request/context"), "request/context stamped at turn open");
-  assert.equal(types.filter((type) => type === "system/message").length, 1, "exactly one system/message");
-  const sysIndex = types.indexOf("system/message");
+  // v4 protected-head posture: an empty PLACEHOLDER head precedes the first
+  // user/message; the real facts stamp REPLACES it inside the step.
+  const systemIndexes = types.flatMap((type, index) => (type === "system/message" ? [index] : []));
+  assert.equal(systemIndexes.length, 2, "placeholder head + one replacement stamp");
+  assert.ok(types.indexOf("user/message") < systemIndexes.at(-1), "the placeholder precedes the first user message");
+  const sysIndex = systemIndexes.at(-1);
   const stepStart = types.indexOf("step/start");
   const assistantIndex = types.indexOf("assistant/message");
-  assert.ok(stepStart < sysIndex && sysIndex < assistantIndex, "system/message sits inside the step it precedes");
+  assert.ok(stepStart < sysIndex && sysIndex < assistantIndex, "the live system head sits inside the step it precedes");
   assert.equal(session.events[sysIndex].data.message.content[0].text.includes("(agent-claude adapter)"), true);
   assert.equal(session.events[sysIndex].data.message.content[0].text.includes("model: sonnet"), true);
   assert.equal(session.events[sysIndex].data.message.content[0].text.includes("cwd: /fake/cwd"), true);

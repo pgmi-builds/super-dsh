@@ -20,9 +20,9 @@ function makeFakeSession() {
     id: "session-test",
     events,
     snapshotEvents: () => [...events],
-    append: (type, data) => {
+    append: (type, data, opts) => {
       seq += 1;
-      const event = { type, seq, time: Date.now(), data };
+      const event = { type, seq, time: Date.now(), data, ...(opts ?? {}) };
       events.push(event);
       return event;
     },
@@ -87,7 +87,9 @@ test("turn projection: bridge chunks → stream records → assistant/message �
   const t = types(session.events);
   const idx = (x) => t.indexOf(x);
   assert.ok(idx("turn/start") >= 0 && idx("user/message") > idx("turn/start"));
-  assert.ok(idx("step/start") > idx("user/message"), "step/start after user/message");
+  // v4 native shape: the head co-writer opens step 1 BEFORE the first user
+  // message (the adapter's own step/start for it is dropped as a duplicate).
+  assert.ok(idx("step/start") >= 0 && idx("user/message") > idx("step/start"), "step/start precedes the user message");
   assert.ok(idx("assistant/message") > idx("step/start"), "assistant/message after step/start");
   assert.ok(idx("step/end") > idx("assistant/message"), "step/end after assistant/message");
   assert.ok(idx("turn/end") > idx("step/end"), "turn/end closes last");
@@ -139,7 +141,7 @@ test("onboarding (§17 minimal): awaitingKey turn never touches the bridge", asy
   assert.deepEqual(client._calls, [], "bridge never invoked without a key");
   const t = types(session.events);
   assert.ok(t.includes("system/message"), "onboarding notice emitted");
-  const notice = session.events.find((e) => e.type === "system/message");
+  const notice = session.events.find((e) => e.type === "system/message" && e.data.message.content.length > 0);
   assert.match(notice.data.message.content[0].text, /Gemini API key/);
   const turnEnd = session.events.find((e) => e.type === "turn/end");
   assert.equal(turnEnd.data.reason.kind, "completed");
@@ -159,7 +161,7 @@ test("onboarding key-paste turn persists via onSaveApiKey and stays local", asyn
   assert.deepEqual(client._calls, [], "key-paste turn is answered locally (no bridge)");
   const t = types(session.events);
   assert.ok(t.includes("system/message"), "confirmation emitted");
-  const notice = session.events.find((e) => e.type === "system/message");
+  const notice = session.events.find((e) => e.type === "system/message" && e.data.message.content.length > 0);
   assert.match(notice.data.message.content[0].text, /已保存/);
   assert.equal(agent.status, "idle");
 });

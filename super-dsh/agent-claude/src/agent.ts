@@ -78,6 +78,7 @@ import type { ClaudeSdkClient } from "./claude-client.js";
 import { CLAUDE_PROVIDER_ID } from "./adapter.js";
 import { claudePermissionMode, presetFromEvents, type ClaudePermissionMode, type PresetName } from "./permission.js";
 import { catalogFromInit, modelEntryFromSdk, readModelCatalog, setModelCatalog } from "./models.js";
+import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
 import {
   registerClaudeCommands,
   slashCommandsFromReported,
@@ -333,7 +334,7 @@ class AssistantStreamBridge {
 export class ClaudeAgent implements Agent {
   readonly id: SessionId;
   readonly options: AgentOptions;
-  readonly session: Session;
+  readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
   private readonly client: ClaudeSdkClient;
@@ -414,7 +415,7 @@ export class ClaudeAgent implements Agent {
     this.loopCtx = loopCtx;
     this.id = id;
     this.options = options;
-    this.session = session;
+    this.session = withSystemHead(session, () => createSystemMessage(""));
     this.client = client;
     this.onIdleExit = onIdleExit;
     this.runtimeInfo = runtimeInfo;
@@ -834,11 +835,10 @@ export class ClaudeAgent implements Agent {
     if (this.systemMessageDone) return;
     if (!this.turnOpen) return;
     this.commitStepStart();
+    // commitStepStart re-enters emitSystemMessage (step open → stamp); the
+    // outer call must re-check the one-shot flag after the recursion.
+    if (this.systemMessageDone) return;
     if (!this.stepOpen) return;
-    if (this.session.snapshotEvents().some((event) => event.type === "system/message")) {
-      this.systemMessageDone = true;
-      return;
-    }
     const model = this.observedMessageModel || this.observedDefaultModel || this.options.model || "unknown";
     const mode = this.runtimeInfo?.claudeMode ?? claudePermissionMode(presetFromEvents(this.session.snapshotEvents()));
     const text = [
@@ -848,15 +848,10 @@ export class ClaudeAgent implements Agent {
       `- cwd: ${this.client.cwd}`,
       `- permission mode: ${mode}`,
     ].join("\n");
-    this.session.append(
-      "system/message",
-      {
-        turn: this.dashTurn,
-        step: this.step,
-        message: createSystemMessage(text),
-      },
-      { surfaceOp: "append" },
-    );
+    // v4 protected-head posture: replace the placeholder head (stamped before
+    // the first user message); an append here would corrupt the log for the
+    // 0.1.7 reader ("system/message requires a protected first surface head").
+    this.session.stampSystemPrompt(this.dashTurn, this.step, createSystemMessage(text));
     this.systemMessageDone = true;
     trace(`system/message stamped (${text.length} chars)`);
   }

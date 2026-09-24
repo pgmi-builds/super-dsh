@@ -15,8 +15,8 @@ function fakeSession(requestHeaderConfig) {
   const session = {
     id: "s-test",
     header: {},
-    append(type, data, _opts) {
-      const event = { type, data, seq: ++seq, time: Date.now() };
+    append(type, data, opts) {
+      const event = { type, data, seq: ++seq, time: Date.now(), ...(opts ?? {}) };
       events.push(event);
       return event;
     },
@@ -120,8 +120,9 @@ test("a full prompt turn synthesizes turn/step/user/assistant/tool events with s
   assert.deepEqual(types(events), [
     "agent-preset/selected",
     "turn/start",
-    "user/message",
     "step/start",
+    "system/message",
+    "user/message",
     "assistant/message",
     "tool/call",
     "tool/result",

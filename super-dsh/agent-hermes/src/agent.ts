@@ -75,6 +75,7 @@ import { GatewayRpcError, HERMES_SPAWN_ATTEMPTS, type HermesGatewayClient, type 
 import { approvalChoiceFromOutcome } from "./permission.js";
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
+import { withSystemHead, type WithSystemHead } from "../../agent-hub/dist/index.js";
 
 /**
  * v2 live assistant-stream publication for the Hermes bridge — the same frame
@@ -384,7 +385,7 @@ export interface HermesAgentRuntimeInfo {
 export class HermesAgent implements Agent {
   readonly id: SessionId;
   readonly options: AgentOptions;
-  readonly session: Session;
+  readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
   readonly #client: HermesGatewayClient;
@@ -404,6 +405,8 @@ export class HermesAgent implements Agent {
   #pendingFailure: { message: string; code: string } | null = null;
   /** Last title mirrored into `session/title` (dedupes repeated gateway events). */
   #mirroredTitle: string | null = null;
+  /** Seq of the session's first user/message (v4 title citations derive from it). */
+  #titleSourceSeq: number | undefined;
   /** Live v2 assistant-stream publication for the in-flight wire message. */
   #streamBridge: AssistantStreamBridge | undefined;
   #assistantAttemptCounter = 0;
@@ -441,7 +444,7 @@ export class HermesAgent implements Agent {
     this.#loopCtx = loopCtx;
     this.id = id;
     this.options = options;
-    this.session = session;
+    this.session = withSystemHead(session, () => createSystemMessage(""));
     this.#client = client;
     this.#onIdleExit = onIdleExit;
     this.#runtimeInfo = runtimeInfo;
@@ -633,7 +636,7 @@ export class HermesAgent implements Agent {
     if (this.#disposed) return;
     this.session.append("turn/start", { turn: this.#dashTurn });
     await this.#emitRequestContext();
-    this.session.append("user/message", message, { surfaceOp: "append" });
+    this.#titleSourceSeq ??= (this.session.append("user/message", message, { surfaceOp: "append" }) as { seq: number }).seq;
     this.#armTurnDeadline();
     void this.#client
       .prompt(userMessageText(message))
@@ -704,22 +707,16 @@ export class HermesAgent implements Agent {
     if (this.#systemMessageDone) return;
     if (this.#runtimeInfo === undefined || !this.#turnOpen) return;
     this.#commitStepStart();
+    // commitStepStart re-enters #emitSystemMessage (step open → stamp); the
+    // outer call must re-check the one-shot flag after the recursion.
+    if (this.#systemMessageDone) return;
     if (this.#step === 0) return;
-    if (this.session.snapshotEvents().some((event) => event.type === "system/message")) {
-      this.#systemMessageDone = true;
-      return;
-    }
     const text = this.#runtimeInfo.systemPrompt();
     if (text === undefined || text.trim() === "") return;
-    this.session.append(
-      "system/message",
-      {
-        turn: this.#dashTurn,
-        step: this.#step,
-        message: createSystemMessage(text),
-      },
-      { surfaceOp: "append" },
-    );
+    // v4 protected-head posture: replace the placeholder head (stamped before
+    // the first user message); an append here would corrupt the log for the
+    // 0.1.7 reader ("system/message requires a protected first surface head").
+    this.session.stampSystemPrompt(this.#dashTurn, this.#step, createSystemMessage(text));
     this.#systemMessageDone = true;
     const title = this.#runtimeInfo.sessionTitle();
     if (title !== undefined && title !== "") trace(`session title: ${title}`);
@@ -1096,9 +1093,10 @@ export class HermesAgent implements Agent {
     if (name === undefined || name.trim() === "" || name === this.#mirroredTitle) return;
     this.#mirroredTitle = name;
     try {
+      if (this.#titleSourceSeq === undefined) return; // v4: a provider title cites the user message it titles
       (this.session.append as (type: string, data: unknown) => unknown)("session/title", {
         title: name,
-        messageSeqs: [],
+        messageSeqs: [this.#titleSourceSeq],
         source: { kind: "provider", provider: "hermes" },
       });
       trace(`session/title ← hermes: "${name}"`);
