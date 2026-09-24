@@ -118,7 +118,7 @@
 
 - 纯逻辑层写成**可脱离浏览器单测的纯函数**；UI 注入层**只寻址官方表面**（服务方法 / 语义 `data-*` / 官方控件）——**第三方插件 DOM 永不作状态输入**。
 - 运行期 = 浏览器 module table：`CLIENT_EXTERNALS` 名单只决定「内联 or 留 `require`」，**不是 `declare`**；官方 UI 原语与宿主**同一模块实例**，**绝不自行 vendor**（本仓名单 + purity gate 在 `superd-hub/scripts/build-client.mjs`）。
-- **client lane 门**：client 半边不得被 tsconfig `exclude` 到零类型检查。（❗本仓两处缺 lane，见 `docs/07` §6。）
+- **client lane 门**：client 半边不得被 tsconfig `exclude` 到零类型检查。（已立：`superd-hub/tsconfig.client.json` + `agent-omp/tsconfig.client.json`，串进各自 build 脚本——hub devDep `@types/react` exact 与 shell react 同主版本；见 `docs/07` §6。）
 
 **依赖与版本**
 
@@ -135,4 +135,4 @@
 
 - 端口**候选表不得写死、归属不得假定**（4999 整机共享）：起线前 `ss` 动态探测，占用即拒。
 - **种子（入库、可重生成）与运行 home（gitignored）分离**：本仓 seed = `super-dsh/test/start-4999.sh`，home = `.tests/superd/`。
-- **compat / clean 双 home 配对**：长寿命 home 专测「旧 session log 对新版本可读」，可弃 home 专测干净启动；rig README 记 session schema 版本。（❗clean 角色本仓未立，见 `docs/07` §6。）
+- **compat / clean 双 home 配对**：长寿命 home 专测「旧 session log 对新版本可读」，可弃 home 专测干净启动；rig README 记 session schema 版本。（已立：`super-dsh/test/README.md`——compat 默认 + `SUPERD_PORT/SUPERD_HOME_DIR` 起 clean rig。）

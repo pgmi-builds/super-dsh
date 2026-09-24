@@ -13,13 +13,18 @@
 # is not this repo's .tests tree — the launch step owns the dev/test boundary,
 # business code never does.
 set -euo pipefail
-PORT=4999
-UNIT="superd-4999-test"
+# Rig knobs (docs/07 §3.3 compat/clean pairing): the defaults below are the
+# COMPAT rig (long-lived home, session-format verification). A CLEAN rig:
+#   SUPERD_PORT=4997 SUPERD_HOME_DIR=$PWD/.tests/superd-clean \
+#     bash super-dsh/test/start-4999.sh
+# (disposable home — delete it between runs; see test/README.md).
+PORT="${SUPERD_PORT:-4999}"
+UNIT="superd-${PORT}-test"
 REPO="$HOME/workspaces/superd"
 LINE="$REPO/super-dsh"
-DSH_HOME_DIR="$REPO/.tests/superd"
-PROFILE="superd-pub"
-LOG="$REPO/.scratch/superd-4999.log"
+DSH_HOME_DIR="${SUPERD_HOME_DIR:-$REPO/.tests/superd}"
+PROFILE="${SUPERD_PROFILE:-superd-pub}"
+LOG="$REPO/.scratch/superd-${PORT}.log"
 NODE_BIN="/usr/bin/node"
 PNPM="corepack pnpm@10.33.2"   # consumer-parity installer (store v10)
 PNPM_STORE="$REPO/.npm-cache/pnpm-store-v10"
@@ -55,14 +60,14 @@ cat > "$PROFILE_DIR/package.json" <<EOF
   "dependencies": { "super-dsh": "file:$TARBALL" }
 }
 EOF
-cat > "$PROFILE_DIR/cordis.patch.yml" <<'EOF'
+cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
 # ctx0 web face on the line port (loopback; LAN/WAN via socat/Caddy per repo
 # port discipline). Everything else — hub, world rows, claude join, picker —
 # composes from the installed super-dsh bundle's own patch.
 - id: webserver
   config:
     host: 127.0.0.1
-    port: 4999
+    port: ${PORT}
 EOF
 cat > "$PROFILE_DIR/pnpm-workspace.yaml" <<'YAML'
 # super-dsh sanctioned build approval: the omp sidecar needs the bun binary;
@@ -109,7 +114,7 @@ systemd-run --user --unit="$UNIT" \
   --property=Environment="SUPERD_DSH_ANCHOR=$ANCHOR" \
   --property=Environment="SUPERD_KEEP=1" \
   --property=Environment="SUPERD_TRACE=${SUPERD_TRACE:-0}" \
-  --property='Environment="SUPERD_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:4999"' \
+  --property="Environment=\"SUPERD_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:${PORT}\"" \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
   --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   --property=StandardOutput=append:"$LOG" \
@@ -142,7 +147,11 @@ for _ in $(seq 1 15); do
 done
 if [ -n "$found" ]; then
   echo "  local: http://127.0.0.1:${PORT}/?token=$found"
-  echo "  wan:   https://test.pc.internal.test/?token=$found"
+  if [ "$PORT" = "4999" ]; then
+    echo "  wan:   https://test.pc.internal.test/?token=$found"
+  else
+    echo "  wan:   (port ${PORT} has no Caddy mapping — LAN exposure via socat per repo port discipline)"
+  fi
 else
   echo "  WARN: no token authenticated against the index — inspect $LOG" >&2
 fi

@@ -28,7 +28,8 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "build-client": "node scripts/build-client.mjs",
+    "typecheck:client": "tsc -p tsconfig.client.json",
+    "build-client": "npm run typecheck:client && node scripts/build-client.mjs",
     "test": "node --test --test-force-exit test/*.test.mjs"
   },
   "dependencies": {
@@ -58,6 +59,7 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.5.1",
+    "@types/react": "18.3.31",
     "tsdown": "^0.15.12",
     "typescript": "5.9.3"
   },

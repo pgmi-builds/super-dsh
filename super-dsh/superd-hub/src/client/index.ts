@@ -16,7 +16,7 @@
  * @module superd-hub/client
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import { RuntimeSeat } from './RuntimeSeat.tsx'
+import { RuntimeSeat } from './RuntimeSeat.js'
 
 /** Required services (cordis fiber inject): the slot registry. */
 export const inject = ['slots']

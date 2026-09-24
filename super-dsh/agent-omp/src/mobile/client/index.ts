@@ -36,7 +36,7 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import { admitsSwipeStart, classifySwipeProgress, resolveMobileConfig, type PanelState } from '../gesture.ts'
+import { admitsSwipeStart, classifySwipeProgress, resolveMobileConfig, type PanelState } from '../gesture.js'
 
 /** Structural layout face (`ctx.layout`): exactly what this feature calls. */
 interface LayoutPanelFace {

@@ -171,12 +171,12 @@
 
 ## 6. 本仓 adoption 状态（实测，2026-09-24）
 
-**已符合**：交付形态测试（tarball 而非 symlink farm）；端口动态预检 + 外来占用拒绝；**产物面启动**（repo build 的 `apps/cli/lib/bin.js` + 裸 node；禁止 tsx 源码启动——双平面 symbol split，仓根 AGENTS §三有根因）；种子/运行 home 分离；LAN 只走用户态中继；daemon 一律 `systemd-run --user`（沙箱内直拉 = `SANDBOX_UNAVAILABLE`）。
+**已符合**：交付形态测试（tarball 而非 symlink farm）；端口动态预检 + 外来占用拒绝；**产物面启动**（repo build 的 `apps/cli/lib/bin.js` + 裸 node；禁止 tsx 源码启动——双平面 symbol split，仓根 AGENTS §三有根因）；种子/运行 home 分离；LAN 只走用户态中继；daemon 一律 `systemd-run --user`（沙箱内直拉 = `SANDBOX_UNAVAILABLE`）；**client lane**（hub + omp 各一条，串进 build——见下）；**compat/clean 双 rig**（`super-dsh/test/README.md`）。
 
-**❗偏差 1（client lane 缺失）**：`superd-hub/tsconfig.json` `exclude: ["src/client"]`、`agent-omp/tsconfig.json` `exclude: ["src/client","src/mobile/client"]` ⇒ 两个 client 半边**零类型检查**。本轮探针实测代价：hub client **22 错**（全部源自缺 `react` 类型）、omp client **2 个真实错误**（`index.ts` 的 `.ts` 扩展名 import；`MobilePageConfig.enabled` 必填 vs 页面 global `__AGENT_OMP_MOBILE__` 可选）。
-**修复路径**（未执行，待 user 放行）：每包加 `tsconfig.client.json`（`lib: DOM`、`jsx: react-jsx`、`noEmit`）+ 把 typecheck 串进 `build-client`；hub 另需 devDep `@types/react`（types-only，不进 farm、不碰 `@deepseek-ai`）。
+**修复记录（2026-09-24 reform 轮，user 指令 "reform the repo to align the guidelines"；原两条 ❗ 偏差关闭）**：
 
-**❗偏差 2（clean home 角色缺失）**：现只有长寿命 `.tests/superd`（= compat 角色）；「每次可弃」的 clean rig 未立。修复路径：给 `start-4999.sh` 加 home 覆盖（或另起 `start-clean.sh`），并在 rig README 记 session schema 版本。
+1. **client lane 已立**：`superd-hub/tsconfig.client.json`（`lib: DOM` + `jsx: react-jsx` + noEmit；devDep `@types/react@18.3.31` **exact**，与 shell 的 react ^18.2 同主版本——版本同源门）+ `agent-omp/tsconfig.client.json`（`lib: DOM`）。接线：hub `build-client` = `typecheck:client && build-client.mjs`；omp `build` = host tsc + client tsc（`pack.mjs` 路径全覆盖）。lane 揪出的 3 处一并修掉：hub `'./RuntimeSeat.tsx'` → `.js`（TS5097）、omp `'../gesture.ts'` → `.js`、`MobilePageConfig.enabled` 改**可选**（`resolveMobileConfig` 本就按 `!== true` 判定、缺省即未启用——类型对齐运行时语义）。**产物字节级零 diff**（md5 复核 `lib/client` + `dist`），无交付影响；omp 49+1skip、hub 106/106 全绿。
+2. **clean rig 已立**：`start-4999.sh` 参数化（`SUPERD_PORT` / `SUPERD_HOME_DIR` / `SUPERD_PROFILE`；默认值 = 原 compat 行为逐字节不变，unit/log/profile patch 端口/trusted-hosts 端口形 entry 全部派生；`bash -n` + 参数化点复核）。rig 说明 + session schema 版本（v4）+ 最近兼容验证日期见 `super-dsh/test/README.md`。
 
 ---
 

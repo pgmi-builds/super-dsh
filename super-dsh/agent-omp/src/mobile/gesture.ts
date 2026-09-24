@@ -154,7 +154,8 @@ export function classifySwipeProgress(progress: SwipeProgress, panels: PanelStat
 
 /** Resolve the page config left by the host half's injected boot script. */
 export interface MobilePageConfig {
-  enabled: boolean
+  /** Absent = not opted in (`resolveMobileConfig` treats non-`true` as disabled). */
+  enabled?: boolean
   swipeDistancePx?: number
   dominanceRatio?: number
   leftEdgeBandPx?: number
