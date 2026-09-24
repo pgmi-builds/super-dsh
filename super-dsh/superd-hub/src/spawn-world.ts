@@ -123,18 +123,24 @@ async function publishWorldInHostResolution(
   // (pathToFileURL(route.entry.declarer)).
   const declarer = join(worldProfileDir, 'package.json')
   const worldScope = join(worldProfileDir, 'node_modules', '@pgmi-builds')
-  const added: RuntimeResolution['entries'][number][] = []
+  const baseNames = new Set(base.entries.map((entry) => entry.name))
   for (const name of readdirSync(worldScope, { withFileTypes: true })) {
     if (!name.isDirectory() && !name.isSymbolicLink()) continue
     const pkgName = `@pgmi-builds/${name.name}`
+    // A profile-declared package already covers the name (a consumer who
+    // properly installed our subpackages) — the base entry wins, never assert
+    // a divergent mapping over it.
+    if (baseNames.has(pkgName)) continue
     const packageDir = realpathSync(join(worldScope, name.name))
     const pkgManifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as { version?: string }
-    added.push({ name: pkgName, packageDir, version: pkgManifest.version, declarer, scope: 'profile' as const })
+    publishedEntries.set(pkgName, { name: pkgName, packageDir, version: pkgManifest.version, declarer, scope: 'profile' as const })
   }
+  const rootName = `superd-world-${opts.appName}`
+  publishedRoots.set(rootName, { name: rootName, realPath: opts.home })
   packages.replace({
     ...base,
-    entries: [...base.entries, ...added],
-    linkedRoots: [...base.linkedRoots, { name: `superd-world-${opts.appName}`, realPath: opts.home }],
+    entries: [...base.entries, ...publishedEntries.values()],
+    linkedRoots: [...base.linkedRoots, ...publishedRoots.values()],
   })
 }
 
@@ -147,6 +153,19 @@ function barePackageNameOf(specifier: string): string | undefined {
   const second = specifier.indexOf('/', first + 1)
   return second < 0 ? specifier : specifier.slice(0, second)
 }
+
+/**
+ * Cross-spawn accumulation (spec §2.1, dev3 0.1.3-t evidence): the service
+ * exposes no `current`, and every reconstruction starts from a fresh base —
+ * a successor that DROPS a prior world's additions trips the contract
+ * ("replacing X requires a process restart") and every world after the
+ * first falls back to native resolution. Each spawn therefore merges its
+ * additions into this process-wide accumulator, and successors always carry
+ * the union. Values are deterministic per world (stable worldHome and pack
+ * paths), so re-spawns re-assert identical mappings — contract-stable.
+ */
+const publishedEntries = new Map<string, RuntimeResolution['entries'][number]>()
+const publishedRoots = new Map<string, { name: string; realPath: string }>()
 
 
 export async function spawnWorld(opts: SpawnWorldOptions) {
