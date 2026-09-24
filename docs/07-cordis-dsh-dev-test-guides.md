@@ -5,7 +5,7 @@
 > dashr 专有内容（better-dsh 插件、dashr distro、`.tests/test123`、供应链年龄门的具体 exclude 配置）不在此列——需要时去正本源读。
 >
 > **优先级**：user 指令 > 根 `AGENTS.md` §〇（发布与验收红线）> 本文件 > 各包/子目录 `AGENTS.md`。
-> **状态**：2026-09-24 移植。标 ⚠ = 实测事实；标 ❗ = **本仓当前偏差**（按 §5 的 Comply-or-Explain 记账，见 §6）。
+> **状态**：2026-09-24 移植，同日**二轮修订**——按 0.1.7 实测重写 §5（进程内表 = 重定向+原生兜底而非白名单；HMR 连 `package.json` 都 watch，`plugin add`/`remove` **热生效**——移植初版照搬的「组合结构变化必须重启」**作废**，与 dashr 正本 `ec5d6c5` 同步）。标 ⚠ = 实测事实；标 ❗ = **本仓当前偏差**（见 §6）。
 
 ---
 
@@ -122,28 +122,50 @@
 - **子命令是 `remove`，不是 `delete`**（pnpm 无 `delete`；别名 `rm` / `uninstall`）。
 - **卸载/安装会自动维护 `dsh.profile.bundles`**：任何一次成功的 pnpm run 之后 `reconcile()` 会摘掉不在 `dependencies` 里的名字、补上新装的 bundle——**不需要手工编辑 bundles**。
 - **安装失败会回滚** `package.json` + `pnpm-lock.yaml` 并打印 `dsh: installation rejected` ⇒ 「试装」安全。
+- ⚠ **热生效有时延**：`add` / `remove` 后的刷新链（chokidar 写入稳定 → `loadProfileDirectory` 全量重载 → `reconcileProfilePatches` 异步 import/dispose）实测 **≈5–15s**——窗口期内 graph「还在/已不在」都是假象，勿据此下结论（测量纪律见 §5.2.6）。
 - ❓ 待验证：本地 tarball 是否触发 profile 的**供应链年龄门**（registry 安装有 ≈24h 门；本地 tarball 预期不触发）。pnpm 侧记录：版本号形式的 exclude 只作用于解析相位，**裸包名**才全相位生效（dashr 正本 A5–A7 实证）。
 
 ---
 
 ## 5. 热插拔规范（Comply or Explain）
 
-### 5.1 三种「热插拔」不是一回事（⚠ 正本实测边界）
+### 5.1 五类「热插拔」不是一回事（⚠ 0.1.7 实测边界，2026-09-24 二轮修订）
 
 | 变更对象 | 现状 | 生效方式 |
 |---|---|---|
-| **profile 配置**（`cordis.patch.yml` / 行 config） | **默认开**（base bundle 的 `hmr` 行：`disabled: !!js "!ctx.get('profileContext')"`；`watch-config.ts` 精确监听 patch 文件） | **改文件即热生效** |
-| **插件 host 代码**（`dist/*.js`） | **默认关**（`root: []` = 不 watch 任何模块根，模块监听是显式 opt-in） | 把模块根加进 `hmr.config.root`，或重启 |
+| **profile 配置**（`cordis.patch.yml` / 行 config） | **默认开**（base bundle 的 `hmr` 行：`disabled: !!js "!ctx.get('profileContext')"`；`watch-config.ts` 精确监听 patch 文件） | **改文件即热生效**（秒级） |
+| **profile 依赖面**（`package.json` manifest、`plugin add`/`remove` 装卸的包、增删 bundle 行） | **支持**——HMR entry 层同时监听 patch 文件**与 `package.json`**（`hmr/src/index.ts:235-236`），manifest 变化 → `refresh(true)` 全量重组（重读 include → `loader.root.update(entries)` → 新行 import+apply、删行 dispose） | **热生效，≈5–15s**（实测：`add` tarball ≈5s、`remove` ≈15s、YAML 加/去 disable 行 6–8s，daemon 零重启） |
+| **插件 host 代码**（`node_modules` 内的 `dist/*.js`） | **不热**：module 层（`partialReload`，`hmr/src/index.ts:406-580`）只换**已加载过**的模块，且 watcher 默认 ignore `**/node_modules`（`index.ts:93`）、analyze 也跳过 `/node_modules/`；`root: []` 默认不 watch 任何模块根 | 重启；dev 免重启的缝见 §5.4（symlink 真实源路径 + `hmr.config.root` 覆盖） |
 | **插件 client bundle** | **支持**：宿主按 artifact rev 提供 bundle | 重建产物后**刷新页面即生效，无需重启 daemon** |
-| **组合结构变化**（增删 bundle、新增 package、依赖树变化） | **不支持进程内热插拔** | **必须重启 profile** |
+| **installation-scope 解析表变更**（改由 installation 提供 / 改版本 / 删 local 覆盖 / linkedRoot 改指） | **冻结**：`ResolutionRouter.replace()` 对已存在条目的任何此类变化一律 `throw … requires a process restart`（`resolver.ts:380-405`）；生产运行路径**不调用** `replace()`（全仓唯一运行时调用点 = `--dump-config` 独立进程） | 重启 |
 
 ### 5.2 条文
 
-1. **默认要求**：插件的**行为改动**应能通过「client bundle 重建 + 刷新」或「配置文件热重载」验证，**不重启实例**。
+1. **默认要求**：插件的**行为改动**应能通过「client bundle 重建 + 刷新」「配置热重载」或「`plugin add`/`remove` 热装卸」验证，**不重启实例**。
 2. **Comply or Explain**：做不到 1 的，必须在插件 README 或报告里给出**具体原因**（「开发不到位」是默认结论）。
-3. **允许重启的情形**：涉及 boot/loader；涉及组合结构（增删 bundle/依赖树）；插件首次安装或卸载。
+3. **允许重启的情形**：涉及 boot / loader；`node_modules` 内**代码替换**；installation-scope 表变更。⚠ 增删 bundle、插件首次安装/卸载**不再属于此列**（2026-09-24 实测热生效——移植初版与 dashr 正本旧稿的「组合结构变化必须重启」作废）。
 4. **允许重启 ≠ 允许停实例**：卸载走 `dsh plugin remove`，**不得**用「把 4999 停掉」代替清理。⚠ 4999 是整机共享端口——**他人/其他 agent 在用时不碰**。
 5. 重启后必须**复验**：端口、boot graph（`--dump-config` 看行真挂上）、以及认证/挂载探针（不是「进程活着」就算数）。
+6. **测量纪律（2026-09-24 新增，先例即本轮）**：热插拔结论必须在刷新链窗口（**≥15s**）之后下，且先用**每请求信号**（如 web-trust 注入脚本的在场性）证明「boot graph 是活树渲染、非 boot 快照/缓存」再读数——remove 后 2s 看到 graph 仍在，曾被误判为「artifact 缓存假在场」，实为刷新前窗口期。
+
+### 5.3 进程内解析模型（0.1.7 实测语义——修正「白名单」误解）
+
+**表 = 重定向表 + 原生兜底，不是白名单。** 启动时 `composeProfile()` 调一次 `createRuntimeResolution({installAnchor, profile})`（`profile-boot.ts:204`），`PluginPackages` 构造时把它装成 Node 补丁（`service.ts:68`，同时补 ESM resolver 与 CJS `Module._resolveFilename`）。表内容 = installation scope（从 install anchor 的 package.json BFS 依赖图，含 peer）+ profile scope（profile `node_modules` 实际在装的直接依赖）+ linkedRoots；**拦的是「谁在 import」**——`findInterceptionLayer` 只对 importer 位于 profile 树 / active profile / linked root 之下的请求生效，installation 自身代码走 native。
+
+`routeScoped()` 三分支（`resolver.ts:468-513`）：
+
+1. profile `node_modules` **物理存在**同名包 → `native` 用磁盘那个（`statSync` **每请求查盘** ⇒ 即装即解析）；
+2. 表里有 installation-scope 条目 → `interception` 重定向到 install tree 的包；
+3. 都没有 → `native-after-interception`，从 profile 位置走 Node 原生祖先链。
+
+推论：表里没有的名字**不会**被拦（落原生兜底）；运行时装进 profile `node_modules` 的新包**无需重启**即可解析（前提 YAML 有行引用它）；想让包改由 **installation** 携带 → 只能重启（installation scope 进程内冻结，见 §5.1 末行）。
+
+### 5.4 对 super-dsh 的直接含义
+
+- **ctx0**（launcher 起，吃拦截表）：`@pgmi-builds/*` 必须启动前就进 profile scope（profile `dependencies`/bundles → pnpm 装）或在 profile `node_modules` 物理在场。
+- **六个 world**（`spawnWorld` 进程内 `boot()`，**不经 launcher → 没有表**）：裸 URL 解析 ⇒ 世界树必须自带 farm（`provisionWorldProfile` 的 `@pgmi-builds` links + `@deepseek-ai` scope 并集）——这就是台账「测试走 `boot()` 直调须自己投影 resolution entries」的根因。
+- **改 adapter 源码 → 世界页要重启才生效**。dev 免重启的两条路：① YAML 加/改行（entry 层，零重启）；② 让插件以**非 node_modules 路径**被加载——Node ESM 默认 realpath，symlink 进 `node_modules` 但真实文件在仓内的包，其模块 URL **不带** `/node_modules/`，若落入 `hmr.config.root` 监视范围（roots 按 profile dir 相对解析）即可真热替换（可实测验证）。
+- **「文件即 composition」与 HMR 一致**：配置刷新 = 重读 include 文件再 `update()`，所以把 spawn 期事实（如 world 零监听姿态）**持久化进 profile 层文件**后，refresh 重算出的树与启动时一致——这正是 `world-provision` 把零监听 posture 写进 `cordis.patch.yml` 的机制原因。
 
 ---
 
