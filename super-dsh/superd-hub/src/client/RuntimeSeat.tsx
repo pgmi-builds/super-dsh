@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
 
 /**
  * The app-level agent selector (`sidebar.footer.action`, just above Settings).
@@ -21,48 +22,8 @@ interface RuntimeSeatProps {
   wide: boolean
 }
 
-interface AgentLink {
-  key: string
-  label: string
-  path: string
-}
-
-const NATIVE: AgentLink = { key: 'native', label: 'DSH', path: '/' }
-
-/** Fallback labels for the read-only face (which only reports keys). */
-const RUNTIME_LABELS: Record<string, string> = {
-  native: 'DSH',
-  omp: 'OMP',
-  codex: 'Codex',
-}
-
-interface RosterGlobal {
-  __DSH_AGENT_ROSTER__?: { agents?: unknown }
-}
-
-function fromGlobal(): AgentLink[] | undefined {
-  const raw = (globalThis as RosterGlobal).__DSH_AGENT_ROSTER__
-  const agents = raw?.agents
-  if (!Array.isArray(agents)) return undefined
-  const links: AgentLink[] = []
-  for (const entry of agents) {
-    if (typeof entry !== 'object' || entry === null) continue
-    const { key, label, path } = entry as Partial<AgentLink>
-    if (typeof key !== 'string' || typeof path !== 'string') continue
-    links.push({ key, label: typeof label === 'string' ? label : (RUNTIME_LABELS[key] ?? key), path })
-  }
-  return links.length > 0 ? links : undefined
-}
-
-/** Normalize the current mount root: `/omp` and `/omp/` are the same page. */
-function currentPath(): string {
-  const pathname = typeof location === 'undefined' ? '/' : location.pathname
-  if (pathname === '' || pathname === '/') return '/'
-  return pathname.endsWith('/') ? pathname : `${pathname}/`
-}
-
 export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | null {
-  const [agents, setAgents] = React.useState<AgentLink[]>(() => fromGlobal() ?? [NATIVE])
+  const [agents, setAgents] = React.useState<AgentLink[]>(() => rosterFromGlobal() ?? [NATIVE_LINK])
   const [open, setOpen] = React.useState(false)
   const rootRef = React.useRef<HTMLDivElement | null>(null)
 
@@ -70,31 +31,8 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
     // The hub is asked every time: the baked global only seeds the first paint
     // (a world page's baked copy can be stale), the wire answer is authoritative.
     let cancelled = false
-    fetch('/api/agent-runtime', { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((j: { available?: unknown; agents?: unknown }) => {
-        if (cancelled) return
-        // Preferred shape: the hub hands over the roster with paths.
-        if (Array.isArray(j?.agents)) {
-          const listed: AgentLink[] = []
-          for (const entry of j.agents) {
-            if (typeof entry !== 'object' || entry === null) continue
-            const { key, label, path } = entry as Partial<AgentLink>
-            if (typeof key !== 'string' || typeof path !== 'string') continue
-            listed.push({ key, label: typeof label === 'string' ? label : (RUNTIME_LABELS[key] ?? key), path })
-          }
-          if (listed.length > 0) { setAgents(listed); return }
-        }
-        if (!Array.isArray(j?.available)) return
-        const links: AgentLink[] = []
-        for (const key of j.available) {
-          if (typeof key !== 'string') continue
-          links.push(key === 'native'
-            ? NATIVE
-            : { key, label: RUNTIME_LABELS[key] ?? key, path: `/${key}/` })
-        }
-        if (links.length > 0) setAgents(links)
-      })
+    fetchRoster()
+      .then((list) => { if (!cancelled) setAgents(list) })
       .catch(() => { /* keep the last known list; the footer must never throw */ })
     return () => { cancelled = true }
   }, [])
@@ -108,8 +46,8 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  const here = currentPath()
-  const active = agents.find((agent) => agent.path === here) ?? NATIVE
+  const here = currentMountPath()
+  const active = agents.find((agent) => agent.path === here) ?? NATIVE_LINK
 
   // The mount path IS the selection: a roster entry navigates to that world's
   // URL. Nothing is reset (no storage, no reload) — the new page boots its own

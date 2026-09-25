@@ -1,14 +1,11 @@
 /**
- * Client half entry: the app-level agent-runtime selector. Registers one
- * `sidebar.footer.action` entry — the footer action stack just above the
- * Settings row — that shows the active runtime and POSTs a switch to the
- * routing host's `/api/agent-runtime` RPC face (same-origin cookie rides
- * the standard auth fence).
+ * Client half entry: the app-level Super D surfaces.
  *
- * Adapted from the shelved route (2026-09-10 purity ruling): no sessionId —
- * ONE selector for the whole app. Switching it swaps the entire data plane,
- * so the client reloads the world (full root re-mount = the honest v1 of
- * "pure projection of the newly selected runtime").
+ * - `sidebar.footer.action` (`agent-runtime`) — the runtime seat: active
+ *   agent + quick switch, just above Settings.
+ * - `main` (key `hub`) + `sidebar.panellist` (id `hub`, below Plugins) — the
+ *   Hub global panel: the sidebar row opens the hub home page (machines +
+ *   agent adapters); the row's chevron expands the agent selector.
  *
  * The plugin shape mirrors the cordis client-plugin contract: an `inject`
  * declaration of required services plus an `apply(ctx)`.
@@ -17,6 +14,8 @@
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { RuntimeSeat } from './RuntimeSeat.js'
+import { HubPage } from './HubPage.js'
+import { HubPanelIcon } from './HubPanelIcon.js'
 
 /** Required services (cordis fiber inject): the slot registry. */
 export const inject = ['slots']
@@ -24,15 +23,15 @@ export const inject = ['slots']
 type SlotsScope = ClientContext & {
   slots: {
     inject(slot: string, factory: () => () => void): () => void
-    register(def: { name: string; id?: string }, component: unknown): () => void
+    register(def: { name: string; id?: string; key?: string; order?: number; label?: string }, component: unknown): () => void
   }
   effect(fn: () => () => void, label?: string): () => void
 }
 
 /**
- * Mount the selector. Degrades silently when the slot service is absent (a
- * composition without the sidebar renders nothing — a footer action is an
- * optional occupant by contract).
+ * Mount the client surfaces. Degrades silently when the slot service is
+ * absent (a composition without the sidebar renders nothing — every seat
+ * here is an optional occupant by contract).
  *
  * @param ctx - client root context.
  */
@@ -46,5 +45,13 @@ export function apply(ctx: ClientContext): void {
       },
       RuntimeSeat,
     )), 'superd-hub: runtime footer action')
+    scope.effect(() => scope.slots.inject('main', () => scope.slots.register(
+      { name: 'main', key: 'hub' },
+      HubPage,
+    )), 'superd-hub: hub main panel')
+    scope.effect(() => scope.slots.inject('sidebar.panellist', () => scope.slots.register(
+      { name: 'sidebar.panellist', id: 'hub', order: 1, label: 'Hub' },
+      HubPanelIcon,
+    )), 'superd-hub: hub sidebar row')
   })
 }
