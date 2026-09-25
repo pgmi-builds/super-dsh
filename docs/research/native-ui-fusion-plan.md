@@ -62,7 +62,9 @@ RuntimeSeat/HubPage（React 树内）          transport 钩子（app boot 前�
 | 控制面（roster） | **天然解决**：无参数 = ctx0 | 需显式豁免 `/api/agent-runtime` |
 | 后端 | **新工作量**：hub 在 ctx0 树内 intercept `webServer`，对同一条 `/api`（含 WS upgrade）按参数 demux | 已完成且 battle-tested（carrier 前缀路由） |
 
-裁决：**parameter 为主案**；P0 探针验证 ctx0 树内 `/api` + upgrade 拦截干净可行（同路由重复注册归属、透传无扰动）即全线上；拦截脏则退 path 方案——两案 transport 钩子形状相同，切换成本低。
+裁决：**parameter 为主案**；P0 探针验证后全线上或退 path 方案——两案 transport 钩子形状相同，切换成本低。
+
+**Carrier 现位置与 parameter 方案的差距（2026-09-26 复核修正）**：当前 WebCarrier（`super-dsh/superd-hub/src/carrier.ts`）**不是**叠在原生 gateway 之上的层——它注册的是与原生 `/api` **同一张 ctx0 webServer 路由表上的兄弟路由族**（`/<label>/api/*` + mux upgrade + open-in-app 桥接），fence 由挂载路由上的 ctx0 authorize gate 补齐。parameter 方案要求对**同一条** `/api`（含 upgrade）demux，且不能另注册路由（`rpc.ts` 先例警告：自注册 webServer 路由会绕过 connection 服务的 Host/Origin fence + browser auth）；cordis fiber 内 intercept 只对子树消费者生效，hub 与 connection 是根上兄弟行，天然够不着。⇒ 唯一候选 = **hub 靠 inject 顺序先起，在原生 connection 注册 `/api` 之前包住其 handler**（注册期换 handler，upgrade 表同理）。R4 探针聚焦为该包装是否干净可行（同一 `/api` 两头注册谁赢、透传无扰动）。
 
 ### 3.3 五个 patch 点（一次装好、call-time 读 state）
 
