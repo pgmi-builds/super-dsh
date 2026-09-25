@@ -36,12 +36,28 @@ case "$DSH_HOME_DIR" in
   *) echo "refusing: DSH home $DSH_HOME_DIR is outside $REPO/.tests (repo red line)" >&2; exit 1 ;;
 esac
 
+RELAY="superd-lan-${PORT}-relay"
+LAN_IP=$(hostname -I | awk '{print $1}')
+
+# Idempotent restart of THIS rig's own named units only (same names ⇒ same
+# rig). A foreign listener on the port still refuses below. Repo port
+# discipline: a 4999 occupant is retired ONLY on explicit user instruction —
+# never kill anything this rig does not own.
+systemctl --user stop "$UNIT" "$RELAY" 2>/dev/null || true
+systemctl --user reset-failed "$UNIT" "$RELAY" 2>/dev/null || true
+for _ in $(seq 1 15); do ss -tln | grep -q ":${PORT} " || break; sleep 1; done
 if ss -tln | grep -q ":${PORT} "; then
-  echo "refusing to start: port ${PORT} already listening:" >&2
+  echo "refusing to start: port ${PORT} already listening (foreign process):" >&2
   ss -tlnp | grep ":${PORT} " >&2 || true
+  if [ "$PORT" = "4999" ]; then
+    echo "  4999 = shared Caddy-backed port (test.pc.internal.test). Either:" >&2
+    echo "    ① SUPERD_PORT=<free> bash super-dsh/test/start-4999.sh  # socat LAN relay auto-starts" >&2
+    echo "    ② user explicitly retires the occupant — never kill it silently." >&2
+  else
+    echo "  pick another port: SUPERD_PORT=<free> bash super-dsh/test/start-4999.sh" >&2
+  fi
   exit 1
 fi
-systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 WATERMARK=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 
 # ---- 1. build + pack the delivery artifact ----
@@ -129,6 +145,23 @@ for _ in $(seq 1 90); do
   systemctl --user is-active --quiet "$UNIT" || { tail -30 "$LOG"; exit 1; }
 done
 [ -n "$ok" ] || { echo "timeout waiting for ${PORT}" >&2; exit 1; }
+
+# ---- LAN relay (2026-09-26 user ruling): user visits via LAN; every non-4999
+# port MUST carry one (4999 is Caddy-backed). Bind the LAN IP only — never
+# 0.0.0.0 (repo port discipline; webserver startup hard-refuses it anyway).
+# The fence already trusts the LAN IP in both entry forms (unit env above).
+if [ "$PORT" != "4999" ]; then
+  systemd-run --user --unit="$RELAY" \
+    --property=StandardOutput=append:"$LOG" \
+    --property=StandardError=append:"$LOG" \
+    /usr/bin/socat TCP-LISTEN:"${PORT}",fork,reuseaddr,bind="${LAN_IP}" TCP:127.0.0.1:"${PORT}"
+  lan_ok=""
+  for _ in $(seq 1 10); do
+    ss -tln | grep -q "${LAN_IP}:${PORT} " && { lan_ok=1; break; }
+    sleep 1
+  done
+  [ -n "$lan_ok" ] || echo "WARN: socat relay $RELAY not listening on ${LAN_IP}:${PORT}" >&2
+fi
 echo "--- listening on ${PORT}; token URL (this boot):"
 JAR=$(mktemp)
 # ctx0's token can land a few seconds after the bind (worlds interleave their
@@ -150,10 +183,10 @@ if [ -n "$found" ]; then
   if [ "$PORT" = "4999" ]; then
     echo "  wan:   https://test.pc.internal.test/?token=$found"
   else
-    echo "  wan:   (port ${PORT} has no Caddy mapping — LAN exposure via socat per repo port discipline)"
+    echo "  lan:   http://${LAN_IP}:${PORT}/?token=$found   (socat relay: $RELAY)"
   fi
 else
   echo "  WARN: no token authenticated against the index — inspect $LOG" >&2
 fi
 rm -f "$JAR"
-echo "--- SUPERD_KEEP=1: unit $UNIT left running (stop: systemctl --user stop $UNIT)"
+echo "--- SUPERD_KEEP=1: unit $UNIT left running (stop: systemctl --user stop $UNIT $RELAY)"
