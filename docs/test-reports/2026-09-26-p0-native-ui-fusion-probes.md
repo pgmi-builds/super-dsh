@@ -21,6 +21,8 @@
 1. **评审 §3.2 的规则推导被实测推翻**：world profile 的 adapter 行（composite subpath `super-dsh/agents/omp`）**不是** client 行——`agent-omp/client`（mobile 侧栏+手势）**不在**任何 world 的 boot graph 里。六个 world 与 native 的模块图差异只有一条 `@pgmi-builds/superd-hub`。**模块图同构不变量今天已天然成立**，无需迁移 `agent-omp/client`（plan §4 的迁移规则降级为纯防御性条款）。
 2. **新事实（fusion 的前置工作项）**：ctx0 native 页的 boot graph **不含** `@pgmi-builds/superd-hub` client 半边——现役 pack 的 client half 只出现在 world 页。融合（P1）需要让 ctx0 也挂上 hub client（裸名行已在 composite patch，是否被 profile 组合吃掉需 P1 复核）。
 
+> **勘误（2026-09-26，Task 1 复核）**：上述结论 2 为**假阴性**。ctx0 页的 client 行 id 是**裸名 `super-dsh`**（composite 裸名行 `- id: superd-hub, name: 'super-dsh'` 经 `exactPackageSpecifier` 只能以裸包名入图），本探针只搜了 world 侧拼写 `@pgmi-builds/superd-hub`，故结构性看不见它。ctx0 **已经** compose hub client half——63 entries 的算术闭合（61 上游 + picker-surface + 一条 hub 行）与 in-process `runProfile()` 复现均证实。证明测试：`superd-hub/test/ctx0-client-row.test.mjs`（commit b9aca2a）；机制锚点：`upstream/.../packages/client/modules/src/client/manifest.ts:189-195`。
+
 ## 探针 ② — `/api` demux 接缝（in-process `boot()` 实测）
 
 方法：worktree 内 `node --test`，boot 最小树（rows：webserver + client-connection + credentials-local + frontend-static；PluginPackages 投影 + profile-local farm link，world-mount 测试同款配方）。

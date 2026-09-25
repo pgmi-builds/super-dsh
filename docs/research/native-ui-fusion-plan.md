@@ -126,7 +126,7 @@ web-trust 注入脚本是 `if(!window.__DSH_TRANSPORT__){…ownsHost:true}`，**
 
 ## 8. 落地顺序
 
-- **P0 探针（已完成 2026-09-26）**：① world boot graph 同构实证（评审 §3.2 推导被推翻，`agent-omp/client` 不在世界图；新事实：ctx0 缺 hub client 半边，P1 补）；② `/api` 接缝实测（Q1 throw / Q2 query 可见 / Q3 veto 独占）。报告：`docs/test-reports/2026-09-26-p0-native-ui-fusion-probes.md`。
+- **P0 探针（已完成 2026-09-26）**：① world boot graph 同构实证（评审 §3.2 推导被推翻，`agent-omp/client` 不在世界图；~~新事实：ctx0 缺 hub client 半边，P1 补~~ **勘误（Task 1 复核）：ctx0 已 compose client half**，行 id = 裸名 `super-dsh`，探针①只搜 world 侧拼写故假阴性——证明测试 `ctx0-client-row.test.mjs`，Task 1 零生产代码改动关闭）；② `/api` 接缝实测（Q1 throw / Q2 query 可见 / Q3 veto 独占）。报告：`docs/test-reports/2026-09-26-p0-native-ui-fusion-probes.md`。
 - **P1 transport + state 原子**：fusion 脚本（含五 patch 点 + web-trust 顺序 + `__SUPERD_UI_FUSION__`）；native 下行为等价（非"逐字节等价"，评审 §5）回归。
 - **P2 切换编排**：RuntimeSeat 融合分支 + §3.5 五步 + 失败兜底；单测覆盖参数/NS 矩阵。
 - **P3 验收**：§7 全项 + 报告 + 放行。
