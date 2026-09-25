@@ -62,9 +62,9 @@ RuntimeSeat/HubPage（React 树内）          transport 钩子（app boot 前�
 | 控制面（roster） | **天然解决**：无参数 = ctx0 | 需显式豁免 `/api/agent-runtime` |
 | 后端 | **新工作量**：hub 在 ctx0 树内 intercept `webServer`，对同一条 `/api`（含 WS upgrade）按参数 demux | 已完成且 battle-tested（carrier 前缀路由） |
 
-裁决：**parameter 为主案**；P0 探针验证后全线上或退 path 方案——两案 transport 钩子形状相同，切换成本低。
+裁决（**P0 探针后定稿，2026-09-26**，见 [探针报告](../test-reports/2026-09-26-p0-native-ui-fusion-probes.md)）：**hybrid 分流**——unary API / 上传 / 下载锚走 `?agent=` 参数，经官方 **`connection/request` waterfall**（`connection/src/index.ts:155`，公开 Events 声明）由 hub 观察者 demux：带非 native 参数 → 消费请求转发对应世界 gateway（carrier 现有 envelope/`dispatchRpc` 机制复用）；无参 → 透传原生。`admit()` fence 先于 waterfall，认证顺序天然正确；观察者 veto（不调 next）实测可独占响应。**mux WS upgrade 无参数接缝**（gateway 直接 `registerUpgrade`，无 waterfall，重复即 throw，路由表私有）→ WS 走 **path 前缀** `/<label>/api/remote.mux`（carrier 现成、battle-tested）。控制面（`/api/agent-runtime`）无参恒 ctx0，天然免疫。原「注册期包 handler」候选不再需要。
 
-**Carrier 现位置与 parameter 方案的差距（2026-09-26 复核修正）**：当前 WebCarrier（`super-dsh/superd-hub/src/carrier.ts`）**不是**叠在原生 gateway 之上的层——它注册的是与原生 `/api` **同一张 ctx0 webServer 路由表上的兄弟路由族**（`/<label>/api/*` + mux upgrade + open-in-app 桥接），fence 由挂载路由上的 ctx0 authorize gate 补齐。parameter 方案要求对**同一条** `/api`（含 upgrade）demux，且不能另注册路由（`rpc.ts` 先例警告：自注册 webServer 路由会绕过 connection 服务的 Host/Origin fence + browser auth）；cordis fiber 内 intercept 只对子树消费者生效，hub 与 connection 是根上兄弟行，天然够不着。⇒ 唯一候选 = **hub 靠 inject 顺序先起，在原生 connection 注册 `/api` 之前包住其 handler**（注册期换 handler，upgrade 表同理）。R4 探针聚焦为该包装是否干净可行（同一 `/api` 两头注册谁赢、透传无扰动）。
+**Carrier 现位置与 parameter 方案的差距（2026-09-26 复核修正，备忘）**：当前 WebCarrier（`super-dsh/superd-hub/src/carrier.ts`）**不是**叠在原生 gateway 之上的层——它注册的是与原生 `/api` **同一张 ctx0 webServer 路由表上的兄弟路由族**（`/<label>/api/*` + mux upgrade + open-in-app 桥接），fence 由挂载路由上的 ctx0 authorize gate 补齐。P0 实测：另注册 `/api` 直接 throw（duplicate），路由表私有；parameter 分流的 demux 点不在路由表层，而在原生 `/api` handler 内部的 waterfall（见上）。历史候选「注册期包 handler」已随探针关闭（原约束（`rpc.ts` 先例警告：自注册 webServer 路由会绕过 connection 服务的 Host/Origin fence + browser auth）；cordis fiber 内 intercept 只对子树消费者生效，hub 与 connection 是根上兄弟行，天然够不着。⇒ 唯一候选 = **hub 靠 inject 顺序先起，在原生 connection 注册 `/api` 之前包住其 handler**（注册期换 handler，upgrade 表同理）。fiber 内 intercept 对兄弟行无效）。
 
 ### 3.3 五个 patch 点（一次装好、call-time 读 state）
 
@@ -107,7 +107,7 @@ web-trust 注入脚本是 `if(!window.__DSH_TRANSPORT__){…ownsHost:true}`，**
 | R1 | adapter 新增 client 模块破坏同构前提 | §4 不变量写进 `agent-adapter-dev-rules.md`；P0 实测 OMP 现状 |
 | R2 | `dsh.*` 扁平 key 跨树串扰（sessionId 可碰撞） | patch 点 5（call-time NS）；P3 串扰探针 |
 | R3 | 切换瞬间内存缓存残留（session-controller 快照等） | `connection/reset` 订阅面重拉 + §3.5.3 显式导航复位；实测有脏读再加清单 |
-| R4 | ctx0 树内 `/api` 拦截（parameter 主案的 go/no-go） | P0 探针；不干净退 path 方案 |
+| R4 | ~~ctx0 树内 `/api` 拦截~~ **已关闭（GO）**：`connection/request` waterfall 即官方接缝（P0 实测）；WS 无接缝走 path 前缀 | [P0 报告](../test-reports/2026-09-26-p0-native-ui-fusion-probes.md) |
 | R5 | transport 钩子与上游 `ClientTransportHooks` 演进耦合 | 只依赖 survey §2 列出的公开成员；对齐轮加查其形状 |
 | R6 | 活动 world 故障锁死页面 | 控制面恒打 ctx0（§3.3 注）+ 失败回退 native（§3.5.5） |
 
@@ -126,7 +126,7 @@ web-trust 注入脚本是 `if(!window.__DSH_TRANSPORT__){…ownsHost:true}`，**
 
 ## 8. 落地顺序
 
-- **P0 探针（只读实测，先行）**：① world boot graph 抓取验证 §4；② ctx0 树内 `/api` + upgrade 拦截试验（R4 go/no-go）。结论落 `docs/test-reports/`。
+- **P0 探针（已完成 2026-09-26）**：① world boot graph 同构实证（评审 §3.2 推导被推翻，`agent-omp/client` 不在世界图；新事实：ctx0 缺 hub client 半边，P1 补）；② `/api` 接缝实测（Q1 throw / Q2 query 可见 / Q3 veto 独占）。报告：`docs/test-reports/2026-09-26-p0-native-ui-fusion-probes.md`。
 - **P1 transport + state 原子**：fusion 脚本（含五 patch 点 + web-trust 顺序 + `__SUPERD_UI_FUSION__`）；native 下行为等价（非"逐字节等价"，评审 §5）回归。
 - **P2 切换编排**：RuntimeSeat 融合分支 + §3.5 五步 + 失败兜底；单测覆盖参数/NS 矩阵。
 - **P3 验收**：§7 全项 + 报告 + 放行。
