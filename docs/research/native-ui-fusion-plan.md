@@ -62,21 +62,21 @@ RuntimeSeat/HubPage（React 树内）          transport 钩子（app boot 前�
 | 控制面（roster） | **天然解决**：无参数 = ctx0 | 需显式豁免 `/api/agent-runtime` |
 | 后端 | **新工作量**：hub 在 ctx0 树内 intercept `webServer`，对同一条 `/api`（含 WS upgrade）按参数 demux | 已完成且 battle-tested（carrier 前缀路由） |
 
-裁决（**P0 探针后定稿，2026-09-26**，见 [探针报告](../test-reports/2026-09-26-p0-native-ui-fusion-probes.md)）：**hybrid 分流**——unary API / 上传 / 下载锚走 `?agent=` 参数，经官方 **`connection/request` waterfall**（`connection/src/index.ts:155`，公开 Events 声明）由 hub 观察者 demux：带非 native 参数 → 消费请求转发对应世界 gateway（carrier 现有 envelope/`dispatchRpc` 机制复用）；无参 → 透传原生。`admit()` fence 先于 waterfall，认证顺序天然正确；观察者 veto（不调 next）实测可独占响应。**mux WS upgrade 无参数接缝**（gateway 直接 `registerUpgrade`，无 waterfall，重复即 throw，路由表私有）→ WS 走 **path 前缀** `/<label>/api/remote.mux`（carrier 现成、battle-tested）。控制面（`/api/agent-runtime`）无参恒 ctx0，天然免疫。原「注册期包 handler」候选不再需要。
+裁决（**user 定稿 2026-09-26：`/hub` 单一家族**）：hub 在 ctx0 webServer 注册**一个** prefix 路由 `/hub` + **一个** upgrade 路由 `/hub/api/remote.mux`，全部 foreign 流量收进该家族，`?agent=<label>` 选世界——客户端一条规则（foreign 时 `/api…` → `/hub/api…` + `?agent=`；native 时零接触），原生 `/api` **完全不被碰**（waterfall 观察者不挂，降级为已探明备选接缝记档）。后端复用 carrier 现有 envelope/mux/dispatchRpc 转发机制，demux 依据从 path label 换成参数；`/hub` 路由套 ctx0 authorize gate（world mount 成熟模式）；未知/未 spawn 的 label 静默退化，不锁死页面。故障域天然隔离：`/hub` 族出 bug 只死 foreign，native 永远活着。备选记录：`connection/request` waterfall（`connection/src/index.ts:155`，公开 Events 声明，P0 探针 Q2/Q3 实测可观察 query、veto 独占响应）为 unary 面的官方备选接缝；WS upgrade 无参数接缝（gateway 直接 `registerUpgrade`，重复 throw，路由表私有）——此为 WS 不得不走 path 的根因。browser 导航/URL 栏/history 与 `/hub` 无关：它只存在于 XHR/WS 请求层。
 
-**Carrier 现位置与 parameter 方案的差距（2026-09-26 复核修正，备忘）**：当前 WebCarrier（`super-dsh/superd-hub/src/carrier.ts`）**不是**叠在原生 gateway 之上的层——它注册的是与原生 `/api` **同一张 ctx0 webServer 路由表上的兄弟路由族**（`/<label>/api/*` + mux upgrade + open-in-app 桥接），fence 由挂载路由上的 ctx0 authorize gate 补齐。P0 实测：另注册 `/api` 直接 throw（duplicate），路由表私有；parameter 分流的 demux 点不在路由表层，而在原生 `/api` handler 内部的 waterfall（见上）。历史候选「注册期包 handler」已随探针关闭（原约束（`rpc.ts` 先例警告：自注册 webServer 路由会绕过 connection 服务的 Host/Origin fence + browser auth）；cordis fiber 内 intercept 只对子树消费者生效，hub 与 connection 是根上兄弟行，天然够不着。⇒ 唯一候选 = **hub 靠 inject 顺序先起，在原生 connection 注册 `/api` 之前包住其 handler**（注册期换 handler，upgrade 表同理）。fiber 内 intercept 对兄弟行无效）。
+**Carrier 现位置备忘（2026-09-26 复核修正）**：当前 WebCarrier（`superd-hub/src/carrier.ts`）注册的是与原生 `/api` 同一张 ctx0 webServer 路由表上的兄弟路由族（`/<label>/api/*` + mux upgrade + open-in-app 桥接）。`/hub` 方案沿用同一模式，只是地址族收敛为单一前缀、demux 依据从 path 换参数。
 
 ### 3.3 五个 patch 点（一次装好、call-time 读 state）
 
 | # | 点 | 行为 |
 |---|---|---|
-| 1 | API fetch（`/api/*` RPC 面） | 追加 `?agent=`（或兜底案：path 前缀） |
-| 2 | WebSocket / EventSource / XHR（mux 流） | URL 追加 `?agent=`（Proxy 构造器拦截，沿用现 shim 形状） |
+| 1 | API fetch（`/api/*` RPC 面） | foreign 时重写为 `/hub/api/*` + `?agent=`；native 零接触 |
+| 2 | WebSocket / EventSource / XHR（mux 流） | foreign 时重写为 `/hub/api/remote.mux` + `?agent=`（Proxy 构造器拦截，沿用现 shim 形状） |
 | 3 | 上传（`__DSH_FILE_UPLOAD__` 绕 blob worker 路径） | 随 API 面 |
-| 4 | 下载锚（`<a download>` + 同源 `/api` href 的 click 拦截） | href 追加 `?agent=`（沿用现窄规则） |
+| 4 | 下载锚（`<a download>` + 同源 `/api` href 的 click 拦截） | foreign 时 href 重写为 `/hub/api/…` + `?agent=`（沿用现窄规则） |
 | 5 | storage NS（`Storage.prototype` get/set/remove） | call-time NS = `'<label>:'`，native 无前缀 |
 
-注：parameter 方案下 URL 改写类（1/2/4）只剩"追加参数"，无路径语义变化；hub 控制面（`/api/agent-runtime`）不带参数、恒打 ctx0——**活动 world 挂掉时 roster 仍可用，用户永远能切回 native**（评审 §4.4）。
+注：全部 foreign 改写收敛为一条规则（`/api` → `/hub/api` + `?agent=`，call-time 读 activeAgent）；hub 控制面（`/api/agent-runtime`）不重写、恒打 ctx0——**活动 world 挂掉时 roster 仍可用，用户永远能切回 native**（评审 §4.4）。`/hub` prefix 优先于 frontend-static 的 SPA fallback（named route > fallback，`/omp` 挂载同次序已验证）。
 
 ### 3.4 web-trust 顺序（评审 §4.3，硬约束）
 
