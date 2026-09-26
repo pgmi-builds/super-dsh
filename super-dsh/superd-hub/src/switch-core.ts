@@ -44,7 +44,11 @@
  *      first post-establishment baseline replacement in the workspace store
  *      ({@link observeCachesRefreshed}) — at which point `startSession()`
  *      resolves the target agent's own workspace exactly like the native
- *      new-chat button would on that plane.
+ *      new-chat button would on that plane. The landing is also BOUNDED: if
+ *      the baseline never installs within one further fallback window after
+ *      the settle, a staleness watchdog disarms it — an armed landing never
+ *      outlives its switch by more than that window (the safe direction: no
+ *      landing at all beats a late surprise blank chat).
  *   4. Fallback: no generation within {@link SWITCH_FALLBACK_MS}, or a failed
  *      roster probe → `setAgent('native')` + `reconnect()` back to the native
  *      plane + toast. A revert also cancels a pending new-chat landing — a
@@ -316,9 +320,10 @@ export interface SwitchAffordance {
  *
  *   - `available: true` (fusion page): the affordance renders — the HubPage
  *     `switch` action and the HubPanelIcon chevron menu.
- *   - `available: false` (flag off): the affordance is NOT rendered; the row
- *     keeps its roster information and carries the hint chip
- *     ({@link FUSION_OFF_HINT}) in its place. Nothing navigates — there is
+ *   - `available: false` (flag off): the affordance is NOT rendered; the
+ *     roster stays informational and the surface shows the degradation hint
+ *     ({@link FUSION_OFF_HINT}) once (HubPage: a single chip under the
+ *     section head, not one per row). Nothing navigates — there is
  *     nothing to navigate to.
  *
  * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
@@ -389,8 +394,10 @@ export interface SwitchController {
    * Run the full switch lifecycle for `label`: state swap, landing,
    * reconnect, then settle on generation establishment or revert on the
    * fallback. Resolves when the attempt ends — a revert is a handled
-   * outcome, not a rejection. A new run supersedes a pending one (cancelled
-   * silently, no revert).
+   * outcome, not a rejection. A new run supersedes any prior attempt —
+   * pending or already settled — silently (cancelled, no revert) and kills
+   * its still-armed deferred landing through the controller-scope handle,
+   * so a settled switch can never land over a newer one.
    */
   run(label: string): Promise<void>
 }
@@ -407,7 +414,10 @@ interface AttemptState {
   dead: boolean
   /** Disarm the fallback, release the settle subscription, resolve. */
   finish(): void
-  /** Kill a pending deferred landing; idempotent, safe before/after firing. */
+  /**
+   * Kill a pending deferred landing (subscription + staleness watchdog);
+   * idempotent, safe before/after firing.
+   */
   cancelLanding(): void
 }
 
@@ -417,26 +427,51 @@ interface AttemptState {
  * Only one attempt is ever armed at a time: starting a new switch finishes
  * the previous one silently (timer cleared, subscription released, promise
  * resolved) and cancels its pending landing, so a stale attempt can never
- * revert or land over a newer switch.
+ * revert or land over a newer switch. The landing cancel is held at
+ * CONTROLLER scope, not reached through the current-attempt pointer: the
+ * deferred landing deliberately survives the settle — which removes the
+ * attempt from `current` — so a supersede must still kill the armed landing
+ * of a PRIOR, ALREADY-SETTLED attempt (final-review round 2: without the
+ * controller-scope handle, a settled switch's landing fired over the newer
+ * switch's pointer-restored view).
  */
 export function createSwitchController(host: SwitchHost, options: SwitchOptions = {}): SwitchController {
   const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS
   let current: AttemptState | undefined
+  // The cancel closure of the latest attempt's still-armed deferred landing,
+  // surviving that attempt's settle. Every subsequent run() disarms it first
+  // (and clears it the moment the landing fires), whatever state the arming
+  // attempt is in.
+  let armedLanding: (() => void) | undefined
 
   return {
     run(label: string): Promise<void> {
       const prior = current
       return new Promise<void>((resolve) => {
         let timer: unknown
+        // The landing staleness watchdog: armed at settle while the landing
+        // is still pending; one more fallback window later the landing is
+        // disarmed. A baseline that never installs must not leave a landing
+        // armed forever — a much-later unrelated cache replacement would
+        // otherwise fire a surprise blank chat long after the switch.
+        let watchdog: unknown
         let disposer: () => void = () => {}
         let disposeLanding: () => void = () => {}
+        let landingArmed = false
+        const cancelWatchdog = (): void => {
+          if (watchdog === undefined) return
+          host.clearTimeout(watchdog)
+          watchdog = undefined
+        }
         const attempt: AttemptState = {
           finished: false,
           dead: false,
           cancelLanding(): void {
             attempt.dead = true
+            landingArmed = false
             disposeLanding()
             disposeLanding = () => {}
+            cancelWatchdog()
           },
           /** The one exit: disarm, release, resolve — a revert only adds effects first. */
           finish(): void {
@@ -445,15 +480,23 @@ export function createSwitchController(host: SwitchHost, options: SwitchOptions 
             host.clearTimeout(timer)
             disposer()
             if (current === attempt) current = undefined
+            // The landing survives the settle — but not indefinitely: while
+            // still pending, bound it to one more fallback window.
+            if (landingArmed) watchdog = host.setTimeout(() => { attempt.cancelLanding() }, fallbackMs)
             resolve()
           },
         }
-        // A superseded attempt finishes silently: no revert, no toast, no
-        // deferred landing — the newer switch owns the page from here.
-        if (prior !== undefined) {
-          prior.cancelLanding()
-          if (!prior.finished) prior.finish()
+        // Supersede, landing first: the previous attempt's still-armed
+        // deferred landing dies through the controller-scope handle —
+        // INCLUDING a settled attempt, which is already out of `current`
+        // (the landing outlives the settle by design). The newer switch owns
+        // the page from here; a stale landing must never fire over it.
+        if (armedLanding !== undefined) {
+          const cancelPriorLanding = armedLanding
+          armedLanding = undefined
+          cancelPriorLanding()
         }
+        if (prior !== undefined && !prior.finished) prior.finish()
         current = attempt
         const revert = (reason: 'timeout' | 'probe'): void => {
           if (attempt.finished || current !== attempt) return
@@ -508,11 +551,20 @@ export function createSwitchController(host: SwitchHost, options: SwitchOptions 
         })
         // The deferred new-chat landing. Deliberately NOT released by
         // `finish()`: the baseline lands after the generation, so the
-        // landing must survive the settle; a revert or a supersede kills it
-        // via `cancelLanding()`. Fires at most once.
+        // landing must survive the settle; a revert kills it directly and a
+        // supersede kills it through the controller-scope handle (a settled
+        // attempt included — see the run() preamble). Fires at most once;
+        // the settle arms the staleness watchdog that disarms it if the
+        // baseline never installs.
         if (deferNewChat) {
+          landingArmed = true
+          const cancelThisLanding = (): void => { attempt.cancelLanding() }
+          armedLanding = cancelThisLanding
           disposeLanding = host.onCachesRefreshed(() => {
             if (attempt.dead) return
+            if (armedLanding === cancelThisLanding) armedLanding = undefined
+            landingArmed = false
+            cancelWatchdog()
             disposeLanding()
             disposeLanding = () => {}
             try {

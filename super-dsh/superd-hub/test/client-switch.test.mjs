@@ -332,6 +332,59 @@ test('supersede cancels the prior attempt\'s pending landing', async () => {
   assert.deepEqual(fx.log.toast, [], 'supersede stays silent')
 })
 
+test('settle→supersede: a settled attempt\'s still-armed landing dies when a new switch starts (final review)', async () => {
+  // The defect window: attempt A (no NS pointer → landing deferred) SETTLES
+  // on the generation — the landing deliberately survives the settle, but
+  // the settle removes A from `current`, so a supersede that only cancels
+  // via the prior-attempt pointer can never reach the still-armed landing.
+  // Scenario: A settles; the user re-clicks agent B (pointer → immediate
+  // openSession) before A's baseline lands; A's cache gate re-anchors on
+  // B's establishment and would fire openNewChat() over B's pointer-restored
+  // view — a surprise blank chat. The controller-scope armed-landing handle
+  // kills it regardless of settle state.
+  const fx = fakeHost()
+  fx.setStored('codex', JSON.stringify({ sessionId: 'codex-s2' }))
+  const controller = createSwitchController(fx.host)
+  const first = controller.run('omp') // no pointer → landing armed
+  fx.establish() // A settles; its landing is still armed
+  await first
+  assert.deepEqual(fx.log.openNewChat, [], 'A has not landed yet (baseline pending)')
+  const second = controller.run('codex') // supersede AFTER the settle
+  assert.deepEqual(fx.log.openSession, ['codex-s2'], 'B lands on its pointer immediately')
+  assert.equal(fx.cacheListeners(), 0, 'the settled attempt\'s cache gate is torn down by the supersede')
+  assert.equal(fx.timers[1].cleared, true, 'the settled attempt\'s staleness watchdog is disarmed too')
+  fx.refreshCaches() // B's baseline arrives — where A's gate would have re-anchored
+  assert.deepEqual(fx.log.openNewChat, [], 'red line: the settled attempt never fires openNewChat over B')
+  fx.establish()
+  await second
+  assert.deepEqual(fx.log.toast, [], 'supersede stays silent')
+})
+
+test('staleness watchdog: a baseline that never installs disarms the landing (safe direction)', async () => {
+  const fx = fakeHost()
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish() // settle with the landing still pending → watchdog armed
+  await done
+  assert.equal(fx.timers.length, 2, 'fallback timer + the post-settle staleness watchdog')
+  assert.equal(fx.timers[1].ms, SWITCH_FALLBACK_MS, 'the watchdog reuses the fallback window')
+  fx.fireTimer(fx.timers[1])
+  fx.refreshCaches()
+  assert.deepEqual(fx.log.openNewChat, [], 'a stale landing never fires long after the switch')
+  assert.equal(fx.cacheListeners(), 0, 'the watchdog tore down the cache gate')
+})
+
+test('the staleness watchdog is disarmed once the landing fires', async () => {
+  const fx = fakeHost()
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.refreshCaches()
+  assert.deepEqual(fx.log.openNewChat, [true], 'the landing fired within the window')
+  assert.equal(fx.timers[1].cleared, true, 'watchdog off once the landing fired')
+  fx.fireTimer(fx.timers[1])
+  assert.deepEqual(fx.log.openNewChat, [true], 'a fired watchdog is inert')
+})
+
 test('the deferred landing fires exactly once', async () => {
   const fx = fakeHost()
   const done = createSwitchController(fx.host).run('omp')

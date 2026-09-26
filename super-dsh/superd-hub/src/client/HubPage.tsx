@@ -20,8 +20,9 @@ import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-cor
  * tracks the `__SUPERD_UI_STATE__` atom. There is no non-fusion navigation
  * arm: the per-label URL family is retired (path-separation T-C — `/hub` is
  * the sole entry), so a row never links anywhere. Flag off (T-E): the switch
- * affordance does not render at all — rows stay informational and carry the
- * degradation hint chip, never a dead control (`switchAffordance`).
+ * affordance does not render at all — rows stay informational and the
+ * degradation hint renders once under the section head, never a dead
+ * control (`switchAffordance`).
  *
  * @module superd-hub/client/HubPage
  */
@@ -469,6 +470,17 @@ export function HubPage(): React.JSX.Element {
         {/* Agent runtimes */}
         <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <GroupHead title="Agent Runtimes" count={agents?.length ?? 0} />
+          {/* Flag-off degradation hint (T-E shape, final-review polish): one
+              chip for the whole section, not one per row — the roster stays
+              informational and nothing navigates. The hint text names the
+              degradation itself; no tooltip prefix re-states the flag. */}
+          {!switchUi.available && (
+            <div style={{ display: 'flex' }}>
+              <span style={{ ...chip, color: 'var(--dsw-alias-label-caption)' }}>
+                {switchUi.hint}
+              </span>
+            </div>
+          )}
           {rosterFailed && (
             <p style={{ margin: 0, fontSize: 12.5, color: 'var(--dsw-alias-state-warn-label, var(--dsw-alias-label-secondary))' }}>
               Live roster unavailable — showing the last known list.
@@ -516,11 +528,11 @@ export function HubPage(): React.JSX.Element {
                     runs the seatClickDecision table (intercept + in-place
                     switch; the handler stops propagation so the row-level
                     handler does not double-run the attempt — one click, one
-                    decision). Flag off: the affordance does NOT render — a
-                    hint chip explains the inert roster instead of a dead
-                    control (no /<label>/ route exists to reach, and no href
-                    ships anywhere in the Hub UI). */}
-                {switchUi.available ? (
+                    decision). Flag off: nothing renders per row — the
+                    affordance is gone and the degradation hint lives once
+                    under the section head (no /<label>/ route exists to
+                    reach, and no href ships anywhere in the Hub UI). */}
+                {switchUi.available && (
                   <a
                     aria-current={isActive(agent) ? 'page' : undefined}
                     style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer' }}
@@ -531,13 +543,6 @@ export function HubPage(): React.JSX.Element {
                   >
                     switch
                   </a>
-                ) : (
-                  <span
-                    title={`SUPERD_UI_FUSION is off — ${switchUi.hint}`}
-                    style={{ ...chip, color: 'var(--dsw-alias-label-caption)' }}
-                  >
-                    {switchUi.hint}
-                  </span>
                 )}
               </HoverRow>
             ))}

@@ -60,7 +60,9 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
   // Baked before app boot and never mutated afterwards: per-page constant.
   const fusion = fusionPage()
   // The flag-off shape (T-E): the chevron is a switch affordance; with no
-  // foreign entry in the product it does not render on a flag-off page.
+  // foreign entry in the product it does not render on a flag-off page. The
+  // glyph still renders — everything that only serves the chevron/menu
+  // (row measurement, the open-menu wiring and its roster fetch) early-outs.
   const switchUi = switchAffordance(fusion)
   // The fusion selection: the page atom is the authority; the subscription
   // follows every switch (another surface's included) and every revert.
@@ -85,12 +87,19 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
     setBox({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width })
   }, [])
 
+  // Measurement only anchors the chevron and the fixed-position menu — both
+  // flag-off absent, so a flag-off page skips the work entirely (the glyph
+  // needs no box).
   React.useLayoutEffect(() => {
-    if (wide) measure()
-  }, [wide, measure])
+    if (!wide || !switchUi.available) return
+    measure()
+  }, [wide, switchUi.available, measure])
 
   React.useEffect(() => {
-    if (!open) return
+    // Unreachable while flag-off (the chevron that flips `open` never
+    // renders), guarded anyway so the menu wiring — measure, roster fetch,
+    // outside-click listeners — can never run without an affordance.
+    if (!open || !switchUi.available) return
     let cancelled = false
     measure()
     void fetchRoster()
@@ -114,7 +123,7 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
       document.removeEventListener('keydown', onKey)
       window.removeEventListener('resize', measure)
     }
-  }, [open, measure])
+  }, [open, switchUi.available, measure])
 
   const here = currentMountPath()
   const isActive = (agent: AgentLink): boolean => hubRowActive({

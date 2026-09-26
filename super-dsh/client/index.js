@@ -456,7 +456,11 @@ function freshMachineId() {
 *      first post-establishment baseline replacement in the workspace store
 *      ({@link observeCachesRefreshed}) — at which point `startSession()`
 *      resolves the target agent's own workspace exactly like the native
-*      new-chat button would on that plane.
+*      new-chat button would on that plane. The landing is also BOUNDED: if
+*      the baseline never installs within one further fallback window after
+*      the settle, a staleness watchdog disarms it — an armed landing never
+*      outlives its switch by more than that window (the safe direction: no
+*      landing at all beats a late surprise blank chat).
 *   4. Fallback: no generation within {@link SWITCH_FALLBACK_MS}, or a failed
 *      roster probe → `setAgent('native')` + `reconnect()` back to the native
 *      plane + toast. A revert also cancels a pending new-chat landing — a
@@ -637,9 +641,10 @@ const FUSION_OFF_HINT = "fusion off — no foreign entry";
 *
 *   - `available: true` (fusion page): the affordance renders — the HubPage
 *     `switch` action and the HubPanelIcon chevron menu.
-*   - `available: false` (flag off): the affordance is NOT rendered; the row
-*     keeps its roster information and carries the hint chip
-*     ({@link FUSION_OFF_HINT}) in its place. Nothing navigates — there is
+*   - `available: false` (flag off): the affordance is NOT rendered; the
+*     roster stays informational and the surface shows the degradation hint
+*     ({@link FUSION_OFF_HINT}) once (HubPage: a single chip under the
+*     section head, not one per row). Nothing navigates — there is
 *     nothing to navigate to.
 *
 * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
@@ -659,24 +664,40 @@ function switchAffordance(fusion) {
 * Only one attempt is ever armed at a time: starting a new switch finishes
 * the previous one silently (timer cleared, subscription released, promise
 * resolved) and cancels its pending landing, so a stale attempt can never
-* revert or land over a newer switch.
+* revert or land over a newer switch. The landing cancel is held at
+* CONTROLLER scope, not reached through the current-attempt pointer: the
+* deferred landing deliberately survives the settle — which removes the
+* attempt from `current` — so a supersede must still kill the armed landing
+* of a PRIOR, ALREADY-SETTLED attempt (final-review round 2: without the
+* controller-scope handle, a settled switch's landing fired over the newer
+* switch's pointer-restored view).
 */
 function createSwitchController(host, options = {}) {
 	const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS;
 	let current;
+	let armedLanding;
 	return { run(label) {
 		const prior = current;
 		return new Promise((resolve) => {
 			let timer;
+			let watchdog;
 			let disposer = () => {};
 			let disposeLanding = () => {};
+			let landingArmed = false;
+			const cancelWatchdog = () => {
+				if (watchdog === void 0) return;
+				host.clearTimeout(watchdog);
+				watchdog = void 0;
+			};
 			const attempt = {
 				finished: false,
 				dead: false,
 				cancelLanding() {
 					attempt.dead = true;
+					landingArmed = false;
 					disposeLanding();
 					disposeLanding = () => {};
+					cancelWatchdog();
 				},
 				finish() {
 					if (attempt.finished) return;
@@ -684,13 +705,18 @@ function createSwitchController(host, options = {}) {
 					host.clearTimeout(timer);
 					disposer();
 					if (current === attempt) current = void 0;
+					if (landingArmed) watchdog = host.setTimeout(() => {
+						attempt.cancelLanding();
+					}, fallbackMs);
 					resolve();
 				}
 			};
-			if (prior !== void 0) {
-				prior.cancelLanding();
-				if (!prior.finished) prior.finish();
+			if (armedLanding !== void 0) {
+				const cancelPriorLanding = armedLanding;
+				armedLanding = void 0;
+				cancelPriorLanding();
 			}
+			if (prior !== void 0 && !prior.finished) prior.finish();
 			current = attempt;
 			const revert = (reason) => {
 				if (attempt.finished || current !== attempt) return;
@@ -733,14 +759,24 @@ function createSwitchController(host, options = {}) {
 				if (attempt.finished || current !== attempt) return;
 				attempt.finish();
 			});
-			if (deferNewChat) disposeLanding = host.onCachesRefreshed(() => {
-				if (attempt.dead) return;
-				disposeLanding();
-				disposeLanding = () => {};
-				try {
-					host.openNewChat();
-				} catch {}
-			});
+			if (deferNewChat) {
+				landingArmed = true;
+				const cancelThisLanding = () => {
+					attempt.cancelLanding();
+				};
+				armedLanding = cancelThisLanding;
+				disposeLanding = host.onCachesRefreshed(() => {
+					if (attempt.dead) return;
+					if (armedLanding === cancelThisLanding) armedLanding = void 0;
+					landingArmed = false;
+					cancelWatchdog();
+					disposeLanding();
+					disposeLanding = () => {};
+					try {
+						host.openNewChat();
+					} catch {}
+				});
+			}
 			host.probeTarget(label).then((alive) => {
 				if (alive !== true) revert("probe");
 			}, () => {
@@ -1406,6 +1442,16 @@ function HubPage() {
 							title: "Agent Runtimes",
 							count: agents?.length ?? 0
 						}),
+						!switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							style: { display: "flex" },
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								style: {
+									...chip,
+									color: "var(--dsw-alias-label-caption)"
+								},
+								children: switchUi.hint
+							})
+						}),
 						rosterFailed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 							style: {
 								margin: 0,
@@ -1465,7 +1511,7 @@ function HubPage() {
 										style: chipSelf,
 										children: "current"
 									}),
-									switchUi.available ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+									switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 										"aria-current": isActive(agent) ? "page" : void 0,
 										style: {
 											fontSize: 12.5,
@@ -1478,13 +1524,6 @@ function HubPage() {
 											rowDecision(agent, event);
 										},
 										children: "switch"
-									}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										title: `SUPERD_UI_FUSION is off — ${switchUi.hint}`,
-										style: {
-											...chip,
-											color: "var(--dsw-alias-label-caption)"
-										},
-										children: switchUi.hint
 									})
 								]
 							}, agent.key))]
@@ -1532,10 +1571,15 @@ function HubPanelIcon({ size }) {
 		});
 	}, []);
 	react.useLayoutEffect(() => {
-		if (wide) measure();
-	}, [wide, measure]);
+		if (!wide || !switchUi.available) return;
+		measure();
+	}, [
+		wide,
+		switchUi.available,
+		measure
+	]);
 	react.useEffect(() => {
-		if (!open) return;
+		if (!open || !switchUi.available) return;
 		let cancelled = false;
 		measure();
 		fetchRoster().then((list) => {
@@ -1557,7 +1601,11 @@ function HubPanelIcon({ size }) {
 			document.removeEventListener("keydown", onKey);
 			window.removeEventListener("resize", measure);
 		};
-	}, [open, measure]);
+	}, [
+		open,
+		switchUi.available,
+		measure
+	]);
 	const here = currentMountPath();
 	const isActive = (agent) => hubRowActive({
 		fusion,
