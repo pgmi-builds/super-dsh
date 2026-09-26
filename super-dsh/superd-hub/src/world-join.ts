@@ -15,8 +15,10 @@
  *      `provisionWorldProfile`, or by the line bootstrap when the adapter
  *      package is not resolvable from this module), with the world mount
  *      patches (no listener, virtual webServer);
- *   4. the world's gateway becomes a foreign target; the carrier answers
- *      `/<key>/api` + `/<key>/api/remote.mux` in ctx0's auth domain.
+ *   4. the world's gateway becomes a foreign target; the hub's `/hub` family
+ *      answers `?agent=<key>` traffic in ctx0's auth domain (T-C: the
+ *      per-label `/<key>/api` + `/<key>/api/remote.mux` mounts are retired —
+ *      `/hub` is the sole entry).
  *
  * Cordis identifies a plugin by its module, so ONE joiner row per tree — a
  * second joined world needs either its own adapter-side plugin (omp/codex
@@ -33,7 +35,6 @@ import { registerForeignTarget } from './targets.js'
 import { spawnWorld } from './spawn-world.js'
 import { provisionWorldProfile, resolveInstallAnchor } from './world-provision.js'
 import { registerHostMount } from './world-host.js'
-import { mountWorld } from './carrier.js'
 import { worldMountPatches } from './world-mount.js'
 
 /** Stable Cordis plugin name. */
@@ -110,16 +111,10 @@ export function apply(ctx: HostContext, config?: Partial<Config>): void {
     })
     const gateway = ctxW.get('typertGateway') as never
     registerForeignTarget({ key, gateway })
-    const mounted = mountWorld({
-      real,
-      label: key,
-      gateway,
-      requestRejection: (request) => (connection as { requestRejection(req: unknown): number | undefined })
-        .requestRejection(request),
-    })
+    // T-C: no per-label mount anymore — the gateway above is the world's
+    // whole ingress, reached through the /hub family's `?agent=<key>` demux.
     setReady(key, true)
     ctx.effect?.(() => () => {
-      mounted.dispose()
       dropHostMount()
     }, `superd-join: ${key} mount`)
     return ctxW

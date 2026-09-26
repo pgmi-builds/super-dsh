@@ -5,10 +5,10 @@
  *   Hub global panel: the sidebar row opens the hub home page (machines +
  *   agent adapters); the row's chevron expands the agent selector. The Hub
  *   UI is the SOLE agent-switch surface (T-B, user ruling: the sidebar-bottom
- *   RuntimeSeat is retired): on a fusion page both the HubPage rows and the
- *   chevron menu intercept clicks into the in-place `switchAgent`
- *   orchestration (no navigation); on a world page the interim arm keeps the
- *   real hyperlinks until T-C deletes it.
+ *   RuntimeSeat is retired): both the HubPage rows and the chevron menu
+ *   intercept clicks into the in-place `switchAgent` orchestration (no
+ *   navigation — and since T-C no non-fusion href arm either: the per-label
+ *   URL family is retired, so a click can never navigate away).
  *
  * The plugin shape mirrors the cordis client-plugin contract: an `inject`
  * declaration of required services plus an `apply(ctx)`.

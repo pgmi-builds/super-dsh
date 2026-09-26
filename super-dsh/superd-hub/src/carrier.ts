@@ -1,29 +1,25 @@
 /**
- * ctx0 WebCarrier (AW-B DL1/DL5): mounts one world's traffic under `/<label>`.
+ * The carrier forwarding kernel (AW-B DL1/DL5 → native UI fusion Task 2 →
+ * path-separation T-C): the wire semantics every foreign-agent entry shares.
  *
- * Responsibilities (grow per AW-B task):
- *  - Task 4: unary RPC — `/<label>/api/<endpoint>` decodes the connection
- *    envelope and dispatches into the ADDRESSED world's gateway instance.
- *  - Task 6: mux — `/<label>/api/remote.mux` upgrade bridged to the same
- *    instance (no shared selection anywhere). Wire protocol is dsh 0.1.7's
- *    stream protocol incl. the client uplink (`item`/`end` frames).
- *  - 2026-09-17 (H1): non-envelope GET/HEAD on `/<label>/api` forwards into
- *    the owning world's registered exact Fetch routes — the world connection's
- *    shared `/api` handler, published from `world-entry` via `world-host` —
- *    still behind ctx0's fence, so `HEAD /<label>/api/session.export?...`
- *    reaches the world's session-log-download route.
- *  - 2026-09-24: `/<label>/open-in-app/*` GETs bridge the same way — the
- *    world page's open-in-app feature polls its host routes relative to the
- *    mount base (`/omp/open-in-app/apps`), which live on the WORLD's
- *    connection, not ctx0's.
- *  - 2026-09-26 (native UI fusion Task 2): the forwarding kernel — envelope
- *    dispatch ({@link forwardApiCall}), the world fetch bridge
- *    ({@link forwardWorldFetch}) and the mux construction
- *    ({@link worldMuxOf}) — is extracted parameterized by
- *    (gateway, label, mountPath) so the hub-owned `/hub` route family
- *    (`hub-route.ts`, demuxed by `?agent=`) shares this exact wire behavior.
+ * History and the T-C cut:
+ *  - The kernel — envelope dispatch ({@link forwardApiCall}), the world fetch
+ *    bridge ({@link forwardWorldFetch}) and the mux construction
+ *    ({@link worldMuxOf}) — is parameterized by (gateway, label, mountPath).
+ *  - It used to be mounted twice: the per-label page family
+ *    (`/<label>/api`, `/<label>/api/remote.mux`, `/<label>/open-in-app` — the
+ *    world PAGE data lane, registered by {@link mountWorld}) and, since
+ *    2026-09-26, the hub-owned `/hub` family (`hub-route.ts`, demuxed by
+ *    `?agent=`).
+ *  - T-C (2026-09-26, user ruling "strip off the per agent url path … no need
+ *    the url path fallback (we have git history)"): the per-label family is
+ *    RETIRED — `/hub` is the sole foreign entry and the only remaining
+ *    consumer of this kernel. The world DATA planes are untouched: the same
+ *    gateway faces (dispatchRpc/openWireStream), the same WorldMuxServer, the
+ *    same envelope, the same worldFetchHandlerOf lane, all reached through
+ *    `/hub`.
  *
- * The addressed world is the request's path. Nothing here reads a global.
+ * Nothing here reads a global: the addressed world travels with the request.
  */
 import {
   EnvelopeError,
@@ -54,36 +50,6 @@ export interface CarrierGatewayFace {
     signal: AbortSignal,
     control: AbortController,
   ): Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
-}
-
-/** Options for mounting one world. */
-export interface MountWorldOptions {
-  /** The ctx0 webServer the translated routes register on. */
-  real: RealWebServerFace
-  /** Runtime key: the mount label (`omp` → `/omp`). */
-  label: string
-  /** The addressed world's gateway instance. */
-  gateway: CarrierGatewayFace
-  /** ctx0's browser-trust fence: returns an HTTP status to reject with. */
-  requestRejection?(req: unknown): number | undefined
-  /** Max request body bytes (mirrors the connection default). */
-  maxBodyBytes?: number
-  /** Mux ping interval (upstream default 30s). */
-  heartbeatIntervalMs?: number
-  /** Error → wire failure mapper for the world's streams. */
-  failure?(error: unknown): MuxFailure
-}
-
-/** The live mount handle. */
-export interface MountedWorld {
-  /** Mount root (`/omp`). */
-  readonly labelPath: string
-  /** Unary channel root (`/omp/api`). */
-  readonly apiPath: string
-  /** Mux websocket path (`/omp/api/remote.mux`). */
-  readonly muxPath: string
-  /** Unregister everything this mount installed. */
-  dispose(): void
 }
 
 /** Default body cap, aligned with the connection service. */
@@ -122,21 +88,6 @@ async function readBody(req: unknown, limit: number): Promise<string> {
     carrier.on?.('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     carrier.on?.('error', (error) => reject(error instanceof Error ? error : new Error(String(error))))
   })
-}
-
-/** Reject an upgrade on the raw socket (no ws ownership transfer). */
-function rejectUpgrade(socket: unknown, status: 401 | 403): void {
-  const reason = status === 401 ? 'Unauthorized' : 'Forbidden'
-  const body = reason.toLowerCase()
-  const writable = socket as { write?: (chunk: string) => unknown; destroy?: () => void; end?: () => void }
-  writable.write?.(
-    `HTTP/1.1 ${status} ${reason}\r\n`
-    + 'Connection: close\r\n'
-    + 'Content-Type: text/plain; charset=utf-8\r\n'
-    + `Content-Length: ${String(Buffer.byteLength(body, 'utf8'))}\r\n\r\n`
-    + body,
-  )
-  writable.destroy?.()
 }
 
 export function writeJson(res: WorldResponse, status: number, body: string): void {
@@ -315,83 +266,31 @@ export function worldMuxOf(
 }
 
 /**
- * Mount one world on the shared ctx0 webServer.
- * @param options - see {@link MountWorldOptions}.
- * @returns the live mount handle.
+ * RETIRED mount (path-separation T-C, 2026-09-26): the per-label URL family
+ * is gone from ctx0. This function used to register `/<label>/api`,
+ * `/<label>/open-in-app` and `/<label>/api/remote.mux` on the real webServer —
+ * the world PAGE data lane, consumerless once the pages themselves stopped
+ * being served (`/hub` is the sole entry; no URL-path fallback, we have git
+ * history).
+ *
+ * It now mounts NOTHING and returns an inert handle. The parameter shape is
+ * kept ONLY so the adapter world-plugins' existing spawn-time call sites
+ * (agent-{agy,codex,hermes,omp,pi}) compile and boot unchanged — the sever is
+ * hub-layer, zero adapter churn; the call sites themselves retire with the
+ * world-web sweep (T-D) or the next cleanup pass.
  */
-export function mountWorld(options: MountWorldOptions): MountedWorld {
-  const labelPath = `/${options.label}`
-  const apiPath = `${labelPath}/api`
-  const muxPath = `${apiPath}/remote.mux`
-  const disposers: Array<() => void> = []
-
-  // The kernel deps: the same (gateway, label, mountPath) triple the `/hub`
-  // family hands its demuxed requests (hub-route.ts).
-  const kernel: ForwardOptions = {
-    gateway: options.gateway,
-    label: options.label,
-    mountPath: labelPath,
-    requestRejection: options.requestRejection,
-    maxBodyBytes: options.maxBodyBytes,
-  }
-
-  disposers.push(options.real.register({
-    kind: 'prefix',
-    path: apiPath,
-    handler: ((req: WorldRequest, res: WorldResponse): Promise<void> => forwardApiCall(kernel, req, res)) as never,
-  }))
-
-  // The world page's open-in-app feature polls its host routes relative to the
-  // mount base (`/omp/open-in-app/apps`); those exact routes live on the
-  // WORLD's connection, so they bridge exactly like the non-envelope `/api`
-  // GETs — behind ctx0's fence, answered by the owning world.
-  const openInAppPath = `${labelPath}/open-in-app`
-  disposers.push(options.real.register({
-    kind: 'prefix',
-    path: openInAppPath,
-    handler: (async (req: WorldRequest, res: WorldResponse): Promise<void> => {
-      const rejection = options.requestRejection?.(req)
-      if (rejection !== undefined) {
-        writeText(res, rejection, rejection === 401 ? 'unauthorized' : 'forbidden')
-        return
-      }
-      await forwardWorldFetch(kernel, req, res)
-    }) as never,
-  }))
-
-  // Mux: the world's own stream face behind the same mount prefix. The wire
-  // protocol is dsh 0.1.7's stream protocol — including the client uplink —
-  // and the world call uses the gateway's canonical argument order
-  // (endpoint, payload, uplink, peer, signal, control): the mux's controller
-  // supplies both the request signal and the logical-stream control.
-  const mux = worldMuxOf(options.gateway, options)
-  disposers.push(options.real.registerUpgrade({
-    path: muxPath,
-    handler: ((req: WorldRequest, socket: unknown, head: Buffer) => {
-      const rejection = options.requestRejection?.(req)
-      if (rejection !== undefined) {
-        rejectUpgrade(socket, rejection === 401 ? 401 : 403)
-        return
-      }
-      return mux.handleUpgrade(req, socket, head)
-    }) as never,
-  }))
-  disposers.push(() => { void mux.close().catch(() => undefined) })
-
-  return {
-    labelPath,
-    apiPath,
-    muxPath,
-    dispose(): void {
-      for (const dispose of disposers.splice(0).reverse()) {
-        try {
-          dispose()
-        } catch {
-          // teardown must not throw
-        }
-      }
-    },
-  }
+export function mountWorld(_options: {
+  /** (inert) the ctx0 webServer — nothing registers on it anymore. */
+  real: RealWebServerFace
+  /** Runtime key (`omp`) — kept for call-site compatibility. */
+  label: string
+  /** The world gateway — the `/hub` family reaches it via the foreign-target table. */
+  gateway: CarrierGatewayFace
+  /** (inert) ctx0's browser-trust fence — the `/hub` family fences its own requests. */
+  requestRejection?(req: unknown): number | undefined
+}): { dispose(): void } {
+  void _options
+  return { dispose(): void {} }
 }
 
 // The mount HTML pass lives in its own module; re-exported here so the carrier

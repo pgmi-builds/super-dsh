@@ -474,7 +474,7 @@ test('gate off: neither half is emitted', () => {
 // consumers of this SAME table — the contract is inherited verbatim, which is
 // exactly why the table outlives the seat.
 
-test('seat click, world page: no interception, no orchestration', () => {
+test('seat click, non-fusion: no interception, no orchestration (inert — T-C retired the href arm)', () => {
   let attempts = 0
   const decide = (active) => seatClickDecision({
     fusion: false,
@@ -483,7 +483,7 @@ test('seat click, world page: no interception, no orchestration', () => {
   })
   assert.deepEqual(decide(false), { preventDefault: false, attempted: false })
   assert.deepEqual(decide(true), { preventDefault: false, attempted: false })
-  assert.equal(attempts, 0, 'the URL is the state — the real hyperlinks stay in charge')
+  assert.equal(attempts, 0, 'the table passes through; with no href there is simply nothing to navigate')
 })
 
 test('seat click, fusion + active entry: intercepted with no switch attempt (review round 1)', () => {
@@ -536,7 +536,7 @@ test('hub row active, fusion: no atom reading (undefined) matches nothing', () =
   assert.equal(hubRowActive({ fusion: true, agentKey: 'native', agentPath: '/', activeAgent: undefined, mountPath: '/' }), false)
 })
 
-test('hub row active, world page: the mount path decides (interim arm; T-C deletes it)', () => {
+test('hub row active, non-fusion: the mount path decides (contract arm; the UI href is retired since T-C)', () => {
   assert.equal(hubRowActive({ fusion: false, agentKey: 'omp', agentPath: '/omp/', activeAgent: undefined, mountPath: '/omp/' }), true)
   assert.equal(hubRowActive({ fusion: false, agentKey: 'omp', agentPath: '/omp/', activeAgent: undefined, mountPath: '/codex/' }), false)
   assert.equal(hubRowActive({ fusion: false, agentKey: 'native', agentPath: '/', activeAgent: undefined, mountPath: '/' }), true)

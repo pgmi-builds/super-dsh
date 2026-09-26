@@ -5,30 +5,33 @@
  * 2026-09-16), so ctx0 and the world cannot share service instances through
  * the context tree. They DO share this module (the profile links
  * `@pgmi-builds/superd-hub` at the same path), which is where the host hands the
- * world everything it needs to mount itself:
+ * world what it needs to mount itself:
  *
  *   ctx0 hub  → registerHostMount({ key, labelPath, real })   (before spawn)
  *   world     → takeHostMount(key) → provides the virtual `webServer`
+ *
+ * T-C (2026-09-26): the `real`/`authorize` legs are RETIRED — the world's
+ * virtual webServer swallows every registration (`/hub` is the sole entry, no
+ * URL-path fallback), so nothing crosses to ctx0's listener anymore. The
+ * fields stay on the published shape only because the adapter world-plugins'
+ * spawn-time call sites still pass them (zero-churn hub-layer sever); the
+ * mount itself remains the world's addressability record (`agentLinks`).
  *
  * No selection state: the key is the world's own identity, fixed at spawn.
  */
 import type { RealWebServerFace } from './world-web-server.js'
 
-/** What a world needs to mount its surface onto ctx0's real webServer. */
+/** What the host publishes for one world mount (the world's identity record). */
 export interface HostMount {
   /** Runtime key (`omp`, `codex`, …) — equals the mount label. */
   key: string
   /** Mount root (`/omp`). */
   labelPath: string
-  /** ctx0's webServer instance (live object, passed across roots). */
+  /** (inert since T-C) ctx0's webServer instance — no world route reaches it. */
   real: RealWebServerFace
   /**
-   * ctx0's index authorization (the SAME gate the native index goes through).
-   * The mount is the only ingress and answers the world's pages/assets itself,
-   * so auth is decided in ctx0's domain — by the cookie that authenticated
-   * `<label>` — and never by the world's own browser-auth gate (a different
-   * tree, a different secret). Returning false means the authorizer already
-   * answered (401, or the token→cookie 303).
+   * (inert since T-C) ctx0's index authorization — no world page is served,
+   * so nothing consults it; kept for adapter call-site compatibility.
    */
   authorize?(req: unknown, res: unknown): boolean
 }
@@ -84,10 +87,11 @@ export interface WorldFetchHandler {
 const worldFetchHandlers = new Map<string, WorldFetchHandler>()
 
 /**
- * Publish one world's shared `/api` fetch handler so the carrier can forward
- * non-envelope traffic on `/<label>/api` into the world's registered routes
- * (session-log export and friends). Called from inside the world root
- * (`world-entry`); read from the host root (`carrier`). Idempotent replace.
+ * Publish one world's shared `/api` fetch handler so the hub's `/hub` family
+ * can forward non-envelope traffic (`?agent=<label>` GET/HEAD) into the
+ * world's registered routes (session-log export and friends). Called from
+ * inside the world root (`world-entry`); read from the host root
+ * (`carrier`). Idempotent replace.
  */
 export function publishWorldFetch(key: string, handler: WorldFetchHandler): () => void {
   worldFetchHandlers.set(key, handler)

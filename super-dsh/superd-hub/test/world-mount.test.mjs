@@ -1,7 +1,9 @@
-// World mount integration (AW-B Task 9): the world root runs with NO listener
-// (`webserver` disabled), provides the virtual `webServer` from our world
-// entry, and every route its plugins register lands translated on ctx0's real
-// webServer — while the RPC channel (/api*) stays with the hub.
+// World mount integration (AW-B Task 9 → path-separation T-C): the world
+// root still runs with NO listener (`webserver` disabled) and still provides
+// the virtual `webServer` from our world entry, so the tree boots and
+// composes its web rows unchanged — but since T-C that server SWALLOWS every
+// registration: NO route lands on ctx0's real webServer anymore (`/hub` is
+// the sole entry; the world's data plane rides `?agent=<label>` demux).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { appendFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -42,7 +44,7 @@ async function waitFor(check, timeoutMs = 5000) {
   }
 }
 
-test('a world with no listener mounts its whole surface under /<label> on ctx0', async () => {
+test('a world with no listener composes its web rows into the void — nothing lands on ctx0', async () => {
   // PROD SHAPE: the world tree lives under `<home>/agents/<label>` — OUTSIDE
   // the host table's profiles tree — so row imports must ride the linked-root
   // route (spec §2.1), exactly like a consumer machine's world.
@@ -120,10 +122,13 @@ test('a world with no listener mounts its whole surface under /<label> on ctx0',
   assert.equal(webServer instanceof WorldWebServer, true, 'the world root got the virtual webServer')
   assert.equal(webServer.labelPath, '/omp')
 
-  const mounted = await waitFor(() => real.routes.has('prefix:/omp/plugins') && real.routes.has('prefix:/omp'))
-  assert.equal(mounted, true, `world surface landed under /omp (saw: ${[...real.routes.keys()].join(', ')})`)
-  assert.equal(real.routes.has('prefix:/omp/api'), false, 'the world never owns the RPC channel')
-  assert.equal(real.upgrades.has('/omp/api/remote.mux'), false, 'the world never owns the mux path')
+  // Give the world tree time to compose its web rows (frontend-static and
+  // friends used to land translations here within this window), then pin the
+  // T-C negative: the registry stays EMPTY — no /<label>/ page family, no
+  // RPC lane, no mux path. The world composes its rows into the void.
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  assert.equal(real.routes.size, 0, `nothing lands on ctx0 (saw: ${[...real.routes.keys()].join(', ')})`)
+  assert.equal(real.upgrades.size, 0, 'no /<label>/api/remote.mux upgrade either')
 
   await new Promise((resolve) => setTimeout(resolve, 200))
   await ctxW.fiber.dispose()

@@ -14,12 +14,13 @@ import { hubRowActive, seatClickDecision } from '../switch-core.js'
  * half of the concept — the client-side ledger owns them until the pairing
  * backend lands; the adapter list is the live `/api/agent-runtime` roster.
  *
- * Switch surface (T-B): the Agent Runtimes rows are the agent selector. On a
- * fusion page every row click runs the `seatClickDecision` table —
- * intercepted, in-place `switchAgent`, NO navigation ever (the href survives
- * only for middle-click / open-in-new-tab / copy link); the active row tracks
- * the `__SUPERD_UI_STATE__` atom. On a world page the interim arm keeps the
- * real hyperlinks (the mount path is the selection; T-C deletes the arm).
+ * Switch surface (T-B, switch-only since T-C): the Agent Runtimes rows are
+ * the agent selector. Every row click runs the `seatClickDecision` table —
+ * intercepted, in-place `switchAgent`, NO navigation ever; the active row
+ * tracks the `__SUPERD_UI_STATE__` atom. There is no non-fusion navigation
+ * arm: the per-label URL family is retired (path-separation T-C — `/hub` is
+ * the sole entry), so a row never links anywhere and a non-fusion page's
+ * clicks are simply inert.
  *
  * @module superd-hub/client/HubPage
  */
@@ -180,8 +181,9 @@ export function HubPage(): React.JSX.Element {
    * The row's click decision — the SAME table the retired sidebar seat ran:
    * on a fusion page EVERY left click is intercepted (active entry included),
    * the attempt runs for non-active entries only, and `preventDefault` keeps
-   * the anchor from navigating the fused page away; on a world page the real
-   * hyperlink stays in charge (interim arm, T-C deletes it).
+   * the page exactly where it is. Non-fusion pages have no navigation arm to
+   * fall back to (T-C retired the URL family), so the pass-through decision
+   * is simply inert.
    */
   const rowDecision = (agent: AgentLink, event: React.MouseEvent): void => {
     const decision = seatClickDecision({
@@ -503,25 +505,25 @@ export function HubPage(): React.JSX.Element {
                   {displayPath(agent.path)}
                 </span>
                 {isActive(agent) && <span style={chipSelf}>current</span>}
-                {/* A real hyperlink: on world pages the URL is the state and
-                    the browser owns navigation. On a fusion page every left
-                    click is intercepted — NO navigation, the active entry
-                    included (the seatClickDecision contract, inherited from
-                    the retired sidebar seat; review round 1). The handler
-                    stops propagation so the row-level handler does not
-                    double-run the attempt: one click, one decision. The href
-                    survives as the world-page arm and for middle-click /
-                    open-in-new-tab / copy link. */}
+                {/* Switch-only (T-C): the per-label URL family is retired —
+                    /hub is the sole entry — so a row is no longer a
+                    hyperlink and there is no navigation arm at all (no
+                    middle-click / open-in-new-tab target either). The
+                    decision table still runs on every click — fusion:
+                    intercept + in-place switch; non-fusion: inert
+                    pass-through — the seatClickDecision contract, with the
+                    handler stopping propagation so the row-level handler
+                    does not double-run the attempt: one click, one
+                    decision. */}
                 <a
-                  href={agent.path}
                   aria-current={isActive(agent) ? 'page' : undefined}
-                  style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none' }}
-                  onClick={fusion ? (event) => {
+                  style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: fusion ? 'pointer' : undefined }}
+                  onClick={(event) => {
                     event.stopPropagation()
                     rowDecision(agent, event)
-                  } : undefined}
+                  }}
                 >
-                  {fusion ? 'switch' : 'open'}
+                  switch
                 </a>
               </HoverRow>
             ))}

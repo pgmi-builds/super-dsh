@@ -614,8 +614,10 @@ function seatClickDecision(input) {
 *   - Fusion page: the page atom's `activeAgent` — the switch state — decides
 *     by roster key; the URL is irrelevant on a fused page. The `native`
 *     entry participates like any other key.
-*   - World page (interim until T-C deletes the arm): the mount path is the
-*     selection — the entry whose path equals the page's normalized mount.
+*   - Non-fusion page (flag off; the UI's navigation arm is retired since
+*     T-C): the mount path is the selection — the entry whose path equals
+*     the page's normalized mount. The pure arm survives as contract; no
+*     served page can hit the foreign case anymore.
 *
 * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
 */
@@ -996,8 +998,9 @@ function HubPage() {
 	* The row's click decision — the SAME table the retired sidebar seat ran:
 	* on a fusion page EVERY left click is intercepted (active entry included),
 	* the attempt runs for non-active entries only, and `preventDefault` keeps
-	* the anchor from navigating the fused page away; on a world page the real
-	* hyperlink stays in charge (interim arm, T-C deletes it).
+	* the page exactly where it is. Non-fusion pages have no navigation arm to
+	* fall back to (T-C retired the URL family), so the pass-through decision
+	* is simply inert.
 	*/
 	const rowDecision = (agent, event) => {
 		if (seatClickDecision({
@@ -1434,18 +1437,18 @@ function HubPage() {
 										children: "current"
 									}),
 									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
-										href: agent.path,
 										"aria-current": isActive(agent) ? "page" : void 0,
 										style: {
 											fontSize: 12.5,
 											color: "var(--dsw-alias-label-secondary)",
-											textDecoration: "none"
+											textDecoration: "none",
+											cursor: fusion ? "pointer" : void 0
 										},
-										onClick: fusion ? (event) => {
+										onClick: (event) => {
 											event.stopPropagation();
 											rowDecision(agent, event);
-										} : void 0,
-										children: fusion ? "switch" : "open"
+										},
+										children: "switch"
 									})
 								]
 							}, agent.key))]
@@ -1598,7 +1601,6 @@ function HubPanelIcon({ size }) {
 					color: "var(--dsw-alias-label-primary)"
 				},
 				children: agents.map((agent) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("a", {
-					href: agent.path,
 					"aria-current": isActive(agent) ? "page" : void 0,
 					onClick: (event) => {
 						if (seatClickDecision({
@@ -1618,6 +1620,7 @@ function HubPanelIcon({ size }) {
 						textDecoration: "none",
 						color: "inherit",
 						fontSize: 13,
+						cursor: fusion ? "pointer" : void 0,
 						background: isActive(agent) ? "color-mix(in srgb, currentColor 10%, transparent)" : "transparent"
 					},
 					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {

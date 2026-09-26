@@ -1,10 +1,12 @@
-// Dual-tab isolation (AW-B DL10): two tabs on two worlds must not step on each
-// other, and a wrong sessionId must be answered by exactly the addressed world
-// — never by probing the others (no server-side selection anywhere; the mount
-// path is the only routing key).
+// Dual-world isolation through the SOLE entry (AW-B DL10 → path-separation
+// T-C): two foreign agents behind the /hub family must not step on each
+// other, and a wrong sessionId must be answered by exactly the addressed
+// world — never by probing the others (no server-side selection anywhere;
+// the `?agent=` demux key is the only routing key).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mountWorld } from '../dist/carrier.js'
+import { registerHubRoute } from '../dist/hub-route.js'
+import { registerForeignTarget, unregisterForeignTarget, getTarget } from '../dist/targets.js'
 import { createOwnershipIndex } from '../dist/ownership.js'
 
 function fakeReal() {
@@ -51,10 +53,12 @@ function request(body, url) {
   }
 }
 
-async function call(real, url, body) {
+/** One demuxed request through the family (`agent` rides the query). */
+async function call(real, agent, url, body) {
   const res = fakeRes()
-  const handler = real.routes.get(`prefix:${url.split('/').slice(0, 3).join('/')}`).handler
-  await handler(request(body, url), res)
+  const handler = real.routes.get('prefix:/hub').handler
+  const sep = url.includes('?') ? '&' : '?'
+  await handler(request(body, `${url}${sep}agent=${agent}`), res)
   return { status: res.status, body: JSON.parse(res.body) }
 }
 
@@ -62,31 +66,42 @@ function envelope(rpcId, method, payload) {
   return { type: 'client-request', rpcId, method, payload }
 }
 
-test('two mounted worlds keep separate call ledgers under interleaved traffic', async () => {
+/** Stand up the family with both worlds registered (the sole-entry shape). */
+function hub(real, worlds) {
+  for (const [key, gateway] of Object.entries(worlds)) registerForeignTarget({ key, gateway })
+  return registerHubRoute({
+    real,
+    authorize: () => true,
+    // The LIVE registry, exactly like gateway.ts — target retirement is
+    // observable through the family.
+    gatewayOf: (label) => getTarget(label)?.gateway,
+  })
+}
+
+test('two worlds behind /hub keep separate call ledgers under interleaved traffic', async () => {
   const real = fakeReal()
   const ompCalls = []
   const codexCalls = []
-  const omp = mountWorld({ real, label: 'omp', gateway: world('omp', ompCalls) })
-  const codex = mountWorld({ real, label: 'codex', gateway: world('codex', codexCalls) })
+  const disposeHub = hub(real, { omp: world('omp', ompCalls), codex: world('codex', codexCalls) })
 
-  await call(real, '/omp/api/session.list', envelope('r1', 'session.list', {}))
-  await call(real, '/codex/api/session.list', envelope('r2', 'session.list', {}))
-  await call(real, '/omp/api/session.list', envelope('r3', 'session.list', {}))
+  await call(real, 'omp', '/hub/api/session.list', envelope('r1', 'session.list', {}))
+  await call(real, 'codex', '/hub/api/session.list', envelope('r2', 'session.list', {}))
+  await call(real, 'omp', '/hub/api/session.list', envelope('r3', 'session.list', {}))
 
   assert.deepEqual(ompCalls, ['omp:session.list', 'omp:session.list'])
   assert.deepEqual(codexCalls, ['codex:session.list'])
-  omp.dispose()
-  codex.dispose()
+  disposeHub()
+  unregisterForeignTarget('omp')
+  unregisterForeignTarget('codex')
 })
 
 test('a wrong sessionId is answered once by the addressed world and probes nothing else', async () => {
   const real = fakeReal()
   const ompCalls = []
   const codexCalls = []
-  const omp = mountWorld({ real, label: 'omp', gateway: world('omp', ompCalls) })
-  const codex = mountWorld({ real, label: 'codex', gateway: world('codex', codexCalls) })
+  const disposeHub = hub(real, { omp: world('omp', ompCalls), codex: world('codex', codexCalls) })
 
-  const result = await call(real, '/omp/api/session.resume', envelope('r4', 'session.resume', { sessionId: 'nope' }))
+  const result = await call(real, 'omp', '/hub/api/session.resume', envelope('r4', 'session.resume', { sessionId: 'nope' }))
   assert.equal(result.status, 200)
   assert.deepEqual(result.body.result, { ok: false, error: { code: 'session/not-found', message: 'no such session' } })
   assert.deepEqual(ompCalls, ['omp:session.resume'])
@@ -96,38 +111,43 @@ test('a wrong sessionId is answered once by the addressed world and probes nothi
   assert.equal(await ownership.resolve('nope'), undefined)
   assert.deepEqual(ompCalls, ['omp:session.resume'], 'an ownership miss dispatches nothing')
   assert.deepEqual(codexCalls, [])
-  omp.dispose()
-  codex.dispose()
+  disposeHub()
+  unregisterForeignTarget('omp')
+  unregisterForeignTarget('codex')
 })
 
 test('an ownership hit routes to the owning world without touching the other', async () => {
   const real = fakeReal()
   const ompCalls = []
   const codexCalls = []
-  const omp = mountWorld({ real, label: 'omp', gateway: world('omp', ompCalls) })
-  const codex = mountWorld({ real, label: 'codex', gateway: world('codex', codexCalls) })
+  const disposeHub = hub(real, { omp: world('omp', ompCalls), codex: world('codex', codexCalls) })
   const ownership = createOwnershipIndex(async () => [{ sessionId: 's1', key: 'codex' }])
 
   const key = await ownership.resolve('s1')
   assert.equal(key, 'codex')
   assert.deepEqual(ompCalls, [])
-  await call(real, `/codex/api/session.list`, envelope('r5', 'session.list', {}))
+  await call(real, 'codex', '/hub/api/session.list', envelope('r5', 'session.list', {}))
   assert.deepEqual(ompCalls, [], 'the non-owning world stays untouched')
   assert.deepEqual(codexCalls, ['codex:session.list'])
-  omp.dispose()
-  codex.dispose()
+  disposeHub()
+  unregisterForeignTarget('omp')
+  unregisterForeignTarget('codex')
 })
 
-test('disposing one mount leaves the other serving', async () => {
+test('retiring one target leaves the other serving through the same family', async () => {
   const real = fakeReal()
   const ompCalls = []
   const codexCalls = []
-  const omp = mountWorld({ real, label: 'omp', gateway: world('omp', ompCalls) })
-  const codex = mountWorld({ real, label: 'codex', gateway: world('codex', codexCalls) })
-  omp.dispose()
-  assert.equal(real.routes.has('prefix:/omp/api'), false)
-  assert.equal(real.routes.has('prefix:/codex/api'), true)
-  await call(real, '/codex/api/session.list', envelope('r6', 'session.list', {}))
+  const disposeHub = hub(real, { omp: world('omp', ompCalls), codex: world('codex', codexCalls) })
+
+  unregisterForeignTarget('omp')
+  const gone = await call(real, 'omp', '/hub/api/session.list', envelope('r7', 'session.list', {}))
+  assert.equal(gone.status, 404)
+  assert.deepEqual(gone.body, { error: 'unknown-agent', label: 'omp' })
+
+  await call(real, 'codex', '/hub/api/session.list', envelope('r6', 'session.list', {}))
+  assert.deepEqual(ompCalls, [])
   assert.deepEqual(codexCalls, ['codex:session.list'])
-  codex.dispose()
+  disposeHub()
+  unregisterForeignTarget('codex')
 })

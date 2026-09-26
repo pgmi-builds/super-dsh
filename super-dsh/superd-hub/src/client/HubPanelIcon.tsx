@@ -11,12 +11,14 @@ import { hubRowActive, seatClickDecision } from '../switch-core.js'
  * lists). The row itself stays native: clicking it opens the Hub main panel;
  * only the chevron and the menu are ours.
  *
- * Switch surface (T-B): the chevron menu is half of the sole agent-switch
- * surface (the HubPage rows are the other half; the sidebar-bottom seat is
- * retired). On a fusion page every menu click runs the `seatClickDecision`
- * table — intercepted, in-place `switchAgent`, NO navigation ever; the
- * active row tracks the `__SUPERD_UI_STATE__` atom. On a world page the
- * interim arm keeps the real hyperlinks (T-C deletes the arm).
+ * Switch surface (T-B, switch-only since T-C): the chevron menu is half of
+ * the sole agent-switch surface (the HubPage rows are the other half; the
+ * sidebar-bottom seat is retired). Every menu click runs the
+ * `seatClickDecision` table — intercepted, in-place `switchAgent`, NO
+ * navigation ever; the active row tracks the `__SUPERD_UI_STATE__` atom.
+ * There is no non-fusion navigation arm: the per-label URL family is retired
+ * (path-separation T-C — `/hub` is the sole entry), so non-fusion clicks are
+ * simply inert.
  *
  * Geometry: the native panel row renders this component inside its glyph
  * span, so the chevron and the menu are `position: fixed` against the row
@@ -181,15 +183,15 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
           }}
         >
           {agents.map((agent) => (
-            // A real hyperlink: on world pages the URL is the state and the
-            // browser owns navigation. On a fusion page every left click is
-            // intercepted — NO navigation, the active entry included (the
-            // seatClickDecision contract, inherited from the retired sidebar
-            // seat; review round 1). The href survives as the world-page arm
-            // and for middle-click / open-in-new-tab / copy link.
+            // Switch-only (T-C): the per-label URL family is retired — /hub
+            // is the sole entry — so a menu entry is no longer a hyperlink
+            // and there is no navigation arm (no middle-click /
+            // open-in-new-tab target either). Every click runs the
+            // seatClickDecision table — fusion: intercept + in-place switch,
+            // the active entry included; non-fusion: inert pass-through
+            // (contract inherited from the retired sidebar seat).
             <a
               key={agent.key}
-              href={agent.path}
               aria-current={isActive(agent) ? 'page' : undefined}
               onClick={(event) => {
                 const decision = seatClickDecision({
@@ -200,8 +202,7 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
                 if (decision.preventDefault) event.preventDefault()
                 // The menu is a DOM child of the native row button: on a
                 // fusion page the switch must not co-open the Hub panel, so
-                // the bubble stops here. The world-page arm keeps its
-                // historical behavior (the navigation leaves the page).
+                // the bubble stops here.
                 if (fusion) event.stopPropagation()
                 setOpen(false)
               }}
@@ -214,6 +215,7 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
                 textDecoration: 'none',
                 color: 'inherit',
                 fontSize: 13,
+                cursor: fusion ? 'pointer' : undefined,
                 background: isActive(agent) ? 'color-mix(in srgb, currentColor 10%, transparent)' : 'transparent',
               }}
             >

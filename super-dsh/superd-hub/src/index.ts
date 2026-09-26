@@ -18,7 +18,7 @@ export { claimLabel, labelOf, releaseLabel, listLabels, type LabelClaim, type Cl
 export { WorldWebServer, stripLabelFromUrl, type WorldWebRoute, type WorldWebUpgradeRoute, type RealWebServerFace } from './world-web-server.js'
 export { parseClientRequest, serverResponse, serverError, serverResult, wireErrorOf, EnvelopeError, type ClientRequestEnvelope, type WireError } from './envelope.js'
 export { WorldMuxServer, parseClientMessage, defaultFailure, type MuxOpen, type MuxFailure, type WorldMuxOptions } from './world-mux.js'
-export { mountWorld, forwardApiCall, forwardWorldFetch, worldMuxOf, writeJson, rewriteIndexHtml, type CarrierGatewayFace, type MountWorldOptions, type MountedWorld, type ForwardOptions } from './carrier.js'
+export { mountWorld, forwardApiCall, forwardWorldFetch, worldMuxOf, writeJson, rewriteIndexHtml, type CarrierGatewayFace, type ForwardOptions } from './carrier.js'
 export { registerHubRoute, HUB_MOUNT_PATH, HUB_MUX_PATH, type HubRouteOptions } from './hub-route.js'
 export { renderClientShim } from './client-shim.js'
 export { renderFusionTransport, deriveFusionFlag, FUSION_FLAG_ENV, FUSION_FLAG_GLOBAL, type FusionConfig } from './fusion-transport.js'

@@ -283,8 +283,10 @@ export interface HubRowActiveInput {
  *   - Fusion page: the page atom's `activeAgent` — the switch state — decides
  *     by roster key; the URL is irrelevant on a fused page. The `native`
  *     entry participates like any other key.
- *   - World page (interim until T-C deletes the arm): the mount path is the
- *     selection — the entry whose path equals the page's normalized mount.
+ *   - Non-fusion page (flag off; the UI's navigation arm is retired since
+ *     T-C): the mount path is the selection — the entry whose path equals
+ *     the page's normalized mount. The pure arm survives as contract; no
+ *     served page can hit the foreign case anymore.
  *
  * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
  */
