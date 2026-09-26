@@ -20,7 +20,10 @@ set -euo pipefail
 # (disposable home — delete it between runs; see test/README.md).
 PORT="${SUPERD_PORT:-4999}"
 UNIT="superd-${PORT}-test"
-REPO="$HOME/workspaces/superd"
+# The line's repo root = wherever THIS script lives (main checkout or a dev
+# worktree — pack.mjs anchors itself the same way via import.meta.url), never a
+# hardcoded path: a worktree checkout must pack and boot its OWN branch state.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LINE="$REPO/super-dsh"
 DSH_HOME_DIR="${SUPERD_HOME_DIR:-$REPO/.tests/superd}"
 PROFILE="${SUPERD_PROFILE:-superd-pub}"
@@ -124,6 +127,14 @@ chmod 600 "$DSH_HOME_DIR/.env"
 
 # systemd parses space-separated tokens as separate assignments — a
 # space-containing value needs its own inner quoting.
+# ---- fusion flag knob (native-ui-fusion Task 6): forward SUPERD_UI_FUSION
+# into the daemon env ONLY when the operator sets it (1/true/yes/on = ON per
+# deriveFusionFlag); unset stays unset = the shipped default OFF.
+FUSION_PROPS=()
+if [ -n "${SUPERD_UI_FUSION:-}" ]; then
+  FUSION_PROPS+=(--property=Environment="SUPERD_UI_FUSION=${SUPERD_UI_FUSION}")
+fi
+
 systemd-run --user --unit="$UNIT" \
   --property=WorkingDirectory="$REPO" \
   --property=Environment="DSH_HOME=$DSH_HOME_DIR" \
@@ -133,6 +144,7 @@ systemd-run --user --unit="$UNIT" \
   --property="Environment=\"SUPERD_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:${PORT}\"" \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
   --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  "${FUSION_PROPS[@]}" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
   "$NODE_BIN" "$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js" \
