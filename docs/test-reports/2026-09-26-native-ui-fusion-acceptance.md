@@ -158,3 +158,7 @@ generation failAll/取代编排是 client 半行为（`switch-core.ts` 注入式
 - flag 双态在真 rig 上对照实证：ON = 三行齐备且次序正确；OFF = 零融合行、其余照旧；服务器路由面 flag 无关（设计如此）。
 - 交付形态全链（pack → tarball → fresh profile pnpm → repo build launcher → systemd-run）自始至终，无脚手架遮丑。
 - **flag 出厂默认保持 OFF**，待 user 放行（§〇.1 两道闸门）；publish 另行请示。
+
+## 附录：0.1.3-zi 复验（终审修复波）
+
+终审（whole-branch）判定 Ready to merge，修复波 commit `752c776` 落地三项（唯一 `agent` 参数手术 + 裸 `?` 折叠；download 锚 href 点击后还原；delivered bundle 漂移守卫——179/179 全绿，delivered bundle 字节不变证明修复全在 host 半边）。本节落档时以 0.1.3-zi 重新 pack 并重启 4996 rig 供 user 亲手测——user 轮测试对象为 **zi**（transport 脚本含锚还原与参数手术；server 面与 zh 等价）。
