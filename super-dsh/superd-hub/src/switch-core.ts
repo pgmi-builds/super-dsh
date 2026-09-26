@@ -1,0 +1,268 @@
+/**
+ * Switch orchestration core (native UI fusion, plan Task 4) — the pure logic
+ * behind the in-page agent switch: storage-namespace key computation, the
+ * session landing decision over the persisted `dsh.sessions.current`
+ * selection, and the fallback state machine (timeout or roster-probe failure
+ * → revert to native + a visible toast, never a page lock).
+ *
+ * Host-half on purpose: plain TS with every effect injected through
+ * {@link SwitchHost} — no DOM, no client imports — so `test/client-switch.test.mjs`
+ * imports it from `dist/` like every other host module. The client half
+ * (`src/client/switch.ts`) builds the real host face from the client context:
+ * the `__SUPERD_UI_STATE__` atom (Task 3), `ctx.connection`,
+ * `ctx.uiWorkspace`, the Task-3 namespaced `Storage`, the control-plane
+ * roster fetch, and a minimal self-owned toast overlay.
+ *
+ * Orchestration sequence (spec §3.5, user rulings 7/8):
+ *   1. `setAgent(label)` — state + NS swap immediately; subsequent requests
+ *      demux to the target world (Task 3's call-time patches read the atom).
+ *   2. Session landing: read the target NS's `dsh.sessions.current` — a
+ *      navigable value is opened through the uiWorkspace face, anything else
+ *      lands on new chat. The chat area is never cleared and no loading
+ *      skeleton is inserted: old content stays in place awaiting data
+ *      self-heal.
+ *   3. `reconnect()` — the generation re-opens against the retargeted data
+ *      plane; the gateway emits `connection/reset` on establishment, the
+ *      designed "wire-derived caches must repull" signal, so sessions /
+ *      config / theme re-derive on their own. Upstream's one-shot boot
+ *      restore (`watchNavigation`'s `initial` flag) does not re-run after a
+ *      reset, so this landing is the switch's only navigation authority.
+ *   4. Fallback: no generation within {@link SWITCH_FALLBACK_MS}, or a failed
+ *      roster probe → `setAgent('native')` + `reconnect()` back to the native
+ *      plane + toast.
+ *
+ * Upstream anchors (dsh-v0.1.7-rc.1):
+ *   - `ctx.connection.reconnect()` — `packages/client/connection/src/client/index.ts`
+ *     `ConnectionHandle.reconnect` (declared :148, wired :264-266); the
+ *     controller resets retry progression and replaces the current attempt
+ *     immediately (`connection.ts:113-121`).
+ *   - `connection/reset` — emitted by the gateway client on every generation
+ *     establishment (`packages/api/gateway/src/client/index.ts:169`),
+ *     declared as the repull signal
+ *     (`packages/client/connection/src/client/index.ts:9-17`).
+ *   - `uiWorkspace.openSession(target)` / `startSession()` — the navigation
+ *     face (`packages/client/ui-workspace/src/client/navigation.ts:34-92`);
+ *     `SessionTarget = SessionId | SubagentAddress`
+ *     (`packages/api/session-controller/src/client/contract/sessions.ts:22`).
+ *   - `dsh.sessions.current` — the per-tab last-selection store
+ *     (`navigation.ts:130-131`); its restore reads `subagentAddress` first,
+ *     then `sessionId` (`navigation.ts:319-330`) — {@link parseLandingTarget}
+ *     keeps that precedence. The store hydrates once at page boot and
+ *     persists on write (`packages/client/store/src/index.ts:155-174`), so
+ *     the post-switch read must go through the namespaced `Storage` (Task 3
+ *     patch 5), which prefixes `'<label>:'` at call time.
+ *
+ * @module @pgmi-builds/superd-hub/switch-core
+ */
+
+/** The active-agent label meaning the native (ctx0) data plane. */
+export const NATIVE_AGENT = 'native'
+
+/** The persisted last-selection key ui-workspace owns (survey §2.6). */
+export const SESSIONS_CURRENT_KEY = 'dsh.sessions.current'
+
+/**
+ * The fallback window: how long a switch may wait for the target world's
+ * generation (mux re-open + repull) before reverting to native. A
+ * human-scale constant; Task 5's config face may expose it later.
+ */
+export const SWITCH_FALLBACK_MS = 10_000
+
+/**
+ * The storage namespace for an active agent: native prefixes nothing
+ * (byte-identical to stock behavior), a foreign agent owns `'<label>:'`.
+ * Mirrors Task 3's storage patch (`ns()` in fusion-transport).
+ */
+export function storageNamespace(label: string): string {
+  return typeof label === 'string' && label !== '' && label !== NATIVE_AGENT ? `${label}:` : ''
+}
+
+/** The full storage key for `key` while `label` is the active agent. */
+export function namespacedKey(label: string, key: string): string {
+  return `${storageNamespace(label)}${key}`
+}
+
+/**
+ * The landing decision over one raw persisted-selection read.
+ *
+ * A value is navigable when it parses to a ui-workspace `MainSelection`
+ * carrying a usable `SessionTarget`: a non-null `subagentAddress` object
+ * wins (upstream restore order), else a non-empty string `sessionId`.
+ * Everything else — no value, a read failure (surfaced here as `null`), a
+ * parse failure, an unusable shape — lands on new chat.
+ *
+ * @returns the exact `uiWorkspace.openSession` argument, or `null` for the
+ *   new-chat (blank session) landing.
+ */
+export function parseLandingTarget(raw: string | null | undefined): string | object | null {
+  if (typeof raw !== 'string' || raw === '') return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const selection = parsed as { sessionId?: unknown; subagentAddress?: unknown }
+  if (selection.subagentAddress !== undefined && selection.subagentAddress !== null
+    && typeof selection.subagentAddress === 'object') {
+    return selection.subagentAddress
+  }
+  if (typeof selection.sessionId === 'string' && selection.sessionId !== '') return selection.sessionId
+  return null
+}
+
+/**
+ * The effects the switch machine needs, all injected. Every method used by
+ * the guarded steps ({@link setAgent}, the landing reads/writes,
+ * {@link reconnect}, {@link toast}) may throw; the machine contains the
+ * damage — a broken effect degrades its own step, never the orchestration
+ * and never the page. Timer and generation-subscription arming are the
+ * wiring's own faces (host `setTimeout`, the connection's generation
+ * observable) and are used directly.
+ */
+export interface SwitchHost {
+  /** Swap the state atom (+ NS) to `label` — orchestration step 1. */
+  setAgent(label: string): void
+  /**
+   * Read the active NS's persisted `dsh.sessions.current` raw value. A read
+   * failure may be reported either by throwing or by returning `null` — both
+   * land on new chat.
+   */
+  readPersistedSelection(): string | null
+  /** Navigate the main view to a parsed landing target (step 2, session case). */
+  openSession(target: string | object): void
+  /** Navigate the main view to a new chat / blank session (step 2, fallback). */
+  openNewChat(): void
+  /** Replace the connection attempt immediately (step 3, and the revert). */
+  reconnect(): void
+  /**
+   * Observe generation establishment (post-`connection/reset`). The listener
+   * fires whenever a generation exists again; the returned disposer stops it.
+   */
+  onGenerationEstablished(listener: () => void): () => void
+  /**
+   * The roster probe: resolve `true` while `label` is still a live roster
+   * entry on the control plane. Reject or resolve `false` = probe failure.
+   */
+  probeTarget(label: string): Promise<boolean>
+  /** One visible toast/message; the revert's user feedback. */
+  toast(message: string): void
+  /** Timers, injected so tests drive time by hand. */
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
+/** Options; every field optional. */
+export interface SwitchOptions {
+  /** Fallback window in ms; defaults to {@link SWITCH_FALLBACK_MS}. */
+  fallbackMs?: number
+}
+
+/** The produced orchestration interface (brief: `switchAgent(label): Promise<void>`). */
+export interface SwitchController {
+  /**
+   * Run the full switch lifecycle for `label`: state swap, landing,
+   * reconnect, then settle on generation establishment or revert on the
+   * fallback. Resolves when the attempt ends — a revert is a handled
+   * outcome, not a rejection. A new run supersedes a pending one (cancelled
+   * silently, no revert).
+   */
+  run(label: string): Promise<void>
+}
+
+/**
+ * Build the switch machine over an injected {@link SwitchHost}.
+ *
+ * Only one attempt is ever armed at a time: starting a new switch finishes
+ * the previous one silently (timer cleared, subscription released, promise
+ * resolved) so a stale attempt can never revert a newer switch.
+ */
+export function createSwitchController(host: SwitchHost, options: SwitchOptions = {}): SwitchController {
+  const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS
+  let current: { finished: boolean; finish(): void } | undefined
+
+  /** Orchestration step 2: the session landing over the freshly active NS. */
+  const land = (): void => {
+    let raw: string | null = null
+    try {
+      raw = host.readPersistedSelection()
+    } catch {
+      raw = null
+    }
+    const target = parseLandingTarget(raw)
+    if (target !== null) {
+      try {
+        host.openSession(target)
+        return
+      } catch {
+        /* fall through to the blank-session landing */
+      }
+    }
+    try {
+      host.openNewChat()
+    } catch {
+      /* landing never throws */
+    }
+  }
+
+  return {
+    run(label: string): Promise<void> {
+      const prior = current
+      return new Promise<void>((resolve) => {
+        let timer: unknown
+        let disposer: () => void = () => {}
+        const attempt = {
+          finished: false,
+          /** The one exit: disarm, release, resolve — a revert only adds effects first. */
+          finish(): void {
+            if (attempt.finished) return
+            attempt.finished = true
+            host.clearTimeout(timer)
+            disposer()
+            if (current === attempt) current = undefined
+            resolve()
+          },
+        }
+        // A superseded attempt finishes silently: no revert, no toast — the
+        // newer switch owns the page from here.
+        if (prior !== undefined && !prior.finished) prior.finish()
+        current = attempt
+        const revert = (reason: 'timeout' | 'probe'): void => {
+          if (attempt.finished || current !== attempt) return
+          try {
+            host.setAgent(NATIVE_AGENT)
+          } catch { /* keep going: the fallback must land the page somewhere */ }
+          try {
+            host.reconnect()
+          } catch { /* the native plane's own recovery loop stays in charge */ }
+          try {
+            host.toast(`Super D: switch to ${label} failed (${reason === 'timeout' ? 'no response' : 'target not reachable'}) — back to native.`)
+          } catch { /* feedback is best-effort */ }
+          attempt.finish()
+        }
+        // Step 1: state + NS swap — subsequent requests demux to `label`.
+        try {
+          host.setAgent(label)
+        } catch { /* the atom face is guarded; landing still reads the old NS */ }
+        // Step 2: land (read + navigate), old content untouched.
+        land()
+        // Step 3: replace the generation attempt against the retargeted plane.
+        try {
+          host.reconnect()
+        } catch { /* fallback below still applies */ }
+        // Step 4: the fallback race — generation establishment settles, the
+        // timer and the roster probe revert.
+        timer = host.setTimeout(() => { revert('timeout') }, fallbackMs)
+        disposer = host.onGenerationEstablished(() => {
+          if (attempt.finished || current !== attempt) return
+          attempt.finish()
+        })
+        void host.probeTarget(label).then(
+          (alive) => { if (alive !== true) revert('probe') },
+          () => { revert('probe') },
+        )
+      })
+    },
+  }
+}
