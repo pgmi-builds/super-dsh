@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
+import { attemptSwitch, fusionPage, uiState } from './switch.js'
 
 /**
  * The app-level agent selector (`sidebar.footer.action`, just above Settings).
@@ -10,9 +11,18 @@ import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type Agen
  * server-side selection value, no POST, and no data-plane swap: two tabs on two
  * agents can never step on each other.
  *
+ * Fusion branch (native UI fusion, plan Task 4): on a page carrying the baked
+ * `__SUPERD_UI_FUSION__` global (the ctx0 index when the gate is on), the seat
+ * intercepts agent clicks and runs the switchAgent orchestration instead —
+ * state switch in place, NO navigation; the active label comes from the
+ * `__SUPERD_UI_STATE__` atom, not the URL. On every other page (each world's
+ * own index, and ctx0 with the gate off) the flag global is absent, the branch
+ * stays dormant, and the real hyperlinks are untouched (spec §5 双半边).
+ *
  * The roster is baked into the index by the hub (native index and every mounted
  * world). The read-only `/api/agent-runtime` face is only a fallback for a page
- * that somehow rendered without the row.
+ * that somehow rendered without the row — and in fusion mode it doubles as the
+ * switch's control-plane probe (never rewritten).
  *
  * Props: the sidebar's owner share ({@link wide} column state).
  */
@@ -26,6 +36,11 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
   const [agents, setAgents] = React.useState<AgentLink[]>(() => rosterFromGlobal() ?? [NATIVE_LINK])
   const [open, setOpen] = React.useState(false)
   const rootRef = React.useRef<HTMLDivElement | null>(null)
+  // Baked before app boot and never mutated afterwards: per-page constant.
+  const fusion = fusionPage()
+  const [activeKey, setActiveKey] = React.useState<string>(
+    () => (fusion ? (uiState()?.activeAgent ?? NATIVE_LINK.key) : NATIVE_LINK.key),
+  )
 
   React.useEffect(() => {
     // The hub is asked every time: the baked global only seeds the first paint
@@ -38,6 +53,15 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
   }, [])
 
   React.useEffect(() => {
+    if (!fusion) return
+    const state = uiState()
+    if (state === undefined) return
+    // The atom is the fusion selection: follow every switch (including one
+    // issued from another surface or a revert of a failed attempt).
+    return state.subscribe((label) => { setActiveKey(label) })
+  }, [fusion])
+
+  React.useEffect(() => {
     if (!open) return
     const onDown = (event: MouseEvent): void => {
       if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) setOpen(false)
@@ -47,12 +71,16 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
   }, [open])
 
   const here = currentMountPath()
-  const active = agents.find((agent) => agent.path === here) ?? NATIVE_LINK
+  const isActive = (agent: AgentLink): boolean =>
+    fusion ? agent.key === activeKey : agent.path === here
+  const active = agents.find(isActive) ?? NATIVE_LINK
 
-  // The mount path IS the selection: a roster entry navigates to that world's
-  // URL. Nothing is reset (no storage, no reload) — the new page boots its own
-  // tree, which owns everything from that point on.
-
+  // Non-fusion: the mount path IS the selection — a roster entry navigates to
+  // that world's URL, the browser owns navigation, no script runs on the way
+  // out. Fusion: the same `<a>` rows stay (middle-click / copy link keep
+  // working), but a left click hands the decision to the switch orchestration
+  // — state switch, never navigation; the href only survives as the
+  // non-fusion fallback and for opening a world page in a new tab.
 
   const styleBase: React.CSSProperties = {
     display: 'flex',
@@ -108,7 +136,9 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
       <button
         type="button"
         style={styleBase}
-        title="Agent runtime — picking one opens that runtime's mount (/omp/, /codex/, …)"
+        title={fusion
+          ? 'Agent runtime — picking one switches this page to that runtime in place (no navigation)'
+          : 'Agent runtime — picking one opens that runtime\'s mount (/omp/, /codex/, …)'}
         onClick={() => { setOpen((v) => !v) }}
       >
         {wide
@@ -117,24 +147,29 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
             <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               Agent · {active.label}
             </span>
-            <span style={styleBadge}>open</span>
+            <span style={styleBadge}>{fusion ? 'switch' : 'open'}</span>
           </>)
           : (<span aria-hidden>⌘</span>)}
       </button>
       {open && (
         <div style={styleMenu}>
           {agents.map((agent) => (
-            // A real hyperlink: the URL is the state, so the browser owns
-            // navigation (middle-click, new tab, copy link all work) and no
-            // script runs on the way out.
+            // A real hyperlink: on world pages the URL is the state and the
+            // browser owns navigation. On a fusion page the left click is
+            // intercepted into the switchAgent orchestration (no navigation);
+            // when the orchestration is somehow unbound, attemptSwitch
+            // reports false and the hyperlink stays in charge.
             <a
               key={agent.key}
               href={agent.path}
-              style={{ ...styleItem(agent.path === here), textDecoration: 'none' }}
-              aria-current={agent.path === here ? 'page' : undefined}
-              onClick={() => { setOpen(false) }}
+              style={{ ...styleItem(isActive(agent)), textDecoration: 'none' }}
+              aria-current={isActive(agent) ? 'page' : undefined}
+              onClick={(event) => {
+                if (fusion && !isActive(agent) && attemptSwitch(agent.key)) event.preventDefault()
+                setOpen(false)
+              }}
             >
-              {agent.path === here ? `${agent.label} ✓` : agent.label}
+              {isActive(agent) ? `${agent.label} ✓` : agent.label}
             </a>
           ))}
         </div>

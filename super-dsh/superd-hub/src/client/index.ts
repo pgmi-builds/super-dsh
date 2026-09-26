@@ -16,6 +16,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { RuntimeSeat } from './RuntimeSeat.js'
 import { HubPage } from './HubPage.js'
 import { HubPanelIcon } from './HubPanelIcon.js'
+import { bindSwitchAgent, type SwitchConnection, type SwitchUiWorkspace } from './switch.js'
 
 /** Required services (cordis fiber inject): the slot registry. */
 export const inject = ['slots']
@@ -53,5 +54,13 @@ export function apply(ctx: ClientContext): void {
       { name: 'sidebar.panellist', id: 'hub', order: 1, label: 'Hub' },
       HubPanelIcon,
     )), 'superd-hub: hub sidebar row')
+  })
+  // Native UI fusion Task 4: bind the switchAgent orchestration once the
+  // connection and uiWorkspace services exist (structural faces; the stock
+  // client tree always has both). Without a binding the seat's fusion branch
+  // degrades to the real hyperlinks — same contract as a non-fusion page.
+  ctx.inject(['connection', 'uiWorkspace'], (raw) => {
+    const services = raw as unknown as { connection: SwitchConnection; uiWorkspace: SwitchUiWorkspace }
+    bindSwitchAgent(services)
   })
 }
