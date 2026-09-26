@@ -120,23 +120,38 @@ async function fetchRoster() {
 * `ctx.uiWorkspace`, the Task-3 namespaced `Storage`, the control-plane
 * roster fetch, and a minimal self-owned toast overlay.
 *
-* Orchestration sequence (spec §3.5, user rulings 7/8):
+* Orchestration sequence (spec §3.5 as amended 2026-09-26, T-A erratum;
+* user rulings 7/8):
 *   1. `setAgent(label)` — state + NS swap immediately; subsequent requests
 *      demux to the target world (Task 3's call-time patches read the atom).
-*   2. Session landing: read the target NS's `dsh.sessions.current` — a
-*      navigable value is opened through the uiWorkspace face, anything else
-*      lands on new chat. The chat area is never cleared and no loading
-*      skeleton is inserted: old content stays in place awaiting data
-*      self-heal.
+*   2. Session landing, split by the target NS's `dsh.sessions.current`:
+*      a navigable value is opened through the uiWorkspace face right away —
+*      session-targeted navigation resolves no workspace id, so it is
+*      correct against the retargeted plane before reconnect (the clean
+*      round-4 acceptance behavior). Anything else lands on new chat, but
+*      only once the target plane's wire-derived caches are fresh (see 3):
+*      upstream `startSession()` resolves `currentWorkspaceId ?? recent`
+*      from those caches (navigation.ts:223-238), and a pre-reconnect
+*      resolution reads the PREVIOUS plane's data → `workspace/not-found`
+*      toast + the view pinned to the dead previous session id (the
+*      2026-09-26 live-acceptance defect). The chat area is never cleared
+*      and no loading skeleton is inserted: old content stays in place
+*      awaiting the landing.
 *   3. `reconnect()` — the generation re-opens against the retargeted data
 *      plane; the gateway emits `connection/reset` on establishment, the
 *      designed "wire-derived caches must repull" signal, so sessions /
 *      config / theme re-derive on their own. Upstream's one-shot boot
 *      restore (`watchNavigation`'s `initial` flag) does not re-run after a
 *      reset, so this landing is the switch's only navigation authority.
+*      The deferred new-chat landing fires when the repull has LANDED — the
+*      first post-establishment baseline replacement in the workspace store
+*      ({@link observeCachesRefreshed}) — at which point `startSession()`
+*      resolves the target agent's own workspace exactly like the native
+*      new-chat button would on that plane.
 *   4. Fallback: no generation within {@link SWITCH_FALLBACK_MS}, or a failed
 *      roster probe → `setAgent('native')` + `reconnect()` back to the native
-*      plane + toast.
+*      plane + toast. A revert also cancels a pending new-chat landing — a
+*      reverted switch never lands.
 *
 * Upstream anchors (dsh-v0.1.7-rc.1):
 *   - `ctx.connection.reconnect()` — `packages/client/connection/src/client/index.ts`
@@ -151,6 +166,12 @@ async function fetchRoster() {
 *     face (`packages/client/ui-workspace/src/client/navigation.ts:34-92`);
 *     `SessionTarget = SessionId | SubagentAddress`
 *     (`packages/api/session-controller/src/client/contract/sessions.ts:22`).
+*   - `startSession()`'s workspace resolution — `workspaceId ??
+*     currentWorkspaceId ?? recent` over the wire-derived `workspaces.list`
+*     / `sessions.list` snapshots (`navigation.ts:223-238`); the workspace
+*     store installs fresh data only through its follow-stream baseline
+*     (`packages/api/workspace-controller/src/client/model.ts`
+*     `replaceBaseline` → `installViews`, a new items array every install).
 *   - `dsh.sessions.current` — the per-tab last-selection store
 *     (`navigation.ts:130-131`); its restore reads `subagentAddress` first,
 *     then `sessionId` (`navigation.ts:319-330`) — {@link parseLandingTarget}
@@ -198,6 +219,51 @@ function parseLandingTarget(raw) {
 	return null;
 }
 /**
+* The caches-fresh gate behind the deferred new-chat landing: fires
+* `listener` exactly once, when the navigation caches demonstrably hold the
+* TARGET plane's data.
+*
+* The freshness token is the snapshot's `items` ARRAY IDENTITY: upstream's
+* workspace model mints a new array on every baseline install
+* (`installViews` → `[...installed.values()]`, model.ts:398) while carrier
+* churn (`handleCarrierFailure`) keeps the reference. The gate arms at the
+* first generation establishment OBSERVED BY ITS OWN subscription — the
+* anchor is retaken there, and nothing before that point can pass, so the
+* dying old plane's last increments racing the reconnect are absorbed; the
+* first replacement after establishment is the target plane's baseline. The
+* `phase === 'ready'` check rides along as a guard against a page whose
+* first baseline never arrived.
+*
+* Establishment strictly precedes any target-plane baseline (the follow
+* streams re-open on top of the established generation), so this single
+* edge implies both "generation established" and "repull landed" — the two
+* preconditions of a correct `startSession()` resolution.
+*
+* Host-half pure logic: the client binding composes it with the real
+* `ctx.workspaces.list` store and the connection generation observable; the
+* machine consumes it through {@link SwitchHost.onCachesRefreshed}.
+*
+* @returns the disposer stopping both subscriptions.
+*/
+function observeCachesRefreshed(list, generation, listener) {
+	let anchor = list.getSnapshot().items;
+	let established = false;
+	const disposeGeneration = generation.subscribe(() => {
+		if (generation.getSnapshot() === void 0) return;
+		established = true;
+		anchor = list.getSnapshot().items;
+	});
+	const disposeList = list.subscribe(() => {
+		if (!established) return;
+		const snapshot = list.getSnapshot();
+		if (snapshot.phase === "ready" && snapshot.items !== anchor) listener();
+	});
+	return () => {
+		disposeList();
+		disposeGeneration();
+	};
+}
+/**
 * The RuntimeSeat's click-interception contract as a pure table.
 *
 *   - World page (`fusion: false`): no interception, no orchestration — the
@@ -232,35 +298,26 @@ function seatClickDecision(input) {
 *
 * Only one attempt is ever armed at a time: starting a new switch finishes
 * the previous one silently (timer cleared, subscription released, promise
-* resolved) so a stale attempt can never revert a newer switch.
+* resolved) and cancels its pending landing, so a stale attempt can never
+* revert or land over a newer switch.
 */
 function createSwitchController(host, options = {}) {
 	const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS;
 	let current;
-	/** Orchestration step 2: the session landing over the freshly active NS. */
-	const land = () => {
-		let raw = null;
-		try {
-			raw = host.readPersistedSelection();
-		} catch {
-			raw = null;
-		}
-		const target = parseLandingTarget(raw);
-		if (target !== null) try {
-			host.openSession(target);
-			return;
-		} catch {}
-		try {
-			host.openNewChat();
-		} catch {}
-	};
 	return { run(label) {
 		const prior = current;
 		return new Promise((resolve) => {
 			let timer;
 			let disposer = () => {};
+			let disposeLanding = () => {};
 			const attempt = {
 				finished: false,
+				dead: false,
+				cancelLanding() {
+					attempt.dead = true;
+					disposeLanding();
+					disposeLanding = () => {};
+				},
 				finish() {
 					if (attempt.finished) return;
 					attempt.finished = true;
@@ -270,10 +327,14 @@ function createSwitchController(host, options = {}) {
 					resolve();
 				}
 			};
-			if (prior !== void 0 && !prior.finished) prior.finish();
+			if (prior !== void 0) {
+				prior.cancelLanding();
+				if (!prior.finished) prior.finish();
+			}
 			current = attempt;
 			const revert = (reason) => {
 				if (attempt.finished || current !== attempt) return;
+				attempt.cancelLanding();
 				try {
 					host.setAgent(NATIVE_AGENT);
 				} catch {}
@@ -288,7 +349,20 @@ function createSwitchController(host, options = {}) {
 			try {
 				host.setAgent(label);
 			} catch {}
-			land();
+			let raw = null;
+			try {
+				raw = host.readPersistedSelection();
+			} catch {
+				raw = null;
+			}
+			const target = parseLandingTarget(raw);
+			let deferNewChat = true;
+			if (target !== null) try {
+				host.openSession(target);
+				deferNewChat = false;
+			} catch {
+				deferNewChat = true;
+			}
 			try {
 				host.reconnect();
 			} catch {}
@@ -298,6 +372,14 @@ function createSwitchController(host, options = {}) {
 			disposer = host.onGenerationEstablished(() => {
 				if (attempt.finished || current !== attempt) return;
 				attempt.finish();
+			});
+			if (deferNewChat) disposeLanding = host.onCachesRefreshed(() => {
+				if (attempt.dead) return;
+				disposeLanding();
+				disposeLanding = () => {};
+				try {
+					host.openNewChat();
+				} catch {}
 			});
 			host.probeTarget(label).then((alive) => {
 				if (alive !== true) revert("probe");
@@ -361,7 +443,8 @@ let bound;
 /**
 * Bind the page's switch agent from the client services. Idempotent; a no-op
 * without the page atom (a non-fusion page never has one).
-* @param deps - the `connection` and `uiWorkspace` services (structural).
+* @param deps - the `connection`, `uiWorkspace` and `workspaces` services
+*   (structural).
 */
 function bindSwitchAgent(deps) {
 	if (bound !== void 0) return;
@@ -380,6 +463,9 @@ function bindSwitchAgent(deps) {
 		},
 		openNewChat() {
 			deps.uiWorkspace.startSession();
+		},
+		onCachesRefreshed(listener) {
+			return observeCachesRefreshed(deps.workspaces.list, deps.connection.generation, listener);
 		},
 		reconnect() {
 			deps.connection.reconnect();
@@ -1634,7 +1720,11 @@ function apply(ctx) {
 			label: "Hub"
 		}, HubPanelIcon)), "superd-hub: hub sidebar row");
 	});
-	ctx.inject(["connection", "uiWorkspace"], (raw) => {
+	ctx.inject([
+		"connection",
+		"uiWorkspace",
+		"workspaces"
+	], (raw) => {
 		bindSwitchAgent(raw);
 	});
 }

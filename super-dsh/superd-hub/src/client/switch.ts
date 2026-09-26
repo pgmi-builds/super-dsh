@@ -14,6 +14,11 @@
  *   - `ctx.uiWorkspace` (`openSession(target)` / `startSession()` — the
  *     navigation face; a no-workspace world clears the main view = blank
  *     session);
+ *   - `ctx.workspaces` (`list` — the workspace projection whose post-reset
+ *     baseline replacement is the caches-fresh edge the deferred new-chat
+ *     landing waits for; upstream resolves `startSession()`'s workspace
+ *     from these snapshots, so they must hold the TARGET plane's data
+ *     before the landing may run);
  *   - the control-plane roster fetch (`/api/agent-runtime`, never rewritten)
  *     as the probe: the target must still be a live roster entry;
  *   - a minimal self-owned toast overlay for the revert feedback (upstream
@@ -31,7 +36,9 @@
  */
 import {
   createSwitchController,
+  observeCachesRefreshed,
   SESSIONS_CURRENT_KEY,
+  type NavigationCacheFace,
   type SwitchHost,
 } from '../switch-core.js'
 import { fetchRoster } from './roster.js'
@@ -57,6 +64,16 @@ export interface SwitchConnection {
 export interface SwitchUiWorkspace {
   openSession(target: string | object): void
   startSession(workspaceId?: unknown): void
+}
+
+/**
+ * Structural face of `ctx.workspaces` — the workspace projection whose
+ * baseline replacement marks the switch's caches-fresh edge. Present
+ * wherever `uiWorkspace` is: upstream's ui-workspace injects `workspaces`
+ * itself (ui-workspace/src/client/index.ts).
+ */
+export interface SwitchWorkspaces {
+  readonly list: NavigationCacheFace
 }
 
 /** Whether this page is a fusion page: the baked flag global is present. */
@@ -115,9 +132,14 @@ let bound: ((label: string) => Promise<void>) | undefined
 /**
  * Bind the page's switch agent from the client services. Idempotent; a no-op
  * without the page atom (a non-fusion page never has one).
- * @param deps - the `connection` and `uiWorkspace` services (structural).
+ * @param deps - the `connection`, `uiWorkspace` and `workspaces` services
+ *   (structural).
  */
-export function bindSwitchAgent(deps: { connection: SwitchConnection; uiWorkspace: SwitchUiWorkspace }): void {
+export function bindSwitchAgent(deps: {
+  connection: SwitchConnection
+  uiWorkspace: SwitchUiWorkspace
+  workspaces: SwitchWorkspaces
+}): void {
   if (bound !== undefined) return
   const state = uiState()
   if (state === undefined) return
@@ -132,6 +154,13 @@ export function bindSwitchAgent(deps: { connection: SwitchConnection; uiWorkspac
     },
     openSession(target) { deps.uiWorkspace.openSession(target) },
     openNewChat() { deps.uiWorkspace.startSession() },
+    onCachesRefreshed(listener) {
+      // The T-A freshness gate over the real stores: the first post-
+      // establishment baseline replacement in `workspaces.list` — before it
+      // lands, `startSession()` would resolve the PREVIOUS agent's
+      // workspace from stale snapshots (navigation.ts:223-238).
+      return observeCachesRefreshed(deps.workspaces.list, deps.connection.generation, listener)
+    },
     reconnect() { deps.connection.reconnect() },
     onGenerationEstablished(listener) {
       const generation = deps.connection.generation

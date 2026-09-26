@@ -90,6 +90,8 @@ web-trust 注入脚本是 `if(!window.__DSH_TRANSPORT__){…ownsHost:true}`，**
 4. `connection.reconnect()` → 新树事件流 + `connection/reset` 订阅者重拉 → UI 自愈；左下角 reconnecting = 原生自带行为；
 5. 失败兜底：切换后一致性校验不过 / 目标 world 不可达 / WS 超时 → 回退 native + 可见提示（评审 §4.8-2）。
 
+> **勘误（2026-09-26，T-A 实证修订）**：步骤 3 的 new-chat 落位**不得在 reconnect 前执行**——上游 `startSession()` 从 wire 缓存解析 `currentWorkspaceId ?? recent`（navigation.ts:223-238），彼时缓存仍是上一个 agent 平面的数据 → `workspace/not-found` + 死会话钉屏（live 验收缺陷，用户第 1-3 轮）。修订：指针落位保持即时（session-targeted，不解析 workspace，第 4 轮行为不变）；new-chat 落位**推迟到 reconnect 后目标平面 baseline 落地**（`workspaces.list` items 引用替换 = 缓存已新），解析语义即该平面原生 new-chat 按钮。回退/新切换接管取消未落地的落位。chat 区不清空、无骨架（裁决 7）不变。
+
 ## 4. 模块图同构不变量（评审 §3.2 重写）
 
 - **不变量**：任何 adapter 不得**新增**自定义 client 模块；ctx0 客户端图是唯一 UI 面（裁决 2）。
