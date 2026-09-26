@@ -135,6 +135,12 @@ if [ -n "${SUPERD_UI_FUSION:-}" ]; then
   FUSION_PROPS+=(--property=Environment="SUPERD_UI_FUSION=${SUPERD_UI_FUSION}")
 fi
 
+# ctx0's native /api + /hub fences read the CONNECTION service's trustedHosts
+# (= webRuntime: bind-derived loopback literals + EXPLICIT --trusted-host
+# extras). SUPERD_TRUSTED_HOSTS above feeds only the world fence leg and the
+# page-trust leg — 2026-09-26 user LAN round: without these extras every
+# non-loopback Host 403s (WS stuck on "reconnecting", RPC transport failures).
+# Port-less entries match any port (api-request-trust canonicalAuthority).
 systemd-run --user --unit="$UNIT" \
   --property=WorkingDirectory="$REPO" \
   --property=Environment="DSH_HOME=$DSH_HOME_DIR" \
@@ -148,7 +154,9 @@ systemd-run --user --unit="$UNIT" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
   "$NODE_BIN" "$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js" \
-    --profile "$PROFILE" --no-open
+    --profile "$PROFILE" --no-open \
+    --trusted-host "$LAN_IP" \
+    --trusted-host test.pc.internal.test
 
 ok=""
 for _ in $(seq 1 90); do
@@ -161,7 +169,9 @@ done
 # ---- LAN relay (2026-09-26 user ruling): user visits via LAN; every non-4999
 # port MUST carry one (4999 is Caddy-backed). Bind the LAN IP only — never
 # 0.0.0.0 (repo port discipline; webserver startup hard-refuses it anyway).
-# The fence already trusts the LAN IP in both entry forms (unit env above).
+# Fence note: the LAN Host passes the /api fences via the CLI --trusted-host
+# extras above (port-less entry matches any port), not via SUPERD_TRUSTED_HOSTS
+# (that env only feeds the world fence leg + page-trust authorities).
 if [ "$PORT" != "4999" ]; then
   systemd-run --user --unit="$RELAY" \
     --property=StandardOutput=append:"$LOG" \
