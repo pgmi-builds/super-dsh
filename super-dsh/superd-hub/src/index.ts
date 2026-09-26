@@ -21,6 +21,7 @@ export { WorldMuxServer, parseClientMessage, defaultFailure, type MuxOpen, type 
 export { mountWorld, forwardApiCall, forwardWorldFetch, worldMuxOf, writeJson, rewriteIndexHtml, type CarrierGatewayFace, type MountWorldOptions, type MountedWorld, type ForwardOptions } from './carrier.js'
 export { registerHubRoute, HUB_MOUNT_PATH, HUB_MUX_PATH, type HubRouteOptions } from './hub-route.js'
 export { renderClientShim } from './client-shim.js'
+export { renderFusionTransport, deriveFusionFlag, FUSION_FLAG_ENV, type FusionConfig } from './fusion-transport.js'
 export { agentLinks, agentRosterRow, AGENT_ROSTER_GLOBAL, type AgentLink } from './agent-roster.js'
 export { createOwnershipIndex, type OwnershipIndex, type OwnershipRow } from './ownership.js'
 export { registerHostMount, takeHostMount, listHostMounts, noteWorldServer, worldServerOf, type HostMount } from './world-host.js'

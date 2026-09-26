@@ -21,7 +21,8 @@
     "./client": "./client/index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
-    "./web-trust": "./superd-hub/dist/web-trust.js"
+    "./web-trust": "./superd-hub/dist/web-trust.js",
+    "./fusion-transport": "./superd-hub/dist/fusion-transport.js"
   },
   "files": [
     "cordis.patch.yml",
