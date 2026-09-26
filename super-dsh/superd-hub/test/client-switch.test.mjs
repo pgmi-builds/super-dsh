@@ -20,6 +20,7 @@ import {
   parseLandingTarget,
   createSwitchController,
 } from '../dist/switch-core.js'
+import { FUSION_FLAG_GLOBAL, apply as applyFusion, renderFusionTransport } from '../dist/fusion-transport.js'
 
 // ---- NS key computation -------------------------------------------------
 
@@ -211,4 +212,44 @@ test('the fallback window defaults to the documented N seconds', () => {
   createSwitchController(fx.host).run('omp')
   assert.equal(fx.timers[0].ms, SWITCH_FALLBACK_MS)
   assert.ok(SWITCH_FALLBACK_MS >= 5_000 && SWITCH_FALLBACK_MS <= 30_000, 'a human-scale switch window')
+})
+
+// ---- the __SUPERD_UI_FUSION__ baked global (review §4.6 双半边通道) ------
+// The flag global must ride the SAME gated listener as the Task-3 transport
+// script, so the two halves can never disagree: gate on → atom + patches +
+// flag land together; gate off → nothing is emitted at all.
+
+/** The emission harness: inject/ordered-listener semantics of a cordis ctx. */
+function harness() {
+  const injectCbs = []
+  const listeners = []
+  return {
+    inject(_deps, cb) { injectCbs.push(cb) },
+    on(_event, fn) { listeners.push(fn) },
+    materialize() { for (const cb of [...injectCbs]) cb() },
+    emit(table) { for (const fn of [...listeners]) fn(table) },
+  }
+}
+
+test('gate on: the flag global rides the same listener as the transport script', () => {
+  const ctx = harness()
+  applyFusion(ctx, { enabled: true })
+  ctx.materialize()
+  const table = []
+  ctx.emit(table)
+  assert.equal(table.length, 2, 'exactly two rows: the transport script + the flag global')
+  assert.equal(table[0].kind, 'script')
+  assert.ok(table[0].text.includes('__SUPERD_UI_STATE__'), 'row one is the fusion transport')
+  assert.deepEqual(table[1], { kind: 'global', name: FUSION_FLAG_GLOBAL, value: true })
+  assert.equal(FUSION_FLAG_GLOBAL, '__SUPERD_UI_FUSION__')
+})
+
+test('gate off: neither half is emitted', () => {
+  const ctx = harness()
+  applyFusion(ctx, { enabled: false })
+  ctx.materialize()
+  const table = []
+  ctx.emit(table)
+  assert.equal(table.length, 0, 'a disabled row injects no script and no flag global')
+  assert.equal(renderFusionTransport(), renderFusionTransport(), 'the script stays a constant')
 })

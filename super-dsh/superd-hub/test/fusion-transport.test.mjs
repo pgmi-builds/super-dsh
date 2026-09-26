@@ -386,7 +386,7 @@ function harness() {
   }
 }
 
-test('the fusion row pushes AFTER the web-trust row (spec §3.4, hard)', () => {
+test('the fusion rows push AFTER the web-trust row (spec §3.4, hard)', () => {
   const ctx = harness()
   // Composite-patch order (super-dsh/cordis.patch.yml): hub, web-trust, fusion.
   applyWebTrust(ctx, { trustedPageAuthorities: ['test.pc.internal.test'] })
@@ -394,15 +394,18 @@ test('the fusion row pushes AFTER the web-trust row (spec §3.4, hard)', () => {
   ctx.materialize()
   const table = []
   ctx.emit(table)
-  assert.equal(table.length, 2, 'one row per component')
-  const [trustRow, fusionRow] = table
+  // Task 4: the fusion listener pushes TWO rows — the transport script plus
+  // the __SUPERD_UI_FUSION__ baked global (one gate, both halves).
+  assert.equal(table.length, 3, 'trust script + fusion transport + fusion flag global')
+  const [trustRow, fusionRow, flagRow] = table
   assert.equal(trustRow.kind, 'script')
   assert.equal(trustRow.placement, 'head')
   assert.ok(trustRow.text.includes('__DSH_TRANSPORT__'), 'the first row is the trust script')
   assert.equal(fusionRow.kind, 'script')
   assert.equal(fusionRow.placement, 'head')
   assert.ok(fusionRow.text.includes('__SUPERD_UI_STATE__'), 'the second row is the fusion transport')
-  assert.equal(table[table.length - 1], fusionRow, 'fusion is the last pushed row')
+  assert.deepEqual(flagRow, { kind: 'global', name: '__SUPERD_UI_FUSION__', value: true }, 'the third row is the baked flag global')
+  assert.equal(table.indexOf(fusionRow) > table.indexOf(trustRow), true, 'the fusion script is evaluated after the trust verdict')
 })
 
 test('served in order, the trust verdict survives the fusion install', () => {

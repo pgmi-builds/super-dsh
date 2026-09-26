@@ -25,6 +25,11 @@
  * Native mode is zero-interference: every patched face passes its exact
  * arguments through untouched.
  *
+ * The component's gated listener ALSO bakes `__SUPERD_UI_FUSION__ = true`
+ * into the ctx0 index (Task 4): the client half's fusion-branch
+ * discriminator, emitted by the same gate as the script so the halves never
+ * disagree (world pages never carry it and keep real hyperlinks — spec §5).
+ *
  * Quoting discipline: the generated script contains NO double-quoted string —
  * index-pass rewrites every DOUBLE-quoted root-absolute literal in served
  * HTML, so all literals stay single-quoted (the client-shim precedent). The
@@ -285,6 +290,16 @@ try {
 export const FUSION_FLAG_ENV = 'SUPERD_UI_FUSION'
 
 /**
+ * The page global the ctx0 index carries when the gate is on: the client
+ * half's fusion-branch discriminator (RuntimeSeat reads its presence to
+ * intercept agent clicks into the switch orchestration instead of letting
+ * the hyperlinks navigate; world pages never carry it, so they keep the real
+ * navigation half — spec §5 双半边). Baked by the SAME gated listener as the
+ * transport script, so the two halves can never disagree.
+ */
+export const FUSION_FLAG_GLOBAL = '__SUPERD_UI_FUSION__'
+
+/**
  * The minimal flag derivation: truthy spellings only (`1` / `true` / `yes` /
  * `on`, case-insensitive, trimmed). Anything else — unset included — is OFF,
  * so between Task 3 and Task 5 the runtime behavior is unchanged.
@@ -318,9 +333,12 @@ export const inject: string[] = []
  * the rendered head script row — the same emission path as the web-trust
  * component, composed AFTER it (the composite row order is load order, and
  * both components register their listeners behind `inject(['webServer'])`, so
- * cordis's FIFO effect order pushes the fusion row last; spec §3.4).
+ * cordis's FIFO effect order pushes the fusion row last; spec §3.4) — plus
+ * the {@link FUSION_FLAG_GLOBAL} baked global row (Task 4): one gate, both
+ * halves.
  *
- * Flag off → the component registers nothing: no listener, no row, no script.
+ * Flag off → the component registers nothing: no listener, no row, no script,
+ * no flag global.
  * @param ctx - host plugin context.
  * @param config - the row config.
  */
@@ -329,6 +347,7 @@ export function apply(ctx: Context, config: FusionConfig | undefined): void {
   ctx.inject(['webServer'], () => {
     ctx.on('webserver/index-inject', (table) => {
       table.push({ kind: 'script', placement: 'head', text: renderFusionTransport() })
+      table.push({ kind: 'global', name: FUSION_FLAG_GLOBAL, value: true })
     })
   })
 }
