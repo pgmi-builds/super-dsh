@@ -772,6 +772,53 @@ function switchAffordance(fusion) {
 	};
 }
 /**
+* The active agent's display name for the sidebar row label: the roster
+* label of the atom's `activeAgent` key; a key the (seeded) roster does not
+* know degrades to the raw key rather than vanishing into the base label.
+* `undefined`/empty (flag off, or no atom read) means "no suffix".
+*
+* Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
+*/
+function activeAgentName(activeAgent, roster) {
+	if (activeAgent === void 0 || activeAgent === "") return void 0;
+	return roster.find((row) => row.key === activeAgent)?.label ?? activeAgent;
+}
+/** The sidebar row label: the base row title, plus ` > ` the active agent's name. */
+function hubRowLabel(base, activeAgent) {
+	return activeAgent === void 0 || activeAgent === "" ? base : `${base} > ${activeAgent}`;
+}
+/** Which machine one roster row groups under: an absent machine is the local one. */
+function machineGroup(row) {
+	return row.machine ?? "local";
+}
+/**
+* Group a roster by machine for the HubPanelIcon chevron menu's native
+* workspace-list look: one group per distinct `machineGroup` key, groups in
+* first-appearance order, members keeping the roster's order inside their
+* group. A single-group roster (today's local-only shape) renders exactly
+* like the old flat list minus the card border.
+*
+* Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
+*/
+function machineGroups(rows) {
+	const groups = [];
+	const byMachine = /* @__PURE__ */ new Map();
+	for (const row of rows) {
+		const machine = machineGroup(row);
+		let group = byMachine.get(machine);
+		if (group === void 0) {
+			group = {
+				machine,
+				agents: []
+			};
+			byMachine.set(machine, group);
+			groups.push(group);
+		}
+		group.agents.push(row);
+	}
+	return groups;
+}
+/**
 * Build the switch machine over an injected {@link SwitchHost}.
 *
 * Only one attempt is ever armed at a time: starting a new switch finishes
@@ -1831,14 +1878,17 @@ function HubPanelIcon({ size }) {
 					width: box.width,
 					zIndex: 60,
 					background: "var(--dsh-surface, #26262b)",
-					border: "1px solid color-mix(in srgb, currentColor 18%, transparent)",
-					borderRadius: 10,
+					borderRadius: 12,
 					boxShadow: "0 8px 24px rgba(0,0,0,.35)",
 					overflow: "hidden",
 					padding: 4,
 					color: "var(--dsw-alias-label-primary)"
 				},
-				children: agents.map((agent) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("a", {
+				children: machineGroups(agents).map((group, groupIndex) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [groupIndex > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { style: {
+					height: 1,
+					margin: "3px 6px",
+					background: "color-mix(in srgb, currentColor 10%, transparent)"
+				} }), group.agents.map((agent) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("a", {
 					"aria-current": isActive(agent) ? "page" : void 0,
 					onClick: (event) => {
 						if (seatClickDecision({
@@ -1861,20 +1911,27 @@ function HubPanelIcon({ size }) {
 						cursor: "pointer",
 						background: isActive(agent) ? "color-mix(in srgb, currentColor 10%, transparent)" : "transparent"
 					},
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						style: {
-							flex: 1,
-							textAlign: "left",
-							whiteSpace: "nowrap",
-							overflow: "hidden",
-							textOverflow: "ellipsis"
-						},
-						children: agent.label
-					}), isActive(agent) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						"aria-hidden": true,
-						children: "✓"
-					})]
-				}, agent.key))
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
+							agentKey: agent.key,
+							size: 16
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: {
+								flex: 1,
+								textAlign: "left",
+								whiteSpace: "nowrap",
+								overflow: "hidden",
+								textOverflow: "ellipsis"
+							},
+							children: agent.label
+						}),
+						isActive(agent) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							"aria-hidden": true,
+							children: "✓"
+						})
+					]
+				}, agent.key))] }, group.machine))
 			})
 		]
 	});
@@ -1898,12 +1955,31 @@ function apply(ctx) {
 			name: "main",
 			key: "hub"
 		}, HubPage)), "superd-hub: hub main panel");
-		scope.effect(() => scope.slots.inject("sidebar.panellist", () => scope.slots.register({
-			name: "sidebar.panellist",
-			id: "hub",
-			order: 1,
-			label: "Hub"
-		}, HubPanelIcon)), "superd-hub: hub sidebar row");
+		scope.effect(() => scope.slots.inject("sidebar.panellist", () => {
+			let disposeRow;
+			let shownLabel;
+			const registerRow = () => {
+				const label = hubRowLabel("Hub", activeAgentName(uiState()?.activeAgent, rosterFromGlobal() ?? [NATIVE_LINK]));
+				if (label === shownLabel) return;
+				shownLabel = label;
+				disposeRow?.();
+				disposeRow = scope.slots.register({
+					name: "sidebar.panellist",
+					id: "hub",
+					order: 1,
+					label
+				}, HubPanelIcon);
+			};
+			registerRow();
+			const unbind = (fusionPage() ? uiState() : void 0)?.subscribe(() => {
+				registerRow();
+			});
+			return () => {
+				unbind?.();
+				disposeRow?.();
+				disposeRow = void 0;
+			};
+		}), "superd-hub: hub sidebar row");
 	});
 	ctx.inject([
 		"connection",

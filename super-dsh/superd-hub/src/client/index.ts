@@ -3,7 +3,11 @@
  *
  * - `main` (key `hub`) + `sidebar.panellist` (id `hub`, below Plugins) — the
  *   Hub global panel: the sidebar row opens the hub home page (machines +
- *   agent adapters); the row's chevron expands the agent selector. The Hub
+ *   agent adapters); the row's chevron expands the agent selector. The row's
+ *   label is registered here and re-registered on active-agent changes
+ *   (fusion pages: `Hub > <active agent>`; flag off: plain `Hub`) — the
+ *   sidebar projects labels from registration metadata, so the re-register
+ *   is the one sanctioned lever that refreshes it. The Hub
  *   UI is the SOLE agent-switch surface (T-B, user ruling: the sidebar-bottom
  *   RuntimeSeat is retired): both the HubPage rows and the chevron menu
  *   intercept clicks into the in-place `switchAgent` orchestration (no
@@ -18,7 +22,21 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { HubPage } from './HubPage.js'
 import { HubPanelIcon } from './HubPanelIcon.js'
-import { bindSwitchAgent, type SwitchConnection, type SwitchLocale, type SwitchSessions, type SwitchUiWorkspace, type SwitchWorkspaces } from './switch.js'
+import { NATIVE_LINK, rosterFromGlobal } from './roster.js'
+import {
+  activeAgentName,
+  hubRowLabel,
+} from '../switch-core.js'
+import {
+  bindSwitchAgent,
+  fusionPage,
+  uiState,
+  type SwitchConnection,
+  type SwitchLocale,
+  type SwitchSessions,
+  type SwitchUiWorkspace,
+  type SwitchWorkspaces,
+} from './switch.js'
 
 /** Required services (cordis fiber inject): the slot registry. */
 export const inject = ['slots']
@@ -45,10 +63,43 @@ export function apply(ctx: ClientContext): void {
       { name: 'main', key: 'hub' },
       HubPage,
     )), 'superd-hub: hub main panel')
-    scope.effect(() => scope.slots.inject('sidebar.panellist', () => scope.slots.register(
-      { name: 'sidebar.panellist', id: 'hub', order: 1, label: 'Hub' },
-      HubPanelIcon,
-    )), 'superd-hub: hub sidebar row')
+    scope.effect(() => scope.slots.inject('sidebar.panellist', () => {
+      // The row label (native-workspace-look round): base `Hub`, suffixed
+      // ` > ` the ACTIVE agent's display name on a fusion page
+      // (`hubRowLabel(activeAgentName(...))` over the page atom + the seeded
+      // roster); plain `Hub` with the flag off (no atom — the label helper
+      // never sees an active agent). The sidebar projects panellist
+      // metadata only on registry events (its `syncPanels` re-resolves the
+      // label on every projection), so a label change is PUSHED by
+      // re-registering the entry: dispose + register inside one tick lands
+      // as ONE microtask-batched projection (SlotCore.markDirty), never a
+      // row-less intermediate frame. The atom subscription follows the
+      // components' subscribe pattern — released with the registration on
+      // unmount (the inject effect's disposer).
+      let disposeRow: (() => void) | undefined
+      let shownLabel: string | undefined
+      const registerRow = (): void => {
+        const label = hubRowLabel(
+          'Hub',
+          activeAgentName(uiState()?.activeAgent, rosterFromGlobal() ?? [NATIVE_LINK]),
+        )
+        if (label === shownLabel) return
+        shownLabel = label
+        disposeRow?.()
+        disposeRow = scope.slots.register(
+          { name: 'sidebar.panellist', id: 'hub', order: 1, label },
+          HubPanelIcon,
+        )
+      }
+      registerRow()
+      const state = fusionPage() ? uiState() : undefined
+      const unbind = state?.subscribe(() => { registerRow() })
+      return () => {
+        unbind?.()
+        disposeRow?.()
+        disposeRow = undefined
+      }
+    }), 'superd-hub: hub sidebar row')
   })
   // Native UI fusion Task 4 (+ T-A, T-F): bind the switchAgent orchestration
   // once the connection, uiWorkspace, workspaces, sessions and locale

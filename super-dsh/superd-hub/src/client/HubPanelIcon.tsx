@@ -1,15 +1,19 @@
 import * as React from 'react'
 import { HubGlyph } from './glyph.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
+import { RuntimeMark } from './runtime-icons.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
-import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
+import { hubRowActive, machineGroups, seatClickDecision, switchAffordance } from '../switch-core.js'
 
 /**
  * The Hub sidebar row's icon share (`sidebar.panellist`, list id `hub`): the
  * mark plus — while the sidebar is wide — a chevron pinned to the row's right
  * edge that expands the agent-runtime selector (the same roster the Hub page
  * lists). The row itself stays native: clicking it opens the Hub main panel;
- * only the chevron and the menu are ours.
+ * only the chevron and the menu are ours. The row's LABEL is the registration
+ * site's (client/index.ts): base `Hub`, suffixed ` > ` the active agent's
+ * display name on a fusion page (`hubRowLabel`, the page atom subscribed at
+ * the registration), plain `Hub` with the fusion flag off.
  *
  * Switch surface (T-B, switch-only since T-C): the chevron menu is half of
  * the sole agent-switch surface (the HubPage rows are the other half; the
@@ -22,6 +26,12 @@ import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-cor
  * no foreign entry in the product a flag-off page renders the bare native
  * row (opens the Hub panel) instead of a dead affordance
  * (`switchAffordance`).
+ *
+ * Menu look (native workspace-list reference): no outer card border; the
+ * roster grouped by machine (`machineGroups` — `AgentLink.machine ?? 'local'`,
+ * groups in first-appearance order) with a very light divider line between
+ * groups; every row leads with the Hub page's runtime mark (`RuntimeMark`)
+ * at menu scale. Pure restyle — the click contract below is untouched.
  *
  * Geometry: the native panel row renders this component inside its glyph
  * span, so the chevron and the menu are `position: fixed` against the row
@@ -189,57 +199,78 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
             width: box.width,
             zIndex: 60,
             background: 'var(--dsh-surface, #26262b)',
-            border: '1px solid color-mix(in srgb, currentColor 18%, transparent)',
-            borderRadius: 10,
+            borderRadius: 12,
             boxShadow: '0 8px 24px rgba(0,0,0,.35)',
             overflow: 'hidden',
             padding: 4,
             color: 'var(--dsw-alias-label-primary)',
           }}
         >
-          {agents.map((agent) => (
-            // Switch-only (T-C): the per-label URL family is retired — /hub
-            // is the sole entry — so a menu entry is no longer a hyperlink
-            // and there is no navigation arm (no middle-click /
-            // open-in-new-tab target either). Every click runs the
-            // seatClickDecision table — intercept + in-place switch, the
-            // active entry included. The menu only exists on a fusion page
-            // (the chevron is gated by switchAffordance, T-E), so the
-            // non-fusion arm of the table is unreachable here.
-            <a
-              key={agent.key}
-              aria-current={isActive(agent) ? 'page' : undefined}
-              onClick={(event) => {
-                const decision = seatClickDecision({
-                  fusion,
-                  active: isActive(agent),
-                  attempt: () => attemptSwitch(agent.key),
-                })
-                if (decision.preventDefault) event.preventDefault()
-                // The menu is a DOM child of the native row button: on a
-                // fusion page the switch must not co-open the Hub panel, so
-                // the bubble stops here.
-                if (fusion) event.stopPropagation()
-                setOpen(false)
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '8px 10px',
-                borderRadius: 7,
-                textDecoration: 'none',
-                color: 'inherit',
-                fontSize: 13,
-                cursor: 'pointer',
-                background: isActive(agent) ? 'color-mix(in srgb, currentColor 10%, transparent)' : 'transparent',
-              }}
-            >
-              <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {agent.label}
-              </span>
-              {isActive(agent) && <span aria-hidden>✓</span>}
-            </a>
+          {machineGroups(agents).map((group, groupIndex) => (
+            // Native workspace-list grouping: one block per machine
+            // (`AgentLink.machine ?? 'local'`), a very light divider line
+            // between groups (hairline, slightly inset — the reference's
+            // treatment). Presentation only; the click contract below is
+            // byte-identical to the flat list it replaces.
+            <React.Fragment key={group.machine}>
+              {groupIndex > 0 && (
+                <div
+                  style={{
+                    height: 1,
+                    margin: '3px 6px',
+                    background: 'color-mix(in srgb, currentColor 10%, transparent)',
+                  }}
+                />
+              )}
+              {group.agents.map((agent) => (
+                // Switch-only (T-C): the per-label URL family is retired — /hub
+                // is the sole entry — so a menu entry is no longer a hyperlink
+                // and there is no navigation arm (no middle-click /
+                // open-in-new-tab target either). Every click runs the
+                // seatClickDecision table — intercept + in-place switch, the
+                // active entry included. The menu only exists on a fusion page
+                // (the chevron is gated by switchAffordance, T-E), so the
+                // non-fusion arm of the table is unreachable here.
+                <a
+                  key={agent.key}
+                  aria-current={isActive(agent) ? 'page' : undefined}
+                  onClick={(event) => {
+                    const decision = seatClickDecision({
+                      fusion,
+                      active: isActive(agent),
+                      attempt: () => attemptSwitch(agent.key),
+                    })
+                    if (decision.preventDefault) event.preventDefault()
+                    // The menu is a DOM child of the native row button: on a
+                    // fusion page the switch must not co-open the Hub panel, so
+                    // the bubble stops here.
+                    if (fusion) event.stopPropagation()
+                    setOpen(false)
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 10px',
+                    borderRadius: 7,
+                    textDecoration: 'none',
+                    color: 'inherit',
+                    fontSize: 13,
+                    cursor: 'pointer',
+                    background: isActive(agent) ? 'color-mix(in srgb, currentColor 10%, transparent)' : 'transparent',
+                  }}
+                >
+                  {/* The Hub page's runtime mark (cool assets + subagent
+                      fallback + native fish) at menu scale — the reference
+                      list's icon-left-of-label row shape. */}
+                  <RuntimeMark agentKey={agent.key} size={16} />
+                  <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {agent.label}
+                  </span>
+                  {isActive(agent) && <span aria-hidden>✓</span>}
+                </a>
+              ))}
+            </React.Fragment>
           ))}
         </div>
       )}

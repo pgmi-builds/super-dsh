@@ -508,6 +508,80 @@ export function switchAffordance(fusion: boolean): SwitchAffordance {
 }
 
 /**
+ * Structural slice of one roster row the Hub UI label/grouping helpers read
+ * (the client roster's `AgentLink` shape mirrored structurally — this module
+ * never imports from the client half).
+ */
+export interface HubRosterRow {
+  /** The roster key (`'native'` or a runtime key). */
+  readonly key: string
+  /** The display label the roster projected for the key. */
+  readonly label: string
+  /** The row's mount path. */
+  readonly path: string
+  /** Machine the runtime comes from; an absent machine is the local one. */
+  readonly machine?: string
+}
+
+/**
+ * The active agent's display name for the sidebar row label: the roster
+ * label of the atom's `activeAgent` key; a key the (seeded) roster does not
+ * know degrades to the raw key rather than vanishing into the base label.
+ * `undefined`/empty (flag off, or no atom read) means "no suffix".
+ *
+ * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
+ */
+export function activeAgentName(activeAgent: string | undefined, roster: readonly HubRosterRow[]): string | undefined {
+  if (activeAgent === undefined || activeAgent === '') return undefined
+  return roster.find((row) => row.key === activeAgent)?.label ?? activeAgent
+}
+
+/** The sidebar row label: the base row title, plus ` > ` the active agent's name. */
+export function hubRowLabel(base: string, activeAgent?: string): string {
+  return activeAgent === undefined || activeAgent === ''
+    ? base
+    : `${base} > ${activeAgent}`
+}
+
+/** Which machine one roster row groups under: an absent machine is the local one. */
+export function machineGroup(row: HubRosterRow): string {
+  return row.machine ?? 'local'
+}
+
+/** One machine's group of roster rows, in roster order. */
+export interface MachineGroup {
+  /** The grouping key (`machine ?? 'local'`). */
+  readonly machine: string
+  /** The rows of this machine, keeping the roster's own order. */
+  readonly agents: readonly HubRosterRow[]
+}
+
+/**
+ * Group a roster by machine for the HubPanelIcon chevron menu's native
+ * workspace-list look: one group per distinct `machineGroup` key, groups in
+ * first-appearance order, members keeping the roster's order inside their
+ * group. A single-group roster (today's local-only shape) renders exactly
+ * like the old flat list minus the card border.
+ *
+ * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
+ */
+export function machineGroups(rows: readonly HubRosterRow[]): readonly MachineGroup[] {
+  const groups: { machine: string; agents: HubRosterRow[] }[] = []
+  const byMachine = new Map<string, { machine: string; agents: HubRosterRow[] }>()
+  for (const row of rows) {
+    const machine = machineGroup(row)
+    let group = byMachine.get(machine)
+    if (group === undefined) {
+      group = { machine, agents: [] }
+      byMachine.set(machine, group)
+      groups.push(group)
+    }
+    group.agents.push(row)
+  }
+  return groups
+}
+
+/**
  * The effects the switch machine needs, all injected. Every method used by
  * the guarded steps ({@link setAgent}, the landing reads/writes,
  * {@link reconnect}, {@link toast}) may throw; the machine contains the

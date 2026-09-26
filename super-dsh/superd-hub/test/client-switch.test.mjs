@@ -32,6 +32,10 @@ import {
   planRestoreLanding,
   seatClickDecision,
   hubRowActive,
+  activeAgentName,
+  hubRowLabel,
+  machineGroup,
+  machineGroups,
   switchAffordance,
   createSwitchController,
   observeCachesRefreshed,
@@ -812,6 +816,74 @@ test('T-B composition: a Hub row click runs the SAME table the seat ran', () => 
     wiring({ fusion: false, activeAgent: undefined, agentKey: 'omp', agentPath: '/omp/', mountPath: '/', bound: true }),
     { preventDefault: false, attempted: false, attempts: 0 },
   )
+})
+
+// ---- the sidebar row label + machine grouping (native-workspace-look) -----
+// The hub row reads `Hub` alone today; on a fusion page it must read
+// `Hub > <active agent's display name>` (plain `Hub` with the flag off —
+// no atom, no suffix). The chevron menu groups the roster by machine
+// (`AgentLink.machine ?? 'local'`) the way the native workspace list groups
+// its sections, a light divider between groups. Pure halves pinned here;
+// the visual treatment lives in HubPanelIcon, the label push (re-register)
+// in client/index.ts.
+
+test('hub row label: no active agent → the plain base (flag off / no atom read)', () => {
+  assert.equal(hubRowLabel('Hub'), 'Hub')
+  assert.equal(hubRowLabel('Hub', undefined), 'Hub')
+  assert.equal(hubRowLabel('Hub', ''), 'Hub')
+})
+
+test('hub row label: the active agent appends with the " > " separator', () => {
+  assert.equal(hubRowLabel('Hub', 'DSH'), 'Hub > DSH')
+  assert.equal(hubRowLabel('Hub', 'Codex'), 'Hub > Codex')
+})
+
+test('active agent name: the roster label decides, unknown keys degrade to the raw key', () => {
+  const roster = [
+    { key: 'native', label: 'DSH', path: '/' },
+    { key: 'codex', label: 'Codex', path: '/codex/' },
+  ]
+  assert.equal(activeAgentName('native', roster), 'DSH')
+  assert.equal(activeAgentName('codex', roster), 'Codex')
+  assert.equal(activeAgentName('mystery', roster), 'mystery', 'an unbaked key still names itself')
+  assert.equal(activeAgentName(undefined, roster), undefined)
+  assert.equal(activeAgentName('', roster), undefined)
+})
+
+test('label composition: atom key → roster label → row label (the wiring client/index.ts runs)', () => {
+  const roster = [{ key: 'native', label: 'DSH', path: '/' }, { key: 'omp', label: 'OMP', path: '/omp/' }]
+  assert.equal(hubRowLabel('Hub', activeAgentName('native', roster)), 'Hub > DSH')
+  assert.equal(hubRowLabel('Hub', activeAgentName('omp', roster)), 'Hub > OMP')
+  assert.equal(hubRowLabel('Hub', activeAgentName(undefined, roster)), 'Hub', 'flag off: plain Hub')
+})
+
+test('machine group key: an absent machine is the local one', () => {
+  assert.equal(machineGroup({ key: 'omp', label: 'OMP', path: '/omp/' }), 'local')
+  assert.equal(machineGroup({ key: 'omp', label: 'OMP', path: '/omp/', machine: 'dev3' }), 'dev3')
+})
+
+test('machine grouping: one group per machine, first-appearance order, members keep roster order', () => {
+  const rows = [
+    { key: 'native', label: 'DSH', path: '/' },
+    { key: 'codex', label: 'Codex', path: '/codex/', machine: 'dev3' },
+    { key: 'omp', label: 'OMP', path: '/omp/' },
+    { key: 'claude', label: 'Claude', path: '/claude/', machine: 'dev3' },
+    { key: 'pi', label: 'Pi', path: '/pi/', machine: 'lab2' },
+  ]
+  assert.deepEqual(machineGroups(rows), [
+    { machine: 'local', agents: [rows[0], rows[2]] },
+    { machine: 'dev3', agents: [rows[1], rows[3]] },
+    { machine: 'lab2', agents: [rows[4]] },
+  ])
+})
+
+test('machine grouping: a machine-less roster is ONE group in roster order (today\'s shape renders flat)', () => {
+  const rows = [
+    { key: 'native', label: 'DSH', path: '/' },
+    { key: 'codex', label: 'Codex', path: '/codex/' },
+  ]
+  assert.deepEqual(machineGroups(rows), [{ machine: 'local', agents: rows }])
+  assert.deepEqual(machineGroups([]), [])
 })
 
 // ---- the flag-off Hub-rows shape (path-separation Part 2, T-E closeout) ---
