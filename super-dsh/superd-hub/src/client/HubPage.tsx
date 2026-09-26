@@ -4,7 +4,7 @@ import { RuntimeMark } from './runtime-icons.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
 import { freshMachineId, loadMachines, saveMachines, type HubMachine } from './machines-store.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
-import { hubRowActive, seatClickDecision } from '../switch-core.js'
+import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 
 /**
  * The Hub main panel (`main`, key `hub`): the hub-functionality home page.
@@ -19,8 +19,9 @@ import { hubRowActive, seatClickDecision } from '../switch-core.js'
  * intercepted, in-place `switchAgent`, NO navigation ever; the active row
  * tracks the `__SUPERD_UI_STATE__` atom. There is no non-fusion navigation
  * arm: the per-label URL family is retired (path-separation T-C — `/hub` is
- * the sole entry), so a row never links anywhere and a non-fusion page's
- * clicks are simply inert.
+ * the sole entry), so a row never links anywhere. Flag off (T-E): the switch
+ * affordance does not render at all — rows stay informational and carry the
+ * degradation hint chip, never a dead control (`switchAffordance`).
  *
  * @module superd-hub/client/HubPage
  */
@@ -140,6 +141,11 @@ export function HubPage(): React.JSX.Element {
   const [tab, setTab] = React.useState<'home' | 'workflows' | 'settings'>('home')
   // Baked before app boot and never mutated afterwards: per-page constant.
   const fusion = fusionPage()
+  // The flag-off shape (T-E): with no /<label>/ routes and no world UIs left
+  // in the product, a flag-off page has NO foreign entry — the switch
+  // affordance does not render and the rows stay informational with the
+  // degradation hint (never a dead control; no hrefs ship either way).
+  const switchUi = switchAffordance(fusion)
   // The fusion selection: the page atom is the authority (the URL is
   // irrelevant on a fused page). The atom seeds the first paint and the
   // subscription follows every switch — including one issued from another
@@ -477,8 +483,8 @@ export function HubPage(): React.JSX.Element {
             {agents?.map((agent) => (
               <HoverRow
                 key={agent.key}
-                clickable={fusion}
-                onClick={fusion ? (event) => { rowDecision(agent, event) } : undefined}
+                clickable={switchUi.available}
+                onClick={switchUi.available ? (event) => { rowDecision(agent, event) } : undefined}
               >
                 <RuntimeMark agentKey={agent.key} size={20} />
                 <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{agent.label}</span>
@@ -505,26 +511,34 @@ export function HubPage(): React.JSX.Element {
                   {displayPath(agent.path)}
                 </span>
                 {isActive(agent) && <span style={chipSelf}>current</span>}
-                {/* Switch-only (T-C): the per-label URL family is retired —
-                    /hub is the sole entry — so a row is no longer a
-                    hyperlink and there is no navigation arm at all (no
-                    middle-click / open-in-new-tab target either). The
-                    decision table still runs on every click — fusion:
-                    intercept + in-place switch; non-fusion: inert
-                    pass-through — the seatClickDecision contract, with the
-                    handler stopping propagation so the row-level handler
-                    does not double-run the attempt: one click, one
-                    decision. */}
-                <a
-                  aria-current={isActive(agent) ? 'page' : undefined}
-                  style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: fusion ? 'pointer' : undefined }}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    rowDecision(agent, event)
-                  }}
-                >
-                  switch
-                </a>
+                {/* Switch affordance (T-C switch-only; T-E flag-off shape):
+                    fusion page: the `switch` action, no href — every click
+                    runs the seatClickDecision table (intercept + in-place
+                    switch; the handler stops propagation so the row-level
+                    handler does not double-run the attempt — one click, one
+                    decision). Flag off: the affordance does NOT render — a
+                    hint chip explains the inert roster instead of a dead
+                    control (no /<label>/ route exists to reach, and no href
+                    ships anywhere in the Hub UI). */}
+                {switchUi.available ? (
+                  <a
+                    aria-current={isActive(agent) ? 'page' : undefined}
+                    style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer' }}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      rowDecision(agent, event)
+                    }}
+                  >
+                    switch
+                  </a>
+                ) : (
+                  <span
+                    title={`SUPERD_UI_FUSION is off — ${switchUi.hint}`}
+                    style={{ ...chip, color: 'var(--dsw-alias-label-caption)' }}
+                  >
+                    {switchUi.hint}
+                  </span>
+                )}
               </HoverRow>
             ))}
           </ul>

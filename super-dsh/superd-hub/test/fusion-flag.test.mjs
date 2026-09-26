@@ -21,7 +21,9 @@
 //   4. flag OFF on the SERVED ctx0 index (in-process boot replica, the
 //      ctx0-client-row recipe): zero fusion rows — the equivalence bar, ruled
 //      to cover fusion INJECTIONS only (the bare-name `super-dsh` client-half
-//      composition row is not gated and not part of the bar);
+//      composition row is not gated and not part of the bar). T-E closeout:
+//      flag OFF = NO foreign entry at all; the Hub rows degrade client-side
+//      (inert + hint, never dead hrefs — pinned at the delivered artifact);
 //   5. flag ON row config face on the SERVED index: web-trust row first, the
 //      fusion pair (transport script + flag global) after it, adjacent and
 //      last among the super-dsh rows — the served-order pin Task 3's review
@@ -58,6 +60,7 @@ const {
   Config,
 } = await import('../dist/fusion-transport.js')
 const { worldMountPatches } = await import('../dist/index.js')
+const { FUSION_OFF_HINT } = await import('../dist/switch-core.js')
 const { createRuntimeResolution, loadProfile, PluginPackages, boot } = await import('@deepseek-ai/dsh-app-boot')
 const { Context } = await import('@deepseek-ai/cordis')
 
@@ -196,6 +199,12 @@ async function servedCtx0Index(extraProfileRows) {
 }
 
 // ---- 4. flag OFF: the equivalence bar (zero fusion injections) -------------
+//
+// T-E closeout semantics: with T-C (per-label URL family retired) and T-D
+// (world webui rows disabled) landed, flag OFF means NO foreign entry at all.
+// The served ctx0 index still composes the full native face — including the
+// Hub UI client row, whose agent rows degrade client-side (inert + hint,
+// `switchAffordance`) rather than by composition absence.
 
 test('flag off (shipped default): the served ctx0 index carries zero fusion rows', async () => {
   const html = await servedCtx0Index([])
@@ -207,6 +216,34 @@ test('flag off (shipped default): the served ctx0 index carries zero fusion rows
   // is the gate and not a broken replica.
   assert.ok(html.includes('__DSH_TRANSPORT__'), 'the web-trust row is still served')
   assert.ok(html.includes('__DSH_BOOT__'), 'the composition graph is still served')
+  // The native face is fully functional: the Hub UI client row composes
+  // regardless of the flag (the bare-name row is not gated) — flag-off
+  // degradation happens client-side (inert rows + hint), never by absence.
+  assert.ok(html.includes('super-dsh/client.js'), 'the Hub UI client row is composed on a flag-off page too')
+})
+
+// ---- 4b. flag OFF Hub rows: inert-with-hint, never dead hrefs (T-E) --------
+//
+// The Hub rows are client-side, so the delivered bundle is the contract
+// surface (the ctx0-client-row precedent of pinning the delivered face):
+// the flag-off shape must SHIP in the artifact, and the artifact must carry
+// NO hyperlink at all — no /<label>/ route exists to reach (T-C), so any
+// surviving href would be a dead link.
+
+test('flag off Hub rows: the delivered client half ships the hint and zero hrefs', () => {
+  const delivered = readFileSync(join(LINE, 'client', 'index.js'), 'utf8')
+  // The chosen shape ships: inert rows + the degradation hint chip.
+  assert.ok(delivered.includes(FUSION_OFF_HINT), 'the flag-off hint ships in the delivered bundle')
+  // The hint is flag-gated through the SAME discriminator test 2 pins.
+  assert.ok(
+    delivered.includes(`${FUSION_FLAG_GLOBAL} === true`),
+    'the hint rendering rides the flag discriminator, never an unconditional branch',
+  )
+  // The dead-href red line: NO href prop anywhere in the bundle CODE (block
+  // comments stripped — the retained doc block legitimately mentions the
+  // retired href arm).
+  const code = delivered.replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.ok(!/["']href["']\s*[:=]/.test(code), 'no href prop survives in the Hub UI code — nothing can navigate')
 })
 
 // ---- 5. flag ON (row config face): web-trust first, fusion pair last -------

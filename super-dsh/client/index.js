@@ -625,6 +625,34 @@ function hubRowActive(input) {
 	if (input.fusion) return input.agentKey === input.activeAgent;
 	return input.agentPath === input.mountPath;
 }
+/** The degradation hint a Hub UI surface shows while the flag is off (T-E). */
+const FUSION_OFF_HINT = "fusion off — no foreign entry";
+/**
+* The flag-off shape of the Hub UI switch surfaces (path-separation Part 2
+* T-E closeout). With the per-label URL family retired (T-C) and the world
+* web UIs disabled (T-D), a flag-OFF ctx0 page has NO foreign entry at all —
+* and since T-C the Hub UI ships no hyperlinks either, so the smallest honest
+* rendering is an inert roster with a visible degradation hint instead of a
+* silently dead control:
+*
+*   - `available: true` (fusion page): the affordance renders — the HubPage
+*     `switch` action and the HubPanelIcon chevron menu.
+*   - `available: false` (flag off): the affordance is NOT rendered; the row
+*     keeps its roster information and carries the hint chip
+*     ({@link FUSION_OFF_HINT}) in its place. Nothing navigates — there is
+*     nothing to navigate to.
+*
+* Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
+*/
+function switchAffordance(fusion) {
+	return fusion ? {
+		available: true,
+		hint: ""
+	} : {
+		available: false,
+		hint: FUSION_OFF_HINT
+	};
+}
 /**
 * Build the switch machine over an injected {@link SwitchHost}.
 *
@@ -960,6 +988,7 @@ function HubPage() {
 	const [rosterFailed, setRosterFailed] = react.useState(false);
 	const [tab, setTab] = react.useState("home");
 	const fusion = fusionPage();
+	const switchUi = switchAffordance(fusion);
 	const [activeKey, setActiveKey] = react.useState(() => fusion ? uiState()?.activeAgent : void 0);
 	react.useEffect(() => {
 		let cancelled = false;
@@ -1396,8 +1425,8 @@ function HubPage() {
 								},
 								children: "Loading roster…"
 							}), agents?.map((agent) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, {
-								clickable: fusion,
-								onClick: fusion ? (event) => {
+								clickable: switchUi.available,
+								onClick: switchUi.available ? (event) => {
 									rowDecision(agent, event);
 								} : void 0,
 								children: [
@@ -1436,19 +1465,26 @@ function HubPage() {
 										style: chipSelf,
 										children: "current"
 									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+									switchUi.available ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 										"aria-current": isActive(agent) ? "page" : void 0,
 										style: {
 											fontSize: 12.5,
 											color: "var(--dsw-alias-label-secondary)",
 											textDecoration: "none",
-											cursor: fusion ? "pointer" : void 0
+											cursor: "pointer"
 										},
 										onClick: (event) => {
 											event.stopPropagation();
 											rowDecision(agent, event);
 										},
 										children: "switch"
+									}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										title: `SUPERD_UI_FUSION is off — ${switchUi.hint}`,
+										style: {
+											...chip,
+											color: "var(--dsw-alias-label-caption)"
+										},
+										children: switchUi.hint
 									})
 								]
 							}, agent.key))]
@@ -1470,6 +1506,7 @@ function HubPanelIcon({ size }) {
 	const [box, setBox] = react.useState(null);
 	const [agents, setAgents] = react.useState(() => rosterFromGlobal() ?? [NATIVE_LINK]);
 	const fusion = fusionPage();
+	const switchUi = switchAffordance(fusion);
 	const [activeKey, setActiveKey] = react.useState(() => fusion ? uiState()?.activeAgent : void 0);
 	react.useEffect(() => {
 		if (!fusion) return;
@@ -1544,7 +1581,7 @@ function HubPanelIcon({ size }) {
 		},
 		children: [
 			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(HubGlyph, { size }),
-			wide && box !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+			wide && box !== null && switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 				role: "button",
 				tabIndex: 0,
 				"aria-label": "Agent selector",
@@ -1620,7 +1657,7 @@ function HubPanelIcon({ size }) {
 						textDecoration: "none",
 						color: "inherit",
 						fontSize: 13,
-						cursor: fusion ? "pointer" : void 0,
+						cursor: "pointer",
 						background: isActive(agent) ? "color-mix(in srgb, currentColor 10%, transparent)" : "transparent"
 					},
 					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {

@@ -15,11 +15,13 @@ import {
   NATIVE_AGENT,
   SESSIONS_CURRENT_KEY,
   SWITCH_FALLBACK_MS,
+  FUSION_OFF_HINT,
   namespacedKey,
   storageNamespace,
   parseLandingTarget,
   seatClickDecision,
   hubRowActive,
+  switchAffordance,
   createSwitchController,
   observeCachesRefreshed,
 } from '../dist/switch-core.js'
@@ -577,4 +579,23 @@ test('T-B composition: a Hub row click runs the SAME table the seat ran', () => 
     wiring({ fusion: false, activeAgent: undefined, agentKey: 'omp', agentPath: '/omp/', mountPath: '/', bound: true }),
     { preventDefault: false, attempted: false, attempts: 0 },
   )
+})
+
+// ---- the flag-off Hub-rows shape (path-separation Part 2, T-E closeout) ---
+// Flag OFF on a ctx0 page = NO foreign entry at all (T-C retired the
+// /<label>/ routes, T-D retired the world web UIs — there is nothing a row
+// could navigate to). The chosen shape: the roster stays informational, but
+// the switch affordance does NOT render — inert rows + the visible
+// degradation hint, never a silently dead control, and no hrefs ship in the
+// Hub UI at all (the delivered-artifact red line is pinned in
+// fusion-flag.test.mjs).
+
+test('switch affordance, fusion page: available — the sole switch surface renders', () => {
+  assert.deepEqual(switchAffordance(true), { available: true, hint: '' })
+})
+
+test('switch affordance, flag off: unavailable with the degradation hint — never a dead control', () => {
+  assert.deepEqual(switchAffordance(false), { available: false, hint: FUSION_OFF_HINT })
+  assert.ok(FUSION_OFF_HINT.includes('fusion off'), 'the hint names the degradation itself')
+  assert.ok(FUSION_OFF_HINT.includes('no foreign entry'), 'the hint states the flag-off reality: no foreign entry exists')
 })

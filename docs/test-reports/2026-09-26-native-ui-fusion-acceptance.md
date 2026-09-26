@@ -162,3 +162,55 @@ generation failAll/取代编排是 client 半行为（`switch-core.ts` 注入式
 ## 附录：0.1.3-zi 复验（终审修复波）
 
 终审（whole-branch）判定 Ready to merge，修复波 commit `752c776` 落地三项（唯一 `agent` 参数手术 + 裸 `?` 折叠；download 锚 href 点击后还原；delivered bundle 漂移守卫——179/179 全绿，delivered bundle 字节不变证明修复全在 host 半边）。本节落档时以 0.1.3-zi 重新 pack 并重启 4996 rig 供 user 亲手测——user 轮测试对象为 **zi**（transport 脚本含锚还原与参数手术；server 面与 zh 等价）。
+
+---
+
+## 附录二：T-E 验收增补（path-separation Part 2 收口轮，2026-09-26 晚）
+
+### 状态基线
+
+path-separation Part 2 五任务全部 landed 且评审干净：T-A `1cefd30`（落位修复）→ T-B `223e6c4`（Hub UI 唯一 switch 面，RuntimeSeat 退役）→ T-C `a751eb2`（per-label URL 族退役，`/hub` 唯一入口）→ T-D `9986942`（世界 webui 行 disable，世界=纯数据面；勘误：保留 roster 行部分为 `/hub` fetch 通道所承重，勿裁）→ **T-E 本轮**（flag 语义收口 + 全量回归 + rig 交付）。
+
+### Flag 语义收口（native-ui-only 现实）
+
+- **代码**：`fusion-transport.ts` `deriveFusionFlag` 区新增语义注块——无 fallback 路线后，flag-OFF = **零 foreign 入口**（`/<label>/` 页与世界 webui 均已从产品退役，非被 flag 门控）；flag-ON = `/hub` 唯一面 + 页内切换。出厂默认维持 OFF（默认翻 ON 属 user 放行轮，§〇.1 两道闸）。
+- **flag-OFF Hub 行为调查结论**：T-C 后两处 switch 面（HubPage 行、HubPanelIcon chevron 菜单）均已无 `href`（无死链、无导航臂），但 flag-OFF 下仍渲染 "switch"/chevron 死控件（点了无响应、无提示）。**选定最小正确形态 = 纯函数决策 `switchAffordance(fusion)`（switch-core.ts）**：flag-ON → 可用；flag-OFF → 不渲染 affordance，行保留 roster 信息并挂 `fusion off — no foreign entry` 提示 chip（HubPage）；chevron 整体不渲染（HubPanelIcon——其菜单唯一用途是切换）。UI 零 href 的红线在**交付 bundle** 上钉死（剥离块注释后零 `href` prop）。
+- **测试**：`client-switch.test.mjs` +2（affordance 双态）；`fusion-flag.test.mjs` flag-OFF served-index 测试增补断言（零融合行 + trust/boot 照常 + **hub client row 照常 compose**——降级发生在 client 半边而非组合缺席）+ 新增交付面测试（hint literal 在交付 bundle、flag discriminator 门控、零 href prop）。hub 套件 157→**160**。
+
+### 全量回归（0.1.3-zj）
+
+| 套件 | 结果 |
+|---|---|
+| superd-hub（含 drift guard：delivered client bundle 字节新鲜） | **160/160** |
+| agent-agy / claude / codex / hermes / omp / pi | 32 + 140 + 70 + 133 + 47 + 56 = **478/478** |
+| builds（hub host tsc + 两 client lane；pack 全量重建） | ✅ |
+
+### Pack 与 rig 交付（交付形态，port 4999）
+
+- Tarball：`.scratch/superd-pack/super-dsh-0.1.3-zj.tgz`（399.6 kB，shasum `62b8a789`）。
+- 旧 fusion rig units `superd-4996-test` + `superd-lan-4996-relay` 先行 stop（本线自有单位）。
+- Rig：`SUPERD_PORT=4999 SUPERD_HOME_DIR=<worktree>/.tests/superd-t-e SUPERD_UI_FUSION=1 bash super-dsh/test/start-4999.sh` → unit **`superd-4999-test`**（保持运行，user 验收）。fresh home，worlds 自举：`agents/{agy,claude,codex,hermes,omp,pi}/` 六 NS 齐。
+
+### 探针证据（命令 + 观察，2026-09-26 22:4x UTC+8）
+
+1. **Shell**：`GET /?token=…`（带 cookie 跳转）→ **200**；无 token → **401**。flag global ×1、transport script ×4 处标记、boot graph ×1、`super-dsh/client.js` hub row ×1。
+2. **次序钉**（served index 字节偏移）：web-trust@32147 < fusion-script@32410 < flag-global@43363 ✅。
+3. **Roster**：`GET /api/agent-runtime` → 200，**7 项**（native/claude/omp/codex/pi/hermes/agy，带 `path` 字段）。
+4. **/hub 语义**：无参 → `404 {"error":"foreign-only",…}`；`?agent=nope` → `404 {"error":"unknown-agent","label":"nope"}`；信封 POST `session/list?agent=pi` → **200 `{"ok":true,"value":{"items":[]}}`**；WS upgrade `/hub/api/remote.mux?agent=pi` → **101 + Sec-WebSocket-Accept 校验通过**。
+5. **退役族负探针**：`/pi/ /omp/ /claude/ /codex/ /hermes/ /agy/` 及 `/pi/api/agent-runtime` → 全 **404**（零 foreign 入口实证）。
+6. **create+prompt(+resume) 经 /hub**（`session/create` + `session/prompt` ×2）：
+   - pi：`session-56af9c6d…` — create 200 / prompt-1 accepted / turn-1 落定（running=false,blank=false）/ prompt-2(resume) accepted / turn-2 落定 ✅
+   - omp：`session-5c755435…` — 同上全绿 ✅
+7. **per-agent NS 落位**：两个 sessionId 均落 `<home>/agents/<label>/sessions/.../session.v4.jsonl.zstd`（fresh T-E home）；pi 的 `dsh-sessions.json` 正确指回原生 `~/.pi`（per-adapter home 裁决）✅。
+8. **Caddy 可信域回归（§7.5 deferred 项本轮补齐）**——`https://test.pc.internal.test/?token=…`：
+   - 认证 shell **200**（44,903 B，与 local 字节同量）；无认证 401；
+   - served index：web-trust@32147 **<** fusion-script@32410 **<** flag-global@43363，`__SUPERD_UI_FUSION__` 在；
+   - page-trust `__DSH_TRANSPORT__={ownsHost:true}` 脚本在，authorities 数组含 `test.pc.internal.test`（浏览器侧 trusted authority 行为）；
+   - native `/api` 信封 POST 经 Caddy → **200 `{"ok":true,"value":{"items":[]}}`**（fence 过）；
+   - 对照腿：显式 `Host: evil.example.com` + 认证 POST `/api/session/list` → **403 forbidden**（fence/reject 腿活体）；`Host: test.pc.internal.test` 直打 loopback → 401 unauthorized（authorize 腿先答，域 Host+非 Caddy 链路的既有次序语义，非本轮回归项）。
+
+### 遗留给 user 浏览器轮
+
+- 页内切换 UX（chevron 菜单 + HubPage 行、native↔foreign 往返、流中切换、失败回退 toast、落位 new-chat/recent）——服务器面与单测已全绿，浏览器手感归 user；
+- flag-OFF 页面的 Hub 行视觉形态（inert 行 + hint chip；本轮以交付 bundle 字节级钉死，浏览器目验待 user）；
+- flag 出厂默认翻 ON 的放行裁决（§〇.1 两道闸门）与 publish 另行请示。

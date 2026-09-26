@@ -341,9 +341,29 @@ export const FUSION_FLAG_ENV = 'SUPERD_UI_FUSION'
 export const FUSION_FLAG_GLOBAL = '__SUPERD_UI_FUSION__'
 
 /**
- * The minimal flag derivation: truthy spellings only (`1` / `true` / `yes` /
- * `on`, case-insensitive, trimmed). Anything else — unset included — is OFF,
- * so between Task 3 and Task 5 the runtime behavior is unchanged.
+ * The flag's SEMANTICS after the path-separation Part 2 closeout (T-C/T-D
+ * landed; this block is the T-E closeout record) — native-ui-only, there is
+ * no fallback route anywhere:
+ *
+ *   - ON: the ctx0 page fuses. The transport script arms the in-place switch
+ *     and `/hub` is the sole surface for every runtime. The per-label URL
+ *     family (`/<label>/` ctx0 pages, T-C) and the world web UIs (T-D) are
+ *     RETIRED from the product, not gated by this flag — there is nothing
+ *     navigational behind them to fall back to.
+ *   - OFF: NO foreign entry exists AT ALL. The served product is the bare
+ *     native UI plus the Hub panel as an information surface: the roster
+ *     still lists the runtimes (the control plane is not gated), but the
+ *     switch affordances render inert with the degradation hint
+ *     (`switchAffordance` in switch-core) instead of dead controls — a row
+ *     has no /<label>/ page to reach and the Hub UI ships no hrefs to reach
+ *     one with.
+ *
+ * The shipped default stays OFF (truthy env opt-in). Moving the default ON is
+ * the user's 放行 (acceptance/release) round — a two-gate decision per repo
+ * §〇.1, never a code-side choice.
+ *
+ * Derivation: truthy spellings only (`1` / `true` / `yes` / `on`,
+ * case-insensitive, trimmed). Anything else — unset included — is OFF.
  */
 export function deriveFusionFlag(env: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes((env ?? '').trim().toLowerCase())

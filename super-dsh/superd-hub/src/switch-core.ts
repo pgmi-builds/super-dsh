@@ -295,6 +295,38 @@ export function hubRowActive(input: HubRowActiveInput): boolean {
   return input.agentPath === input.mountPath
 }
 
+/** The degradation hint a Hub UI surface shows while the flag is off (T-E). */
+export const FUSION_OFF_HINT = 'fusion off — no foreign entry'
+
+/** What one Hub UI surface renders as its switch affordance (T-E closeout). */
+export interface SwitchAffordance {
+  /** Whether the in-place switch affordance may render at all. */
+  available: boolean
+  /** The degradation hint; non-empty exactly when {@link available} is false. */
+  hint: string
+}
+
+/**
+ * The flag-off shape of the Hub UI switch surfaces (path-separation Part 2
+ * T-E closeout). With the per-label URL family retired (T-C) and the world
+ * web UIs disabled (T-D), a flag-OFF ctx0 page has NO foreign entry at all —
+ * and since T-C the Hub UI ships no hyperlinks either, so the smallest honest
+ * rendering is an inert roster with a visible degradation hint instead of a
+ * silently dead control:
+ *
+ *   - `available: true` (fusion page): the affordance renders — the HubPage
+ *     `switch` action and the HubPanelIcon chevron menu.
+ *   - `available: false` (flag off): the affordance is NOT rendered; the row
+ *     keeps its roster information and carries the hint chip
+ *     ({@link FUSION_OFF_HINT}) in its place. Nothing navigates — there is
+ *     nothing to navigate to.
+ *
+ * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
+ */
+export function switchAffordance(fusion: boolean): SwitchAffordance {
+  return fusion ? { available: true, hint: '' } : { available: false, hint: FUSION_OFF_HINT }
+}
+
 /**
  * The effects the switch machine needs, all injected. Every method used by
  * the guarded steps ({@link setAgent}, the landing reads/writes,

@@ -2,7 +2,7 @@ import * as React from 'react'
 import { HubGlyph } from './glyph.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
-import { hubRowActive, seatClickDecision } from '../switch-core.js'
+import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 
 /**
  * The Hub sidebar row's icon share (`sidebar.panellist`, list id `hub`): the
@@ -17,8 +17,11 @@ import { hubRowActive, seatClickDecision } from '../switch-core.js'
  * `seatClickDecision` table — intercepted, in-place `switchAgent`, NO
  * navigation ever; the active row tracks the `__SUPERD_UI_STATE__` atom.
  * There is no non-fusion navigation arm: the per-label URL family is retired
- * (path-separation T-C — `/hub` is the sole entry), so non-fusion clicks are
- * simply inert.
+ * (path-separation T-C — `/hub` is the sole entry). Flag off (T-E): the
+ * chevron does not render — its menu's only purpose is switching, and with
+ * no foreign entry in the product a flag-off page renders the bare native
+ * row (opens the Hub panel) instead of a dead affordance
+ * (`switchAffordance`).
  *
  * Geometry: the native panel row renders this component inside its glyph
  * span, so the chevron and the menu are `position: fixed` against the row
@@ -56,6 +59,9 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
   const [agents, setAgents] = React.useState<AgentLink[]>(() => rosterFromGlobal() ?? [NATIVE_LINK])
   // Baked before app boot and never mutated afterwards: per-page constant.
   const fusion = fusionPage()
+  // The flag-off shape (T-E): the chevron is a switch affordance; with no
+  // foreign entry in the product it does not render on a flag-off page.
+  const switchUi = switchAffordance(fusion)
   // The fusion selection: the page atom is the authority; the subscription
   // follows every switch (another surface's included) and every revert.
   const [activeKey, setActiveKey] = React.useState<string | undefined>(
@@ -132,7 +138,7 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
       {/* Exactly the size the sidebar asks for (16 wide / 18 rail) — the same
           treatment as the native Plugins row. */}
       <HubGlyph size={size} />
-      {wide && box !== null && (
+      {wide && box !== null && switchUi.available && (
         <span
           role="button"
           tabIndex={0}
@@ -187,9 +193,10 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
             // is the sole entry — so a menu entry is no longer a hyperlink
             // and there is no navigation arm (no middle-click /
             // open-in-new-tab target either). Every click runs the
-            // seatClickDecision table — fusion: intercept + in-place switch,
-            // the active entry included; non-fusion: inert pass-through
-            // (contract inherited from the retired sidebar seat).
+            // seatClickDecision table — intercept + in-place switch, the
+            // active entry included. The menu only exists on a fusion page
+            // (the chevron is gated by switchAffordance, T-E), so the
+            // non-fusion arm of the table is unreachable here.
             <a
               key={agent.key}
               aria-current={isActive(agent) ? 'page' : undefined}
@@ -215,7 +222,7 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
                 textDecoration: 'none',
                 color: 'inherit',
                 fontSize: 13,
-                cursor: fusion ? 'pointer' : undefined,
+                cursor: 'pointer',
                 background: isActive(agent) ? 'color-mix(in srgb, currentColor 10%, transparent)' : 'transparent',
               }}
             >
