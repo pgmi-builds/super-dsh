@@ -10,7 +10,9 @@
  *     into a closure — after setAgent the same request expression retargets):
  *       1. `globalThis.fetch` — while a FOREIGN agent is active, a same-origin
  *          request whose path starts with `/api` is re-rooted under `/hub`
- *          and gains `?agent=<label>` (existing query + hash preserved);
+ *          and gains exactly one `agent=<label>` param (a pre-existing agent
+ *          key is replaced, never duplicated — the server demuxes repeated
+ *          params to the FIRST value; other query bytes + hash preserved);
  *       2. `WebSocket` / `EventSource` Proxy constructors + `XMLHttpRequest.open`
  *          — the same rule (the mux WS lands on `/hub/api/remote.mux`);
  *       3. `__DSH_FILE_UPLOAD__ = { fetch }` — uploads ride patch 1 (the
@@ -18,6 +20,8 @@
  *          must exist before app boot);
  *       4. `HTMLAnchorElement.prototype.click` — ONLY download anchors with a
  *          same-origin `/api` href rewrite (the narrow client-shim r2 rule);
+ *          the rewrite is transient — saved around the native click and
+ *          restored after, so an agent switch re-targets the same anchor;
  *       5. `Storage.prototype` get/set/removeItem — namespace read at call
  *          time: native = no prefix, foreign = `'<label>:'`.
  *   - one control-plane exemption: `/api/agent-runtime` is NEVER rewritten —
@@ -114,13 +118,34 @@ try {
   const isApiPath = (path) => path === '/api' || path.startsWith('/api/')
   // Control-plane exemption: the roster control plane always hits ctx0.
   const isExempt = (path) => path === CONTROL || path.startsWith(CONTROL + '/')
-  // Pure string surgery on (path, search, hash): existing query bytes and the
-  // hash survive byte-for-byte; only the path grows the '/hub' prefix and the
-  // demux key rides in as one appended parameter.
+  // Key compare matches the server demux shape: searchParams.get('agent')
+  // looks up PERCENT-DECODED keys, so '%61gent=x' demuxes as agent=x and the
+  // surgery must strip those spellings too (+' ' wins the '+' spelling).
+  const decodedKey = (k) => {
+    try { return decodeURIComponent(k.replace(/\\+/g, ' ')) } catch { return k }
+  }
+  const isAgentKey = (k) => k === 'agent' || decodedKey(k) === 'agent'
+  // Pure string surgery on (path, search, hash): the '/hub' prefix grows on
+  // the path, the hash survives byte-for-byte, and EXACTLY ONE agent param
+  // carries the active label. A pre-existing agent key is stripped before the
+  // fresh one lands — appending blindly would leave two agent params and the
+  // server demuxes to the FIRST value (searchParams.get), i.e. the wrong
+  // world with no trace. Non-agent query pairs keep their exact bytes and
+  // order; a bare '?' (no pairs) collapses instead of doubling the question
+  // mark, which would swallow the demux key.
   const retarget = (path, search, hash) => {
     if (isExempt(path) || !isApiPath(path)) return null
-    const joiner = search === '' || search === '?' ? '?' : '&'
-    return HUB + path + search + joiner + 'agent=' + encodeURIComponent(String(state.activeAgent)) + hash
+    let kept = ''
+    if (search.length > 1) {
+      const survivors = []
+      for (const pair of (search.charAt(0) === '?' ? search.slice(1) : search).split('&')) {
+        if (pair === '') continue
+        const eq = pair.indexOf('=')
+        if (!isAgentKey(eq === -1 ? pair : pair.slice(0, eq))) survivors.push(pair)
+      }
+      kept = survivors.join('&')
+    }
+    return HUB + path + (kept === '' ? '?' : '?' + kept + '&') + 'agent=' + encodeURIComponent(String(state.activeAgent)) + hash
   }
   const rewriteUrlString = (s) => {
     if (typeof s !== 'string' || s === '') return s
@@ -245,16 +270,31 @@ try {
       g.__SUPERD_UI_FUSION_ANCHOR__ = true
       const nativeAnchorClick = g.HTMLAnchorElement.prototype.click
       g.HTMLAnchorElement.prototype.click = function (...args) {
+        let original = null
         try {
           if (foreign() && this.hasAttribute('download')) {
             const current = this.getAttribute('href')
             if (typeof current === 'string' && current !== '') {
               const next = rewriteSafe(current)
-              if (typeof next === 'string' && next !== current) this.setAttribute('href', next)
+              if (typeof next === 'string' && next !== current) {
+                this.setAttribute('href', next)
+                original = current
+              }
             }
           }
         } catch { /* best-effort: never break the click itself */ }
-        return nativeAnchorClick.apply(this, args)
+        try {
+          return nativeAnchorClick.apply(this, args)
+        } finally {
+          // The rewrite is TRANSIENT: restored right after the native click,
+          // so the rewritten /hub/api href never outlives it. A persisted
+          // rewrite would survive an agent switch and the next click would
+          // browse the stale /hub/api form — no /api match, no re-rewrite,
+          // wrong-agent download.
+          if (original !== null) {
+            try { this.setAttribute('href', original) } catch { /* best-effort */ }
+          }
+        }
       }
     }
   } catch { /* best-effort */ }

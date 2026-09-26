@@ -210,28 +210,110 @@ test('foreign: WebSocket, EventSource and XMLHttpRequest follow the same rule', 
   assert.equal(sandbox.calls.xhr[1].url, '/api/agent-runtime', 'control plane exempt on XHR too')
 })
 
+// ---- the demux key is UNIQUE: a pre-existing agent param is REPLACED ----
+
+test('foreign fetch: a pre-existing agent key is replaced, never appended (single demux key)', async () => {
+  const { sandbox, install } = page()
+  install()
+  const state = sandbox.__SUPERD_UI_STATE__
+  state.setAgent('codex')
+  // The page believes codex while the URL still carries agent=claude: an
+  // appended duplicate would leave TWO agent params and the server demuxes
+  // to the FIRST value (searchParams.get) — the wrong world with no trace.
+  await sandbox.fetch('/api/x?agent=claude')
+  const rewritten = String(sandbox.calls.fetch[0].input)
+  assert.equal(rewritten, '/hub/api/x?agent=codex', 'exactly the active label survives')
+  assert.equal(new URL(rewritten, 'http://host:4999').searchParams.get('agent'), 'codex', 'the server-side demux reads codex')
+  // Doubled spellings collapse to the one fresh key too.
+  await sandbox.fetch('/api/x?agent=claude&agent=omp')
+  assert.equal(sandbox.calls.fetch[1].input, '/hub/api/x?agent=codex')
+  // Bare-flag spelling (agent with no =) is still an agent key.
+  await sandbox.fetch('/api/x?agent')
+  assert.equal(sandbox.calls.fetch[2].input, '/hub/api/x?agent=codex')
+  // A percent-encoded key spelling demuxes as agent=x server-side: stripped too.
+  await sandbox.fetch('/api/x?%61gent=claude')
+  assert.equal(new URL(String(sandbox.calls.fetch[3].input), 'http://host:4999').searchParams.get('agent'), 'codex')
+})
+
+test('foreign rewrite: non-agent query bytes keep their places, the demux key lands last', async () => {
+  const { sandbox, install } = page()
+  install()
+  sandbox.__SUPERD_UI_STATE__.setAgent('omp')
+  await sandbox.fetch('/api/x?a=1&agent=claude&b=2#h')
+  assert.equal(sandbox.calls.fetch[0].input, '/hub/api/x?a=1&b=2&agent=omp#h')
+  await sandbox.fetch('http://host:4999/api/x?agent=claude&y=1')
+  assert.equal(sandbox.calls.fetch[1].input, 'http://host:4999/hub/api/x?y=1&agent=omp')
+  // The companion deferred minor: a bare-'?' URL collapses into ONE fresh
+  // question mark — the old '??' doubled form swallowed the demux key.
+  await sandbox.fetch('/api/session.export?')
+  assert.equal(sandbox.calls.fetch[2].input, '/hub/api/session.export?agent=omp')
+  await sandbox.fetch('/api/session.export?#top')
+  assert.equal(sandbox.calls.fetch[3].input, '/hub/api/session.export?agent=omp#top')
+})
+
+test('foreign: the demux-key surgery holds on the socket and XHR faces too', () => {
+  const { sandbox, install } = page()
+  install()
+  sandbox.__SUPERD_UI_STATE__.setAgent('codex')
+  new sandbox.WebSocket('/api/remote.mux?agent=claude')
+  assert.equal(sandbox.calls.ws[0].url, '/hub/api/remote.mux?agent=codex')
+  const xhr = new sandbox.XMLHttpRequest()
+  xhr.open('GET', '/api/session/export?token=t&agent=claude')
+  assert.equal(sandbox.calls.xhr[0].url, '/hub/api/session/export?token=t&agent=codex')
+})
+
 test('foreign: only download anchors with same-origin /api hrefs rewrite', () => {
   const { sandbox, install } = page()
   install()
   sandbox.__SUPERD_UI_STATE__.setAgent('codex')
+  // The rewrite is transient (saved around the native click, restored after):
+  // the BROWSER sees the rewritten href — asserted via the native click —
+  // while the anchor keeps owning its original attribute afterwards.
   const download = new sandbox.HTMLAnchorElement('/api/session.export?x=1')
   download.setAttribute('download', 's.zip')
   download.click()
-  assert.equal(download.getAttribute('href'), '/hub/api/session.export?x=1&agent=codex')
+  assert.equal(sandbox.calls.clicks.at(-1).href, '/hub/api/session.export?x=1&agent=codex')
+  assert.equal(download.getAttribute('href'), '/api/session.export?x=1', 'restored: the rewrite does not outlive the click')
   const absolute = new sandbox.HTMLAnchorElement('http://host:4999/api/session.export?x=1')
   absolute.setAttribute('download', 's.zip')
   absolute.click()
-  assert.equal(absolute.getAttribute('href'), 'http://host:4999/hub/api/session.export?x=1&agent=codex')
+  assert.equal(sandbox.calls.clicks.at(-1).href, 'http://host:4999/hub/api/session.export?x=1&agent=codex')
+  assert.equal(absolute.getAttribute('href'), 'http://host:4999/api/session.export?x=1', 'restored')
   const foreign = new sandbox.HTMLAnchorElement('http://other:1234/api/x')
   foreign.setAttribute('download', 's.zip')
   foreign.click()
+  assert.equal(sandbox.calls.clicks.at(-1).href, 'http://other:1234/api/x')
   assert.equal(foreign.getAttribute('href'), 'http://other:1234/api/x')
   const selector = new sandbox.HTMLAnchorElement('/omp/') // navigation anchor: never touched
   selector.click()
+  assert.equal(sandbox.calls.clicks.at(-1).href, '/omp/')
   assert.equal(selector.getAttribute('href'), '/omp/')
   const nav = new sandbox.HTMLAnchorElement('/api/session.export') // /api WITHOUT download: untouched
   nav.click()
+  assert.equal(sandbox.calls.clicks.at(-1).href, '/api/session.export')
   assert.equal(nav.getAttribute('href'), '/api/session.export')
+})
+
+test('switch agents, click the SAME download anchor twice: each click rides the then-active agent', () => {
+  const { sandbox, install } = page()
+  install()
+  const state = sandbox.__SUPERD_UI_STATE__
+  const anchor = new sandbox.HTMLAnchorElement('/api/session.export?x=1')
+  anchor.setAttribute('download', 's.zip')
+  state.setAgent('codex')
+  anchor.click()
+  assert.deepEqual(sandbox.calls.clicks[0], { href: '/hub/api/session.export?x=1&agent=codex', args: [] },
+    'first click lands on the then-active agent')
+  assert.equal(anchor.getAttribute('href'), '/api/session.export?x=1', 'the rewrite does not outlive the click')
+  state.setAgent('omp')
+  anchor.click()
+  assert.deepEqual(sandbox.calls.clicks[1], { href: '/hub/api/session.export?x=1&agent=omp', args: [] },
+    'the SAME anchor re-targets after the switch (a persisted /hub/api href would skip the rewrite: isApiPath no longer matches)')
+  state.setAgent('native')
+  anchor.click()
+  assert.deepEqual(sandbox.calls.clicks[2], { href: '/api/session.export?x=1', args: [] },
+    'back to native the anchor behaves byte-identical again')
+  assert.equal(anchor.getAttribute('href'), '/api/session.export?x=1', 'the original href is what the page keeps owning')
 })
 
 test('foreign: the file-upload hook rides the rewriting fetch', async () => {
