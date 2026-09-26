@@ -4,9 +4,13 @@
 # exports, so every row below is individually toggleable on the plugin page
 # (cordis hmr; docs/06 §二.5 — insert rows = the "Components" lines).
 #
-#   - super-dsh/hub            the hub: selector + roster + per-world mount
-#                              carrier + V5 gateway delegation (wraps the live
-#                              typertGateway; upstream dispatch untouched)
+#   - super-dsh/hub            the hub host library (selector + roster +
+#                              per-world mount carrier + V5 gateway
+#                              delegation) — ships for the adapters' relative
+#                              imports (world spawn/mount/carrier/web-trust);
+#                              the ctx0 control-plane row and ui client half
+#                              were stripped in 0.1.4 (archival final state
+#                              of the multi-webui path)
 #   - super-dsh/agents/<label>  one world plugin per adapter (activation IS
 #                              roster membership, S2) — each spawns its own
 #                              zero-port sibling root, mounted under /<label>

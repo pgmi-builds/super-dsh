@@ -14,7 +14,7 @@ the foreign store.
 ## Install
 
 ```bash
-dsh plugin --profile <name> add super-dsh@0.1.0
+dsh plugin --profile <name> add super-dsh@0.1.4
 ```
 
 That single package composes the whole line (`@pgmi-builds/superd-hub` plus the
