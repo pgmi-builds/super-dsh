@@ -822,7 +822,8 @@ test('T-B composition: a Hub row click runs the SAME table the seat ran', () => 
 // The hub row reads `Hub` alone today; on a fusion page it must read
 // `Hub > <active agent's display name>` (plain `Hub` with the flag off —
 // no atom, no suffix). The chevron menu groups the roster by machine
-// (`AgentLink.machine ?? 'local'`) the way the native workspace list groups
+// (`AgentLink.machine` — carried on the wire, defaulted to 'local' once at
+// the roster parse boundary) the way the native workspace list groups
 // its sections, a light divider between groups. Pure halves pinned here;
 // the visual treatment lives in HubPanelIcon, the label push (re-register)
 // in client/index.ts.
@@ -840,8 +841,8 @@ test('hub row label: the active agent appends with the " > " separator', () => {
 
 test('active agent name: the roster label decides, unknown keys degrade to the raw key', () => {
   const roster = [
-    { key: 'native', label: 'DSH', path: '/' },
-    { key: 'codex', label: 'Codex', path: '/codex/' },
+    { key: 'native', label: 'DSH', path: '/', machine: 'local' },
+    { key: 'codex', label: 'Codex', path: '/codex/', machine: 'local' },
   ]
   assert.equal(activeAgentName('native', roster), 'DSH')
   assert.equal(activeAgentName('codex', roster), 'Codex')
@@ -851,22 +852,22 @@ test('active agent name: the roster label decides, unknown keys degrade to the r
 })
 
 test('label composition: atom key → roster label → row label (the wiring client/index.ts runs)', () => {
-  const roster = [{ key: 'native', label: 'DSH', path: '/' }, { key: 'omp', label: 'OMP', path: '/omp/' }]
+  const roster = [{ key: 'native', label: 'DSH', path: '/', machine: 'local' }, { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' }]
   assert.equal(hubRowLabel('Hub', activeAgentName('native', roster)), 'Hub > DSH')
   assert.equal(hubRowLabel('Hub', activeAgentName('omp', roster)), 'Hub > OMP')
   assert.equal(hubRowLabel('Hub', activeAgentName(undefined, roster)), 'Hub', 'flag off: plain Hub')
 })
 
-test('machine group key: an absent machine is the local one', () => {
-  assert.equal(machineGroup({ key: 'omp', label: 'OMP', path: '/omp/' }), 'local')
+test('machine group key: the row\'s own machine — no helper fallback (the parse boundary owns the default)', () => {
+  assert.equal(machineGroup({ key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' }), 'local')
   assert.equal(machineGroup({ key: 'omp', label: 'OMP', path: '/omp/', machine: 'dev3' }), 'dev3')
 })
 
 test('machine grouping: one group per machine, first-appearance order, members keep roster order', () => {
   const rows = [
-    { key: 'native', label: 'DSH', path: '/' },
+    { key: 'native', label: 'DSH', path: '/', machine: 'local' },
     { key: 'codex', label: 'Codex', path: '/codex/', machine: 'dev3' },
-    { key: 'omp', label: 'OMP', path: '/omp/' },
+    { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' },
     { key: 'claude', label: 'Claude', path: '/claude/', machine: 'dev3' },
     { key: 'pi', label: 'Pi', path: '/pi/', machine: 'lab2' },
   ]
@@ -877,10 +878,28 @@ test('machine grouping: one group per machine, first-appearance order, members k
   ])
 })
 
-test('machine grouping: a machine-less roster is ONE group in roster order (today\'s shape renders flat)', () => {
+test('machine grouping: two machines → two groups — the divider renders between them', () => {
+  // The wire's live shape now (roster carries machine): this machine's rows
+  // plus a foreign machine's. HubPanelIcon draws its hairline divider exactly
+  // when `groupIndex > 0` over `machineGroups(agents)` — two groups = one
+  // divider, between them.
   const rows = [
-    { key: 'native', label: 'DSH', path: '/' },
-    { key: 'codex', label: 'Codex', path: '/codex/' },
+    { key: 'native', label: 'DSH', path: '/', machine: 'local' },
+    { key: 'codex', label: 'Codex', path: '/codex/', machine: 'dev3' },
+    { key: 'omp', label: 'OMP', path: '/omp/', machine: 'dev3' },
+  ]
+  const groups = machineGroups(rows)
+  assert.deepEqual(groups, [
+    { machine: 'local', agents: [rows[0]] },
+    { machine: 'dev3', agents: [rows[1], rows[2]] },
+  ])
+  assert.ok(groups.length > 1, 'more than one group → the menu draws the between-groups divider')
+})
+
+test('machine grouping: an all-local roster (the wire\'s today shape) is ONE group in roster order (renders flat)', () => {
+  const rows = [
+    { key: 'native', label: 'DSH', path: '/', machine: 'local' },
+    { key: 'codex', label: 'Codex', path: '/codex/', machine: 'local' },
   ]
   assert.deepEqual(machineGroups(rows), [{ machine: 'local', agents: rows }])
   assert.deepEqual(machineGroups([]), [])

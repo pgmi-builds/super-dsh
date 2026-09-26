@@ -519,8 +519,8 @@ export interface HubRosterRow {
   readonly label: string
   /** The row's mount path. */
   readonly path: string
-  /** Machine the runtime comes from; an absent machine is the local one. */
-  readonly machine?: string
+  /** Machine the runtime comes from (the roster parser guarantees it — `'local'` when an older host shape omitted it). */
+  readonly machine: string
 }
 
 /**
@@ -543,14 +543,14 @@ export function hubRowLabel(base: string, activeAgent?: string): string {
     : `${base} > ${activeAgent}`
 }
 
-/** Which machine one roster row groups under: an absent machine is the local one. */
+/** Which machine one roster row groups under: the row's own machine (parser-guaranteed). */
 export function machineGroup(row: HubRosterRow): string {
-  return row.machine ?? 'local'
+  return row.machine
 }
 
 /** One machine's group of roster rows, in roster order. */
 export interface MachineGroup {
-  /** The grouping key (`machine ?? 'local'`). */
+  /** The grouping key (the members' shared `machine`). */
   readonly machine: string
   /** The rows of this machine, keeping the roster's own order. */
   readonly agents: readonly HubRosterRow[]

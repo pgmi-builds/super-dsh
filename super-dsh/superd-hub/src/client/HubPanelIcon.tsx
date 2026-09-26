@@ -28,8 +28,9 @@ import { hubRowActive, machineGroups, seatClickDecision, switchAffordance } from
  * (`switchAffordance`).
  *
  * Menu look (native workspace-list reference): no outer card border; the
- * roster grouped by machine (`machineGroups` — `AgentLink.machine ?? 'local'`,
- * groups in first-appearance order) with a very light divider line between
+ * roster grouped by machine (`machineGroups` — `AgentLink.machine`, the
+ * wire-carried field the roster parser guarantees, groups in first-appearance
+ * order) with a very light divider line between
  * groups; every row leads with the Hub page's runtime mark (`RuntimeMark`)
  * at menu scale. Pure restyle — the click contract below is untouched.
  *
@@ -208,7 +209,8 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
         >
           {machineGroups(agents).map((group, groupIndex) => (
             // Native workspace-list grouping: one block per machine
-            // (`AgentLink.machine ?? 'local'`), a very light divider line
+            // (`AgentLink.machine`, wire-carried + parser-guaranteed), a very
+            // light divider line
             // between groups (hairline, slightly inset — the reference's
             // treatment). Presentation only; the click contract below is
             // byte-identical to the flat list it replaces.

@@ -4,6 +4,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { handleAgentRuntime, registerSelectorRpc } from '../dist/rpc.js'
+import { registerAgent, unregisterAgent } from '../dist/index.js'
+import { registerHostMount } from '../dist/world-host.js'
+import { agentRosterRow } from '../dist/agent-roster.js'
 
 function fakeCtx() {
   const routes = []
@@ -27,7 +30,7 @@ test('GET exposes the available worlds AND the roster paths the selector navigat
   assert.deepEqual(body.available, ['native', 'omp'])
   // `agents` is the roster: native always, plus every key that currently owns a
   // host mount (none in this unit test), so the selector has a path per entry.
-  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/' }])
+  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/', machine: 'local' }])
 })
 
 test('POST carries NO switch: selection is per-request (mount path)', async () => {
@@ -53,5 +56,26 @@ test('registerSelectorRpc mounts the control face on the shared /api channel', a
   const res = await ctx.routes[0].fetch(new Request('http://x/api/agent-runtime'))
   const body = await res.json()
   assert.deepEqual(body.available, ['native'])
-  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/' }])
+  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/', machine: 'local' }])
+})
+
+test('the roster wire carries machine on native AND adapter rows (local constant)', async () => {
+  registerAgent({ key: 'omp', label: 'OMP', ready: true })
+  const disposeMount = registerHostMount({ key: 'omp', labelPath: '/omp' })
+  try {
+    const res = await handleAgentRuntime(new Request('http://x/api/agent-runtime'), {
+      listRuntimes: () => ['native', 'omp'],
+    })
+    const body = await res.json()
+    assert.deepEqual(body.agents, [
+      { key: 'native', label: 'DSH', path: '/', machine: 'local' },
+      { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' },
+    ])
+    // The baked-index emitter (gateway's `webserver/index-inject` global,
+    // seeding the first paint) projects the same rows — one wire shape.
+    assert.deepEqual(agentRosterRow().value.agents, body.agents)
+  } finally {
+    disposeMount()
+    unregisterAgent('omp')
+  }
 })

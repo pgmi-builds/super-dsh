@@ -10,17 +10,21 @@
  * @module superd-hub/client/roster
  */
 
-/** One runtime as the roster hands it over: key, display label, mount path. */
+/** One runtime as the roster hands it over: key, display label, mount path, machine. */
 export interface AgentLink {
   readonly key: string
   readonly label: string
   readonly path: string
-  /** Machine the runtime comes from; an absent machine is the local one. */
-  readonly machine?: string
+  /**
+   * Machine the runtime comes from. Guaranteed by the parser: the host wire
+   * carries it (`machine: 'local'` today) and an older shape defaults to
+   * `'local'` right here — the parse boundary is the only defensive default.
+   */
+  readonly machine: string
 }
 
 /** The native runtime every composition can fall back to. */
-export const NATIVE_LINK: AgentLink = { key: 'native', label: 'DSH', path: '/' }
+export const NATIVE_LINK: AgentLink = { key: 'native', label: 'DSH', path: '/', machine: 'local' }
 
 /** Labels for the read-only face's bare keys (it reports keys, not labels). */
 const FALLBACK_LABELS: Record<string, string> = {
@@ -45,7 +49,9 @@ function coerceAgents(raw: unknown): AgentLink[] | undefined {
       key,
       label: typeof label === 'string' ? label : (FALLBACK_LABELS[key] ?? key),
       path,
-      ...(typeof machine === 'string' ? { machine } : {}),
+      // The parse boundary's one defensive default: older host shapes without
+      // machine are local-machine rosters.
+      machine: typeof machine === 'string' ? machine : 'local',
     })
   }
   return links.length > 0 ? links : undefined
@@ -83,7 +89,7 @@ export async function fetchRoster(): Promise<AgentLink[]> {
       if (typeof key !== 'string') continue
       links.push(key === 'native'
         ? NATIVE_LINK
-        : { key, label: FALLBACK_LABELS[key] ?? key, path: `/${key}/` })
+        : { key, label: FALLBACK_LABELS[key] ?? key, path: `/${key}/`, machine: 'local' })
     }
     if (links.length > 0) return links
   }

@@ -511,7 +511,7 @@ export function HubPage(): React.JSX.Element {
                     color: 'var(--dsw-alias-label-tertiary)',
                   }}
                 >
-                  {agent.machine ?? 'local'}
+                  {agent.machine}
                 </span>
                 <span
                   style={{

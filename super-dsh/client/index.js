@@ -265,7 +265,8 @@ function RuntimeMark({ agentKey, size }) {
 const NATIVE_LINK = {
 	key: "native",
 	label: "DSH",
-	path: "/"
+	path: "/",
+	machine: "local"
 };
 /** Labels for the read-only face's bare keys (it reports keys, not labels). */
 const FALLBACK_LABELS = {
@@ -289,7 +290,7 @@ function coerceAgents(raw) {
 			key,
 			label: typeof label === "string" ? label : FALLBACK_LABELS[key] ?? key,
 			path,
-			...typeof machine === "string" ? { machine } : {}
+			machine: typeof machine === "string" ? machine : "local"
 		});
 	}
 	return links.length > 0 ? links : void 0;
@@ -325,7 +326,8 @@ async function fetchRoster() {
 			links.push(key === "native" ? NATIVE_LINK : {
 				key,
 				label: FALLBACK_LABELS[key] ?? key,
-				path: `/${key}/`
+				path: `/${key}/`,
+				machine: "local"
 			});
 		}
 		if (links.length > 0) return links;
@@ -787,9 +789,9 @@ function activeAgentName(activeAgent, roster) {
 function hubRowLabel(base, activeAgent) {
 	return activeAgent === void 0 || activeAgent === "" ? base : `${base} > ${activeAgent}`;
 }
-/** Which machine one roster row groups under: an absent machine is the local one. */
+/** Which machine one roster row groups under: the row's own machine (parser-guaranteed). */
 function machineGroup(row) {
-	return row.machine ?? "local";
+	return row.machine;
 }
 /**
 * Group a roster by machine for the HubPanelIcon chevron menu's native
@@ -1697,7 +1699,7 @@ function HubPage() {
 											fontSize: 12.5,
 											color: "var(--dsw-alias-label-tertiary)"
 										},
-										children: agent.machine ?? "local"
+										children: agent.machine
 									}),
 									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 										style: {
