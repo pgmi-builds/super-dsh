@@ -174,7 +174,7 @@ path-separation Part 2 五任务全部 landed 且评审干净：T-A `1cefd30`（
 ### Flag 语义收口（native-ui-only 现实）
 
 - **代码**：`fusion-transport.ts` `deriveFusionFlag` 区新增语义注块——无 fallback 路线后，flag-OFF = **零 foreign 入口**（`/<label>/` 页与世界 webui 均已从产品退役，非被 flag 门控）；flag-ON = `/hub` 唯一面 + 页内切换。出厂默认维持 OFF（默认翻 ON 属 user 放行轮，§〇.1 两道闸）。
-- **flag-OFF Hub 行为调查结论**：T-C 后两处 switch 面（HubPage 行、HubPanelIcon chevron 菜单）均已无 `href`（无死链、无导航臂），但 flag-OFF 下仍渲染 "switch"/chevron 死控件（点了无响应、无提示）。**选定最小正确形态 = 纯函数决策 `switchAffordance(fusion)`（switch-core.ts）**：flag-ON → 可用；flag-OFF → 不渲染 affordance，行保留 roster 信息并挂 `fusion off — no foreign entry` 提示 chip（HubPage）；chevron 整体不渲染（HubPanelIcon——其菜单唯一用途是切换）。UI 零 href 的红线在**交付 bundle** 上钉死（剥离块注释后零 `href` prop）。
+- **flag-OFF Hub 行为调查结论**：T-C 后两处 switch 面（HubPage 行、HubPanelIcon chevron 菜单）均已无 `href`（无死链、无导航臂），但 flag-OFF 下仍渲染 "switch"/chevron 死控件（点了无响应、无提示）。**选定最小正确形态 = 纯函数决策 `switchAffordance(fusion)`（switch-core.ts）**：flag-ON → 可用；flag-OFF → 不渲染 affordance，行保留 roster 信息并挂 `fusion off — no foreign entry` 提示 chip（HubPage）；chevron 整体不渲染（HubPanelIcon——其菜单唯一用途是切换）。UI 零 href 的红线由**交付 bundle** 上的守卫承载（剥离块注释后探测；守卫覆盖四种语法形态——引号对象键 `"href":`/`["href"]`、无引号 JSX prop 键 `{href:`/`, href:`（本 unminified 构建的复现向量）、`.href=` 直写、`setAttribute('href',…)`；块注释中的合法 `href` 提法不触发守卫）。
 - **测试**：`client-switch.test.mjs` +2（affordance 双态）；`fusion-flag.test.mjs` flag-OFF served-index 测试增补断言（零融合行 + trust/boot 照常 + **hub client row 照常 compose**——降级发生在 client 半边而非组合缺席）+ 新增交付面测试（hint literal 在交付 bundle、flag discriminator 门控、零 href prop）。hub 套件 157→**160**。
 
 ### 全量回归（0.1.3-zj）

@@ -239,11 +239,18 @@ test('flag off Hub rows: the delivered client half ships the hint and zero hrefs
     delivered.includes(`${FUSION_FLAG_GLOBAL} === true`),
     'the hint rendering rides the flag discriminator, never an unconditional branch',
   )
-  // The dead-href red line: NO href prop anywhere in the bundle CODE (block
-  // comments stripped — the retained doc block legitimately mentions the
-  // retired href arm).
+  // The dead-href red line: NO href anywhere in the bundle CODE, across all
+  // four syntactic forms a reintroduction can take — the quoted object key
+  // ("href": / ["href"]:), the unquoted JSX prop key this unminified build
+  // emits (<a href={…}> compiles to `{href:` / `, href:`), the direct
+  // `.href=` DOM write, and setAttribute('href', …). Block comments are
+  // stripped first — the retained doc block legitimately mentions the
+  // retired href arm and must not trip the guard.
   const code = delivered.replace(/\/\*[\s\S]*?\*\//g, '')
-  assert.ok(!/["']href["']\s*[:=]/.test(code), 'no href prop survives in the Hub UI code — nothing can navigate')
+  assert.ok(
+    !/["']href["']\s*[:=]|[{,]\s*href\s*:|\[\s*['"]href['"]\s*\]|\.\s*href\b\s*=|setAttribute\s*\(\s*['"]href/.test(code),
+    'no href survives in the Hub UI code in any syntactic form — nothing can navigate',
+  )
 })
 
 // ---- 5. flag ON (row config face): web-trust first, fusion pair last -------
