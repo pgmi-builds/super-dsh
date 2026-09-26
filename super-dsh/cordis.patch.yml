@@ -38,6 +38,10 @@
     # the trust script's non-merging `if(!window.__DSH_TRANSPORT__)` verdict
     # must be evaluated before the fusion script could own that global
     # (spec §3.4, hard; precedent world-web-server.ts renderIndex).
+    # On/off (Task 5 formalization): env `SUPERD_UI_FUSION` derives the
+    # schema default (off when unset); a profile layer may restate this row
+    # (same id, same name) with `config: {enabled: true|false}` to override.
+    # Off = the component registers nothing: no script, no flag global.
     - id: superd-fusion-transport
       name: 'super-dsh/fusion-transport'
     - id: agent-omp

@@ -102,11 +102,335 @@ async function fetchRoster() {
 }
 
 //#endregion
+//#region src/switch-core.ts
+/**
+* Switch orchestration core (native UI fusion, plan Task 4) — the pure logic
+* behind the in-page agent switch: storage-namespace key computation, the
+* session landing decision over the persisted `dsh.sessions.current`
+* selection, the RuntimeSeat click-interception decision (a fusion page never
+* navigates on a left click — spec: 融合页 = state 切换，拦截 click，无导航),
+* and the fallback state machine (timeout or roster-probe failure
+* → revert to native + a visible toast, never a page lock).
+*
+* Host-half on purpose: plain TS with every effect injected through
+* {@link SwitchHost} — no DOM, no client imports — so `test/client-switch.test.mjs`
+* imports it from `dist/` like every other host module. The client half
+* (`src/client/switch.ts`) builds the real host face from the client context:
+* the `__SUPERD_UI_STATE__` atom (Task 3), `ctx.connection`,
+* `ctx.uiWorkspace`, the Task-3 namespaced `Storage`, the control-plane
+* roster fetch, and a minimal self-owned toast overlay.
+*
+* Orchestration sequence (spec §3.5, user rulings 7/8):
+*   1. `setAgent(label)` — state + NS swap immediately; subsequent requests
+*      demux to the target world (Task 3's call-time patches read the atom).
+*   2. Session landing: read the target NS's `dsh.sessions.current` — a
+*      navigable value is opened through the uiWorkspace face, anything else
+*      lands on new chat. The chat area is never cleared and no loading
+*      skeleton is inserted: old content stays in place awaiting data
+*      self-heal.
+*   3. `reconnect()` — the generation re-opens against the retargeted data
+*      plane; the gateway emits `connection/reset` on establishment, the
+*      designed "wire-derived caches must repull" signal, so sessions /
+*      config / theme re-derive on their own. Upstream's one-shot boot
+*      restore (`watchNavigation`'s `initial` flag) does not re-run after a
+*      reset, so this landing is the switch's only navigation authority.
+*   4. Fallback: no generation within {@link SWITCH_FALLBACK_MS}, or a failed
+*      roster probe → `setAgent('native')` + `reconnect()` back to the native
+*      plane + toast.
+*
+* Upstream anchors (dsh-v0.1.7-rc.1):
+*   - `ctx.connection.reconnect()` — `packages/client/connection/src/client/index.ts`
+*     `ConnectionHandle.reconnect` (declared :148, wired :264-266); the
+*     controller resets retry progression and replaces the current attempt
+*     immediately (`connection.ts:113-121`).
+*   - `connection/reset` — emitted by the gateway client on every generation
+*     establishment (`packages/api/gateway/src/client/index.ts:169`),
+*     declared as the repull signal
+*     (`packages/client/connection/src/client/index.ts:9-17`).
+*   - `uiWorkspace.openSession(target)` / `startSession()` — the navigation
+*     face (`packages/client/ui-workspace/src/client/navigation.ts:34-92`);
+*     `SessionTarget = SessionId | SubagentAddress`
+*     (`packages/api/session-controller/src/client/contract/sessions.ts:22`).
+*   - `dsh.sessions.current` — the per-tab last-selection store
+*     (`navigation.ts:130-131`); its restore reads `subagentAddress` first,
+*     then `sessionId` (`navigation.ts:319-330`) — {@link parseLandingTarget}
+*     keeps that precedence. The store hydrates once at page boot and
+*     persists on write (`packages/client/store/src/index.ts:155-174`), so
+*     the post-switch read must go through the namespaced `Storage` (Task 3
+*     patch 5), which prefixes `'<label>:'` at call time.
+*
+* @module @pgmi-builds/superd-hub/switch-core
+*/
+/** The active-agent label meaning the native (ctx0) data plane. */
+const NATIVE_AGENT = "native";
+/** The persisted last-selection key ui-workspace owns (survey §2.6). */
+const SESSIONS_CURRENT_KEY = "dsh.sessions.current";
+/**
+* The fallback window: how long a switch may wait for the target world's
+* generation (mux re-open + repull) before reverting to native. A
+* human-scale constant; Task 5's config face may expose it later.
+*/
+const SWITCH_FALLBACK_MS = 1e4;
+/**
+* The landing decision over one raw persisted-selection read.
+*
+* A value is navigable when it parses to a ui-workspace `MainSelection`
+* carrying a usable `SessionTarget`: a non-null `subagentAddress` object
+* wins (upstream restore order), else a non-empty string `sessionId`.
+* Everything else — no value, a read failure (surfaced here as `null`), a
+* parse failure, an unusable shape — lands on new chat.
+*
+* @returns the exact `uiWorkspace.openSession` argument, or `null` for the
+*   new-chat (blank session) landing.
+*/
+function parseLandingTarget(raw) {
+	if (typeof raw !== "string" || raw === "") return null;
+	let parsed;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+	const selection = parsed;
+	if (selection.subagentAddress !== void 0 && selection.subagentAddress !== null && typeof selection.subagentAddress === "object") return selection.subagentAddress;
+	if (typeof selection.sessionId === "string" && selection.sessionId !== "") return selection.sessionId;
+	return null;
+}
+/**
+* The RuntimeSeat's click-interception contract as a pure table.
+*
+*   - World page (`fusion: false`): no interception, no orchestration — the
+*     real hyperlink navigates (spec §5 双半边).
+*   - Fusion page, active entry: intercepted, no attempt — switching to the
+*     active agent is a no-op, and the click must never fall through to the
+*     anchor (an `href="/"` reload would discard the in-page switch state; a
+*     foreign `href` would abandon the fused page entirely).
+*   - Fusion page, inactive entry: intercepted and the attempt runs. The
+*     attempt's `false` (orchestration unbound) still keeps the page: a
+*     swallowed click beats silent navigation away from the fusion surface.
+*
+* Host-half pure logic so `test/client-switch.test.mjs` pins the table from
+* `dist/`; the seat maps `preventDefault` onto the DOM event.
+*/
+function seatClickDecision(input) {
+	if (!input.fusion) return {
+		preventDefault: false,
+		attempted: false
+	};
+	if (input.active) return {
+		preventDefault: true,
+		attempted: false
+	};
+	return {
+		preventDefault: true,
+		attempted: input.attempt() === true
+	};
+}
+/**
+* Build the switch machine over an injected {@link SwitchHost}.
+*
+* Only one attempt is ever armed at a time: starting a new switch finishes
+* the previous one silently (timer cleared, subscription released, promise
+* resolved) so a stale attempt can never revert a newer switch.
+*/
+function createSwitchController(host, options = {}) {
+	const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS;
+	let current;
+	/** Orchestration step 2: the session landing over the freshly active NS. */
+	const land = () => {
+		let raw = null;
+		try {
+			raw = host.readPersistedSelection();
+		} catch {
+			raw = null;
+		}
+		const target = parseLandingTarget(raw);
+		if (target !== null) try {
+			host.openSession(target);
+			return;
+		} catch {}
+		try {
+			host.openNewChat();
+		} catch {}
+	};
+	return { run(label) {
+		const prior = current;
+		return new Promise((resolve) => {
+			let timer;
+			let disposer = () => {};
+			const attempt = {
+				finished: false,
+				finish() {
+					if (attempt.finished) return;
+					attempt.finished = true;
+					host.clearTimeout(timer);
+					disposer();
+					if (current === attempt) current = void 0;
+					resolve();
+				}
+			};
+			if (prior !== void 0 && !prior.finished) prior.finish();
+			current = attempt;
+			const revert = (reason) => {
+				if (attempt.finished || current !== attempt) return;
+				try {
+					host.setAgent(NATIVE_AGENT);
+				} catch {}
+				try {
+					host.reconnect();
+				} catch {}
+				try {
+					host.toast(`Super D: switch to ${label} failed (${reason === "timeout" ? "no response" : "target not reachable"}) — back to native.`);
+				} catch {}
+				attempt.finish();
+			};
+			try {
+				host.setAgent(label);
+			} catch {}
+			land();
+			try {
+				host.reconnect();
+			} catch {}
+			timer = host.setTimeout(() => {
+				revert("timeout");
+			}, fallbackMs);
+			disposer = host.onGenerationEstablished(() => {
+				if (attempt.finished || current !== attempt) return;
+				attempt.finish();
+			});
+			host.probeTarget(label).then((alive) => {
+				if (alive !== true) revert("probe");
+			}, () => {
+				revert("probe");
+			});
+		});
+	} };
+}
+
+//#endregion
+//#region src/client/switch.ts
+/** Whether this page is a fusion page: the baked flag global is present. */
+function fusionPage() {
+	return globalThis.__SUPERD_UI_FUSION__ === true;
+}
+/** The page atom, when the page carries one (it always does on a fusion page). */
+function uiState() {
+	const state = globalThis.__SUPERD_UI_STATE__;
+	if (state === void 0) return void 0;
+	if (typeof state.setAgent !== "function") return void 0;
+	if (typeof state.subscribe !== "function" || typeof state.activeAgent !== "string") return void 0;
+	return state;
+}
+/** How long one revert toast stays on screen. */
+const TOAST_HOLD_MS = 6e3;
+/**
+* One transient message, fixed above the sidebar footer. Self-owned
+* presentation only — no read from any foreign DOM, nothing is a state input.
+*/
+function showToast(message) {
+	try {
+		const doc = globalThis.document;
+		if (doc === void 0 || doc.body === null) return;
+		const el = doc.createElement("div");
+		el.textContent = message;
+		el.setAttribute("style", [
+			"position:fixed",
+			"left:50%",
+			"bottom:64px",
+			"transform:translateX(-50%)",
+			"z-index:9999",
+			"max-width:80vw",
+			"padding:10px 14px",
+			"border-radius:8px",
+			"background:rgba(24,24,28,.94)",
+			"color:#ececf0",
+			"font:13px/1.4 system-ui,sans-serif",
+			"box-shadow:0 8px 24px rgba(0,0,0,.35)"
+		].join(";"));
+		doc.body.appendChild(el);
+		globalThis.setTimeout(() => {
+			try {
+				el.remove();
+			} catch {}
+		}, TOAST_HOLD_MS);
+	} catch {}
+}
+/** The bound `switchAgent`, or `undefined` until the entry binds it. */
+let bound;
+/**
+* Bind the page's switch agent from the client services. Idempotent; a no-op
+* without the page atom (a non-fusion page never has one).
+* @param deps - the `connection` and `uiWorkspace` services (structural).
+*/
+function bindSwitchAgent(deps) {
+	if (bound !== void 0) return;
+	const state = uiState();
+	if (state === void 0) return;
+	const controller = createSwitchController({
+		setAgent(label) {
+			state.setAgent(label);
+		},
+		readPersistedSelection() {
+			const storage = globalThis.localStorage;
+			return storage === void 0 ? null : storage.getItem(SESSIONS_CURRENT_KEY);
+		},
+		openSession(target) {
+			deps.uiWorkspace.openSession(target);
+		},
+		openNewChat() {
+			deps.uiWorkspace.startSession();
+		},
+		reconnect() {
+			deps.connection.reconnect();
+		},
+		onGenerationEstablished(listener) {
+			const generation = deps.connection.generation;
+			return generation.subscribe(() => {
+				if (generation.getSnapshot() !== void 0) listener();
+			});
+		},
+		async probeTarget(label) {
+			try {
+				return (await fetchRoster()).some((agent) => agent.key === label);
+			} catch {
+				return false;
+			}
+		},
+		toast: showToast,
+		setTimeout(fn, ms) {
+			return globalThis.setTimeout(fn, ms);
+		},
+		clearTimeout(handle) {
+			globalThis.clearTimeout(handle);
+		}
+	});
+	bound = (label) => controller.run(label);
+}
+/**
+* The seat's entry point. Attempts the in-page switch for `label`.
+* @returns `true` when the fusion switch took the click over; `false` when
+*   this page is not a fusion page or the orchestration is unbound.
+*   Informational only — the seat's interception contract
+*   (`seatClickDecision`) prevents navigation on every fusion-page left
+*   click regardless: a `false` means the click is swallowed, never that
+*   the anchor navigates the fused page away (review round 1).
+*/
+function attemptSwitch(label) {
+	const run = bound;
+	if (run === void 0 || !fusionPage()) return false;
+	run(label).catch(() => {});
+	return true;
+}
+
+//#endregion
 //#region src/client/RuntimeSeat.tsx
 function RuntimeSeat({ wide }) {
 	const [agents, setAgents] = react.useState(() => rosterFromGlobal() ?? [NATIVE_LINK]);
 	const [open, setOpen] = react.useState(false);
 	const rootRef = react.useRef(null);
+	const fusion = fusionPage();
+	const [activeKey, setActiveKey] = react.useState(() => fusion ? uiState()?.activeAgent ?? NATIVE_LINK.key : NATIVE_LINK.key);
 	react.useEffect(() => {
 		let cancelled = false;
 		fetchRoster().then((list) => {
@@ -117,6 +441,14 @@ function RuntimeSeat({ wide }) {
 		};
 	}, []);
 	react.useEffect(() => {
+		if (!fusion) return;
+		const state = uiState();
+		if (state === void 0) return;
+		return state.subscribe((label) => {
+			setActiveKey(label);
+		});
+	}, [fusion]);
+	react.useEffect(() => {
 		if (!open) return;
 		const onDown = (event) => {
 			if (rootRef.current !== null && !rootRef.current.contains(event.target)) setOpen(false);
@@ -125,7 +457,8 @@ function RuntimeSeat({ wide }) {
 		return () => document.removeEventListener("mousedown", onDown);
 	}, [open]);
 	const here = currentMountPath();
-	const active = agents.find((agent) => agent.path === here) ?? NATIVE_LINK;
+	const isActive = (agent) => fusion ? agent.key === activeKey : agent.path === here;
+	const active = agents.find(isActive) ?? NATIVE_LINK;
 	const styleBase = {
 		display: "flex",
 		alignItems: "center",
@@ -162,12 +495,12 @@ function RuntimeSeat({ wide }) {
 		boxShadow: "0 8px 24px rgba(0,0,0,.35)",
 		overflow: "hidden"
 	};
-	const styleItem = (isActive) => ({
+	const styleItem = (isActive$1) => ({
 		display: "block",
 		width: "100%",
 		padding: "8px 12px",
 		border: "none",
-		background: isActive ? "color-mix(in srgb, currentColor 10%, transparent)" : "transparent",
+		background: isActive$1 ? "color-mix(in srgb, currentColor 10%, transparent)" : "transparent",
 		color: "inherit",
 		font: "inherit",
 		fontSize: 13,
@@ -183,7 +516,7 @@ function RuntimeSeat({ wide }) {
 		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 			type: "button",
 			style: styleBase,
-			title: "Agent runtime — picking one opens that runtime's mount (/omp/, /codex/, …)",
+			title: fusion ? "Agent runtime — picking one switches this page to that runtime in place (no navigation)" : "Agent runtime — picking one opens that runtime's mount (/omp/, /codex/, …)",
 			onClick: () => {
 				setOpen((v) => !v);
 			},
@@ -204,7 +537,7 @@ function RuntimeSeat({ wide }) {
 				}),
 				/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 					style: styleBadge,
-					children: "open"
+					children: fusion ? "switch" : "open"
 				})
 			] }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 				"aria-hidden": true,
@@ -215,14 +548,19 @@ function RuntimeSeat({ wide }) {
 			children: agents.map((agent) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 				href: agent.path,
 				style: {
-					...styleItem(agent.path === here),
+					...styleItem(isActive(agent)),
 					textDecoration: "none"
 				},
-				"aria-current": agent.path === here ? "page" : void 0,
-				onClick: () => {
+				"aria-current": isActive(agent) ? "page" : void 0,
+				onClick: (event) => {
+					if (seatClickDecision({
+						fusion,
+						active: isActive(agent),
+						attempt: () => attemptSwitch(agent.key)
+					}).preventDefault) event.preventDefault();
 					setOpen(false);
 				},
-				children: agent.path === here ? `${agent.label} ✓` : agent.label
+				children: isActive(agent) ? `${agent.label} ✓` : agent.label
 			}, agent.key))
 		})]
 	});
@@ -1295,6 +1633,9 @@ function apply(ctx) {
 			order: 1,
 			label: "Hub"
 		}, HubPanelIcon)), "superd-hub: hub sidebar row");
+	});
+	ctx.inject(["connection", "uiWorkspace"], (raw) => {
+		bindSwitchAgent(raw);
 	});
 }
 
