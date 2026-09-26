@@ -23,9 +23,21 @@
  *
  * The ctx0 gate is the SAME authorize source the world mounts use
  * (`connection.authorizeIndex`, the boolean face whose false path already
- * wrote the answer — 401 or the token→cookie 303). Forwarding reuses the
- * carrier kernel ({@link forwardApiCall} / {@link worldMuxOf}) unchanged:
- * this module only gates and demuxes.
+ * wrote the answer — 401 or the token→cookie 303); the family then runs the
+ * SAME browser-trust fence the sibling `/<label>/api` mounts run
+ * (`requestRejection`, the connection's `isTrustedApiRequest` face) before it
+ * answers anything — the family is never weaker than the neighbors carrying
+ * identical traffic. Forwarding reuses the carrier kernel
+ * ({@link forwardApiCall} / {@link worldMuxOf}) unchanged: this module only
+ * gates, fences and demuxes.
+ *
+ * Mux lifecycle (review round 1): each accepted upgrade constructs ONE
+ * `WorldMuxServer`, which roots a heartbeat interval and a per-connection
+ * WebSocketServer — resources that would otherwise outlive the client forever
+ * (one 2s no-op timer per reconnect). The mux is therefore CLOSED the moment
+ * its socket dies: close-on-disconnect. The carrier's shared-mux-per-mount
+ * shape does not transfer (the hub rebinds per respawn); close-on-disconnect
+ * does.
  */
 import { forwardApiCall, worldMuxOf, writeJson, type CarrierGatewayFace } from './carrier.js'
 import { stripLabelFromUrl, type RealWebServerFace, type WorldRequest, type WorldResponse } from './world-web-server.js'
@@ -46,6 +58,14 @@ export interface HubRouteOptions {
    * must not touch any gateway.
    */
   authorize(req: unknown, res: unknown): boolean
+  /**
+   * ctx0's browser-trust fence — the SAME `isTrustedApiRequest` face the
+   * sibling carrier mounts run: returns an HTTP status to reject with, or
+   * undefined for trusted Host/Origin. Runs after {@link authorize} (auth
+   * first, the carrier's own ordering precedent) and before ANY family
+   * answer, so even the demux 404s never speak to untrusted traffic.
+   */
+  requestRejection?(req: unknown): number | undefined
   /** The live gateway of a registered label, or undefined (unknown / not yet spawned). */
   gatewayOf(label: string): CarrierGatewayFace | undefined
 }
@@ -122,6 +142,14 @@ export function registerHubRoute(options: HubRouteOptions): () => void {
   const handleRequest = async (req: WorldRequest, res: WorldResponse): Promise<void> => {
     // ctx0's gate first (world-mount order): false ⇒ already answered.
     if (!options.authorize(req, res)) return
+    // Then the SAME browser-trust fence the sibling carrier family runs
+    // (the kernel's first statement there): before ANY family answer — the
+    // demux 404s below are for trusted traffic only.
+    const rejection = options.requestRejection?.(req)
+    if (rejection !== undefined) {
+      writeJson(res, rejection, JSON.stringify({ error: rejection === 401 ? 'unauthorized' : 'forbidden' }))
+      return
+    }
     const agent = agentOf(req)
     if (agent === undefined || agent === 'native') {
       answer404(res, {
@@ -135,13 +163,21 @@ export function registerHubRoute(options: HubRouteOptions): () => void {
       answer404(res, { error: 'unknown-agent', label: agent })
       return
     }
-    // Consume the family plumbing: the kernel forwards a native-shaped URL.
+    // Consume the family plumbing: the kernel forwards a native-shaped URL
+    // (the kernel carries the same fence face as the carrier's own kernel).
     req.url = worldUrlOf(req.url)
-    await forwardApiCall({ gateway, label: agent, mountPath: HUB_MOUNT_PATH }, req, res)
+    await forwardApiCall({ gateway, label: agent, mountPath: HUB_MOUNT_PATH, requestRejection: options.requestRejection }, req, res)
   }
 
   const handleUpgrade = (req: WorldRequest, socket: unknown, head: Buffer): void => {
     if (!gateUpgrade(options, req, socket)) return
+    // Same fence as the sibling carrier's mux: raw 401/403, no ws handover
+    // for untrusted Host/Origin.
+    const rejection = options.requestRejection?.(req)
+    if (rejection !== undefined) {
+      rejectUpgrade(socket, rejection, JSON.stringify({ error: rejection === 401 ? 'unauthorized' : 'forbidden' }), 'application/json')
+      return
+    }
     const agent = agentOf(req)
     if (agent === undefined || agent === 'native') {
       rejectUpgrade(socket, 404, JSON.stringify({ error: 'foreign-only' }), 'application/json')
@@ -153,8 +189,15 @@ export function registerHubRoute(options: HubRouteOptions): () => void {
       return
     }
     // One mux per accepted connection: the binding resolves at upgrade time,
-    // so a respawned world is addressed by its CURRENT gateway.
-    void worldMuxOf(gateway).handleUpgrade(req, socket, head)
+    // so a respawned world is addressed by its CURRENT gateway. The mux roots
+    // a heartbeat interval and a per-connection WebSocketServer; on socket
+    // close it must be CLOSED (world-mux clears the heartbeat only in close),
+    // or every reconnect leaks the timer plus the mux graph forever.
+    const mux = worldMuxOf(gateway)
+    ;(socket as { once?: (event: string, listener: () => void) => void }).once?.('close', () => {
+      void mux.close().catch(() => undefined)
+    })
+    void mux.handleUpgrade(req, socket, head)
   }
 
   const disposers: Array<() => void> = [
