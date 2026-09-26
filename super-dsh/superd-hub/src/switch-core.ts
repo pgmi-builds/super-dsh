@@ -17,41 +17,39 @@
  * `ctx.uiWorkspace`, the Task-3 namespaced `Storage`, the control-plane
  * roster fetch, and a minimal self-owned toast overlay.
  *
- * Orchestration sequence (spec §3.5 as amended 2026-09-26, T-A erratum;
- * user rulings 7/8):
+ * Orchestration sequence (spec §3.5 as amended 2026-09-26, T-A + T-F
+ * errata; user rulings 7/8 and the T-F ruling "按原生的语义去理解…把这个
+ * last visit session 也做一下"):
  *   1. `setAgent(label)` — state + NS swap immediately; subsequent requests
  *      demux to the target world (Task 3's call-time patches read the atom).
- *   2. Session landing, split by the target NS's `dsh.sessions.current`:
- *      a navigable value is opened through the uiWorkspace face right away —
- *      session-targeted navigation resolves no workspace id, so it is
- *      correct against the retargeted plane before reconnect (the clean
- *      round-4 acceptance behavior). Anything else lands on new chat, but
- *      only once the target plane's wire-derived caches are fresh (see 3):
- *      upstream `startSession()` resolves `currentWorkspaceId ?? recent`
- *      from those caches (navigation.ts:223-238), and a pre-reconnect
- *      resolution reads the PREVIOUS plane's data → `workspace/not-found`
- *      toast + the view pinned to the dead previous session id (the
- *      2026-09-26 live-acceptance defect). The chat area is never cleared
- *      and no loading skeleton is inserted: old content stays in place
- *      awaiting the landing.
- *   3. `reconnect()` — the generation re-opens against the retargeted data
+ *   2. `reconnect()` — the generation re-opens against the retargeted data
  *      plane; the gateway emits `connection/reset` on establishment, the
  *      designed "wire-derived caches must repull" signal, so sessions /
- *      config / theme re-derive on their own. Upstream's one-shot boot
- *      restore (`watchNavigation`'s `initial` flag) does not re-run after a
- *      reset, so this landing is the switch's only navigation authority.
- *      The deferred new-chat landing fires when the repull has LANDED — the
- *      first post-establishment baseline replacement in the workspace store
- *      ({@link observeCachesRefreshed}) — at which point `startSession()`
- *      resolves the target agent's own workspace exactly like the native
- *      new-chat button would on that plane. The landing is also BOUNDED: if
- *      the baseline never installs within one further fallback window after
- *      the settle, a staleness watchdog disarms it — an armed landing never
- *      outlives its switch by more than that window (the safe direction: no
- *      landing at all beats a late surprise blank chat).
+ *      config / theme re-derive on their own. Nothing navigates before the
+ *      repull: the chat area is never cleared and no loading skeleton is
+ *      inserted — old content stays in place awaiting the landing.
+ *   3. Session landing (T-F: NATIVE restore semantics) — upstream's
+ *      fresh-load restore is `watchNavigation`/`restoreSelection`
+ *      (navigation.ts:284-347): it fires only when BOTH `workspaces.list`
+ *      and `sessions.list` reached phase `'ready'`, and then walks
+ *      `saved.subagentAddress` → `saved.sessionId` looked up in the FRESH
+ *      `sessions.byId` (stale-proof) → recent-workspace → the fresh-boot
+ *      default workspace. The landing replicates exactly that: it fires once
+ *      when BOTH wire-derived caches have installed fresh post-establishment
+ *      baselines ({@link observeCachesRefreshed} — the T-A gate watched
+ *      `workspaces.list` alone, so a plane whose sessions list landed later
+ *      served stale rows to the decision and broke native's own
+ *      last-visited restore), then reads the target NS's persisted
+ *      `dsh.sessions.current` (the NS swap has long since happened) and
+ *      executes {@link planRestoreLanding}'s precedence through the public
+ *      faces. The landing is BOUNDED: if the baselines never install within
+ *      one further fallback window after the settle, a staleness watchdog
+ *      disarms it — an armed landing never outlives its switch by more than
+ *      that window (the safe direction: no landing at all beats a late
+ *      surprise navigation).
  *   4. Fallback: no generation within {@link SWITCH_FALLBACK_MS}, or a failed
  *      roster probe → `setAgent('native')` + `reconnect()` back to the native
- *      plane + toast. A revert also cancels a pending new-chat landing — a
+ *      plane + toast. A revert also cancels a pending landing — a
  *      reverted switch never lands.
  *
  * Upstream anchors (dsh-v0.1.7-rc.1):
@@ -63,22 +61,34 @@
  *     establishment (`packages/api/gateway/src/client/index.ts:169`),
  *     declared as the repull signal
  *     (`packages/client/connection/src/client/index.ts:9-17`).
- *   - `uiWorkspace.openSession(target)` / `startSession()` — the navigation
- *     face (`packages/client/ui-workspace/src/client/navigation.ts:34-92`);
+ *   - `uiWorkspace.openSession(target)` / `startSession(workspaceId?)` /
+ *     `openWorkspace(workspaceId)` — the navigation face
+ *     (`packages/client/ui-workspace/src/client/navigation.ts:34-92`);
  *     `SessionTarget = SessionId | SubagentAddress`
  *     (`packages/api/session-controller/src/client/contract/sessions.ts:22`).
+ *   - `watchNavigation` / `restoreSelection` — the fresh-load restore this
+ *     landing replicates (`navigation.ts:284-347`): both-lists ready gate
+ *     (:292), `subagentAddress` first (:320-323), the fresh-`byId` session
+ *     lookup with the blank-reuse nuance (:324-335), `recentWorkspace`
+ *     fallback (:337, the tie-break at :434-453), and
+ *     `initializeDefaultWorkspace` on a fresh boot (:338-342, :349-361).
  *   - `startSession()`'s workspace resolution — `workspaceId ??
  *     currentWorkspaceId ?? recent` over the wire-derived `workspaces.list`
- *     / `sessions.list` snapshots (`navigation.ts:223-238`); the workspace
- *     store installs fresh data only through its follow-stream baseline
- *     (`packages/api/workspace-controller/src/client/model.ts`
- *     `replaceBaseline` → `installViews`, a new items array every install).
+ *     / `sessions.list` snapshots (`navigation.ts:223-238`); `connectWorkspace`
+ *     → `reuseOrCreateBlank` reuses the pointer's own blank whenever the
+ *     private restore path would (:179-198).
+ *   - The wire-derived stores: `workspaces.list` installs fresh data only
+ *     through its follow-stream baseline (`packages/api/workspace-controller/src/client/model.ts`
+ *     `replaceBaseline` → `installViews`, a new items array every install);
+ *     `sessions.list` is projected with a fresh `ids` array on every manager
+ *     change (`packages/api/session-controller/src/client/sessions/service.ts:607-677`)
+ *     — array identity is the freshness token for both.
  *   - `dsh.sessions.current` — the per-tab last-selection store
  *     (`navigation.ts:130-131`); its restore reads `subagentAddress` first,
  *     then `sessionId` (`navigation.ts:319-330`) — {@link parseLandingTarget}
  *     keeps that precedence. The store hydrates once at page boot and
  *     persists on write (`packages/client/store/src/index.ts:155-174`), so
- *     the post-switch read must go through the namespaced `Storage` (Task 3
+ *     the landing read must go through the namespaced `Storage` (Task 3
  *     patch 5), which prefixes `'<label>:'` at call time.
  *
  * @module @pgmi-builds/superd-hub/switch-core
@@ -112,16 +122,16 @@ export function namespacedKey(label: string, key: string): string {
 }
 
 /**
- * The landing decision over one raw persisted-selection read.
+ * The persisted-selection parse feeding {@link planRestoreLanding}.
  *
  * A value is navigable when it parses to a ui-workspace `MainSelection`
  * carrying a usable `SessionTarget`: a non-null `subagentAddress` object
  * wins (upstream restore order), else a non-empty string `sessionId`.
  * Everything else — no value, a read failure (surfaced here as `null`), a
- * parse failure, an unusable shape — lands on new chat.
+ * parse failure, an unusable shape — parses to `null` and the plan falls to
+ * the recent-workspace / default-workspace ladder.
  *
- * @returns the exact `uiWorkspace.openSession` argument, or `null` for the
- *   new-chat (blank session) landing.
+ * @returns the subagent address object, the session id string, or `null`.
  */
 export function parseLandingTarget(raw: string | null | undefined): string | object | null {
   if (typeof raw !== 'string' || raw === '') return null
@@ -141,9 +151,149 @@ export function parseLandingTarget(raw: string | null | undefined): string | obj
   return null
 }
 
-/** The structural face of the workspace projection store (upstream `ctx.workspaces.list`). */
+/** Structural slice of one `workspaces.list` row the landing plan reads. */
+export interface RestoreWorkspaceView {
+  readonly workspaceId: string
+  readonly sessionIds: readonly string[]
+  readonly createdAt?: string
+}
+
+/** Structural slice of one `sessions.list` `byId` row the landing plan reads. */
+export interface RestoreSessionSummary {
+  readonly id: string
+  readonly blank?: boolean
+  readonly updatedAt?: number
+}
+
+/**
+ * The FRESH wire-derived navigation caches the landing decides over —
+ * upstream `restoreSelection` receives exactly these two snapshots once both
+ * phases are ready (navigation.ts:290-292, :318). The structural slices keep
+ * this module host-half: the client binding projects the real
+ * `ctx.workspaces.list` / `ctx.sessions.list` snapshots into it.
+ */
+export interface RestoreCaches {
+  readonly workspaces: {
+    readonly items: readonly RestoreWorkspaceView[]
+    readonly phase: unknown
+  }
+  readonly sessions: {
+    readonly ids: readonly string[]
+    readonly byId: Readonly<Record<string, RestoreSessionSummary>>
+    readonly phase: unknown
+  }
+}
+
+/** One landing action, in upstream `restoreSelection`'s order of outcomes. */
+export type RestoreLandingPlan =
+  | { kind: 'open-session'; target: string | object }
+  /**
+   * The new-session flow through the public `uiWorkspace.startSession` face:
+   * with a workspace id it connects THAT workspace (its `reuseOrCreateBlank`
+   * reuses the pointer's own blank exactly when upstream's private
+   * `reuseBlank` pre-check would pass); `undefined` inherits the
+   * current-then-recent resolution.
+   */
+  | { kind: 'start-session'; workspaceId?: string }
+  /** Upstream's `initializeDefaultWorkspace`: the fresh-boot empty-plane case. */
+  | { kind: 'default-workspace' }
+
+/**
+ * The most-recent workspace per upstream `recentWorkspace`
+ * (navigation.ts:434-453): the latest member-session `updatedAt` wins, a
+ * workspace with no listed sessions falls back to its `createdAt`.
+ */
+function recentWorkspaceId(
+  items: RestoreCaches['workspaces']['items'],
+  byId: RestoreCaches['sessions']['byId'],
+): string | undefined {
+  let selected: string | undefined
+  let selectedTime = Number.NEGATIVE_INFINITY
+  for (const workspace of items) {
+    let latest = Number.NEGATIVE_INFINITY
+    for (const sessionId of workspace.sessionIds) {
+      const session = byId[sessionId]
+      if (session !== undefined && typeof session.updatedAt === 'number') {
+        latest = Math.max(latest, session.updatedAt)
+      }
+    }
+    if (latest === Number.NEGATIVE_INFINITY && workspace.createdAt !== undefined) {
+      latest = Date.parse(workspace.createdAt)
+    }
+    if (selected === undefined || latest > selectedTime) {
+      selected = workspace.workspaceId
+      selectedTime = latest
+    }
+  }
+  return selected
+}
+
+/**
+ * The landing decision with NATIVE restore semantics (T-F): replicate
+ * upstream `restoreSelection` (navigation.ts:318-347) against the fresh
+ * caches and the parsed persisted selection ({@link parseLandingTarget}'s
+ * result, which already applies the `subagentAddress`-first precedence).
+ *
+ *   - `subagentAddress` → open it directly, no cache consultation
+ *     (navigation.ts:320-323).
+ *   - `sessionId` found in the FRESH `byId`: non-blank — or blank but
+ *     workspace-less — opens the id (navigation.ts:324-329); blank with a
+ *     workspace resolves to that workspace (navigation.ts:333-335's private
+ *     `reuseBlank` + :337's `workspace.workspaceId` target — the public
+ *     `startSession(workspaceId)` face covers both: its `connectWorkspace`
+ *     → `reuseOrCreateBlank` reuses the pointer's own blank whenever the
+ *     private pre-check would pass, because the eligibility scan is the
+ *     same).
+ *   - A stale id (absent from the fresh `byId`) falls through to the
+ *     no-pointer ladder exactly as upstream's `summary === undefined` does.
+ *   - No pointer / stale pointer: the recent workspace gets the new-session
+ *     flow (navigation.ts:337); both lists empty is the fresh boot and
+ *     mirrors `initializeDefaultWorkspace` (navigation.ts:338-342).
+ *   - `caches` unavailable (the host's read failed) → `undefined`: land
+ *     nothing — no landing beats a wrong one. Same for the degenerate
+ *     zero-workspaces-with-sessions shape, where upstream simply leaves the
+ *     view as it is (no target, both-empty guard false, :337-342).
+ *
+ * @param parsed - the persisted-selection parse ({@link parseLandingTarget}).
+ * @param caches - the fresh both-lists snapshots, or `undefined` unreadable.
+ * @returns the action to execute, or `undefined` to land nothing.
+ */
+export function planRestoreLanding(
+  parsed: string | object | null,
+  caches: RestoreCaches | undefined,
+): RestoreLandingPlan | undefined {
+  if (caches === undefined) return undefined
+  if (parsed !== null && typeof parsed === 'object') {
+    return { kind: 'open-session', target: parsed }
+  }
+  if (typeof parsed === 'string' && parsed !== '') {
+    const summary = caches.sessions.byId[parsed]
+    if (summary !== undefined) {
+      const workspace = caches.workspaces.items.find(
+        (item) => item.sessionIds.includes(parsed),
+      )
+      if (summary.blank !== true || workspace === undefined) {
+        return { kind: 'open-session', target: parsed }
+      }
+      return { kind: 'start-session', workspaceId: workspace.workspaceId }
+    }
+  }
+  const target = recentWorkspaceId(caches.workspaces.items, caches.sessions.byId)
+  if (target !== undefined) return { kind: 'start-session', workspaceId: target }
+  if (caches.workspaces.items.length === 0 && caches.sessions.ids.length === 0) {
+    return { kind: 'default-workspace' }
+  }
+  return undefined
+}
+
+/** The structural face of one wire-derived list store (workspaces or sessions). */
 export interface NavigationCacheFace {
-  /** Read the current snapshot: the items array identity is the freshness token. */
+  /**
+   * Read the current snapshot: the `items` ARRAY IDENTITY is the freshness
+   * token. For `workspaces.list` this is the snapshot's items array; for
+   * `sessions.list` the client binding adapts the projection's `ids` array
+   * (a fresh array is minted on every projection — service.ts:607-677).
+   */
   getSnapshot(): { items: readonly unknown[]; phase: unknown }
   /** Subscribe to snapshot invalidation; the returned disposer stops it. */
   subscribe(listener: () => void): () => void
@@ -158,54 +308,79 @@ export interface GenerationFace {
 }
 
 /**
- * The caches-fresh gate behind the deferred new-chat landing: fires
- * `listener` exactly once, when the navigation caches demonstrably hold the
- * TARGET plane's data.
+ * The caches-fresh gate behind the deferred landing (T-F): fires `listener`
+ * exactly once, when BOTH navigation caches demonstrably hold the TARGET
+ * plane's data — the client-face equivalent of upstream's both-lists ready
+ * gate (`watchNavigation`, navigation.ts:292: `workspace.phase !== 'ready'
+ * || sessions.phase !== 'ready'` → return).
  *
- * The freshness token is the snapshot's `items` ARRAY IDENTITY: upstream's
+ * The freshness token is each snapshot's `items` ARRAY IDENTITY: upstream's
  * workspace model mints a new array on every baseline install
- * (`installViews` → `[...installed.values()]`, model.ts:398) while carrier
- * churn (`handleCarrierFailure`) keeps the reference. The gate arms at the
- * first generation establishment OBSERVED BY ITS OWN subscription — the
- * anchor is retaken there, and nothing before that point can pass, so the
- * dying old plane's last increments racing the reconnect are absorbed; the
- * first replacement after establishment is the target plane's baseline. The
- * `phase === 'ready'` check rides along as a guard against a page whose
- * first baseline never arrived.
+ * (`installViews` → `[...installed.values()]`, model.ts:398) and the session
+ * list projection mints a fresh `ids` array on every manager change
+ * (service.ts:607-677), while carrier churn keeps references. The gate arms
+ * at the first generation establishment OBSERVED BY ITS OWN subscription —
+ * the anchors are retaken there, and nothing before that point can pass, so
+ * the dying old plane's last increments racing the reconnect are absorbed;
+ * the first replacements after establishment are the target plane's
+ * baselines. The `phase === 'ready'` checks ride along as a guard against a
+ * page whose first baseline never arrived. Both edges are tracked
+ * independently, in either arrival order (the T-A gap: watching workspaces
+ * alone let a late sessions baseline leave the pointer lookup reading stale
+ * `byId` rows); the listener fires once, when the SECOND edge lands.
  *
  * Establishment strictly precedes any target-plane baseline (the follow
- * streams re-open on top of the established generation), so this single
- * edge implies both "generation established" and "repull landed" — the two
- * preconditions of a correct `startSession()` resolution.
+ * streams re-open on top of the established generation), so this single edge
+ * implies both "generation established" and "repull landed" — the two
+ * preconditions of a correct landing resolution.
  *
  * Host-half pure logic: the client binding composes it with the real
- * `ctx.workspaces.list` store and the connection generation observable; the
- * machine consumes it through {@link SwitchHost.onCachesRefreshed}.
+ * `ctx.workspaces.list` + `ctx.sessions.list` stores and the connection
+ * generation observable; the machine consumes it through
+ * {@link SwitchHost.onCachesRefreshed}.
  *
- * @returns the disposer stopping both subscriptions.
+ * @returns the disposer stopping all three subscriptions.
  */
 export function observeCachesRefreshed(
-  list: NavigationCacheFace,
+  workspaces: NavigationCacheFace,
+  sessions: NavigationCacheFace,
   generation: GenerationFace,
   listener: () => void,
 ): () => void {
-  let anchor = list.getSnapshot().items
   // Establishment is an event, not a level: a live OLD generation at arming
   // time must not open the gate to that plane's churn. Monotonic — a later
-  // generation loss mints no arrays, a re-establishment retakes the anchor.
+  // generation loss mints no arrays, a re-establishment retakes the anchors.
   let established = false
+  let workspacesAnchor = workspaces.getSnapshot().items
+  let sessionsAnchor = sessions.getSnapshot().items
+  let workspacesFresh = false
+  let sessionsFresh = false
   const disposeGeneration = generation.subscribe(() => {
     if (generation.getSnapshot() === undefined) return
     established = true
-    anchor = list.getSnapshot().items
+    workspacesFresh = false
+    sessionsFresh = false
+    workspacesAnchor = workspaces.getSnapshot().items
+    sessionsAnchor = sessions.getSnapshot().items
   })
-  const disposeList = list.subscribe(() => {
+  const check = (): void => {
+    if (workspacesFresh && sessionsFresh) listener()
+  }
+  const disposeWorkspaces = workspaces.subscribe(() => {
     if (!established) return
-    const snapshot = list.getSnapshot()
-    if (snapshot.phase === 'ready' && snapshot.items !== anchor) listener()
+    const snapshot = workspaces.getSnapshot()
+    if (snapshot.phase === 'ready' && snapshot.items !== workspacesAnchor) workspacesFresh = true
+    check()
+  })
+  const disposeSessions = sessions.subscribe(() => {
+    if (!established) return
+    const snapshot = sessions.getSnapshot()
+    if (snapshot.phase === 'ready' && snapshot.items !== sessionsAnchor) sessionsFresh = true
+    check()
   })
   return () => {
-    disposeList()
+    disposeWorkspaces()
+    disposeSessions()
     disposeGeneration()
   }
 }
@@ -345,21 +520,43 @@ export interface SwitchHost {
   /** Swap the state atom (+ NS) to `label` — orchestration step 1. */
   setAgent(label: string): void
   /**
-   * Read the active NS's persisted `dsh.sessions.current` raw value. A read
-   * failure may be reported either by throwing or by returning `null` — both
-   * land on new chat.
+   * Read the active NS's persisted `dsh.sessions.current` raw value. The
+   * machine reads it at LANDING time — inside the both-lists gate callback,
+   * long after the NS swap, exactly where upstream `restoreSelection` reads
+   * its hydrated selection store relative to its ready gate. A read failure
+   * may be reported either by throwing or by returning `null`.
    */
   readPersistedSelection(): string | null
-  /** Navigate the main view to a parsed landing target (step 2, session case). */
+  /** Navigate the main view to a parsed landing target (open-session plan). */
   openSession(target: string | object): void
-  /** Navigate the main view to a new chat / blank session (step 2, fallback). */
-  openNewChat(): void
+  /**
+   * Run the new-session flow (the public `uiWorkspace.startSession` face):
+   * with a workspace id the flow targets that workspace (blank reuse
+   * included); without, the inherited current-then-recent resolution —
+   * which on a fresh, plane-consistent cache set IS the recent-workspace
+   * ladder. Executed for the start-session plan.
+   */
+  startSession(workspaceId?: string): void
+  /**
+   * Mirror upstream `initializeDefaultWorkspace` (navigation.ts:349-361)
+   * through the public faces: prepare the default workspace and open it.
+   * Executed for the default-workspace plan. Asynchronous upstream; a
+   * failure is feedback, never a revert.
+   */
+  openDefaultWorkspace(): void
+  /**
+   * Read the target plane's fresh navigation caches — the `workspaces.list`
+   * and `sessions.list` snapshots the landing plan decides over. The both-
+   * lists gate has already fired, so both phases are ready; a read failure
+   * may throw (a failed read lands nothing).
+   */
+  readRestoreCaches(): RestoreCaches
   /**
    * Observe the target plane's wire-derived navigation caches being replaced
-   * after the switch began — the post-`connection/reset` repull landing its
-   * baseline. The all-clear for the deferred new-chat landing: only then is
-   * upstream's `startSession()` workspace resolution guaranteed to read the
-   * target agent's data instead of the previous agent's. The listener must
+   * after the switch began — BOTH stores' post-`connection/reset` repull
+   * baselines landed (workspaces and sessions, either order). The all-clear
+   * for the landing: only then do the snapshots hold the target agent's data
+   * and upstream's resolution faces read the target plane. The listener must
    * fire at most once per subscription; the returned disposer stops it.
    */
   onCachesRefreshed(listener: () => void): () => void
@@ -516,62 +713,63 @@ export function createSwitchController(host: SwitchHost, options: SwitchOptions 
         try {
           host.setAgent(label)
         } catch { /* the atom face is guarded; landing still reads the old NS */ }
-        // Step 2: land. The pointer case navigates immediately —
-        // session-targeted, no workspace resolution, correct before
-        // reconnect (round 4). The new-chat case DEFERS: upstream
-        // `startSession()` would resolve a workspace from caches still
-        // holding the previous agent's plane (the T-A defect); it fires
-        // once the target plane's caches are fresh (armed below).
-        let raw: string | null = null
-        try {
-          raw = host.readPersistedSelection()
-        } catch {
-          raw = null
-        }
-        const target = parseLandingTarget(raw)
-        let deferNewChat = true
-        if (target !== null) {
-          try {
-            host.openSession(target)
-            deferNewChat = false
-          } catch {
-            deferNewChat = true // degrade to the deferred blank landing
-          }
-        }
-        // Step 3: replace the generation attempt against the retargeted plane.
+        // Step 2: replace the generation attempt against the retargeted plane.
+        // Nothing navigates here (T-F): every landing — the pointer included —
+        // defers to the both-lists gate, because native restore semantics
+        // resolve ONLY against fresh, plane-consistent data (the pre-reconnect
+        // pointer landing read stale sessions and broke native's own
+        // last-visited restore).
         try {
           host.reconnect()
         } catch { /* fallback below still applies */ }
-        // Step 4: the fallback race — generation establishment settles, the
+        // Step 3: the fallback race — generation establishment settles, the
         // timer and the roster probe revert.
         timer = host.setTimeout(() => { revert('timeout') }, fallbackMs)
         disposer = host.onGenerationEstablished(() => {
           if (attempt.finished || current !== attempt) return
           attempt.finish()
         })
-        // The deferred new-chat landing. Deliberately NOT released by
-        // `finish()`: the baseline lands after the generation, so the
-        // landing must survive the settle; a revert kills it directly and a
-        // supersede kills it through the controller-scope handle (a settled
-        // attempt included — see the run() preamble). Fires at most once;
-        // the settle arms the staleness watchdog that disarms it if the
-        // baseline never installs.
-        if (deferNewChat) {
-          landingArmed = true
-          const cancelThisLanding = (): void => { attempt.cancelLanding() }
-          armedLanding = cancelThisLanding
-          disposeLanding = host.onCachesRefreshed(() => {
-            if (attempt.dead) return
-            if (armedLanding === cancelThisLanding) armedLanding = undefined
-            landingArmed = false
-            cancelWatchdog()
-            disposeLanding()
-            disposeLanding = () => {}
-            try {
-              host.openNewChat()
-            } catch { /* landing never throws */ }
-          })
-        }
+        // The landing (T-F): NATIVE restore semantics. Fires once BOTH
+        // wire-derived caches are fresh, then reads the target NS's persisted
+        // selection (the NS swap happened in step 1; the active agent only
+        // changes again on a revert, which kills this landing first) and
+        // executes the restoreSelection precedence through the public faces.
+        // Deliberately NOT released by `finish()`: the baselines land after
+        // the generation, so the landing must survive the settle; a revert
+        // kills it directly and a supersede kills it through the
+        // controller-scope handle (a settled attempt included — see the
+        // run() preamble). Fires at most once; the settle arms the staleness
+        // watchdog that disarms it if the baselines never install.
+        landingArmed = true
+        const cancelThisLanding = (): void => { attempt.cancelLanding() }
+        armedLanding = cancelThisLanding
+        disposeLanding = host.onCachesRefreshed(() => {
+          if (attempt.dead) return
+          if (armedLanding === cancelThisLanding) armedLanding = undefined
+          landingArmed = false
+          cancelWatchdog()
+          disposeLanding()
+          disposeLanding = () => {}
+          let caches: RestoreCaches | undefined
+          try {
+            caches = host.readRestoreCaches()
+          } catch {
+            caches = undefined // unreadable caches land nothing (safe direction)
+          }
+          let raw: string | null = null
+          try {
+            raw = host.readPersistedSelection()
+          } catch {
+            raw = null
+          }
+          const plan = planRestoreLanding(parseLandingTarget(raw), caches)
+          if (plan === undefined) return
+          try {
+            if (plan.kind === 'open-session') host.openSession(plan.target)
+            else if (plan.kind === 'start-session') host.startSession(plan.workspaceId)
+            else host.openDefaultWorkspace()
+          } catch { /* landing never throws */ }
+        })
         void host.probeTarget(label).then(
           (alive) => { if (alive !== true) revert('probe') },
           () => { revert('probe') },

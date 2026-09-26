@@ -11,14 +11,19 @@
  *     target world's tree without this module ever prefixing keys itself;
  *   - `ctx.connection` (`reconnect()` + the generation observable — the
  *     establishment leg of `connection/reset`);
- *   - `ctx.uiWorkspace` (`openSession(target)` / `startSession()` — the
- *     navigation face; a no-workspace world clears the main view = blank
- *     session);
- *   - `ctx.workspaces` (`list` — the workspace projection whose post-reset
- *     baseline replacement is the caches-fresh edge the deferred new-chat
- *     landing waits for; upstream resolves `startSession()`'s workspace
- *     from these snapshots, so they must hold the TARGET plane's data
- *     before the landing may run);
+ *   - `ctx.uiWorkspace` (`openSession(target)` / `startSession(workspaceId?)`
+ *     / `openWorkspace(workspaceId)` — the navigation face; T-F executes the
+ *     restore precedence through these public faces only);
+ *   - `ctx.workspaces` (`list` — the workspace projection; T-F also reads
+ *     `initializeDefault` to mirror upstream's default-workspace boot path);
+ *   - `ctx.sessions` (T-F: the session projection — its `list` store is the
+ *     second freshness edge the landing gate watches, and its `ids`/`byId`
+ *     are what upstream `restoreSelection` resolves the pointer against,
+ *     navigation.ts:324; watching `workspaces.list` alone was the T-A gap
+ *     that broke native's own last-visited restore);
+ *   - `ctx.locale` (T-F: the active language for the default-workspace
+ *     title, the one input upstream's `initializeDefaultWorkspace` derives
+ *     from the context, navigation.ts:350-351);
  *   - the control-plane roster fetch (`/api/agent-runtime`, never rewritten)
  *     as the probe: the target must still be a live roster entry;
  *   - a minimal self-owned toast overlay for the revert feedback (upstream
@@ -40,6 +45,8 @@ import {
   observeCachesRefreshed,
   SESSIONS_CURRENT_KEY,
   type NavigationCacheFace,
+  type RestoreCaches,
+  type RestoreWorkspaceView,
   type SwitchHost,
 } from '../switch-core.js'
 import { fetchRoster } from './roster.js'
@@ -61,20 +68,60 @@ export interface SwitchConnection {
   }
 }
 
-/** Structural face of `ctx.uiWorkspace` — the navigation face. */
+/** Structural face of `ctx.uiWorkspace` — the navigation face (public only). */
 export interface SwitchUiWorkspace {
   openSession(target: string | object): void
-  startSession(workspaceId?: unknown): void
+  openWorkspace(workspaceId: string): void | Promise<void>
+  startSession(workspaceId?: string): void
 }
 
 /**
  * Structural face of `ctx.workspaces` — the workspace projection whose
- * baseline replacement marks the switch's caches-fresh edge. Present
- * wherever `uiWorkspace` is: upstream's ui-workspace injects `workspaces`
- * itself (ui-workspace/src/client/index.ts).
+ * baseline replacement is one of the TWO freshness edges the landing gate
+ * watches, plus `initializeDefault` for the default-workspace mirror (the
+ * same public method upstream's private `initializeDefaultWorkspace`
+ * calls). Present wherever `uiWorkspace` is: upstream's ui-workspace injects
+ * `workspaces` itself (ui-workspace/src/client/index.ts).
  */
 export interface SwitchWorkspaces {
-  readonly list: NavigationCacheFace
+  readonly list: {
+    getSnapshot(): { items: readonly RestoreWorkspaceView[]; phase: unknown }
+    subscribe(listener: () => void): () => void
+  }
+  initializeDefault(request: {
+    directoryName: string
+    title: string
+  }): Promise<{ workspaceId: string } | undefined>
+}
+
+/** Structural slice of one `ctx.sessions.list` `byId` row the landing reads. */
+export interface SwitchSessionSummary {
+  readonly id: string
+  readonly blank?: boolean
+  readonly updatedAt?: number
+}
+
+/**
+ * Structural face of `ctx.sessions` (T-F) — the session projection the
+ * landing pointer resolves against (upstream `restoreSelection` reads
+ * `sessions.byId`, navigation.ts:324) and the second freshness edge of the
+ * both-lists gate (the T-A gap: without it the gate could fire while `byId`
+ * still held the previous plane's rows).
+ */
+export interface SwitchSessions {
+  readonly list: {
+    getSnapshot(): {
+      ids: readonly string[]
+      byId: Readonly<Record<string, SwitchSessionSummary>>
+      phase: unknown
+    }
+    subscribe(listener: () => void): () => void
+  }
+}
+
+/** Structural face of `ctx.locale` — the active-language read. */
+export interface SwitchLocale {
+  getSnapshot(): { active: string }
 }
 
 /** Whether this page is a fusion page: the baked flag global is present. */
@@ -133,34 +180,72 @@ let bound: ((label: string) => Promise<void>) | undefined
 /**
  * Bind the page's switch agent from the client services. Idempotent; a no-op
  * without the page atom (a non-fusion page never has one).
- * @param deps - the `connection`, `uiWorkspace` and `workspaces` services
- *   (structural).
+ * @param deps - the `connection`, `uiWorkspace`, `workspaces`, `sessions`
+ *   and `locale` services (structural; the stock client tree always has all
+ *   five — upstream's ui-workspace injects the same set).
  */
 export function bindSwitchAgent(deps: {
   connection: SwitchConnection
   uiWorkspace: SwitchUiWorkspace
   workspaces: SwitchWorkspaces
+  sessions: SwitchSessions
+  locale: SwitchLocale
 }): void {
   if (bound !== undefined) return
   const state = uiState()
   if (state === undefined) return
+  const readRestoreCaches = (): RestoreCaches => {
+    const workspaces = deps.workspaces.list.getSnapshot()
+    const sessions = deps.sessions.list.getSnapshot()
+    return {
+      workspaces: { items: workspaces.items, phase: workspaces.phase },
+      sessions: { ids: sessions.ids, byId: sessions.byId, phase: sessions.phase },
+    }
+  }
+  // Upstream `initializeDefaultWorkspace` (navigation.ts:349-361) mirrored
+  // through the public faces: the same language branch, the same request
+  // payload, then `openWorkspace` instead of the private `connectWorkspace`
+  // (both funnel into `reuseOrCreateBlank`). A refusal is feedback (the
+  // upstream notice's meaning), never a revert; `undefined` (first-use
+  // initialization ineligible) leaves the view as it is, like upstream.
+  const openDefaultWorkspace = (): void => {
+    const language = deps.locale.getSnapshot().active.toLowerCase().split('-')[0]
+    const title = language === 'zh' ? '默认工作区' : 'Default workspace'
+    const directoryName = language === 'zh' || language === 'en' ? title : 'default-workspace'
+    void deps.workspaces.initializeDefault({ directoryName, title })
+      .then((prepared) => {
+        if (prepared !== undefined) deps.uiWorkspace.openWorkspace(prepared.workspaceId)
+      })
+      .catch(() => { showToast('Super D: unable to create the default workspace.') })
+  }
   const host: SwitchHost = {
     setAgent(label) { state.setAgent(label) },
     readPersistedSelection() {
       // The Task-3 storage patch prefixes the ACTIVE label's namespace at
-      // call time — after setAgent this read lands in the target world's
-      // `'<label>:dsh.sessions.current'`.
+      // call time — the landing reads long after setAgent, so this read
+      // lands in the target world's `'<label>:dsh.sessions.current'`.
       const storage = (globalThis as { localStorage?: Storage }).localStorage
       return storage === undefined ? null : storage.getItem(SESSIONS_CURRENT_KEY)
     },
     openSession(target) { deps.uiWorkspace.openSession(target) },
-    openNewChat() { deps.uiWorkspace.startSession() },
+    startSession(workspaceId) { deps.uiWorkspace.startSession(workspaceId) },
+    openDefaultWorkspace,
+    readRestoreCaches,
     onCachesRefreshed(listener) {
-      // The T-A freshness gate over the real stores: the first post-
-      // establishment baseline replacement in `workspaces.list` — before it
-      // lands, `startSession()` would resolve the PREVIOUS agent's
-      // workspace from stale snapshots (navigation.ts:223-238).
-      return observeCachesRefreshed(deps.workspaces.list, deps.connection.generation, listener)
+      // The T-F freshness gate over the real stores: the first
+      // post-establishment baseline replacement in BOTH `workspaces.list`
+      // and `sessions.list` — upstream's watchNavigation ready gate
+      // (navigation.ts:292). The sessions store adapts its projection's
+      // `ids` array to the freshness token (a fresh array is minted on
+      // every projection).
+      const sessionsFace: NavigationCacheFace = {
+        getSnapshot: () => {
+          const snapshot = deps.sessions.list.getSnapshot()
+          return { items: snapshot.ids, phase: snapshot.phase }
+        },
+        subscribe: (fn) => deps.sessions.list.subscribe(fn),
+      }
+      return observeCachesRefreshed(deps.workspaces.list, sessionsFace, deps.connection.generation, listener)
     },
     reconnect() { deps.connection.reconnect() },
     onGenerationEstablished(listener) {

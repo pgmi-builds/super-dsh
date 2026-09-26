@@ -1,13 +1,23 @@
-// Client switch (native-ui-fusion Task 4): the pure orchestration core behind
-// the in-page agent switch — storage-namespace key computation, the session
-// landing decision table (persisted 'dsh.sessions.current' under the target
-// NS), and the fallback state machine (timeout / roster-probe failure →
-// revert to native + toast, never a page lock).
+// Client switch (native-ui-fusion Task 4 + T-F): the pure orchestration core
+// behind the in-page agent switch — storage-namespace key computation, the
+// landing decision (persisted 'dsh.sessions.current' under the target NS,
+// resolved with NATIVE restore semantics), and the fallback state machine
+// (timeout / roster-probe failure → revert to native + toast, never a page
+// lock).
 //
 // switch-core.ts is a host-half module (plain TS, no DOM, no client imports)
 // precisely so node tests can import it from dist — the client-shim precedent
 // in reverse: pure logic lives where tsc emits, the DOM/connection face is
 // injected. Seat DOM behavior is verified on the pack line (Task 6).
+//
+// T-F (2026-09-26, user ruling "按原生的语义去理解…把这个 last visit session 也
+// 做一下"): the landing replicates upstream's fresh-load restore —
+// watchNavigation waits for BOTH lists' ready phase (navigation.ts:284-316)
+// and restoreSelection walks subagentAddress → fresh-byId sessionId →
+// recent-workspace → default-workspace (navigation.ts:318-347). Every landing
+// defers to the both-lists gate; the pointer no longer lands pre-reconnect
+// (that ordering read stale sessions and broke native's own last-visited
+// restore — the live defect this task fixes).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -19,6 +29,7 @@ import {
   namespacedKey,
   storageNamespace,
   parseLandingTarget,
+  planRestoreLanding,
   seatClickDecision,
   hubRowActive,
   switchAffordance,
@@ -41,7 +52,7 @@ test('namespacedKey: the sessions-current key lands under the active NS', () => 
   assert.equal(NATIVE_AGENT, 'native')
 })
 
-// ---- landing decision table ----------------------------------------------
+// ---- landing decision table (the persisted-selection parser) --------------
 
 test('landing: a persisted session id is navigable', () => {
   assert.equal(parseLandingTarget(JSON.stringify({ sessionId: 's-1' })), 's-1')
@@ -68,27 +79,148 @@ test('landing: no value / empty / garbage / wrong shapes → new chat', () => {
   assert.equal(parseLandingTarget(JSON.stringify({ subagentAddress: 'plain-string' })), null)
 })
 
+// ---- T-F: the landing plan (restoreSelection precedence, replicated) ------
+// planRestoreLanding mirrors upstream restoreSelection (navigation.ts:318-347)
+// against the FRESH wire-derived caches: subagentAddress → open (no cache
+// consultation); sessionId → fresh byId (non-blank opens; blank resolves to
+// its workspace — the reuseBlank nuance, covered exactly by the public
+// startSession face's connectWorkspace scan); a stale id falls through to the
+// no-pointer ladder; recent workspace → startSession(that workspace); both
+// lists empty → the default-workspace mirror; unreadable caches → no plan.
+
+const PLAN_WS = { workspaceId: 'ws-1', sessionIds: ['s-a', 's-b'], createdAt: '2026-01-01T00:00:00.000Z' }
+const PLAN_CACHES = {
+  workspaces: { items: [PLAN_WS] },
+  sessions: {
+    ids: ['s-a', 's-b'],
+    byId: { 's-a': { id: 's-a', blank: false, updatedAt: 1 }, 's-b': { id: 's-b', blank: true, updatedAt: 2 } },
+  },
+}
+
+test('plan: subagentAddress wins without any cache consultation', () => {
+  const address = { parentSessionId: 'p', childSessionId: 'c' }
+  assert.deepEqual(planRestoreLanding(address, PLAN_CACHES), { kind: 'open-session', target: address })
+})
+
+test('plan: fresh byId hit — non-blank opens, blank resolves to its workspace', () => {
+  assert.deepEqual(planRestoreLanding('s-a', PLAN_CACHES), { kind: 'open-session', target: 's-a' })
+  assert.deepEqual(planRestoreLanding('s-b', PLAN_CACHES), { kind: 'start-session', workspaceId: 'ws-1' })
+})
+
+test('plan: blank hit without a workspace still opens the id (upstream: !blank || workspace undefined)', () => {
+  const caches = {
+    workspaces: { items: [{ workspaceId: 'ws-1', sessionIds: [], createdAt: '2026-01-01T00:00:00.000Z' }] },
+    sessions: { ids: ['s-b'], byId: { 's-b': { id: 's-b', blank: true } } },
+  }
+  assert.deepEqual(planRestoreLanding('s-b', caches), { kind: 'open-session', target: 's-b' })
+})
+
+test('plan: a stale sessionId falls to the recent-workspace ladder (upstream: summary undefined)', () => {
+  assert.deepEqual(planRestoreLanding('gone-s1', PLAN_CACHES), { kind: 'start-session', workspaceId: 'ws-1' })
+})
+
+test('plan: recent = latest session updatedAt, not createdAt order (recentWorkspace replication)', () => {
+  const caches = {
+    workspaces: { items: [
+      { workspaceId: 'ws-old', sessionIds: ['a1'], createdAt: '2026-03-01T00:00:00.000Z' },
+      { workspaceId: 'ws-new', sessionIds: ['b1'], createdAt: '2026-01-01T00:00:00.000Z' },
+    ] },
+    sessions: { ids: ['a1', 'b1'], byId: {
+      a1: { id: 'a1', blank: false, updatedAt: 10 },
+      b1: { id: 'b1', blank: false, updatedAt: 999 },
+    } },
+  }
+  assert.deepEqual(planRestoreLanding(null, caches), { kind: 'start-session', workspaceId: 'ws-new' })
+  const byCreatedAt = {
+    workspaces: { items: [
+      { workspaceId: 'ws-only', sessionIds: ['x1'], createdAt: '2026-05-01T00:00:00.000Z' },
+    ] },
+    sessions: { ids: [], byId: {} },
+  }
+  assert.deepEqual(planRestoreLanding(null, byCreatedAt), { kind: 'start-session', workspaceId: 'ws-only' },
+    'a workspace with no listed sessions falls back to its createdAt')
+})
+
+test('plan: no pointer, both lists empty → default workspace; unreadable caches → no plan', () => {
+  const empty = { workspaces: { items: [] }, sessions: { ids: [], byId: {} } }
+  assert.deepEqual(planRestoreLanding(null, empty), { kind: 'default-workspace' })
+  assert.deepEqual(planRestoreLanding('s-1', empty), { kind: 'default-workspace' },
+    'a stale pointer on an empty plane is the fresh-boot case too')
+  assert.equal(planRestoreLanding('s-1', undefined), undefined, 'unreadable caches land nothing')
+  const degenerate = { workspaces: { items: [] }, sessions: { ids: ['x'], byId: { x: { id: 'x', blank: false } } } }
+  assert.equal(planRestoreLanding(null, degenerate), undefined,
+    'workspaces=0 with sessions>0: upstream leaves the view as it is — so does the plan')
+})
+
 // ---- fallback state machine ----------------------------------------------
 
-/** A fully observable fake host: every effect is recorded, time is manual. */
+/** A fake wire-derived snapshot store (workspaces or sessions). */
+function fakeListStore(initial) {
+  let snapshot = initial
+  const listeners = []
+  return {
+    face: {
+      getSnapshot: () => snapshot,
+      subscribe(fn) { listeners.push(fn); return () => { const i = listeners.indexOf(fn); if (i !== -1) listeners.splice(i, 1) } },
+    },
+    install(next) { snapshot = next; for (const fn of [...listeners]) fn() },
+    listenerCount: () => listeners.length,
+  }
+}
+
+/** The fake's "previous plane" stale data (what the stores hold pre-repull). */
+const STALE_WS = { items: [{ workspaceId: 'stale-ws', sessionIds: ['old-s1'], createdAt: '2026-01-01T00:00:00.000Z' }], phase: 'ready' }
+const STALE_SS = { ids: ['old-s1'], byId: { 'old-s1': { id: 'old-s1', blank: false, updatedAt: 10 } }, phase: 'ready' }
+/** The fake's target-plane fresh data (what the repull installs). */
+const FRESH_WS = { items: [{ workspaceId: 'ws-1', sessionIds: ['s-1'], createdAt: '2026-01-15T00:00:00.000Z' }], phase: 'ready' }
+const FRESH_SS = { ids: ['s-1'], byId: { 's-1': { id: 's-1', blank: false, updatedAt: 100 } }, phase: 'ready' }
+
+/**
+ * A fully observable fake host: every effect is recorded, time is manual.
+ * The freshness gate is the REAL `observeCachesRefreshed` composed over the
+ * two fake stores + a fake generation — machine-level tests exercise the same
+ * both-lists gate the client binding wires (T-F).
+ */
 function fakeHost(overrides = {}) {
-  const log = { setAgent: [], openSession: [], openNewChat: [], reconnect: [], toast: [] }
+  const log = { setAgent: [], openSession: [], startSession: [], openDefaultWorkspace: [], reconnect: [], toast: [] }
   const seq = []
-  let genListeners = []
-  let cacheListeners = []
   const timers = []
   const storage = new Map([['dsh.sessions.current', JSON.stringify({ sessionId: 'native-s1' })]])
-  // The patched Storage reads its namespace at call time from the atom — the
-  // fake mirrors exactly that: the read resolves against the active label.
   let active = 'native'
+  const workspaces = fakeListStore(STALE_WS)
+  const sessions = fakeListStore(STALE_SS)
+  let generation
+  const genListeners = []
+  const genFace = {
+    getSnapshot: () => generation,
+    subscribe(fn) { genListeners.push(fn); return () => { const i = genListeners.indexOf(fn); if (i !== -1) genListeners.splice(i, 1) } },
+  }
   const host = {
     setAgent(label) { active = label; log.setAgent.push(label); seq.push(`setAgent:${label}`) },
     readPersistedSelection() { return storage.get(namespacedKey(active, SESSIONS_CURRENT_KEY)) ?? null },
     openSession(target) { log.openSession.push(target); seq.push(`openSession:${JSON.stringify(target)}`) },
-    openNewChat() { log.openNewChat.push(true); seq.push('openNewChat') },
+    startSession(workspaceId) { log.startSession.push(workspaceId); seq.push(`startSession:${workspaceId ?? 'inherit'}`) },
+    openDefaultWorkspace() { log.openDefaultWorkspace.push(true); seq.push('openDefaultWorkspace') },
+    readRestoreCaches() {
+      const w = workspaces.face.getSnapshot()
+      const s = sessions.face.getSnapshot()
+      return { workspaces: { items: w.items, phase: w.phase }, sessions: { ids: s.ids, byId: s.byId, phase: s.phase } }
+    },
     reconnect() { log.reconnect.push(true); seq.push('reconnect') },
-    onGenerationEstablished(fn) { genListeners.push(fn); return () => { genListeners = genListeners.filter((f) => f !== fn) } },
-    onCachesRefreshed(fn) { cacheListeners.push(fn); return () => { cacheListeners = cacheListeners.filter((f) => f !== fn) } },
+    onGenerationEstablished(fn) {
+      return genFace.subscribe(() => { if (genFace.getSnapshot() !== undefined) fn() })
+    },
+    onCachesRefreshed(fn) {
+      // The client binding's composition: sessions.ids plays items.
+      const sessionsFace = {
+        getSnapshot: () => {
+          const s = sessions.face.getSnapshot()
+          return { items: s.ids, phase: s.phase }
+        },
+        subscribe: (l) => sessions.face.subscribe(l),
+      }
+      return observeCachesRefreshed(workspaces.face, sessionsFace, genFace, fn)
+    },
     probeTarget() { return Promise.resolve(true) },
     toast(message) { log.toast.push(message); seq.push('toast') },
     setTimeout(fn, ms) { const t = { fn, ms, cleared: false }; timers.push(t); return t },
@@ -101,64 +233,132 @@ function fakeHost(overrides = {}) {
     seq,
     timers,
     setStored(label, raw) { storage.set(namespacedKey(label, SESSIONS_CURRENT_KEY), raw) },
-    establish: () => { for (const fn of [...genListeners]) fn() },
-    generationListeners: () => genListeners.length,
-    refreshCaches: () => { for (const fn of [...cacheListeners]) fn() },
-    cacheListeners: () => cacheListeners.length,
+    establish: () => { generation = 'gen-switch'; for (const fn of [...genListeners]) fn() },
+    installWorkspacesBaseline: (next) => { workspaces.install({ ...next, phase: 'ready' }) },
+    installSessionsBaseline: (next) => { sessions.install({ ...next, phase: 'ready' }) },
+    refreshCaches() {
+      workspaces.install({ ...FRESH_WS })
+      sessions.install({ ...FRESH_SS })
+    },
+    gateSubscriptions: () => workspaces.listenerCount() + sessions.listenerCount(),
+    generationSubscriptions: () => genListeners.length,
     fireTimer: (t) => { if (!t.cleared) t.fn() },
   }
 }
 
-test('happy path: setAgent → land on the target NS session → reconnect → settle on generation', async () => {
+test('happy path (T-F): pointer landing defers to the both-lists gate, then lands the persisted session', async () => {
   const fx = fakeHost()
   fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7' }))
   const done = createSwitchController(fx.host).run('omp')
   assert.deepEqual(fx.log.setAgent, ['omp'], 'state + NS swap first')
-  assert.deepEqual(fx.log.openSession, ['omp-s7'], 'lands on the persisted target session')
-  assert.deepEqual(fx.log.openNewChat, [], 'no new chat when a session was navigable')
-  assert.deepEqual(fx.log.reconnect, [true], 'reconnect after landing')
+  assert.deepEqual(fx.seq, ['setAgent:omp', 'reconnect'], 'no navigation before the gate — the pointer must be read against fresh data')
   assert.equal(fx.timers.length, 1, 'fallback timer armed')
-  assert.equal(fx.generationListeners(), 1, 'generation subscription armed')
   fx.establish()
   await done
-  assert.deepEqual(fx.log.toast, [], 'no toast on success')
-  assert.equal(fx.timers[0].cleared, true, 'fallback timer disarmed')
-  assert.equal(fx.generationListeners(), 0, 'generation subscription released')
+  fx.installWorkspacesBaseline(FRESH_WS)
+  assert.deepEqual(fx.log.openSession, [], 'workspaces alone do not open the gate (the T-A gap: sessions still stale)')
+  fx.installSessionsBaseline({ ids: ['omp-s7'], byId: { 'omp-s7': { id: 'omp-s7', blank: false, updatedAt: 5 } } })
+  assert.deepEqual(fx.log.openSession, ['omp-s7'], 'the persisted target session lands once BOTH lists are fresh')
+  assert.deepEqual(fx.log.startSession, [], 'no new-chat detour')
 })
 
-test('no value / read failure → new chat landing deferred to fresh caches, old content stays (no clearing calls)', async () => {
-  for (const setup of [(fx) => null, (fx) => fx.setStored('omp', 'garbage{')]) {
-    const fx = fakeHost()
-    setup(fx)
-    const done = createSwitchController(fx.host).run('omp')
-    assert.deepEqual(fx.log.openSession, [])
-    assert.deepEqual(fx.log.openNewChat, [], 'nothing lands before the target plane caches are fresh')
-    fx.refreshCaches()
-    assert.deepEqual(fx.log.openNewChat, [true], 'blank-session landing after the cache refresh')
-    assert.deepEqual(fx.log.openSession, [], 'the previous agent session id is never re-opened')
-    fx.establish()
-    await done
-  }
-})
-
-test('openSession throwing degrades to the deferred new-chat landing, never out of run()', () => {
-  const fx = fakeHost({ openSession() { throw new Error('retain failed') } })
-  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7' }))
-  const done = createSwitchController(fx.host).run('omp')
-  assert.deepEqual(fx.log.openNewChat, [])
-  fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [true])
-  fx.establish()
-  return done.then(() => {})
-})
-
-test('native switch: same path over the bare NS', async () => {
+test('native-return-with-pointer: switching back to native lands native\'s persisted last-visited session (not new chat)', async () => {
   const fx = fakeHost()
   const done = createSwitchController(fx.host).run('native')
   assert.deepEqual(fx.log.setAgent, ['native'])
-  assert.deepEqual(fx.log.openSession, ['native-s1'], 'native persisted session re-landed')
+  assert.deepEqual(fx.log.openSession, [], 'nothing lands while the native plane caches are stale')
   fx.establish()
   await done
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['native-s1'], byId: { 'native-s1': { id: 'native-s1', blank: false, updatedAt: 7 } } })
+  assert.deepEqual(fx.log.openSession, ['native-s1'], 'native\'s own last-visited restore works again')
+  assert.deepEqual(fx.log.startSession, [])
+})
+
+test('subagentAddress precedence: the address wins over the sessionId at landing time (upstream restore order)', async () => {
+  const fx = fakeHost()
+  const address = { parentSessionId: 'p-1', childSessionId: 'c-1', mode: 'continuable' }
+  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7', subagentAddress: address }))
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.refreshCaches()
+  assert.deepEqual(fx.log.openSession, [address], 'openSession receives the address object, not the session id')
+  assert.deepEqual(fx.log.startSession, [])
+})
+
+test('blank pointer: the landing connects the pointer\'s workspace (reuseBlank nuance via the public startSession face)', async () => {
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-b1' }))
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline({ items: [{ workspaceId: 'ws-9', sessionIds: ['omp-b1'], createdAt: '2026-01-01T00:00:00.000Z' }] })
+  fx.installSessionsBaseline({ ids: ['omp-b1'], byId: { 'omp-b1': { id: 'omp-b1', blank: true, cwd: '/x', updatedAt: 5 } } })
+  assert.deepEqual(fx.log.startSession, ['ws-9'], 'a blank pointer resolves to its workspace, exactly like native\'s restore')
+  assert.deepEqual(fx.log.openSession, [])
+})
+
+test('stale pointer: a sessionId the fresh list no longer knows falls to the recent-workspace ladder', async () => {
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'gone-s1' }))
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline({ items: [
+    { workspaceId: 'ws-old', sessionIds: ['a1'], createdAt: '2026-03-01T00:00:00.000Z' },
+    { workspaceId: 'ws-new', sessionIds: ['b1'], createdAt: '2026-01-01T00:00:00.000Z' },
+  ] })
+  fx.installSessionsBaseline({ ids: ['a1', 'b1'], byId: {
+    a1: { id: 'a1', blank: false, updatedAt: 10 },
+    b1: { id: 'b1', blank: false, updatedAt: 999 },
+  } })
+  assert.deepEqual(fx.log.startSession, ['ws-new'], 'recent = latest session updatedAt (native recentWorkspace)')
+  assert.deepEqual(fx.log.openSession, [], 'the dead id is never opened')
+})
+
+test('foreign-no-pointer (non-empty plane): the fresh-boot-equivalent recent-workspace landing, never an unconditional blank', async () => {
+  const fx = fakeHost()
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.refreshCaches()
+  assert.deepEqual(fx.log.startSession, ['ws-1'], 'a new session opens in the most recent workspace (startSession face)')
+  assert.deepEqual(fx.log.openDefaultWorkspace, [])
+  assert.deepEqual(fx.log.openSession, [], 'the previous agent session id is never re-opened')
+})
+
+test('foreign-no-pointer (fresh-boot empty plane): the default-workspace mirror — NOT an unconditional blank', async () => {
+  const fx = fakeHost()
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline({ items: [] })
+  fx.installSessionsBaseline({ ids: [], byId: {} })
+  assert.deepEqual(fx.log.openDefaultWorkspace, [true], 'both lists empty → native\'s initializeDefaultWorkspace mirror')
+  assert.deepEqual(fx.log.startSession, [], 'never an unconditional blank')
+})
+
+test('a failing caches read lands nothing (safe direction: no landing beats a wrong one)', async () => {
+  const fx = fakeHost({ readRestoreCaches() { throw new Error('store gone') } })
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.refreshCaches()
+  assert.deepEqual(fx.log.startSession, [])
+  assert.deepEqual(fx.log.openSession, [])
+  assert.deepEqual(fx.log.openDefaultWorkspace, [])
+})
+
+test('a landing face throwing at gate time never escapes run(); the machine still settles', async () => {
+  const fx = fakeHost({ openSession() { throw new Error('retain failed') } })
+  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7' }))
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  fx.refreshCaches()
+  await done
+  assert.deepEqual(fx.log.setAgent, ['omp'], 'no revert: the switch itself succeeded')
+  assert.deepEqual(fx.log.toast, [], 'a failed landing is contained, not a revert')
 })
 
 test('timeout with no generation → revert: native + reconnect + toast, resolves', async () => {
@@ -172,7 +372,7 @@ test('timeout with no generation → revert: native + reconnect + toast, resolve
   assert.equal(fx.log.toast.length, 1, 'a visible toast says so')
   assert.match(fx.log.toast[0], /omp/)
   assert.equal(fx.timers[0].cleared, true)
-  assert.equal(fx.generationListeners(), 0, 'subscription released on revert')
+  assert.equal(fx.generationSubscriptions(), 0, 'subscription released on revert')
 })
 
 test('roster probe failure → immediate revert, timer never fires', async () => {
@@ -230,71 +430,13 @@ test('the fallback window defaults to the documented N seconds', () => {
   assert.ok(SWITCH_FALLBACK_MS >= 5_000 && SWITCH_FALLBACK_MS <= 30_000, 'a human-scale switch window')
 })
 
-// ---- T-A: the new-chat landing never resolves the previous agent's workspace
-// Live-acceptance defect (2026-09-26): with no valid per-agent NS pointer the
-// landing ran BEFORE reconnect, so upstream `startSession()` resolved
-// `currentWorkspaceId ?? recent` from wire-derived caches still holding the
-// PREVIOUS agent's plane → `workspace/not-found` toast + the view pinned to
-// the dead previous session id. The new-chat landing therefore defers until
-// the target plane's caches are fresh; the pointer landing stays immediate
-// (session-targeted, no workspace resolution — the clean round-4 behavior).
-
-test('matrix native→foreign, no pointer: new-chat landing fires only after reconnect + fresh caches', async () => {
-  const fx = fakeHost()
-  const done = createSwitchController(fx.host).run('omp')
-  assert.deepEqual(fx.seq, ['setAgent:omp', 'reconnect'], 'no landing before the plane is retargeted')
-  fx.refreshCaches()
-  assert.deepEqual(fx.seq, ['setAgent:omp', 'reconnect', 'openNewChat'], 'landing rides the cache refresh')
-  fx.establish()
-  await done
-  assert.deepEqual(fx.log.openSession, [], 'the red line: never navigates to the previous agent session')
-  assert.deepEqual(fx.log.toast, [], 'no failure feedback on the happy path')
-})
-
-test('matrix foreign→foreign, no pointer: same deferral across worlds', async () => {
-  const fx = fakeHost()
-  fx.setStored('omp', 'garbage{') // omp NS holds no usable pointer
-  const done = createSwitchController(fx.host).run('codex')
-  assert.deepEqual(fx.log.setAgent, ['codex'])
-  assert.deepEqual(fx.log.openNewChat, [], 'no stale landing while the codex plane caches are stale')
-  fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [true])
-  fx.establish()
-  await done
-})
-
-test('matrix foreign→native, no pointer: deferral applies on the way home too', async () => {
-  const fx = fakeHost()
-  fx.setStored('native', null) // bare NS, no pointer
-  const done = createSwitchController(fx.host).run('native')
-  assert.deepEqual(fx.log.openNewChat, [], 'native plane caches are equally stale right after setAgent')
-  fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [true])
-  fx.establish()
-  await done
-})
-
-test('matrix native↔foreign with pointer: landing is immediate and pre-reconnect (round-4 behavior unchanged)', async () => {
-  const fx = fakeHost()
-  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7' }))
-  const done = createSwitchController(fx.host).run('omp')
-  assert.deepEqual(fx.seq, ['setAgent:omp', 'openSession:"omp-s7"', 'reconnect'],
-    'pointer landing precedes reconnect, exactly as today')
-  assert.deepEqual(fx.log.openNewChat, [], 'no new-chat detour')
-  assert.equal(fx.cacheListeners(), 0, 'no cache subscription armed for a pointer landing')
-  fx.establish()
-  await done
-})
-
-test('settle before caches refresh: the deferred landing still fires after establishment', async () => {
-  const fx = fakeHost()
-  const done = createSwitchController(fx.host).run('omp')
-  fx.establish() // generation first, baseline later
-  await done
-  assert.deepEqual(fx.log.openNewChat, [], 'settle alone does not land')
-  fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [true], 'the pending landing survives the settle')
-})
+// ---- T-F landing timing: gate, cancellation machinery, watchdog -----------
+// EVERY landing defers to the both-lists gate now (the pointer included —
+// the pre-reconnect pointer landing read stale sessions and broke native's
+// own last-visited restore). The cancellation machinery from 8dde3b0 is
+// unchanged: revert kills the pending landing, a supersede kills the prior
+// attempt's still-armed landing through the controller-scope handle, and the
+// settle arms a staleness watchdog that disarms a baseline that never lands.
 
 test('timeout revert cancels the pending landing: a later refresh is inert (red line)', async () => {
   const fx = fakeHost()
@@ -304,8 +446,9 @@ test('timeout revert cancels the pending landing: a later refresh is inert (red 
   assert.deepEqual(fx.log.setAgent, ['omp', 'native'], 'reverted to native')
   assert.equal(fx.log.toast.length, 1)
   fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [], 'no landing after the revert — the machine stays consistent')
-  assert.equal(fx.cacheListeners(), 0, 'landing subscription released')
+  assert.deepEqual(fx.log.startSession, [], 'no landing after the revert — the machine stays consistent')
+  assert.deepEqual(fx.log.openSession, [])
+  assert.equal(fx.gateSubscriptions(), 0, 'landing gate subscriptions released')
 })
 
 test('probe-failure revert cancels the pending landing', async () => {
@@ -313,7 +456,7 @@ test('probe-failure revert cancels the pending landing', async () => {
   const done = createSwitchController(fx.host).run('omp')
   await done
   fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [], 'a reverted switch never lands')
+  assert.deepEqual(fx.log.startSession, [], 'a reverted switch never lands')
   assert.deepEqual(fx.log.setAgent, ['omp', 'native'])
 })
 
@@ -321,40 +464,33 @@ test('supersede cancels the prior attempt\'s pending landing', async () => {
   const fx = fakeHost()
   fx.setStored('codex', JSON.stringify({ sessionId: 'codex-s2' }))
   const controller = createSwitchController(fx.host)
-  const first = controller.run('omp') // no pointer → deferred
-  const second = controller.run('codex') // pointer → immediate
+  const first = controller.run('omp') // no pointer → landing armed
+  const second = controller.run('codex') // pointer → also gated, its own landing
   await first
-  assert.deepEqual(fx.log.openSession, ['codex-s2'])
-  fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [], 'the superseded attempt must not land')
-  fx.establish()
+  fx.establish() // B's generation
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['codex-s2'], byId: { 'codex-s2': { id: 'codex-s2', blank: false, updatedAt: 3 } } })
+  assert.deepEqual(fx.log.openSession, ['codex-s2'], 'the surviving attempt lands its pointer')
+  assert.deepEqual(fx.log.startSession, [], 'the superseded attempt must not land')
   await second
   assert.deepEqual(fx.log.toast, [], 'supersede stays silent')
 })
 
-test('settle→supersede: a settled attempt\'s still-armed landing dies when a new switch starts (final review)', async () => {
-  // The defect window: attempt A (no NS pointer → landing deferred) SETTLES
-  // on the generation — the landing deliberately survives the settle, but
-  // the settle removes A from `current`, so a supersede that only cancels
-  // via the prior-attempt pointer can never reach the still-armed landing.
-  // Scenario: A settles; the user re-clicks agent B (pointer → immediate
-  // openSession) before A's baseline lands; A's cache gate re-anchors on
-  // B's establishment and would fire openNewChat() over B's pointer-restored
-  // view — a surprise blank chat. The controller-scope armed-landing handle
-  // kills it regardless of settle state.
+test('rapid double-switch, both armed: only the latest attempt\'s landing survives (controller-scope handle, new gate)', async () => {
   const fx = fakeHost()
   fx.setStored('codex', JSON.stringify({ sessionId: 'codex-s2' }))
   const controller = createSwitchController(fx.host)
   const first = controller.run('omp') // no pointer → landing armed
   fx.establish() // A settles; its landing is still armed
   await first
-  assert.deepEqual(fx.log.openNewChat, [], 'A has not landed yet (baseline pending)')
+  assert.deepEqual(fx.log.startSession, [], 'A has not landed yet (baseline pending)')
   const second = controller.run('codex') // supersede AFTER the settle
-  assert.deepEqual(fx.log.openSession, ['codex-s2'], 'B lands on its pointer immediately')
-  assert.equal(fx.cacheListeners(), 0, 'the settled attempt\'s cache gate is torn down by the supersede')
-  assert.equal(fx.timers[1].cleared, true, 'the settled attempt\'s staleness watchdog is disarmed too')
-  fx.refreshCaches() // B's baseline arrives — where A's gate would have re-anchored
-  assert.deepEqual(fx.log.openNewChat, [], 'red line: the settled attempt never fires openNewChat over B')
+  assert.equal(fx.timers[1].cleared, true, 'the settled attempt\'s staleness watchdog is disarmed by the supersede')
+  fx.establish() // B's establishment re-anchors the surviving gate
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['codex-s2'], byId: { 'codex-s2': { id: 'codex-s2', blank: false, updatedAt: 3 } } })
+  assert.deepEqual(fx.log.openSession, ['codex-s2'], 'B lands on its pointer through the gate')
+  assert.deepEqual(fx.log.startSession, [], 'red line: the settled attempt never fires its landing over B')
   fx.establish()
   await second
   assert.deepEqual(fx.log.toast, [], 'supersede stays silent')
@@ -369,8 +505,9 @@ test('staleness watchdog: a baseline that never installs disarms the landing (sa
   assert.equal(fx.timers[1].ms, SWITCH_FALLBACK_MS, 'the watchdog reuses the fallback window')
   fx.fireTimer(fx.timers[1])
   fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [], 'a stale landing never fires long after the switch')
-  assert.equal(fx.cacheListeners(), 0, 'the watchdog tore down the cache gate')
+  assert.deepEqual(fx.log.startSession, [], 'a stale landing never fires long after the switch')
+  assert.deepEqual(fx.log.openSession, [])
+  assert.equal(fx.gateSubscriptions(), 0, 'the watchdog tore down the gate')
 })
 
 test('the staleness watchdog is disarmed once the landing fires', async () => {
@@ -379,100 +516,143 @@ test('the staleness watchdog is disarmed once the landing fires', async () => {
   fx.establish()
   await done
   fx.refreshCaches()
-  assert.deepEqual(fx.log.openNewChat, [true], 'the landing fired within the window')
+  assert.deepEqual(fx.log.startSession, ['ws-1'], 'the landing fired within the window')
   assert.equal(fx.timers[1].cleared, true, 'watchdog off once the landing fired')
   fx.fireTimer(fx.timers[1])
-  assert.deepEqual(fx.log.openNewChat, [true], 'a fired watchdog is inert')
+  assert.deepEqual(fx.log.startSession, ['ws-1'], 'a fired watchdog is inert')
 })
 
 test('the deferred landing fires exactly once', async () => {
   const fx = fakeHost()
   const done = createSwitchController(fx.host).run('omp')
-  fx.refreshCaches()
-  fx.refreshCaches()
   fx.establish()
   await done
-  assert.deepEqual(fx.log.openNewChat, [true], 'one cache edge, one landing; further edges are inert')
+  fx.refreshCaches()
+  fx.refreshCaches()
+  assert.deepEqual(fx.log.startSession, ['ws-1'], 'one gate edge, one landing; further edges are inert')
 })
 
-test('openNewChat throwing never escapes run(); the machine still settles consistently', async () => {
-  const fx = fakeHost({ openNewChat() { throw new Error('startSession exploded') } })
+test('startSession throwing never escapes run(); the machine still settles consistently', async () => {
+  const fx = fakeHost({ startSession() { throw new Error('startSession exploded') } })
   const done = createSwitchController(fx.host).run('omp')
-  fx.refreshCaches()
   fx.establish()
+  fx.refreshCaches()
   await done
   assert.deepEqual(fx.log.toast, [], 'a failed landing is upstream-reported, not a revert')
   assert.deepEqual(fx.log.setAgent, ['omp'], 'no revert: the switch itself succeeded')
 })
 
-// ---- the caches-fresh gate (host-half pure factory) -----------------------
-// The client binding composes this with the real `workspaces.list` store +
-// the connection generation observable. Semantics: fire when the store's
-// items array is REPLACED (a baseline install always mints a new array) with
-// a ready phase, where the anchor is re-taken at every generation
-// establishment — so the dying old plane's last increments can never pass.
+test('the landing reads the pointer through the target NS (setAgent-first ordering holds at gate time)', async () => {
+  // The read happens in the landing callback, long after setAgent — the
+  // patched Storage namespaces at call time, so it must still resolve the
+  // TARGET NS's pointer (the active agent only changes again on a revert,
+  // which kills the landing first).
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7' }))
+  fx.setStored('codex', JSON.stringify({ sessionId: 'codex-s9' }))
+  const controller = createSwitchController(fx.host)
+  const first = controller.run('omp')
+  const second = controller.run('codex')
+  fx.establish()
+  await first
+  await second
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['codex-s9'], byId: { 'codex-s9': { id: 'codex-s9', blank: false, updatedAt: 9 } } })
+  assert.deepEqual(fx.log.openSession, ['codex-s9'], 'the read resolved the codex NS (active at gate time), not the omp one')
+})
 
-/** A minimal fake of the workspace store + generation observable pair. */
+// ---- the both-lists caches-fresh gate (host-half pure factory) ------------
+// The client binding composes this with the real `workspaces.list` +
+// `sessions.list` stores (sessions.ids playing items) + the connection
+// generation observable. Semantics: fire ONCE, only after BOTH stores have
+// replaced their items post-establishment with a ready phase — the T-A gate
+// watched workspaces alone, so a plane whose sessions list landed later
+// still served stale byId rows to the landing decision (the live defect).
+
+/** A minimal fake of the store pair + generation observable. */
 function cacheGateFixture() {
-  const listeners = []
-  const genListeners = []
-  let items = ['stale-ws']
-  let phase = 'ready'
-  let generation
-  const list = {
-    getSnapshot: () => ({ items, phase }),
-    subscribe(fn) { listeners.push(fn); return () => { const i = listeners.indexOf(fn); if (i !== -1) listeners.splice(i, 1) } },
+  const makeStore = (initial) => {
+    let snapshot = initial
+    const listeners = []
+    return {
+      getSnapshot: () => snapshot,
+      subscribe(fn) { listeners.push(fn); return () => { const i = listeners.indexOf(fn); if (i !== -1) listeners.splice(i, 1) } },
+      install(next) { snapshot = { ...snapshot, ...next }; for (const fn of [...listeners]) fn() },
+      churnSameReference() { for (const fn of [...listeners]) fn() },
+      setPhase(phase) { snapshot = { ...snapshot, phase }; for (const fn of [...listeners]) fn() },
+    }
   }
+  const workspaces = makeStore({ items: ['stale-ws'], phase: 'ready' })
+  const sessions = makeStore({ items: ['stale-s1'], phase: 'ready' })
+  let generation
+  const genListeners = []
   const generationFace = {
     getSnapshot: () => generation,
     subscribe(fn) { genListeners.push(fn); return () => { const i = genListeners.indexOf(fn); if (i !== -1) genListeners.splice(i, 1) } },
   }
   return {
-    list,
+    workspaces,
+    sessions,
     generationFace,
     establish: (value = 'gen-2') => { generation = value; for (const fn of [...genListeners]) fn() },
-    installBaseline: (next) => { items = next; for (const fn of [...listeners]) fn() },
-    sameArrayChurn: () => { for (const fn of [...listeners]) fn() },
-    setPhase: (p) => { phase = p; for (const fn of [...listeners]) fn() },
+    installWorkspaces: (items) => workspaces.install({ items }),
+    installSessions: (items) => sessions.install({ items }),
   }
 }
 
-test('gate: a post-establishment baseline replacement fires once', () => {
+test('gate: a post-establishment replacement of BOTH lists fires once (workspaces first)', () => {
   const fx = cacheGateFixture()
   let fired = 0
-  const dispose = observeCachesRefreshed(fx.list, fx.generationFace, () => { fired += 1 })
+  const dispose = observeCachesRefreshed(fx.workspaces, fx.sessions, fx.generationFace, () => { fired += 1 })
   fx.establish()
-  fx.installBaseline(['fresh-ws'])
-  assert.equal(fired, 1, 'the target plane baseline is the all-clear')
+  fx.installWorkspaces(['fresh-ws'])
+  assert.equal(fired, 0, 'the T-A gap: workspaces alone must not open the gate')
+  fx.installSessions(['fresh-s1'])
+  assert.equal(fired, 1, 'the both-lists all-clear')
   dispose()
 })
 
-test('gate: pre-establishment churn (the old plane\'s dying increments) never fires', () => {
+test('gate: sessions landing later than workspaces is the same single fire (the live race, order flipped)', () => {
   const fx = cacheGateFixture()
   let fired = 0
-  const dispose = observeCachesRefreshed(fx.list, fx.generationFace, () => { fired += 1 })
-  fx.installBaseline(['old-plane-churn']) // items replaced BEFORE establishment
-  assert.equal(fired, 0, 'absorbed: the establishment re-anchor retakes the reference')
+  const dispose = observeCachesRefreshed(fx.workspaces, fx.sessions, fx.generationFace, () => { fired += 1 })
   fx.establish()
-  fx.installBaseline(['fresh-ws'])
+  fx.installSessions(['fresh-s1'])
+  assert.equal(fired, 0, 'sessions alone do not open the gate either')
+  fx.installWorkspaces(['fresh-ws'])
   assert.equal(fired, 1)
   dispose()
 })
 
-test('gate: same-reference notifications and non-ready phases do not fire; the disposer stops it', () => {
+test('gate: pre-establishment churn (the old plane\'s dying increments) never counts', () => {
   const fx = cacheGateFixture()
   let fired = 0
-  const dispose = observeCachesRefreshed(fx.list, fx.generationFace, () => { fired += 1 })
-  fx.sameArrayChurn()
+  const dispose = observeCachesRefreshed(fx.workspaces, fx.sessions, fx.generationFace, () => { fired += 1 })
+  fx.installWorkspaces(['old-plane-churn'])
+  fx.installSessions(['old-plane-churn'])
+  assert.equal(fired, 0, 'absorbed: the establishment re-anchor retakes both references')
   fx.establish()
-  fx.sameArrayChurn()
-  fx.setPhase('pending')
-  fx.installBaseline(['fresh-ws'])
-  assert.equal(fired, 0, 'no reference change, no ready phase → no all-clear')
-  fx.setPhase('ready')
-  assert.equal(fired, 1, 'the baseline install with ready phase passes')
+  fx.installWorkspaces(['fresh-ws'])
+  fx.installSessions(['fresh-s1'])
+  assert.equal(fired, 1)
   dispose()
-  fx.installBaseline(['another-ws'])
+})
+
+test('gate: same-reference notifications and non-ready phases do not count; the disposer stops it', () => {
+  const fx = cacheGateFixture()
+  let fired = 0
+  const dispose = observeCachesRefreshed(fx.workspaces, fx.sessions, fx.generationFace, () => { fired += 1 })
+  fx.establish()
+  fx.workspaces.churnSameReference()
+  fx.sessions.churnSameReference()
+  fx.installWorkspaces(['fresh-ws'])
+  fx.sessions.setPhase('pending') // non-ready: even a real replacement does not count
+  fx.installSessions(['fresh-s1'])
+  assert.equal(fired, 0, 'no ready phase on the sessions list → no all-clear')
+  fx.sessions.install({ items: ['fresher-s1'], phase: 'ready' })
+  assert.equal(fired, 1, 'the real replacement with a ready phase passes')
+  dispose()
+  fx.installSessions(['another-s1'])
   assert.equal(fired, 1, 'disposed: no further fires')
 })
 

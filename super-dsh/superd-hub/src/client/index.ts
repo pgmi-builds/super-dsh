@@ -18,7 +18,7 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { HubPage } from './HubPage.js'
 import { HubPanelIcon } from './HubPanelIcon.js'
-import { bindSwitchAgent, type SwitchConnection, type SwitchUiWorkspace, type SwitchWorkspaces } from './switch.js'
+import { bindSwitchAgent, type SwitchConnection, type SwitchLocale, type SwitchSessions, type SwitchUiWorkspace, type SwitchWorkspaces } from './switch.js'
 
 /** Required services (cordis fiber inject): the slot registry. */
 export const inject = ['slots']
@@ -50,17 +50,22 @@ export function apply(ctx: ClientContext): void {
       HubPanelIcon,
     )), 'superd-hub: hub sidebar row')
   })
-  // Native UI fusion Task 4 (+ T-A): bind the switchAgent orchestration once
-  // the connection, uiWorkspace and workspaces services exist (structural
-  // faces; the stock client tree always has all three — upstream's
-  // ui-workspace injects `workspaces` itself). Without a binding the Hub
-  // surfaces' fusion branch degrades to swallowed clicks — never navigation
-  // away from the fused page (the seatClickDecision contract).
-  ctx.inject(['connection', 'uiWorkspace', 'workspaces'], (raw) => {
+  // Native UI fusion Task 4 (+ T-A, T-F): bind the switchAgent orchestration
+  // once the connection, uiWorkspace, workspaces, sessions and locale
+  // services exist (structural faces; the stock client tree always has all
+  // five — upstream's ui-workspace injects the same set itself). T-F: the
+  // landing resolves against the sessions projection and mirrors the
+  // default-workspace boot path, hence `sessions` + `locale`. Without a
+  // binding the Hub surfaces' fusion branch degrades to swallowed clicks —
+  // never navigation away from the fused page (the seatClickDecision
+  // contract).
+  ctx.inject(['connection', 'uiWorkspace', 'workspaces', 'sessions', 'locale'], (raw) => {
     const services = raw as unknown as {
       connection: SwitchConnection
       uiWorkspace: SwitchUiWorkspace
       workspaces: SwitchWorkspaces
+      sessions: SwitchSessions
+      locale: SwitchLocale
     }
     bindSwitchAgent(services)
   })
