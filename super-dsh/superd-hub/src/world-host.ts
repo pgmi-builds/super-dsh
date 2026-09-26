@@ -4,22 +4,20 @@
  * A world runs as its OWN cordis ROOT (events are root-scoped — probe
  * 2026-09-16), so ctx0 and the world cannot share service instances through
  * the context tree. They DO share this module (the profile links
- * `@pgmi-builds/superd-hub` at the same path), which is where the host hands the
- * world what it needs to mount itself:
+ * `@pgmi-builds/superd-hub` at the same path), which is where the host hands
+ * the world what it needs to mount itself:
  *
- *   ctx0 hub  → registerHostMount({ key, labelPath, real })   (before spawn)
+ *   ctx0 hub  → registerHostMount({ key, labelPath })         (before spawn)
  *   world     → takeHostMount(key) → provides the virtual `webServer`
  *
- * T-C (2026-09-26): the `real`/`authorize` legs are RETIRED — the world's
- * virtual webServer swallows every registration (`/hub` is the sole entry, no
- * URL-path fallback), so nothing crosses to ctx0's listener anymore. The
- * fields stay on the published shape only because the adapter world-plugins'
- * spawn-time call sites still pass them (zero-churn hub-layer sever); the
- * mount itself remains the world's addressability record (`agentLinks`).
+ * T-C (2026-09-26): the `real`/`authorize` legs were RETIRED with the
+ * per-label URL family. T-D (2026-09-26) swept the vestiges: the mount record
+ * is the world's ADDRESSABILITY entry only (`{ key, labelPath }`) — no ctx0
+ * webServer instance, no index gate; the adapter world-plugins' call sites
+ * were updated in the same round.
  *
  * No selection state: the key is the world's own identity, fixed at spawn.
  */
-import type { RealWebServerFace } from './world-web-server.js'
 
 /** What the host publishes for one world mount (the world's identity record). */
 export interface HostMount {
@@ -27,13 +25,6 @@ export interface HostMount {
   key: string
   /** Mount root (`/omp`). */
   labelPath: string
-  /** (inert since T-C) ctx0's webServer instance — no world route reaches it. */
-  real: RealWebServerFace
-  /**
-   * (inert since T-C) ctx0's index authorization — no world page is served,
-   * so nothing consults it; kept for adapter call-site compatibility.
-   */
-  authorize?(req: unknown, res: unknown): boolean
 }
 
 const mounts = new Map<string, HostMount>()

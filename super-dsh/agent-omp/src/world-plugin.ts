@@ -2,22 +2,26 @@
  * agent-omp — the adapter's world plugin (spec S2): activation IS
  * roster membership.
  *
- * AW-B (DL1–DL5): the world is spawned as a sibling ROOT context with NO
- * listener (see `worldMountPatches`) and mounts itself under `/<label>` through
- * the hub:
+ * AW-B (DL1–DL5) → path-separation T-D: the world is spawned as a sibling
+ * ROOT context with NO listener and NO webui composition (see
+ * `worldMountPatches`) — a pure data plane behind the hub's `/hub` family:
  *
- *   1. ctx0 publishes the host mount (real webServer instance) before spawn.
- *   2. the world's entry row provides the virtual `webServer` in the world root,
- *      translating every route its plugins declare into `/<label>+path`.
- *   3. the hub's carrier answers `/<label>/api` + `/<label>/api/remote.mux` in
- *      ctx0's auth domain and dispatches into this world's gateway instance.
+ *   1. ctx0 publishes the host mount record (the world's addressability
+ *      entry — no webServer, no fence: those legs retired with the world
+ *      pages) before spawn.
+ *   2. the world's entry row provides the virtual `webServer` (a silent
+ *      sink) plus the neutral `webRuntime` facts its connection row injects.
+ *   3. the hub's `/hub` family answers `?agent=omp` traffic in ctx0's auth
+ *      domain and dispatches into this world's gateway instance (the
+ *      per-label `/<label>/api` + `/<label>/api/remote.mux` mounts retired
+ *      in T-C, `mountWorld` deleted in T-D).
  */
 import { mkdirSync } from 'node:fs'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { join } from 'node:path'
 import {
   spawnWorld, registerAgent, setReady, registerForeignTarget,
-  registerHostMount, mountWorld, worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
+  registerHostMount, worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
 } from '../../superd-hub/dist/index.js'
 
 export const name = 'agent-omp'
@@ -54,21 +58,9 @@ export function apply(ctx: HostContext): void {
     worldHome,
   })
   const world = (async () => {
-    // Wait for ctx0's listening stack: the mount needs the real webServer and
-    // the browser-trust fence from the live connection service.
-    const host = await new Promise<Record<string, any>>((resolve) => {
-      ctx.inject(['webServer', 'connection'], (hostCtx) => { resolve(hostCtx as Record<string, any>) })
-    })
-    const real = host['webServer']
-    const connection = host['connection']
-    const dropHostMount = registerHostMount({
-      key: KEY,
-      labelPath: `/${KEY}`,
-      real,
-      // ctx0's index gate, applied by the mount to this world's pages and assets:
-      // the world is reached in-ctx and owns no listener, so ctx0 decides auth.
-      authorize: (req, res) => (connection as { authorizeIndex(req: unknown, res: unknown): boolean }).authorizeIndex(req, res),
-    })
+    // T-D: no ctx0 listening-stack wait — the mount record is addressability
+    // only and the /hub family wires its own gate in ctx0 (gateway.ts).
+    const dropHostMount = registerHostMount({ key: KEY, labelPath: `/${KEY}` })
     const ctxW = await spawnWorld({
       appName: `superd-${KEY}`,
       profileName: 'web',
@@ -83,16 +75,8 @@ export function apply(ctx: HostContext): void {
     })
     const gateway = ctxW.get('typertGateway') as never
     registerForeignTarget({ key: KEY, gateway })
-    const mounted = mountWorld({
-      real,
-      label: KEY,
-      gateway,
-      requestRejection: (request) => (connection as { requestRejection(req: unknown): number | undefined })
-        .requestRejection(request),
-    })
     setReady(KEY, true)
     ctx.effect?.(() => () => {
-      mounted.dispose()
       dropHostMount()
     }, `agent-${KEY}: mount`)
     return ctxW

@@ -2,30 +2,12 @@
 // per-label URL family is RETIRED from ctx0 — `/hub` (hub-route.ts) is the
 // sole foreign entry and consumes the kernel directly (forwardApiCall /
 // forwardWorldFetch / worldMuxOf). The kernel tests below drive the exact
-// functions the /hub family calls; mountWorld itself mounts NOTHING anymore
-// (negative probes at the bottom).
+// functions the /hub family calls. T-D: the retired `mountWorld` no-op is
+// GONE from the module (the adapter call sites swept with it).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { forwardApiCall, forwardWorldFetch, mountWorld } from '../dist/carrier.js'
-
-function fakeReal() {
-  return {
-    routes: new Map(),
-    upgrades: new Map(),
-    fallback: undefined,
-    register(route) {
-      const id = `${route.kind}:${route.path}`
-      if (this.routes.has(id)) throw new Error(`webserver: duplicate ${route.kind} route "${route.path}"`)
-      this.routes.set(id, route)
-      return () => this.routes.delete(id)
-    },
-    registerUpgrade(route) { this.upgrades.set(route.path, route); return () => this.upgrades.delete(route.path) },
-    registerFallback(handler) { this.fallback = handler; return () => { this.fallback = undefined } },
-    tapIndex() { return () => { } },
-    port: 4999,
-    host: '127.0.0.1',
-  }
-}
+import * as carrierModule from '../dist/carrier.js'
+import { forwardApiCall, forwardWorldFetch } from '../dist/carrier.js'
 
 function fakeRes() {
   return {
@@ -245,29 +227,11 @@ test('a world fetch handler fault answers 500 without leaking an envelope', asyn
   drop()
 })
 
-// ---- T-C negative probes: the per-label mount is retired. mountWorld keeps
-// its spawn-time call-site shape (adapter world-plugins still call it) but
-// registers NOTHING on ctx0's real webServer — /hub is the sole entry.
+// ---- T-D negative probe: the retired `mountWorld` no-op is gone entirely —
+// the vestige sweep removed it together with the adapter call sites that fed
+// it (git history keeps both).
 
-test('mountWorld is retired: it registers no /<label> route on the real webServer', () => {
-  const real = fakeReal()
-  const mounted = mountWorld({ real, label: 'omp', gateway: worldGateway() })
-  assert.equal(real.routes.size, 0, 'no /omp/api prefix, no /omp/open-in-app prefix')
-  assert.equal(real.upgrades.size, 0, 'no /omp/api/remote.mux upgrade')
-  mounted.dispose()
-  assert.equal(real.routes.size, 0)
-  assert.equal(real.upgrades.size, 0)
-})
-
-test('mountWorld tolerates the full historical call shape and disposes idempotently', () => {
-  const real = fakeReal()
-  const mounted = mountWorld({
-    real,
-    label: 'codex',
-    gateway: worldGateway(),
-    requestRejection: () => 403,
-  })
-  mounted.dispose()
-  mounted.dispose()
-  assert.equal(real.routes.size, 0)
+test('mountWorld no longer exists on the carrier module (vestige swept, T-D)', () => {
+  assert.equal(carrierModule.mountWorld, undefined)
+  assert.equal(carrierModule.rewriteIndexHtml, undefined, 'the mount HTML pass retired with the world pages')
 })

@@ -49,12 +49,11 @@ export function apply(ctx: Context): void {
       authorizeIndex(req: unknown, res: unknown): boolean
       requestRejection(req: unknown): number | undefined
     }
-    // The gate is the SAME ctx0 authorize source the world mounts use
-    // (connection.authorizeIndex); the addressed world resolves per request
-    // through the live foreign-target table — never a shared selection. The
-    // requestRejection face is the SAME ctx0 browser-trust fence world-join
-    // wires into the sibling /<label> mounts: auth first, then Host/Origin —
-    // the family is never weaker than the neighbors carrying identical traffic.
+    // The gate is ctx0's authorize source (connection.authorizeIndex); the
+    // addressed world resolves per request through the live foreign-target
+    // table — never a shared selection. The requestRejection face is the
+    // ctx0 browser-trust fence: auth first, then Host/Origin — the family is
+    // never weaker than the neighbors carrying identical traffic.
     const dispose = registerHubRoute({
       real: real as RealWebServerFace,
       authorize: (req, res) => connection.authorizeIndex(req, res),

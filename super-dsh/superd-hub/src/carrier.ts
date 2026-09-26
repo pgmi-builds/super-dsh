@@ -2,15 +2,14 @@
  * The carrier forwarding kernel (AW-B DL1/DL5 → native UI fusion Task 2 →
  * path-separation T-C): the wire semantics every foreign-agent entry shares.
  *
- * History and the T-C cut:
+ * History and the T-C/T-D cuts:
  *  - The kernel — envelope dispatch ({@link forwardApiCall}), the world fetch
  *    bridge ({@link forwardWorldFetch}) and the mux construction
  *    ({@link worldMuxOf}) — is parameterized by (gateway, label, mountPath).
  *  - It used to be mounted twice: the per-label page family
- *    (`/<label>/api`, `/<label>/api/remote.mux`, `/<label>/open-in-app` — the
- *    world PAGE data lane, registered by {@link mountWorld}) and, since
- *    2026-09-26, the hub-owned `/hub` family (`hub-route.ts`, demuxed by
- *    `?agent=`).
+ *    (`/<label>/api`, `/<label>/api/remote.mux`, `/<label>/open-in-app` —
+ *    registered by the now-deleted `mountWorld`) and, since 2026-09-26, the
+ *    hub-owned `/hub` family (`hub-route.ts`, demuxed by `?agent=`).
  *  - T-C (2026-09-26, user ruling "strip off the per agent url path … no need
  *    the url path fallback (we have git history)"): the per-label family is
  *    RETIRED — `/hub` is the sole foreign entry and the only remaining
@@ -18,6 +17,9 @@
  *    gateway faces (dispatchRpc/openWireStream), the same WorldMuxServer, the
  *    same envelope, the same worldFetchHandlerOf lane, all reached through
  *    `/hub`.
+ *  - T-D (2026-09-26, "disable their webui build"): the retired `mountWorld`
+ *    no-op and the mount HTML pass re-export left the module; the carrier is
+ *    the forwarding kernel alone.
  *
  * Nothing here reads a global: the addressed world travels with the request.
  */
@@ -266,33 +268,14 @@ export function worldMuxOf(
 }
 
 /**
- * RETIRED mount (path-separation T-C, 2026-09-26): the per-label URL family
- * is gone from ctx0. This function used to register `/<label>/api`,
- * `/<label>/open-in-app` and `/<label>/api/remote.mux` on the real webServer —
- * the world PAGE data lane, consumerless once the pages themselves stopped
- * being served (`/hub` is the sole entry; no URL-path fallback, we have git
- * history).
- *
- * It now mounts NOTHING and returns an inert handle. The parameter shape is
- * kept ONLY so the adapter world-plugins' existing spawn-time call sites
- * (agent-{agy,codex,hermes,omp,pi}) compile and boot unchanged — the sever is
- * hub-layer, zero adapter churn; the call sites themselves retire with the
- * world-web sweep (T-D) or the next cleanup pass.
+ * RETIRED with T-D (2026-09-26): the T-C `mountWorld` no-op — which itself
+ * used to register `/<label>/api`, `/<label>/open-in-app` and
+ * `/<label>/api/remote.mux` on the real webServer — is GONE from the module.
+ * The adapter world-plugins' spawn-time call sites were updated in the same
+ * round (the registerHostMount record needs no webServer and no fence; the
+ * `/hub` family reaches each world's gateway through the foreign-target
+ * table). Git history keeps the function.
  */
-export function mountWorld(_options: {
-  /** (inert) the ctx0 webServer — nothing registers on it anymore. */
-  real: RealWebServerFace
-  /** Runtime key (`omp`) — kept for call-site compatibility. */
-  label: string
-  /** The world gateway — the `/hub` family reaches it via the foreign-target table. */
-  gateway: CarrierGatewayFace
-  /** (inert) ctx0's browser-trust fence — the `/hub` family fences its own requests. */
-  requestRejection?(req: unknown): number | undefined
-}): { dispose(): void } {
-  void _options
-  return { dispose(): void {} }
-}
 
-// The mount HTML pass lives in its own module; re-exported here so the carrier
-// remains the single import surface for mount behaviour.
-export { rewriteIndexHtml } from './index-pass.js'
+// The carrier is now purely the forwarding kernel: no mount-time HTML pass,
+// no per-label registration — `/hub` (hub-route.ts) is the sole consumer.

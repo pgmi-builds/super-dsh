@@ -164,10 +164,11 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): boolean {
   //
   // 0.1.7: the profile hmr row arms itself wherever a profileContext exists,
   // and its config reload recomposes the tree from THE PROFILE LAYERS ALONE —
-  // spawn-time extraPatches do not survive it. The zero-listener posture is
-  // therefore PERSISTED in this layer (webserver disabled + ephemeral port,
-  // hmr itself off — a world's composition is a spawn-time fact and must not
-  // be re-derived), exactly mirroring worldMountPatches.
+  // spawn-time extraPatches do not survive it. The world posture is therefore
+  // PERSISTED in this layer (webserver disabled + ephemeral port, hmr itself
+  // off, and — T-D — the webui rows `web-runtime`/`client-hmr` off: a world's
+  // composition is a spawn-time fact and must not be re-derived), exactly
+  // mirroring worldMountPatches.
   writeFileSync(
     join(profDir, 'cordis.patch.yml'),
     [
@@ -183,6 +184,12 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): boolean {
       '    host: 127.0.0.1',
       '    port: 0',
       '- id: hmr',
+      '  disabled: true',
+      '# Webui-less posture (T-D): the world page rows stay off across any',
+      '# recomposition — worlds are pure data planes, `/hub` is the sole entry.',
+      '- id: web-runtime',
+      '  disabled: true',
+      '- id: client-hmr',
       '  disabled: true',
       '',
     ].join('\n'),

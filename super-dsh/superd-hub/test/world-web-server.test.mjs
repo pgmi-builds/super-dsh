@@ -1,13 +1,12 @@
-// Virtual per-world webServer (AW-B DL3; silent since path-separation T-C):
-// any route a world plugin declares is accepted and SWALLOWED — no
-// /<label>/… route lands on ctx0's real webServer (the /hub family is the
-// sole entry), while the world-local index face (taps, injections, mount
-// shim) keeps rendering inside the world tree.
+// Virtual per-world webServer (AW-B DL3; silent since T-C, index-face-less
+// since T-D): any route a world plugin declares is accepted and SWALLOWED —
+// no /<label>/… route lands on ctx0's real webServer (the /hub family is the
+// sole entry) and, with the world webui rows disabled (T-D), nothing ever
+// renders a world page: the index face (renderIndex/taps/shim) is retired.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import * as worldWebServerModule from '../dist/world-web-server.js'
 import { WorldWebServer } from '../dist/world-web-server.js'
-
-function req(url) { return { url } }
 
 test('register swallows any declared prefix (T-C: pages have no road to ctx0)', () => {
   const world = new WorldWebServer('/omp')
@@ -37,45 +36,16 @@ test('port/host keep the neutral no-socket defaults (the read-through retired wi
   assert.equal(world.host, '127.0.0.1')
 })
 
-test('index taps and injections stay world-local and render through the mount', () => {
-  const rows = []
-  const world = new WorldWebServer('/omp', { onIndexInject: (table) => table.push({ kind: 'script', placement: 'head', text: 'x' }) })
-  world.tapIndex((html) => html.replace('</head>', '<meta name="tapped"></head>'))
-  world.registerFallback(() => { })
-  const out = world.renderIndex('<head></head>')
-  assert.match(out, /<meta name="tapped">/)
-  assert.match(out, /<script>x<\/script>/)
-})
-
-test('dispose releases the world-local index state (taps cleared)', () => {
-  const world = new WorldWebServer('/omp')
-  world.tapIndex((html) => html.replace('</head>', '<meta name="tapped"></head>'))
-  world.dispose()
-  assert.equal(world.renderIndex('<head></head>').includes('<meta name="tapped">'), false, 'taps do not survive dispose')
-  world.dispose() // idempotent
-})
-
 test('labelPath must be a rooted segment', () => {
   assert.throws(() => new WorldWebServer('omp'), /labelPath must start with/)
 })
 
-test('renderIndex emits a mount-ready page (base pinned, root-absolute strings re-rooted)', () => {
-  const world = new WorldWebServer('/omp', { onIndexInject: (table) => table.push({ kind: 'script', placement: 'head', text: 'x' }) })
-  const out = world.renderIndex('<head><base href="/"></head><script>globalThis.__DSH_BOOT__={"batches":[{"url":"/plugins/??a/client.js"}]}</script>')
-  assert.match(out, /<base href="\/omp\/">/)
-  assert.match(out, /"url":"\/omp\/plugins\/\?\?a\/client\.js"/)
-  assert.match(out, /<script>x<\/script>/)
-})
-
-test('renderIndex runs index-inject rows before the client mount shim', () => {
-  const world = new WorldWebServer('/omp', { onIndexInject: (table) => table.push({ kind: 'script', placement: 'head', text: 'INJECTED_SENTINEL' }) })
-  const out = world.renderIndex('<head></head>')
-  // Injection rows own the transport global first (the page-trust component
-  // guards on absence); the shim MERGES into the existing object afterwards
-  // (`globalThis.__DSH_TRANSPORT__ = globalThis.__DSH_TRANSPORT__ || {}`) —
-  // shim-first would create the object and silently eat the ownsHost verdict.
-  assert.ok(out.indexOf('INJECTED_SENTINEL') < out.indexOf('__DSH_TRANSPORT__'), 'injections precede the shim')
-  assert.match(out, /__DSH_TRANSPORT__/)
-  assert.match(out, /__DSH_FILE_UPLOAD__/)
-  assert.ok(out.indexOf('__DSH_TRANSPORT__') < out.indexOf('</head>'), 'shim runs before the app entry')
+test('T-D: the world index face is retired (no renderIndex, no taps, no shim baking)', () => {
+  assert.equal(WorldWebServer.prototype.renderIndex, undefined, 'no world page is rendered anywhere')
+  assert.equal(WorldWebServer.prototype.tapIndex, undefined, 'no world-local index taps')
+  assert.equal(WorldWebServer.prototype.applyIndexTaps, undefined)
+  assert.equal(WorldWebServer.prototype.collectIndexInjections, undefined)
+  assert.equal(WorldWebServer.prototype.dispose, undefined, 'nothing world-local to release')
+  // The mount shim source is gone from the package surface (git history keeps it).
+  assert.equal(worldWebServerModule.renderClientShim, undefined)
 })

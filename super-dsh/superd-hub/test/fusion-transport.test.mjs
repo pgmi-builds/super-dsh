@@ -432,27 +432,23 @@ test('patched APIs used in odd ways never throw (best-effort)', async () => {
   assert.equal(sandbox.calls.fetch.length, 4, 'every odd call reached the native fetch')
 })
 
-// ---- the generated script itself: quoting discipline + HTML pass survival ----
+// ---- the generated script itself: quoting discipline ----
 
 test('the generated script carries no double quotes (single-quote discipline)', () => {
   const text = renderFusionTransport()
   assert.equal(typeof text, 'string')
   assert.ok(text.length > 0)
-  assert.ok(!text.includes('"'), 'index-pass rewrites double-quoted root-absolute strings; the script must not carry any')
+  // Historical constraint (kept as discipline): the world-page mount pass used
+  // to rewrite every DOUBLE-quoted root-absolute string in served HTML — T-D
+  // retired that pass with the world pages, but the single-quote rule stays so
+  // any future HTML-mutating pass can never silently rewrite this script.
+  assert.ok(!text.includes('"'), 'the script keeps the single-quote discipline (no HTML pass may rewrite it)')
   assert.ok(!text.includes('</script'), 'an inline script row must never close its own element')
 })
 
-test('the rewrite survives the HTML pass (composition regression)', async () => {
-  const { rewriteIndexHtml } = await import('../dist/index-pass.js')
-  const served = rewriteIndexHtml(`<head><script>${renderFusionTransport()}</script></head>`, '/omp')
-  const script = /<script>([\s\S]*?)<\/script>/.exec(served)?.[1]
-  assert.ok(script !== undefined, 'script still present after the pass')
-  const { sandbox } = page()
-  vm.runInContext(script, vm.createContext(sandbox), { filename: 'served-fusion-transport.js' })
-  sandbox.__SUPERD_UI_STATE__.setAgent('codex')
-  await sandbox.fetch('/api/x?a=1#h')
-  assert.equal(sandbox.calls.fetch[0].input, '/hub/api/x?a=1&agent=codex#h', 'the rule survives the served HTML')
-})
+// T-D: the "rewrite survives the HTML pass" composition regression retired
+// WITH the mount HTML pass itself — no world page is served, so no pass ever
+// mutates the fusion script (git history keeps the test).
 
 // ---- the injection face: row emitted after web-trust, flag-gated ----
 

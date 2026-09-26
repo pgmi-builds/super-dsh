@@ -1,39 +1,25 @@
-// World mount integration (AW-B Task 9 → path-separation T-C): the world
-// root still runs with NO listener (`webserver` disabled) and still provides
-// the virtual `webServer` from our world entry, so the tree boots and
-// composes its web rows unchanged — but since T-C that server SWALLOWS every
-// registration: NO route lands on ctx0's real webServer anymore (`/hub` is
-// the sole entry; the world's data plane rides `?agent=<label>` demux).
+// World mount integration (AW-B Task 9 → path-separation T-C/T-D): the world
+// root runs with NO listener and, since T-D, NO webui rows either —
+// `web-runtime`/`client-hmr` are disabled, the page-trust row is gone, and
+// the only web-ish facts left are the VIRTUAL `webServer` the mount row
+// provides (a silent sink, T-C) plus the neutral `webRuntime` the
+// `connection` row injects. The world is a pure data plane; `/hub` is the
+// sole entry (`?agent=<label>` demux).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { spawnWorld, registerHostMount, worldServerOf, worldMountPatches } from '../dist/index.js'
 import { WorldWebServer } from '../dist/world-web-server.js'
 
 const REPO = join(new URL('../../..', import.meta.url).pathname)
 const HOME = process.env.SUPERD_TEST_HOME ?? join(REPO, '.tests', 'superd')
+// The world's webRuntime trusted-host extras derive from this env (world-entry);
+// pin the neutral no-extras shape for the deterministic assertion below.
+delete process.env.SUPERD_TRUSTED_HOSTS
 const FIXTURE = new URL('./fixtures/superd-omp-world/', import.meta.url).pathname
 const ANCHOR = process.env.SUPERD_DSH_ANCHOR ?? join(REPO, 'upstream/deepseek-harness/apps/cli/package.json')
 const PROFILE = 'superd-omp-world-mounted'
-
-function fakeReal() {
-  return {
-    routes: new Map(),
-    upgrades: new Map(),
-    fallback: undefined,
-    register(route) {
-      const id = `${route.kind}:${route.path}`
-      this.routes.set(id, route)
-      return () => this.routes.delete(id)
-    },
-    registerUpgrade(route) { this.upgrades.set(route.path, route); return () => this.upgrades.delete(route.path) },
-    registerFallback(handler) { this.fallback = handler; return () => { this.fallback = undefined } },
-    tapIndex() { return () => { } },
-    port: 4999,
-    host: '127.0.0.1',
-  }
-}
 
 async function waitFor(check, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
@@ -44,7 +30,7 @@ async function waitFor(check, timeoutMs = 5000) {
   }
 }
 
-test('a world with no listener composes its web rows into the void — nothing lands on ctx0', async () => {
+test('a world composes as a webui-less data plane — webui rows disabled, virtual server silent, data plane intact', async () => {
   // PROD SHAPE: the world tree lives under `<home>/agents/<label>` — OUTSIDE
   // the host table's profiles tree — so row imports must ride the linked-root
   // route (spec §2.1), exactly like a consumer machine's world.
@@ -72,9 +58,9 @@ test('a world with no listener composes its web rows into the void — nothing l
   appendFileSync(
     join(WORLD_HOME, 'profiles', PROFILE, 'cordis.patch.yml'),
     ['# test-home pinning (provision parity): keep the world out of prod homes.',
-     ...['settings', 'credentials', 'attachment-local', 'shell-env', 'skill-filesystem']
-       .flatMap((id) => [`- id: ${id}`, '  config:', `    dshHome: ${HOME}`]),
-     '',
+      ...['settings', 'credentials', 'attachment-local', 'shell-env', 'skill-filesystem']
+        .flatMap((id) => [`- id: ${id}`, '  config:', `    dshHome: ${HOME}`]),
+      '',
     ].join('\n'),
   )
   // The row imports (`@pgmi-builds/superd-hub[/world]`, the adapter) ride the
@@ -106,8 +92,9 @@ test('a world with no listener composes its web rows into the void — nothing l
     startedBundles: [],
     overlays: [],
   })
-  const real = fakeReal()
-  const dropMount = registerHostMount({ key: 'omp', labelPath: '/omp', real })
+  // T-D: the host mount record is the world's addressability entry ONLY — no
+  // real webServer, no authorize leg (both retired with the world pages).
+  const dropMount = registerHostMount({ key: 'omp', labelPath: '/omp' })
 
   const ctxW = await spawnWorld({
     appName: PROFILE,
@@ -122,15 +109,35 @@ test('a world with no listener composes its web rows into the void — nothing l
   assert.equal(webServer instanceof WorldWebServer, true, 'the world root got the virtual webServer')
   assert.equal(webServer.labelPath, '/omp')
 
-  // Give the world tree time to compose its web rows (frontend-static and
-  // friends used to land translations here within this window), then pin the
-  // T-C negative: the registry stays EMPTY — no /<label>/ page family, no
-  // RPC lane, no mux path. The world composes its rows into the void.
-  await new Promise((resolve) => setTimeout(resolve, 500))
-  assert.equal(real.routes.size, 0, `nothing lands on ctx0 (saw: ${[...real.routes.keys()].join(', ')})`)
-  assert.equal(real.upgrades.size, 0, 'no /<label>/api/remote.mux upgrade either')
+  // DATA PLANE INTACT: the connection row resolved (through the mount row's
+  // neutral webRuntime) and the gateway the /hub family dispatches into is up.
+  await waitFor(() => ctxW.get('connection') !== undefined)
+  assert.notEqual(ctxW.get('connection'), undefined, 'the world connection (data plane) is live')
+  assert.notEqual(ctxW.get('typertGateway'), undefined, 'the world gateway is live')
+  const webRuntime = ctxW.get('webRuntime')
+  assert.deepEqual(webRuntime, { lanAddresses: [], trustedHosts: [] }, 'neutral webRuntime facts (loopback bind ⇒ no LAN literals)')
 
-  await new Promise((resolve) => setTimeout(resolve, 200))
+  // T-D COMPOSITION: the FINAL row list spawnWorld wrote carries the webui
+  // rows disabled and no page-trust row — the world tree has no web surface.
+  const composed = readFileSync(join(WORLD_HOME, 'profiles', PROFILE, 'cordis.yml'), 'utf8')
+  const lines = composed.split('\n')
+  // One row block = from its `- id:` line up to (not including) the next row.
+  const rowBlock = (id) => {
+    const at = lines.findIndex((line) => line.trim() === `- id: ${id}`)
+    if (at === -1) return undefined
+    let end = at + 1
+    while (end < lines.length && !lines[end].startsWith('- id: ')) end++
+    return lines.slice(at, end).join('\n')
+  }
+  assert.match(rowBlock('web-runtime'), /disabled: true/, 'web-runtime (frontend-static mount) is disabled')
+  assert.match(rowBlock('client-hmr'), /disabled: true/, 'client-hmr (reload chain) is disabled')
+  assert.match(rowBlock('superd-world-mount'), /name: '@pgmi-builds\/superd-hub\/world'/, 'the mount row is present')
+  assert.equal(composed.includes('superd-web-trust'), false, 'the world page-trust row is gone')
+
+  // Give the world tree time to compose (the retired machinery used to land
+  // page translations within this window), then pin the negatives: the
+  // virtual server served nothing and stored nothing.
+  await new Promise((resolve) => setTimeout(resolve, 300))
   await ctxW.fiber.dispose()
   dropMount()
 })

@@ -2,13 +2,19 @@
  * World-side mount plugin (AW-B DL1/DL3) — `@pgmi-builds/superd-hub/world`.
  *
  * Inserted into the WORLD root's composition (its own process-side root, no
- * listener). It provides the virtual `webServer` for that root, so every
- * route the world's plugins declare has something to bind to. Since
- * path-separation T-C (2026-09-26, `/hub` is the sole entry; no URL-path
- * fallback) that server is a SILENT surface: registrations are accepted and
- * swallowed — no `/<label>/…` route lands on ctx0's real webServer, so the
- * world's pages are unreachable from the outside while the tree boots exactly
- * as before (the world web rows themselves retire with T-D).
+ * listener). Since path-separation T-D (2026-09-26, "disable their webui
+ * build, just like disable their webserver") it provides the world's whole
+ * remaining web-adjacent surface, shrunk to data-plane facts:
+ *
+ *   - the VIRTUAL `webServer` — a silent, registration-only shell
+ *     (`world-web-server.ts`): every route a world plugin declares is
+ *     accepted and swallowed, so the tree boots exactly as before while
+ *     nothing is ever served (`/hub` is the sole entry, T-C);
+ *   - the neutral `webRuntime` values — the ONE leg the disabled `web-runtime`
+ *     row used to provide that the DATA plane still reads (the `connection`
+ *     row injects it): loopback bind ⇒ no LAN literals, plus the deploy-level
+ *     `--trusted-host` extras spawnWorld seeds the tree with (carried here by
+ *     `worldMountPatches` in the row config).
  *
  * The RPC channel is NOT the world's: the hub's `/hub` family
  * (`hub-route.ts`) answers `?agent=<key>` traffic in ctx0's auth domain,
@@ -21,6 +27,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { noteWorldServer, publishWorldFetch, takeHostMount, type WorldFetchHandler } from './world-host.js'
 import { WorldWebServer } from './world-web-server.js'
+import { superdTrustedHosts } from './world-mount.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'superd-world-mount'
@@ -42,39 +49,35 @@ export function apply(ctx: Context, config?: { key?: unknown }): void {
     ctx.logger?.warn?.(`superd-world-mount: no host mount registered for key ${JSON.stringify(key)}`)
     return
   }
-  const worldWebServer = new WorldWebServer(mount.labelPath, {
-    onIndexInject: (table) => { ctx.emit('webserver/index-inject', table) },
-  })
+  const worldWebServer = new WorldWebServer(mount.labelPath)
   noteWorldServer(key, worldWebServer)
   ctx.reflect.provide('webServer', worldWebServer)
-  // The world's frontend-static still asks ITS OWN connection to authorize an
-  // index request. No index request has reached a world since T-C (pages are
-  // unreachable from ctx0), so the neutralization below is inert belt-and-
-  // braces until T-D retires the world web rows — kept so the world tree
-  // composes unchanged. The same connection also composes the world's `/api`
-  // fetch handler (exact Fetch routes + the gateway's RPC interceptor). It is
-  // published here so the hub's `/hub` family can forward non-envelope
-  // GET/HEAD traffic into the world's registered routes; auth stays in ctx0's
-  // domain because the family fences the request BEFORE this handler runs.
+  // The data-plane leg of the disabled `web-runtime` row: the `connection`
+  // row injects `webRuntime` (and reads `ctx.webRuntime.trustedHosts` in its
+  // config). Same neutral shape as before T-D: a loopback-only bind resolves
+  // no LAN literals; the trusted-host extras are the same deploy-level env
+  // list `spawnWorld` feeds this tree as `--trusted-host` arguments (one
+  // derivation: `superdTrustedHosts`).
+  ctx.reflect.provide('webRuntime', { lanAddresses: [], trustedHosts: superdTrustedHosts(process.env.SUPERD_TRUSTED_HOSTS) })
+  // The world's `/api` fetch handler (exact Fetch routes + the gateway's RPC
+  // interceptor) is published here so the hub's `/hub` family can forward
+  // non-envelope GET/HEAD traffic into the world's registered routes; auth
+  // stays in ctx0's domain because the family fences the request BEFORE this
+  // handler runs. (The world's own index-authorization neutralization is
+  // gone with T-D: no world page exists to authorize.)
   let dropWorldFetch: (() => void) | undefined
   ctx.inject(['connection'], (webCtx) => {
     const connection = webCtx.get('connection') as {
-      authorizeIndex?: (...rest: unknown[]) => boolean
       createSharedFetchHandler?: (channel: string) => WorldFetchHandler
     } | undefined
     if (connection === undefined) return
-    if (typeof connection.authorizeIndex === 'function') {
-      connection.authorizeIndex = () => true
-    }
     if (typeof connection.createSharedFetchHandler === 'function') {
       dropWorldFetch = publishWorldFetch(key, connection.createSharedFetchHandler('/api'))
     }
   })
   ctx.effect(() => () => {
-    worldWebServer.dispose()
     dropWorldFetch?.()
   }, 'superd-world-mount: virtual webServer')
-
 }
 
 export default apply

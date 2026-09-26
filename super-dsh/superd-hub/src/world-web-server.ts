@@ -1,29 +1,35 @@
 /**
- * Per-world virtual webServer (AW-B DL3; path-separation T-C: a SILENT
- * surface).
+ * Per-world virtual webServer (AW-B DL3; path-separation T-C silent sink →
+ * T-D registration-only shell).
  *
  * A world's plugins still declare ANY path they like (`/api`, `/plugins`,
  * `/whatever-name-i-like`), and the world root still needs a `webServer`
- * provider for them to bind (`worldMountPatches` pins the `modules` row to
- * wait for it). It used to translate every registration onto ctx0's real
+ * provider for them to bind (the `modules` row injects it; `worldMountPatches`
+ * pins that inject). It used to translate every registration onto ctx0's real
  * webServer as `/<label>+path` — the per-label page family. T-C (2026-09-26,
  * user ruling "strip off the per agent url path … no need the url path
- * fallback (we have git history)") severs exactly that: every route a world
- * plugin declares is accepted and SWALLOWED. No `/<label>/…` route ever lands
- * on ctx0's real webServer, so a world's pages are unreachable from the
- * outside while its tree keeps booting untouched — the world still composes
- * its web rows (their retirement is T-D's scope), their output simply goes
- * nowhere. The RPC channel was always hub-owned and stays with the hub: the
- * `/hub` family (`hub-route.ts`) is the sole foreign entry.
+ * fallback (we have git history)") severed that: every route a world plugin
+ * declares is accepted and SWALLOWED — no `/<label>/…` route ever lands on
+ * ctx0's real webServer. T-D (2026-09-26, "disable their webui build, just
+ * like disable their webserver") then disabled the world webui rows
+ * (`web-runtime`/`client-hmr`, see `worldMountPatches`) and retired the whole
+ * index face with them: no `renderIndex`, no taps, no index injections, no
+ * client mount shim — nothing renders a world page anywhere, and the mount
+ * HTML pass (`index-pass.ts`) plus the shim retired with the last consumer.
  *
- * What remains live is the world-local index face: `renderIndex` (the world's
- * frontend-static still renders through it) with the client mount shim, the
- * world's own index-inject rows and its taps — all consumed inside the world
- * tree; T-D retires that baking together with the world webui rows.
+ * What REMAINS and why (the data-plane coupling the guardrail protects):
+ *   - the `webServer` provider itself: world-tree rows (`modules`, adapter
+ *     rows) inject/bind it; removing the provider would pend them and fail
+ *     the world boot;
+ *   - `stripLabelFromUrl`/`RealWebServerFace`: the `/hub` family
+ *     (`hub-route.ts`) types ctx0's real server and strips the `/hub` prefix
+ *     with the same URL rule;
+ *   - the neutral `port`/`host` getters: the shape every remaining reader
+ *     sees (a world owns no socket).
+ *
+ * The RPC channel is hub-owned: the `/hub` family (`hub-route.ts`) is the
+ * sole foreign entry.
  */
-import { renderIndexInjections, type IndexInjection } from '@deepseek-ai/dsh-host-webserver'
-import { rewriteIndexHtml } from './index-pass.js'
-import { renderClientShim } from './client-shim.js'
 
 /** Route match kind (mirrors the upstream contract). */
 export type WebRouteKind = 'exact' | 'prefix'
@@ -65,15 +71,6 @@ export interface RealWebServerFace {
   readonly host?: string
 }
 
-/** Options: how this world collects its own index rows. */
-export interface WorldWebServerOptions {
-  /**
-   * Push the world's index injection rows. The world plugin supplies a
-   * function that emits on the WORLD root (never on ctx0's tree).
-   */
-  onIndexInject?(table: IndexInjection[]): void
-}
-
 /** Remove the mount label from `req.url`, preserving the trailing query. */
 export function stripLabelFromUrl(url: string | undefined, labelPath: string): string {
   const raw = typeof url === 'string' && url !== '' ? url : '/'
@@ -91,22 +88,17 @@ function swallowed(): () => void {
 }
 
 /**
- * One world's web surface — since T-C a silent sink: it accepts every
+ * One world's web surface — a registration-only shell: it accepts every
  * registration a world plugin makes (so the tree boots and composes exactly
- * as before) and forwards none of them anywhere.
+ * as before) and forwards none of them anywhere; nothing is stored, nothing
+ * is served (T-C), and nothing renders (T-D).
  */
 export class WorldWebServer {
-  private readonly taps: Array<(html: string) => string> = []
-
   /**
    * @param labelPath - mount root, e.g. `/omp` (no trailing slash) — the
-   *   world's identity, still baked into its index pass.
-   * @param options - world-local index row source.
+   *   world's identity record; no page is ever served under it.
    */
-  constructor(
-    readonly labelPath: string,
-    private readonly options: WorldWebServerOptions = {},
-  ) {
+  constructor(readonly labelPath: string) {
     if (typeof labelPath !== 'string' || !labelPath.startsWith('/') || labelPath === '/' || labelPath.endsWith('/')) {
       throw new Error(`world-web-server: labelPath must start with "/" and carry no trailing slash, got ${JSON.stringify(labelPath)}`)
     }
@@ -147,61 +139,5 @@ export class WorldWebServer {
    */
   registerFallback(_handler: (req: WorldRequest, res: WorldResponse) => void | Promise<void>): () => void {
     return swallowed()
-  }
-
-  /** World-local raw index transform (never forwarded to ctx0's taps). */
-  tapIndex(transform: (html: string) => string): () => void {
-    this.taps.push(transform)
-    return () => {
-      const at = this.taps.indexOf(transform)
-      if (at !== -1) this.taps.splice(at, 1)
-    }
-  }
-
-  /** Apply this world's taps in registration order. */
-  applyIndexTaps(html: string): string {
-    let out = html
-    for (const transform of this.taps) out = transform(out)
-    return out
-  }
-
-  /** Collect this world's structured rows (supplied by the world root). */
-  collectIndexInjections(): IndexInjection[] {
-    const table: IndexInjection[] = []
-    this.options.onIndexInject?.(table)
-    return table
-  }
-
-  /**
-   * Render the world's index: the client mount shim first (it must run before
-   * the app entry module), then the world's rows, then its taps, then the
-   * mount pass (base pinned at `/<label>/`, root-absolute strings re-rooted).
-   *
-   * The agent roster arrives through the world's own index-inject rows (the
-   * world composes the hub row); ctx0's own index gets it from the hub
-   * plugin's ctx0-side row. Nothing rendered here is served to anyone since
-   * T-C — the render survives because the world's frontend-static still runs
-   * (T-D retires it).
-   */
-  renderIndex(html: string): string {
-    // Injection rows FIRST, the client shim LAST: index-inject rows may need
-    // to own the transport global before anything else materializes — the
-    // page-trust component's `window.__DSH_TRANSPORT__ = { ownsHost: true }`
-    // guards on absence, while the shim MERGES into an existing object
-    // (`globalThis.__DSH_TRANSPORT__ = globalThis.__DSH_TRANSPORT__ || {}`).
-    // Shim-first would create the object and silently eat the verdict.
-    const rows: IndexInjection[] = [
-      // No hub-invented widget here: the world composes the hub's own client
-      // plugin (see worldMountPatches), so its selector IS the native one.
-      ...this.collectIndexInjections(),
-      { kind: 'script', placement: 'head', text: renderClientShim(this.labelPath) },
-    ]
-    const rendered = this.applyIndexTaps(renderIndexInjections(html, rows))
-    return rewriteIndexHtml(rendered, this.labelPath)
-  }
-
-  /** Release the world-local index state (world unloaded). */
-  dispose(): void {
-    this.taps.length = 0
   }
 }

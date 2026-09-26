@@ -29,11 +29,11 @@
  *   - config level: `trustedPageAuthorities: []` keeps the row mounted but
  *     injects nothing (fully inert).
  *
- * Composed on BOTH trees: ctx0 through the `super-dsh/web-trust` row (the
- * composite bundle's insert list) and every world through the
- * `@pgmi-builds/superd-hub/web-trust` row (world mount patches) — world pages
- * emit `webserver/index-inject` on their own root, so a ctx0-only listener
- * would never reach them.
+ * Composed on ctx0 only (since path-separation T-D): the `super-dsh/web-trust`
+ * row in the composite bundle's insert list. The per-world row retired with
+ * the world pages themselves (T-D disabled the world webui rows — no world
+ * page renders, so no world-local injection exists); `/hub` is the sole
+ * foreign entry and it serves ctx0's index, which this ctx0 row covers.
  *
  * @module @pgmi-builds/superd-hub/web-trust
  */
