@@ -25,11 +25,6 @@
 # Profile-layer values (webserver port/host, settings path) stay in the USER's
 # profile patch layer, never here.
 - insert:
-    # BARE package row: subpath rows (…/agents/omp) are permanently not client
-    # rows in client-modules' scan (exactPackageSpecifier), so THIS row is
-    # what registers the package's client half — the sidebar selector.
-    - id: superd-hub
-      name: 'super-dsh'
     - id: superd-web-trust
       name: 'super-dsh/web-trust'
     - id: agent-omp

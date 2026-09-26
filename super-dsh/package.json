@@ -1,7 +1,7 @@
 {
   "name": "super-dsh",
-  "version": "0.1.3-zg",
-  "description": "Super D for the DeepSeek Harness (DSH) — one dsh plugin that mounts the superd hub (runtime selector, roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
+  "version": "0.1.4",
+  "description": "Super D for the DeepSeek Harness (DSH) — one dsh plugin that mounts the superd hub (roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -18,17 +18,14 @@
     "./agents/pi": "./agent-pi/dist/world-plugin.js",
     "./agents/hermes": "./agent-hermes/dist/world-plugin.js",
     "./agents/agy": "./agent-agy/dist/world-plugin.js",
-    "./client": "./client/index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./web-trust": "./superd-hub/dist/web-trust.js"
   },
   "files": [
     "cordis.patch.yml",
-    "client",
     "README.md",
     "superd-hub/dist",
-    "superd-hub/lib",
     "superd-hub/package.json",
     "superd-hub/cordis.patch.yml",
     "agent-omp/dist",
@@ -55,12 +52,6 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-slots"
-      ],
-      "platform": "web"
     }
   },
   "dependencies": {

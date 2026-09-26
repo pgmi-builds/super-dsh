@@ -3,8 +3,8 @@
  *
  * No config file: an agent is in the roster exactly while its adapter
  * plugin is loaded and registered. Adapter plugins self-register on
- * activation (key/label/ready) and the RuntimeSeat chip consumes the
- * snapshot. Roster entries are inventory only: they carry NO selection —
+ * activation (key/label/ready). Roster entries are inventory only: they
+ * carry NO selection —
  * the addressed world is the request's mount path (`DL7`, 2026-09-16).
  * one authority.
  */

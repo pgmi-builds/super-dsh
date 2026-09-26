@@ -5,31 +5,21 @@
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
-    "./client": "./lib/client/index.js",
     "./world": "./dist/world-entry.js",
     "./join": "./dist/world-join.js",
     "./web-trust": "./dist/web-trust.js"
   },
   "files": [
     "dist",
-    "lib",
     "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-slots"
-      ],
-      "platform": "web"
     }
   },
   "scripts": {
     "build": "tsc -p .",
-    "typecheck:client": "tsc -p tsconfig.client.json",
-    "build-client": "npm run typecheck:client && node scripts/build-client.mjs",
     "test": "node --test --test-force-exit test/*.test.mjs"
   },
   "dependencies": {
@@ -59,8 +49,6 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.5.1",
-    "@types/react": "18.3.31",
-    "tsdown": "^0.15.12",
     "typescript": "5.9.3"
   },
   "publishConfig": {
