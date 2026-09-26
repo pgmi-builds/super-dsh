@@ -18,6 +18,7 @@ import {
   namespacedKey,
   storageNamespace,
   parseLandingTarget,
+  seatClickDecision,
   createSwitchController,
 } from '../dist/switch-core.js'
 import { FUSION_FLAG_GLOBAL, apply as applyFusion, renderFusionTransport } from '../dist/fusion-transport.js'
@@ -252,4 +253,55 @@ test('gate off: neither half is emitted', () => {
   ctx.emit(table)
   assert.equal(table.length, 0, 'a disabled row injects no script and no flag global')
   assert.equal(renderFusionTransport(), renderFusionTransport(), 'the script stays a constant')
+})
+
+// ---- the RuntimeSeat click-interception contract (review round 1) --------
+// Spec: 融合页 = state 切换（拦截 click，无导航）— on a fusion page a left
+// click NEVER navigates, the already-active entry included (the old
+// short-circuit let the anchor through: an `href="/"` reload discarding the
+// in-page switch state, or a foreign href abandoning the fused page). The
+// seat's onClick maps `preventDefault` onto the DOM event; `attempt` stands
+// for the seat's `attemptSwitch`, and its return value can never re-open
+// navigation.
+
+test('seat click, world page: no interception, no orchestration', () => {
+  let attempts = 0
+  const decide = (active) => seatClickDecision({
+    fusion: false,
+    active,
+    attempt: () => { attempts += 1; return true },
+  })
+  assert.deepEqual(decide(false), { preventDefault: false, attempted: false })
+  assert.deepEqual(decide(true), { preventDefault: false, attempted: false })
+  assert.equal(attempts, 0, 'the URL is the state — the real hyperlinks stay in charge')
+})
+
+test('seat click, fusion + active entry: intercepted with no switch attempt (review round 1)', () => {
+  let attempts = 0
+  const decision = seatClickDecision({
+    fusion: true,
+    active: true,
+    attempt: () => { attempts += 1; return true },
+  })
+  assert.deepEqual(decision, { preventDefault: true, attempted: false })
+  assert.equal(attempts, 0, 'switching to the active agent is a no-op — but the click never navigates')
+})
+
+test('seat click, fusion + inactive entry: intercepted and the switch runs', () => {
+  let attempts = 0
+  const decision = seatClickDecision({
+    fusion: true,
+    active: false,
+    attempt: () => { attempts += 1; return true },
+  })
+  assert.deepEqual(decision, { preventDefault: true, attempted: true })
+  assert.equal(attempts, 1, 'exactly one orchestration attempt per click')
+})
+
+test('seat click, fusion + unbound orchestration: still intercepted, never navigated', () => {
+  // attemptSwitch() reporting false must not hand the click back to the
+  // anchor: the fused page is not abandoned on a left click (review round
+  // 1); the href survives for middle-click / open-in-new-tab / copy link.
+  const decision = seatClickDecision({ fusion: true, active: false, attempt: () => false })
+  assert.deepEqual(decision, { preventDefault: true, attempted: false })
 })

@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
+import { seatClickDecision } from '../switch-core.js'
 
 /**
  * The app-level agent selector (`sidebar.footer.action`, just above Settings).
@@ -78,9 +79,9 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
   // Non-fusion: the mount path IS the selection — a roster entry navigates to
   // that world's URL, the browser owns navigation, no script runs on the way
   // out. Fusion: the same `<a>` rows stay (middle-click / copy link keep
-  // working), but a left click hands the decision to the switch orchestration
-  // — state switch, never navigation; the href only survives as the
-  // non-fusion fallback and for opening a world page in a new tab.
+  // working), but EVERY left click is intercepted (review round 1 — the
+  // active entry included) — state switch, never navigation; the href only
+  // survives as the world-page arm and for opening a world page in a new tab.
 
   const styleBase: React.CSSProperties = {
     display: 'flex',
@@ -155,17 +156,26 @@ export function RuntimeSeat({ wide }: RuntimeSeatProps): React.JSX.Element | nul
         <div style={styleMenu}>
           {agents.map((agent) => (
             // A real hyperlink: on world pages the URL is the state and the
-            // browser owns navigation. On a fusion page the left click is
-            // intercepted into the switchAgent orchestration (no navigation);
-            // when the orchestration is somehow unbound, attemptSwitch
-            // reports false and the hyperlink stays in charge.
+            // browser owns navigation. On a fusion page every left click is
+            // intercepted — NO navigation, the active entry included (that
+            // attempt is a no-op, but the click must still never fall through
+            // to the anchor: an `href="/"` reload would discard the in-page
+            // switch state, a foreign href would abandon the fused page;
+            // review round 1). With the orchestration unbound the click is
+            // swallowed, not navigated — the decision table lives in
+            // `seatClickDecision` (switch-core), pinned by client-switch tests.
             <a
               key={agent.key}
               href={agent.path}
               style={{ ...styleItem(isActive(agent)), textDecoration: 'none' }}
               aria-current={isActive(agent) ? 'page' : undefined}
               onClick={(event) => {
-                if (fusion && !isActive(agent) && attemptSwitch(agent.key)) event.preventDefault()
+                const decision = seatClickDecision({
+                  fusion,
+                  active: isActive(agent),
+                  attempt: () => attemptSwitch(agent.key),
+                })
+                if (decision.preventDefault) event.preventDefault()
                 setOpen(false)
               }}
             >

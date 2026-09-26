@@ -2,7 +2,9 @@
  * Switch orchestration core (native UI fusion, plan Task 4) — the pure logic
  * behind the in-page agent switch: storage-namespace key computation, the
  * session landing decision over the persisted `dsh.sessions.current`
- * selection, and the fallback state machine (timeout or roster-probe failure
+ * selection, the RuntimeSeat click-interception decision (a fusion page never
+ * navigates on a left click — spec: 融合页 = state 切换，拦截 click，无导航),
+ * and the fallback state machine (timeout or roster-probe failure
  * → revert to native + a visible toast, never a page lock).
  *
  * Host-half on purpose: plain TS with every effect injected through
@@ -110,6 +112,57 @@ export function parseLandingTarget(raw: string | null | undefined): string | obj
   }
   if (typeof selection.sessionId === 'string' && selection.sessionId !== '') return selection.sessionId
   return null
+}
+
+/** The decision one roster-entry left click produces in the RuntimeSeat. */
+export interface SeatClickDecision {
+  /**
+   * `true` = the anchor's default action must be prevented: a fusion page
+   * never navigates on a left click (the href survives only for middle-click
+   * / open-in-new-tab / copy link). `false` = the world-page arm — the URL is
+   * the state and the browser owns navigation, byte-identical to stock.
+   */
+  preventDefault: boolean
+  /** Whether the switch orchestration was invoked for the clicked entry. */
+  attempted: boolean
+}
+
+/** The inputs of one seat click: the page mode, the entry, the attempt. */
+export interface SeatClickInput {
+  /** The page carries the baked `__SUPERD_UI_FUSION__` flag global. */
+  fusion: boolean
+  /** The clicked roster entry is the currently active agent. */
+  active: boolean
+  /**
+   * The switch attempt (the seat's `attemptSwitch`). Invoked exactly when
+   * `fusion && !active`; its return value is recorded but can never re-open
+   * navigation — an unbound orchestration swallows the click instead of
+   * abandoning the fused page (review round 1).
+   */
+  attempt: () => boolean
+}
+
+/**
+ * The RuntimeSeat's click-interception contract as a pure table.
+ *
+ *   - World page (`fusion: false`): no interception, no orchestration — the
+ *     real hyperlink navigates (spec §5 双半边).
+ *   - Fusion page, active entry: intercepted, no attempt — switching to the
+ *     active agent is a no-op, and the click must never fall through to the
+ *     anchor (an `href="/"` reload would discard the in-page switch state; a
+ *     foreign `href` would abandon the fused page entirely).
+ *   - Fusion page, inactive entry: intercepted and the attempt runs. The
+ *     attempt's `false` (orchestration unbound) still keeps the page: a
+ *     swallowed click beats silent navigation away from the fusion surface.
+ *
+ * Host-half pure logic so `test/client-switch.test.mjs` pins the table from
+ * `dist/`; the seat maps `preventDefault` onto the DOM event.
+ */
+export function seatClickDecision(input: SeatClickInput): SeatClickDecision {
+  if (!input.fusion) return { preventDefault: false, attempted: false }
+  if (input.active) return { preventDefault: true, attempted: false }
+  const attempted = input.attempt() === true
+  return { preventDefault: true, attempted }
 }
 
 /**
