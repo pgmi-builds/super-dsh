@@ -331,9 +331,10 @@ export const FUSION_FLAG_ENV = 'SUPERD_UI_FUSION'
 
 /**
  * The page global the ctx0 index carries when the gate is on: the client
- * half's fusion-branch discriminator (RuntimeSeat reads its presence to
- * intercept agent clicks into the switch orchestration instead of letting
- * the hyperlinks navigate; world pages never carry it, so they keep the real
+ * half's fusion-branch discriminator (the Hub UI switch surfaces read its
+ * presence to intercept agent clicks into the switch orchestration instead
+ * of letting the hyperlinks navigate — the sole switch surface since the T-B
+ * RuntimeSeat retirement; world pages never carry it, so they keep the real
  * navigation half — spec §5 双半边). Baked by the SAME gated listener as the
  * transport script, so the two halves can never disagree.
  */

@@ -1,9 +1,11 @@
 /**
- * Shared roster projection for the client half: the runtime list every seat
- * (footer selector, hub row chevron, hub page) renders. Source of truth = the
- * hub's read-only `/api/agent-runtime` face; the baked
- * `window.__DSH_AGENT_ROSTER__` global only seeds the first paint (a world
- * page's baked copy can be stale, so the wire answer is authoritative).
+ * Shared roster projection for the client half: the runtime list every Hub
+ * switch surface (the HubPanelIcon chevron menu, the HubPage Agent Runtimes
+ * rows — the sole agent-switch surface since the T-B RuntimeSeat retirement)
+ * renders. Source of truth = the hub's read-only `/api/agent-runtime` face;
+ * the baked `window.__DSH_AGENT_ROSTER__` global only seeds the first paint
+ * (a world page's baked copy can be stale, so the wire answer is
+ * authoritative).
  *
  * @module superd-hub/client/roster
  */

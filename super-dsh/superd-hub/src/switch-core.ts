@@ -2,10 +2,12 @@
  * Switch orchestration core (native UI fusion, plan Task 4) — the pure logic
  * behind the in-page agent switch: storage-namespace key computation, the
  * session landing decision over the persisted `dsh.sessions.current`
- * selection, the RuntimeSeat click-interception decision (a fusion page never
- * navigates on a left click — spec: 融合页 = state 切换，拦截 click，无导航),
- * and the fallback state machine (timeout or roster-probe failure
- * → revert to native + a visible toast, never a page lock).
+ * selection, the agent-selector click-interception decision (a fusion page
+ * never navigates on a left click — spec: 融合页 = state 切换，拦截 click，无导航;
+ * T-B: consumed by the Hub UI surfaces, the sole switch surface since the
+ * RuntimeSeat retirement), and the fallback state machine (timeout or
+ * roster-probe failure → revert to native + a visible toast, never a page
+ * lock).
  *
  * Host-half on purpose: plain TS with every effect injected through
  * {@link SwitchHost} — no DOM, no client imports — so `test/client-switch.test.mjs`
@@ -204,7 +206,7 @@ export function observeCachesRefreshed(
   }
 }
 
-/** The decision one roster-entry left click produces in the RuntimeSeat. */
+/** The decision one roster-entry left click produces in the agent selector. */
 export interface SeatClickDecision {
   /**
    * `true` = the anchor's default action must be prevented: a fusion page
@@ -224,7 +226,7 @@ export interface SeatClickInput {
   /** The clicked roster entry is the currently active agent. */
   active: boolean
   /**
-   * The switch attempt (the seat's `attemptSwitch`). Invoked exactly when
+   * The switch attempt (`attemptSwitch`). Invoked exactly when
    * `fusion && !active`; its return value is recorded but can never re-open
    * navigation — an unbound orchestration swallows the click instead of
    * abandoning the fused page (review round 1).
@@ -233,7 +235,11 @@ export interface SeatClickInput {
 }
 
 /**
- * The RuntimeSeat's click-interception contract as a pure table.
+ * The agent-selector click-interception contract as a pure table (native UI
+ * fusion; originally landed for the sidebar-bottom RuntimeSeat, which T-B
+ * retired — the Hub UI surfaces (HubPage rows + the HubPanelIcon chevron
+ * menu) are now the sole switch surface and consume this SAME table, so the
+ * contract below is inherited verbatim).
  *
  *   - World page (`fusion: false`): no interception, no orchestration — the
  *     real hyperlink navigates (spec §5 双半边).
@@ -246,13 +252,45 @@ export interface SeatClickInput {
  *     swallowed click beats silent navigation away from the fusion surface.
  *
  * Host-half pure logic so `test/client-switch.test.mjs` pins the table from
- * `dist/`; the seat maps `preventDefault` onto the DOM event.
+ * `dist/`; the Hub surfaces map `preventDefault` onto the DOM event.
  */
 export function seatClickDecision(input: SeatClickInput): SeatClickDecision {
   if (!input.fusion) return { preventDefault: false, attempted: false }
   if (input.active) return { preventDefault: true, attempted: false }
   const attempted = input.attempt() === true
   return { preventDefault: true, attempted }
+}
+
+/** The inputs of one Hub UI roster row's active indication. */
+export interface HubRowActiveInput {
+  /** The page carries the baked `__SUPERD_UI_FUSION__` flag global. */
+  fusion: boolean
+  /** The row's roster key (`'native'` or a runtime key). */
+  agentKey: string
+  /** The row's mount path. */
+  agentPath: string
+  /** The page atom's active agent (fusion pages; absent otherwise). */
+  activeAgent?: string
+  /** The page's normalized mount path (world pages). */
+  mountPath: string
+}
+
+/**
+ * Which Hub UI roster row shows as the active agent (T-B: the Hub surfaces —
+ * HubPage rows and the HubPanelIcon chevron menu — are the sole switch
+ * surface after the RuntimeSeat retirement).
+ *
+ *   - Fusion page: the page atom's `activeAgent` — the switch state — decides
+ *     by roster key; the URL is irrelevant on a fused page. The `native`
+ *     entry participates like any other key.
+ *   - World page (interim until T-C deletes the arm): the mount path is the
+ *     selection — the entry whose path equals the page's normalized mount.
+ *
+ * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
+ */
+export function hubRowActive(input: HubRowActiveInput): boolean {
+  if (input.fusion) return input.agentKey === input.activeAgent
+  return input.agentPath === input.mountPath
 }
 
 /**

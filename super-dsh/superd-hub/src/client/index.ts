@@ -1,11 +1,14 @@
 /**
  * Client half entry: the app-level Super D surfaces.
  *
- * - `sidebar.footer.action` (`agent-runtime`) — the runtime seat: active
- *   agent + quick switch, just above Settings.
  * - `main` (key `hub`) + `sidebar.panellist` (id `hub`, below Plugins) — the
  *   Hub global panel: the sidebar row opens the hub home page (machines +
- *   agent adapters); the row's chevron expands the agent selector.
+ *   agent adapters); the row's chevron expands the agent selector. The Hub
+ *   UI is the SOLE agent-switch surface (T-B, user ruling: the sidebar-bottom
+ *   RuntimeSeat is retired): on a fusion page both the HubPage rows and the
+ *   chevron menu intercept clicks into the in-place `switchAgent`
+ *   orchestration (no navigation); on a world page the interim arm keeps the
+ *   real hyperlinks until T-C deletes it.
  *
  * The plugin shape mirrors the cordis client-plugin contract: an `inject`
  * declaration of required services plus an `apply(ctx)`.
@@ -13,7 +16,6 @@
  * @module superd-hub/client
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import { RuntimeSeat } from './RuntimeSeat.js'
 import { HubPage } from './HubPage.js'
 import { HubPanelIcon } from './HubPanelIcon.js'
 import { bindSwitchAgent, type SwitchConnection, type SwitchUiWorkspace, type SwitchWorkspaces } from './switch.js'
@@ -39,13 +41,6 @@ type SlotsScope = ClientContext & {
 export function apply(ctx: ClientContext): void {
   ctx.inject(['slots'], (raw) => {
     const scope = raw as SlotsScope
-    scope.effect(() => scope.slots.inject('sidebar.footer.action', () => scope.slots.register(
-      {
-        name: 'sidebar.footer.action',
-        id: 'agent-runtime',
-      },
-      RuntimeSeat,
-    )), 'superd-hub: runtime footer action')
     scope.effect(() => scope.slots.inject('main', () => scope.slots.register(
       { name: 'main', key: 'hub' },
       HubPage,
@@ -58,9 +53,9 @@ export function apply(ctx: ClientContext): void {
   // Native UI fusion Task 4 (+ T-A): bind the switchAgent orchestration once
   // the connection, uiWorkspace and workspaces services exist (structural
   // faces; the stock client tree always has all three — upstream's
-  // ui-workspace injects `workspaces` itself). Without a binding the seat's
-  // fusion branch degrades to the real hyperlinks — same contract as a
-  // non-fusion page.
+  // ui-workspace injects `workspaces` itself). Without a binding the Hub
+  // surfaces' fusion branch degrades to swallowed clicks — never navigation
+  // away from the fused page (the seatClickDecision contract).
   ctx.inject(['connection', 'uiWorkspace', 'workspaces'], (raw) => {
     const services = raw as unknown as {
       connection: SwitchConnection

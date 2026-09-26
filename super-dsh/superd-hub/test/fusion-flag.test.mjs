@@ -6,8 +6,9 @@
 //   - server half: ONE gated `webserver/index-inject` listener pushing the
 //     transport script AND the `__SUPERD_UI_FUSION__` baked global — or,
 //     when off, NOTHING at all (评审 §5: 多一个 script 标签都不该有);
-//   - client half: the RuntimeSeat fusion branch reading
-//     `__SUPERD_UI_FUSION__ === true` off the delivered client bundle.
+//   - client half: the Hub UI switch surfaces' fusion branch (T-B: the
+//     sole switch surface since the sidebar-bottom RuntimeSeat retirement)
+//     reading `__SUPERD_UI_FUSION__ === true` off the delivered client bundle.
 //
 // Faces pinned here, per the brief's Step 1:
 //   1. the name/derivation contract and the schema default (env absent → off,

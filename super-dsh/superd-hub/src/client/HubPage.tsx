@@ -3,6 +3,8 @@ import { HubGlyph } from './glyph.js'
 import { RuntimeMark } from './runtime-icons.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
 import { freshMachineId, loadMachines, saveMachines, type HubMachine } from './machines-store.js'
+import { attemptSwitch, fusionPage, uiState } from './switch.js'
+import { hubRowActive, seatClickDecision } from '../switch-core.js'
 
 /**
  * The Hub main panel (`main`, key `hub`): the hub-functionality home page.
@@ -11,6 +13,13 @@ import { freshMachineId, loadMachines, saveMachines, type HubMachine } from './m
  * agent-adapter roster the hub currently bridges. Machines are the UI-first
  * half of the concept — the client-side ledger owns them until the pairing
  * backend lands; the adapter list is the live `/api/agent-runtime` roster.
+ *
+ * Switch surface (T-B): the Agent Runtimes rows are the agent selector. On a
+ * fusion page every row click runs the `seatClickDecision` table —
+ * intercepted, in-place `switchAgent`, NO navigation ever (the href survives
+ * only for middle-click / open-in-new-tab / copy link); the active row tracks
+ * the `__SUPERD_UI_STATE__` atom. On a world page the interim arm keeps the
+ * real hyperlinks (the mount path is the selection; T-C deletes the arm).
  *
  * @module superd-hub/client/HubPage
  */
@@ -79,10 +88,17 @@ const listStyle: React.CSSProperties = {
 }
 
 /** A row that lights its surface on hover (inline styles have no :hover). */
-function HoverRow({ children }: { children: React.ReactNode }): React.JSX.Element {
+function HoverRow({ children, onClick, clickable }: {
+  children: React.ReactNode
+  /** Row-level click handler (the fusion switch wiring; absent on world pages). */
+  onClick?: (event: React.MouseEvent) => void
+  /** Pointer cursor while the row is a switch target. */
+  clickable?: boolean
+}): React.JSX.Element {
   const [hover, setHover] = React.useState(false)
   return (
     <li
+      onClick={onClick}
       onMouseEnter={() => { setHover(true) }}
       onMouseLeave={() => { setHover(false) }}
       style={{
@@ -94,6 +110,7 @@ function HoverRow({ children }: { children: React.ReactNode }): React.JSX.Elemen
         borderRadius: 12,
         listStyle: 'none',
         background: hover ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
+        cursor: clickable ? 'pointer' : undefined,
       }}
     >
       {children}
@@ -120,6 +137,15 @@ export function HubPage(): React.JSX.Element {
   const [agents, setAgents] = React.useState<AgentLink[] | null>(() => rosterFromGlobal() ?? null)
   const [rosterFailed, setRosterFailed] = React.useState(false)
   const [tab, setTab] = React.useState<'home' | 'workflows' | 'settings'>('home')
+  // Baked before app boot and never mutated afterwards: per-page constant.
+  const fusion = fusionPage()
+  // The fusion selection: the page atom is the authority (the URL is
+  // irrelevant on a fused page). The atom seeds the first paint and the
+  // subscription follows every switch — including one issued from another
+  // surface or the revert of a failed attempt.
+  const [activeKey, setActiveKey] = React.useState<string | undefined>(
+    () => (fusion ? uiState()?.activeAgent : undefined),
+  )
 
   React.useEffect(() => {
     let cancelled = false
@@ -134,7 +160,37 @@ export function HubPage(): React.JSX.Element {
     return () => { cancelled = true }
   }, [])
 
+  React.useEffect(() => {
+    if (!fusion) return
+    const state = uiState()
+    if (state === undefined) return
+    return state.subscribe((label) => { setActiveKey(label) })
+  }, [fusion])
+
   const here = currentMountPath()
+  const isActive = (agent: AgentLink): boolean => hubRowActive({
+    fusion,
+    agentKey: agent.key,
+    agentPath: agent.path,
+    activeAgent: activeKey,
+    mountPath: here,
+  })
+
+  /**
+   * The row's click decision — the SAME table the retired sidebar seat ran:
+   * on a fusion page EVERY left click is intercepted (active entry included),
+   * the attempt runs for non-active entries only, and `preventDefault` keeps
+   * the anchor from navigating the fused page away; on a world page the real
+   * hyperlink stays in charge (interim arm, T-C deletes it).
+   */
+  const rowDecision = (agent: AgentLink, event: React.MouseEvent): void => {
+    const decision = seatClickDecision({
+      fusion,
+      active: isActive(agent),
+      attempt: () => attemptSwitch(agent.key),
+    })
+    if (decision.preventDefault) event.preventDefault()
+  }
 
   const persist = (next: readonly HubMachine[]): void => {
     const list = [...next]
@@ -417,7 +473,11 @@ export function HubPage(): React.JSX.Element {
               </li>
             )}
             {agents?.map((agent) => (
-              <HoverRow key={agent.key}>
+              <HoverRow
+                key={agent.key}
+                clickable={fusion}
+                onClick={fusion ? (event) => { rowDecision(agent, event) } : undefined}
+              >
                 <RuntimeMark agentKey={agent.key} size={20} />
                 <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{agent.label}</span>
                 <span
@@ -442,12 +502,26 @@ export function HubPage(): React.JSX.Element {
                 >
                   {displayPath(agent.path)}
                 </span>
-                {agent.path === here && <span style={chipSelf}>current</span>}
+                {isActive(agent) && <span style={chipSelf}>current</span>}
+                {/* A real hyperlink: on world pages the URL is the state and
+                    the browser owns navigation. On a fusion page every left
+                    click is intercepted — NO navigation, the active entry
+                    included (the seatClickDecision contract, inherited from
+                    the retired sidebar seat; review round 1). The handler
+                    stops propagation so the row-level handler does not
+                    double-run the attempt: one click, one decision. The href
+                    survives as the world-page arm and for middle-click /
+                    open-in-new-tab / copy link. */}
                 <a
                   href={agent.path}
+                  aria-current={isActive(agent) ? 'page' : undefined}
                   style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none' }}
+                  onClick={fusion ? (event) => {
+                    event.stopPropagation()
+                    rowDecision(agent, event)
+                  } : undefined}
                 >
-                  open
+                  {fusion ? 'switch' : 'open'}
                 </a>
               </HoverRow>
             ))}

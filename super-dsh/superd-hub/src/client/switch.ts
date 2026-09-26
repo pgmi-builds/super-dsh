@@ -26,11 +26,12 @@
  *     component's DOM).
  *
  * The client entry (`index.ts`) binds once `connection` + `uiWorkspace`
- * exist. The seat runs every click through {@link seatClickDecision}
- * (switch-core): on a fusion page the left click is intercepted with NO
- * navigation — the orchestration bound or not; on a world page the flag
- * global is absent, the fusion arm never runs, and the real hyperlink stays
- * in charge (spec §5 双半边).
+ * exist. The Hub UI surfaces (HubPage rows + the HubPanelIcon chevron menu —
+ * the sole switch surface since the T-B RuntimeSeat retirement) run every
+ * click through {@link seatClickDecision} (switch-core): on a fusion page
+ * the left click is intercepted with NO navigation — the orchestration bound
+ * or not; on a world page the flag global is absent, the fusion arm never
+ * runs, and the real hyperlink stays in charge (spec §5 双半边).
  *
  * @module superd-hub/client/switch
  */
@@ -188,13 +189,14 @@ export function bindSwitchAgent(deps: {
 }
 
 /**
- * The seat's entry point. Attempts the in-page switch for `label`.
+ * The Hub switch surfaces' entry point. Attempts the in-page switch for
+ * `label`.
  * @returns `true` when the fusion switch took the click over; `false` when
  *   this page is not a fusion page or the orchestration is unbound.
- *   Informational only — the seat's interception contract
- *   (`seatClickDecision`) prevents navigation on every fusion-page left
- *   click regardless: a `false` means the click is swallowed, never that
- *   the anchor navigates the fused page away (review round 1).
+ *   Informational only — the interception contract (`seatClickDecision`)
+ *   prevents navigation on every fusion-page left click regardless: a
+ *   `false` means the click is swallowed, never that the anchor navigates
+ *   the fused page away (review round 1).
  */
 export function attemptSwitch(label: string): boolean {
   const run = bound

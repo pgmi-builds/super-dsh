@@ -1,13 +1,22 @@
 import * as React from 'react'
 import { HubGlyph } from './glyph.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
+import { attemptSwitch, fusionPage, uiState } from './switch.js'
+import { hubRowActive, seatClickDecision } from '../switch-core.js'
 
 /**
  * The Hub sidebar row's icon share (`sidebar.panellist`, list id `hub`): the
  * mark plus — while the sidebar is wide — a chevron pinned to the row's right
- * edge that expands the agent-runtime selector (the same roster the footer
- * seat shows). The row itself stays native: clicking it opens the Hub main
- * panel; only the chevron and the menu are ours.
+ * edge that expands the agent-runtime selector (the same roster the Hub page
+ * lists). The row itself stays native: clicking it opens the Hub main panel;
+ * only the chevron and the menu are ours.
+ *
+ * Switch surface (T-B): the chevron menu is half of the sole agent-switch
+ * surface (the HubPage rows are the other half; the sidebar-bottom seat is
+ * retired). On a fusion page every menu click runs the `seatClickDecision`
+ * table — intercepted, in-place `switchAgent`, NO navigation ever; the
+ * active row tracks the `__SUPERD_UI_STATE__` atom. On a world page the
+ * interim arm keeps the real hyperlinks (T-C deletes the arm).
  *
  * Geometry: the native panel row renders this component inside its glyph
  * span, so the chevron and the menu are `position: fixed` against the row
@@ -43,6 +52,20 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
   const [box, setBox] = React.useState<RowBox | null>(null)
   const [agents, setAgents] = React.useState<AgentLink[]>(() => rosterFromGlobal() ?? [NATIVE_LINK])
+  // Baked before app boot and never mutated afterwards: per-page constant.
+  const fusion = fusionPage()
+  // The fusion selection: the page atom is the authority; the subscription
+  // follows every switch (another surface's included) and every revert.
+  const [activeKey, setActiveKey] = React.useState<string | undefined>(
+    () => (fusion ? uiState()?.activeAgent : undefined),
+  )
+
+  React.useEffect(() => {
+    if (!fusion) return
+    const state = uiState()
+    if (state === undefined) return
+    return state.subscribe((label) => { setActiveKey(label) })
+  }, [fusion])
 
   const measure = React.useCallback((): void => {
     const row = rootRef.current?.closest('button') ?? null
@@ -86,6 +109,13 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
   }, [open, measure])
 
   const here = currentMountPath()
+  const isActive = (agent: AgentLink): boolean => hubRowActive({
+    fusion,
+    agentKey: agent.key,
+    agentPath: agent.path,
+    activeAgent: activeKey,
+    mountPath: here,
+  })
   const toggle = (event: React.MouseEvent | React.KeyboardEvent): void => {
     event.stopPropagation()
     if (event.type !== 'keydown') event.preventDefault()
@@ -151,11 +181,30 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
           }}
         >
           {agents.map((agent) => (
+            // A real hyperlink: on world pages the URL is the state and the
+            // browser owns navigation. On a fusion page every left click is
+            // intercepted — NO navigation, the active entry included (the
+            // seatClickDecision contract, inherited from the retired sidebar
+            // seat; review round 1). The href survives as the world-page arm
+            // and for middle-click / open-in-new-tab / copy link.
             <a
               key={agent.key}
               href={agent.path}
-              aria-current={agent.path === here ? 'page' : undefined}
-              onClick={() => { setOpen(false) }}
+              aria-current={isActive(agent) ? 'page' : undefined}
+              onClick={(event) => {
+                const decision = seatClickDecision({
+                  fusion,
+                  active: isActive(agent),
+                  attempt: () => attemptSwitch(agent.key),
+                })
+                if (decision.preventDefault) event.preventDefault()
+                // The menu is a DOM child of the native row button: on a
+                // fusion page the switch must not co-open the Hub panel, so
+                // the bubble stops here. The world-page arm keeps its
+                // historical behavior (the navigation leaves the page).
+                if (fusion) event.stopPropagation()
+                setOpen(false)
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -165,13 +214,13 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
                 textDecoration: 'none',
                 color: 'inherit',
                 fontSize: 13,
-                background: agent.path === here ? 'color-mix(in srgb, currentColor 10%, transparent)' : 'transparent',
+                background: isActive(agent) ? 'color-mix(in srgb, currentColor 10%, transparent)' : 'transparent',
               }}
             >
               <span style={{ flex: 1, textAlign: 'left', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {agent.label}
               </span>
-              {agent.path === here && <span aria-hidden>✓</span>}
+              {isActive(agent) && <span aria-hidden>✓</span>}
             </a>
           ))}
         </div>

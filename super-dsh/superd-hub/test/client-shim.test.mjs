@@ -258,8 +258,9 @@ test('root-absolute /api download hrefs rewrite; foreign and non-api stay virgin
 
 test('selector-style anchors (no download attribute) are never touched', () => {
   // Live-found regression (2026-09-18): the r1 blanket document listener
-  // re-rooted the runtime selector's /<label>/ anchors (RuntimeSeat.tsx <a
-  // href="/omp/">) into /<current-label>/omp/ and broke cross-world
+  // re-rooted the runtime selector's /<label>/ anchors (then the
+  // sidebar-bottom seat's <a href="/omp/">; the selector now lives in the
+  // Hub UI surfaces) into /<current-label>/omp/ and broke cross-world
   // navigation. The r2 seam must leave every non-download anchor virgin.
   const { HTMLAnchorElement, clicks } = fakeAnchorElement()
   fakeGlobal({ HTMLAnchorElement })

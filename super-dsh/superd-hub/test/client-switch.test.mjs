@@ -19,6 +19,7 @@ import {
   storageNamespace,
   parseLandingTarget,
   seatClickDecision,
+  hubRowActive,
   createSwitchController,
   observeCachesRefreshed,
 } from '../dist/switch-core.js'
@@ -460,14 +461,18 @@ test('gate off: neither half is emitted', () => {
   assert.equal(renderFusionTransport(), renderFusionTransport(), 'the script stays a constant')
 })
 
-// ---- the RuntimeSeat click-interception contract (review round 1) --------
+// ---- the seat click-interception contract (review round 1; T-B keeps it) --
 // Spec: 融合页 = state 切换（拦截 click，无导航）— on a fusion page a left
 // click NEVER navigates, the already-active entry included (the old
 // short-circuit let the anchor through: an `href="/"` reload discarding the
 // in-page switch state, or a foreign href abandoning the fused page). The
-// seat's onClick maps `preventDefault` onto the DOM event; `attempt` stands
-// for the seat's `attemptSwitch`, and its return value can never re-open
-// navigation.
+// consumer maps `preventDefault` onto the DOM event; `attempt` stands for
+// `attemptSwitch`, and its return value can never re-open navigation.
+// T-B (user ruling: "strip off the old agent-selector, use the hub ui
+// components"): the sidebar-bottom RuntimeSeat is retired and the Hub UI
+// surfaces (HubPage rows + the HubPanelIcon chevron menu) become the sole
+// consumers of this SAME table — the contract is inherited verbatim, which is
+// exactly why the table outlives the seat.
 
 test('seat click, world page: no interception, no orchestration', () => {
   let attempts = 0
@@ -509,4 +514,67 @@ test('seat click, fusion + unbound orchestration: still intercepted, never navig
   // 1); the href survives for middle-click / open-in-new-tab / copy link.
   const decision = seatClickDecision({ fusion: true, active: false, attempt: () => false })
   assert.deepEqual(decision, { preventDefault: true, attempted: false })
+})
+
+// ---- the Hub UI row active-indication (T-B) -------------------------------
+// RuntimeSeat retired; the Hub surfaces are the sole switch surface. They
+// inherit the decision table above and add one indication fact: which roster
+// row shows as the active agent. Fusion pages read the page atom's
+// `activeAgent` (the switch state — the URL is irrelevant on a fused page);
+// world pages keep the interim mount-path arm (T-C deletes it).
+
+test('hub row active, fusion: the atom activeAgent decides by key — native included', () => {
+  assert.equal(hubRowActive({ fusion: true, agentKey: 'omp', agentPath: '/omp/', activeAgent: 'omp', mountPath: '/' }), true)
+  assert.equal(hubRowActive({ fusion: true, agentKey: 'codex', agentPath: '/codex/', activeAgent: 'omp', mountPath: '/' }), false)
+  assert.equal(hubRowActive({ fusion: true, agentKey: 'native', agentPath: '/', activeAgent: 'native', mountPath: '/' }), true,
+    'the native entry is a switch target like any other')
+  assert.equal(hubRowActive({ fusion: true, agentKey: 'native', agentPath: '/', activeAgent: 'omp', mountPath: '/' }), false)
+})
+
+test('hub row active, fusion: no atom reading (undefined) matches nothing', () => {
+  assert.equal(hubRowActive({ fusion: true, agentKey: 'omp', agentPath: '/omp/', activeAgent: undefined, mountPath: '/' }), false)
+  assert.equal(hubRowActive({ fusion: true, agentKey: 'native', agentPath: '/', activeAgent: undefined, mountPath: '/' }), false)
+})
+
+test('hub row active, world page: the mount path decides (interim arm; T-C deletes it)', () => {
+  assert.equal(hubRowActive({ fusion: false, agentKey: 'omp', agentPath: '/omp/', activeAgent: undefined, mountPath: '/omp/' }), true)
+  assert.equal(hubRowActive({ fusion: false, agentKey: 'omp', agentPath: '/omp/', activeAgent: undefined, mountPath: '/codex/' }), false)
+  assert.equal(hubRowActive({ fusion: false, agentKey: 'native', agentPath: '/', activeAgent: undefined, mountPath: '/' }), true)
+})
+
+test('T-B composition: a Hub row click runs the SAME table the seat ran', () => {
+  // Exactly the wiring the HubPage rows and the HubPanelIcon menu use:
+  // hubRowActive feeds `active`, attemptSwitch stands behind `attempt`, and
+  // preventDefault maps onto the DOM event. Pinned end-to-end at the pure
+  // layer so the two surfaces cannot drift from the inherited contract.
+  const wiring = ({ fusion, activeAgent, agentKey, agentPath, mountPath, bound }) => {
+    const active = hubRowActive({ fusion, agentKey, agentPath, activeAgent, mountPath })
+    let attempts = 0
+    const decision = seatClickDecision({
+      fusion,
+      active,
+      attempt: () => { attempts += 1; return bound },
+    })
+    return { preventDefault: decision.preventDefault, attempted: decision.attempted, attempts }
+  }
+  // Fusion, inactive entry, bound orchestration: intercepted + switched.
+  assert.deepEqual(
+    wiring({ fusion: true, activeAgent: 'native', agentKey: 'omp', agentPath: '/omp/', mountPath: '/', bound: true }),
+    { preventDefault: true, attempted: true, attempts: 1 },
+  )
+  // Fusion, active entry (native active, native row): intercepted, NO attempt.
+  assert.deepEqual(
+    wiring({ fusion: true, activeAgent: 'native', agentKey: 'native', agentPath: '/', mountPath: '/', bound: true }),
+    { preventDefault: true, attempted: false, attempts: 0 },
+  )
+  // Fusion, unbound orchestration: intercepted, click swallowed, no navigation.
+  assert.deepEqual(
+    wiring({ fusion: true, activeAgent: 'native', agentKey: 'omp', agentPath: '/omp/', mountPath: '/', bound: false }),
+    { preventDefault: true, attempted: false, attempts: 1 },
+  )
+  // World page (interim arm): plain hyperlink, no interception, no attempt.
+  assert.deepEqual(
+    wiring({ fusion: false, activeAgent: undefined, agentKey: 'omp', agentPath: '/omp/', mountPath: '/', bound: true }),
+    { preventDefault: false, attempted: false, attempts: 0 },
+  )
 })
