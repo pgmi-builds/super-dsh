@@ -25,9 +25,17 @@ subagent family: `subagent`, `subagent-spawn-in-process`, `subagent-fork-in-proc
 
 Mechanism: one shared disable block in the per-world patch layer (`worldMountPatches`, world-mount.ts) — same channel that already persists the zero-listener posture — so every world and every recomposition carries it. Per-adapter customization remains a later patch layer on top (ruling preserved: default world composition + optional adapter-specific additions).
 
-## Wave-2 candidates (NOT this change; require their own analysis)
+## Wave-2 (executed 2026-09-27 — the client lane, native-ui-only completion)
 
-`client-ui-*` family (~45 rows — biggest mass; verify no world-side module-manifest consumption by the fused page), `bash-sandbox`, `tools`, `terminal-controller`, `time-context`, `schedule`, `agent-instructions`, `session-title-llm`/`user-questions` (llm consumers on foreign sessions), `ui-agent-preset` + native preset rows (`preset-standard/ptc/minimal/cordis`).
+User framing ratified: the multi-ctx-multi-ui → native-ui-only transition (0.1.5/T-D) retired the world's own web UI; wave-2 completes it by stripping the web-app bundle's browser-half rows. **46 rows disabled** (45 `dsh-client-*` + `cordis-client-runner`) with two KEEPS:
+- `connection` — the world's typert gateway injects it;
+- `modules` — **parked, not disabled**: its activation fails in world trees ("client bundles not found") and the omp fiber treats it as required (rig evidence: `omp world failed: 1 required plugin did not activate`); the load-bearing restatement `{ id: 'modules', inject: ['webServer'] }` keeps it inert without a startup failure.
+
+Result (rig, delivery form): enabled rows per world **237 → 89**; six-runtime switch matrix all LANDED; world-failed 0; warm-up ≈11.4 s and RSS ≈381 MB (parity — the stripped rows were registry-cheap; boot cost lives in the remaining host imports).
+
+## Remaining candidates (future waves)
+
+`bash-sandbox`, `tools`, `terminal-controller`, `time-context`, `schedule`, `agent-instructions`, `session-title-llm`/`user-questions` (llm consumers on foreign sessions), native preset rows (`preset-standard/ptc/minimal/cordis`).
 
 ## Verification protocol (every wave, delivery form on the rig)
 
