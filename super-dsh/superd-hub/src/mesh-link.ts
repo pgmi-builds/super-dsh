@@ -7,8 +7,10 @@
  * Pure module — no cordis dependencies. Outbound calls use the global
  * fetch (injectable via `fetchImpl` / `deps.fetchImpl` for tests) with
  * a 10s AbortSignal timeout. Cookies live in an in-process jar keyed by
- * machine id — `machines.json` deliberately persists only the re-mint
- * token (D1: cookie-grade sensitivity, §3.3 schema). Probe outcomes land
+ * a 10s AbortSignal timeout. The minted cookie is persisted on the machine
+ * row (`MachineRow.cookie`, D1 sensitivity, §3.3/§4) so hub restarts keep the
+ * remote's 30-day session; an in-process jar fronts the row as a write-through
+ * cache of the same value. Probe outcomes land
  * in the module-level status table exported read-only via
  * `machineStatus()` (mesh API consumes; `resetMachineStatus()` is the
  * test hook). No retry loops, no background probing — P1 is explicit
@@ -53,7 +55,7 @@ export interface MachineStatusEntry {
 
 const FETCH_TIMEOUT_MS = 10_000
 
-/** <machineId, cookie> — in-process cookie jar (machines.json persists only the re-mint token). */
+/** <machineId, cookie> — in-process jar, a front for the persisted `MachineRow.cookie` (same value; write-through on every mint). */
 const cookieJar = new Map<string, string>()
 
 const machineStatusTable = new Map<string, MachineStatusEntry>()
@@ -62,20 +64,22 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-/** Validate a pasted token URL: absolute http(s) origin + non-empty `?token=`. */
+/** Validate a pasted token URL: absolute http(s) origin + non-empty `?token=`.
+ *  Error copy never echoes the raw input — a typo'd paste may still carry a live
+ *  token, so messages carry at most the (userinfo-free) origin. */
 export function parseTokenUrl(tokenUrl: string): { origin: string; token: string } {
   let url: URL
   try {
     url = new URL(tokenUrl)
   } catch {
-    throw new Error(`mesh-link: invalid token url "${tokenUrl}" — not a parseable absolute URL`)
+    throw new Error('mesh-link: invalid token url — not a parseable absolute URL')
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`mesh-link: invalid token url "${tokenUrl}" — origin must be http(s), got "${url.protocol}"`)
+    throw new Error(`mesh-link: invalid token url — origin must be http(s), got "${url.origin}"`)
   }
   const token = url.searchParams.get('token') ?? ''
   if (token === '') {
-    throw new Error(`mesh-link: invalid token url "${tokenUrl}" — missing ?token= query parameter`)
+    throw new Error(`mesh-link: invalid token url at "${url.origin}" — missing ?token= query parameter`)
   }
   return { origin: url.origin, token }
 }
@@ -204,8 +208,8 @@ function persistRow(home: string, row: MachineRow, deps?: LinkDeps): void {
 /**
  * Full pairing: parse the pasted token URL → mint a cookie → probe the roster
  * → adopt the remote machine id (fail-loud on collision with self or an
- * existing remote) → persist the row with the retained token → jar the
- * cookie and mark the machine reachable. A failed mint/probe throws before
+ * existing remote) → persist the row with the retained token and minted
+ * cookie → jar the cookie and mark the machine reachable. A failed mint/probe throws before
  * anything is persisted.
  */
 export async function pairMachine(home: string, input: { name: string; label?: string; tokenUrl: string }, deps?: LinkDeps): Promise<PairOutcome> {
@@ -227,6 +231,7 @@ export async function pairMachine(home: string, input: { name: string; label?: s
     label: input.label ?? input.name,
     origin,
     token,
+    cookie,
     enabled: true,
     addedAt: Date.now(),
   }
@@ -237,9 +242,11 @@ export async function pairMachine(home: string, input: { name: string; label?: s
 }
 
 /**
- * Re-probe a paired machine with its jarred cookie. On `auth-expired`, if the
- * row retains a token, re-mint once and probe again; a success writes the new
- * cookie back into the jar. Every outcome lands in the status table
+ * Re-probe a paired machine: the jar's cookie, falling back to the cookie
+ * persisted on the row (cold jar after a hub restart), rides the probe. On
+ * `auth-expired`, if the row retains a token, re-mint once and probe again; a
+ * successful re-mint writes the new cookie back into the jar AND the row. Every
+ * outcome lands in the status table
  * (`reachable` / `auth-expired` / `unreachable`, the latter two with the error).
  */
 export async function reprobeMachine(home: string, id: string, deps?: LinkDeps): Promise<ProbeResult> {
@@ -250,11 +257,13 @@ export async function reprobeMachine(home: string, id: string, deps?: LinkDeps):
     throw new Error(`mesh-link: unknown machine id "${id}" — no remote row in the registry`)
   }
   const origin = row.origin
-  let cookie = cookieJar.get(id) ?? ''
+  let cookie = cookieJar.get(id) ?? row.cookie ?? ''
   let probe = await probeMachine(origin, cookie, fetchImpl)
   if (!probe.ok && probe.status === 'auth-expired' && row.token) {
     try {
       cookie = await mintCookie(origin, row.token, fetchImpl)
+      cookieJar.set(id, cookie)
+      persistRow(home, { ...row, cookie }, deps)
       probe = await probeMachine(origin, cookie, fetchImpl)
     } catch (err) {
       probe = { ok: false, status: 'auth-expired', error: `re-mint failed — ${errMsg(err)}` }

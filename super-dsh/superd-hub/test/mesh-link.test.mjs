@@ -81,7 +81,7 @@ async function closedOrigin() {
   return `http://127.0.0.1:${port}`
 }
 
-test('parseTokenUrl 校验与提取', () => {
+test('parseTokenUrl 校验与提取；错误信息不回显 token', () => {
   assert.deepEqual(parseTokenUrl('http://h:1/?token=abc'), { origin: 'http://h:1', token: 'abc' })
   assert.deepEqual(parseTokenUrl('https://dev3.example:4999/?token=t%20k'), { origin: 'https://dev3.example:4999', token: 't k' })
   assert.throws(() => parseTokenUrl('http://h:1/'), /invalid token url/)
@@ -89,6 +89,20 @@ test('parseTokenUrl 校验与提取', () => {
   assert.throws(() => parseTokenUrl('http://h:1/?token='), /invalid token url/)
   assert.throws(() => parseTokenUrl('ftp://h:1/?token=abc'), /invalid token url/)
   assert.throws(() => parseTokenUrl('not a url'), /invalid token url/)
+  // 红线：贴错的 token URL 可能带着活 token——错误文案不得回显 query
+  const assertRedacted = (fn, marker) => {
+    try {
+      fn()
+    } catch (err) {
+      assert.match(err.message, /invalid token url/)
+      assert.ok(!err.message.includes(marker), `error leaked token substring "${marker}": ${err.message}`)
+      return
+    }
+    assert.fail('expected throw')
+  }
+  assertRedacted(() => parseTokenUrl('http://h:notaport/?token=S3CRET'), 'S3CRET') // 坏端口：URL 不可解析
+  assertRedacted(() => parseTokenUrl('ftp://h:1/?token=S3CRET'), 'S3CRET') // 错 scheme
+  assertRedacted(() => parseTokenUrl('http://h:1/?tok=S3CRET'), 'S3CRET') // 无 token 参数但 query 带敏感值
 })
 
 test('mintCookie 拿到 dsh-auth cookie（只取 name=value 对）', async () => {
@@ -160,6 +174,7 @@ test('pairMachine 全链：mint→probe→持久化→采纳 k3f9；重复 id �
     assert.equal(out.row.label, 'DEV3')
     assert.equal(out.row.origin, hub.origin)
     assert.equal(out.row.token, 'boot-tok')
+    assert.equal(out.row.cookie, 'dsh-auth-x=v1') // mint 出的 cookie 随行持久化
     assert.equal(out.row.enabled, true)
     assert.equal(fetchCalls, 2) // mint + probe 都走注入的 fetchImpl
 
@@ -167,6 +182,7 @@ test('pairMachine 全链：mint→probe→持久化→采纳 k3f9；重复 id �
     assert.equal(rows.length, 1)
     assert.equal(rows[0].id, 'k3f9')
     assert.equal(rows[0].token, 'boot-tok')
+    assert.equal(rows[0].cookie, 'dsh-auth-x=v1') // 落盘后读回仍有 cookie
 
     const st = machineStatus().get('k3f9')
     assert.equal(st.status, 'reachable')
@@ -218,7 +234,7 @@ test('reprobeMachine：401 → 存量 token 自动重铸一次；成功回写新
     const expired = await reprobeMachine(h, 'r7p2')
     assert.equal(expired.ok, true)
     assert.equal(hub.state.mintCount, 2)
-    assert.equal(hub.state.lastCookie, 'dsh-auth-x=v2')
+    assert.equal(listRemotes(h)[0].cookie, 'dsh-auth-x=v2') // 新 cookie 回写进行
     assert.equal(machineStatus().get('r7p2').status, 'reachable')
 
     // 回写验证：jar 里必须是 v2（而非 v1）——再失效一轮，重铸出来的是 v3
@@ -227,12 +243,31 @@ test('reprobeMachine：401 → 存量 token 自动重铸一次；成功回写新
     assert.equal(again.ok, true)
     assert.equal(hub.state.mintCount, 3)
     assert.equal(hub.state.lastCookie, 'dsh-auth-x=v3')
+    assert.equal(listRemotes(h)[0].cookie, 'dsh-auth-x=v3') // 再轮回写仍是最新值
   } finally {
     rmSync(h, { recursive: true, force: true })
     await hub.close()
   }
 })
 
+
+
+test('reprobeMachine：持久化 cookie 跨进程可用（jar 冷启动 → 用行内 cookie，不重铸）', async () => {
+  const hub = await startRemoteHub({ machineId: 'p1q2', token: 'keep-tok' })
+  const h = home()
+  try {
+    hub.state.validCookies.add('v9') // 服务端已签发的存量 cookie（模拟另一进程/上次会话铸的）
+    upsertRemote(h, { id: 'p1q2', name: 'dev3', label: 'DEV3', origin: hub.origin, token: 'keep-tok', cookie: 'dsh-auth-x=v9', enabled: true, addedAt: 1 })
+    const r = await reprobeMachine(h, 'p1q2') // 本进程从未 pair 过 p1q2：jar 空，只能吃行内 cookie
+    assert.equal(r.ok, true)
+    assert.equal(hub.state.mintCount, 0) // 存量 cookie 仍有效：不重铸
+    assert.equal(hub.state.lastCookie, 'dsh-auth-x=v9') // probe 看到的正是行内持久化 cookie
+    assert.equal(machineStatus().get('p1q2').status, 'reachable')
+  } finally {
+    rmSync(h, { recursive: true, force: true })
+    await hub.close()
+  }
+})
 test('reprobeMachine：cookie 失效且行内无 token → auth-expired 停机（不重铸）', async () => {
   resetMachineStatus()
   const hub = await startRemoteHub({ machineId: 'a1b2', token: 'gone' })

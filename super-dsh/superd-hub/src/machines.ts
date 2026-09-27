@@ -26,6 +26,8 @@ export interface MachineRow {
   origin: string
   /** Retained auth token for cookie re-mint; same sensitivity as the cookie itself. */
   token?: string
+  /** Last minted request cookie (spec §4): persisted so hub restarts keep the remote's 30-day session instead of forcing a re-mint on every boot. */
+  cookie?: string
   enabled: boolean
   /** Epoch ms when this row was added. */
   addedAt: number
@@ -54,7 +56,8 @@ function isMachineRow(v: unknown): v is MachineRow {
   return (
     typeof r.id === 'string' && typeof r.name === 'string' && typeof r.label === 'string' &&
     typeof r.origin === 'string' && typeof r.enabled === 'boolean' && typeof r.addedAt === 'number' &&
-    (r.token === undefined || typeof r.token === 'string')
+    (r.token === undefined || typeof r.token === 'string') &&
+    (r.cookie === undefined || typeof r.cookie === 'string')
   )
 }
 
