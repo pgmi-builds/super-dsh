@@ -11,15 +11,15 @@
     "rootDir": "src"
   },
   "include": ["src/**/*.ts"],
-  // The client half is tsdown territory (lib/client) — EXCEPT mesh-api.ts,
-  // which is node-safe (no DOM, no react, no @deepseek-ai imports) and dual-
-  // emits to dist/client/mesh-api.js so test/client-mesh-view.test.mjs can
-  // import its pure halves under node --test (the switch-core/toast-core
-  // precedent, kept inside src/client). New client .ts files default to the
-  // tsdown lane: list them here unless they are node-safe test seams too.
+  // The client half is tsdown territory (lib/client) — EXCEPT the node-safe
+  // pure seams that dual-emit to dist/client/ for node --test: mesh-api.ts
+  // (test/client-mesh-view.test.mjs), roster.ts + mesh-groups.ts
+  // (test/client-mesh-groups.test.mjs; no DOM globals, no react, no
+  // @deepseek-ai imports — fetch only inside functions). New client .ts
+  // files default to the tsdown lane: list them here unless they are
+  // node-safe test seams too.
   "exclude": [
     "src/client/index.ts",
-    "src/client/roster.ts",
     "src/client/switch.ts",
     "src/client/toast.ts"
   ]

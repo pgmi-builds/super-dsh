@@ -7,6 +7,11 @@
  * (a world page's baked copy can be stale, so the wire answer is
  * authoritative).
  *
+ * Node-safe by construction (no DOM globals, fetch only inside functions) —
+ * the host tsc dual-emits this file to `dist/client/roster.js` so
+ * test/client-mesh-groups.test.mjs can pin the coercion under `node --test`
+ * (the mesh-api/mesh-groups precedent).
+ *
  * @module superd-hub/client/roster
  */
 
@@ -16,11 +21,13 @@ export interface AgentLink {
   readonly label: string
   readonly path: string
   /**
-   * Machine the runtime comes from. Guaranteed by the parser: the host wire
-   * carries it (`machine: 'local'` today) and an older shape defaults to
-   * `'local'` right here — the parse boundary is the only defensive default.
+   * Machine the runtime comes from (mesh P2): `'local'` for this machine's
+   * rows, the owning machine's m4 id for federated rows. Optional and
+   * additive: the coercion drops unknown values to `undefined` and the
+   * grouping (mesh-groups.ts) treats absent as local — no parse-boundary
+   * default anymore, the wire's machine ids pass through verbatim.
    */
-  readonly machine: string
+  readonly machine?: string
   /** Whether the world's data plane is up. Optional: older hosts omit it (parse boundary default). */
   readonly ready?: boolean
   /** Whether the world's spawn REJECTED. Optional: older hosts omit it. */
@@ -53,9 +60,11 @@ function coerceAgents(raw: unknown): AgentLink[] | undefined {
       key,
       label: typeof label === 'string' ? label : (FALLBACK_LABELS[key] ?? key),
       path,
-      // The parse boundary's one defensive default: older host shapes without
-      // machine are local-machine rosters.
-      machine: typeof machine === 'string' ? machine : 'local',
+      // Passthrough (mesh P2 Task 4): a string machine id rides verbatim
+      // ('local' for this machine's rows, the m4 for federated rows);
+      // anything else is dropped to undefined — the grouping treats absent
+      // as local, so an older host shape needs no default here.
+      machine: typeof machine === 'string' && machine !== '' ? machine : undefined,
       ready: (entry as { ready?: unknown }).ready === true,
       failed: (entry as { failed?: unknown }).failed === true,
     })
@@ -71,7 +80,8 @@ export function rosterFromGlobal(): AgentLink[] | undefined {
 
 /** Normalize the current mount root: `/omp` and `/omp/` are the same page. */
 export function currentMountPath(): string {
-  const pathname = typeof location === 'undefined' ? '/' : location.pathname
+  const location = (globalThis as { location?: { pathname: string } }).location
+  const pathname = location === undefined ? '/' : location.pathname
   if (pathname === '' || pathname === '/') return '/'
   return pathname.endsWith('/') ? pathname : `${pathname}/`
 }

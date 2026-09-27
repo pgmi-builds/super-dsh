@@ -34,8 +34,6 @@ import {
   seatClickDecision,
   hubRowActive,
   activeAgentName,
-  machineGroup,
-  machineGroups,
   switchAffordance,
   createSwitchController,
   createReadinessWaiter,
@@ -1021,18 +1019,16 @@ test('T-B composition: a Hub row click runs the SAME table the seat ran', () => 
   )
 })
 
-// ---- the sidebar row selector + machine grouping (native-workspace-look) ---
+// ---- the sidebar row selector (native-workspace-look) ----------------------
 // The hub row reads the constant `Hub` on every page: the active agent no
 // longer appends to the label (`Hub > <name>` was round 1) — it rides the
 // row's right-edge selector, whose runtime mark sits beside its chevron
 // (HubPanelIcon), and whose `title` names it via `activeAgentName`. The
-// selector's menu groups the roster by machine (`AgentLink.machine` — carried
-// on the wire, defaulted to 'local' once at the roster parse boundary) as one
-// heading row per machine group, the way the native workspace list groups its
-// sections. Pure halves pinned here; the visual treatment lives in
-// HubPanelIcon, the registration (constant label — no re-registration push)
-// in client/index.ts.
-
+// menu's machine SECTIONS (local first, remotes by display label) moved to
+// the client half in mesh P2 Task 4: src/client/mesh-groups.ts, pinned by
+// test/client-mesh-groups.test.mjs. Pure halves pinned here; the visual
+// treatment lives in HubPanelIcon, the registration (constant label — no
+// re-registration push) in client/index.ts.
 test('active agent name: the roster label decides, unknown keys degrade to the raw key', () => {
   const roster = [
     { key: 'native', label: 'DSH', path: '/', machine: 'local' },
@@ -1044,67 +1040,6 @@ test('active agent name: the roster label decides, unknown keys degrade to the r
   assert.equal(activeAgentName(undefined, roster), undefined)
   assert.equal(activeAgentName('', roster), undefined)
 })
-
-test('selector title: the atom key resolves through the roster (the wiring HubPanelIcon runs)', () => {
-  // Round 2: the name is the selector's `title`, never a row-label suffix —
-  // the row label is the constant `Hub` and the entry registers once.
-  const roster = [{ key: 'native', label: 'DSH', path: '/', machine: 'local' }, { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' }]
-  const title = (key) => {
-    const name = activeAgentName(key, roster)
-    return name === undefined ? 'Agent selector' : `Agent selector: ${name}`
-  }
-  assert.equal(title('native'), 'Agent selector: DSH')
-  assert.equal(title('omp'), 'Agent selector: OMP')
-  assert.equal(title(undefined), 'Agent selector', 'flag off: the bare affordance name')
-})
-
-test('machine group key: the row\'s own machine — no helper fallback (the parse boundary owns the default)', () => {
-  assert.equal(machineGroup({ key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' }), 'local')
-  assert.equal(machineGroup({ key: 'omp', label: 'OMP', path: '/omp/', machine: 'dev3' }), 'dev3')
-})
-
-test('machine grouping: one group per machine, first-appearance order, members keep roster order', () => {
-  const rows = [
-    { key: 'native', label: 'DSH', path: '/', machine: 'local' },
-    { key: 'codex', label: 'Codex', path: '/codex/', machine: 'dev3' },
-    { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' },
-    { key: 'claude', label: 'Claude', path: '/claude/', machine: 'dev3' },
-    { key: 'pi', label: 'Pi', path: '/pi/', machine: 'lab2' },
-  ]
-  assert.deepEqual(machineGroups(rows), [
-    { machine: 'local', agents: [rows[0], rows[2]] },
-    { machine: 'dev3', agents: [rows[1], rows[3]] },
-    { machine: 'lab2', agents: [rows[4]] },
-  ])
-})
-
-test('machine grouping: two machines → two groups — the heading and divider render between them', () => {
-  // The wire's live shape now (roster carries machine): this machine's rows
-  // plus a foreign machine's. HubPanelIcon turns each group into a heading row
-  // (the machine name) followed by its entries, with a separator row before
-  // every group after the first — the native view-options menu's own shape.
-  const rows = [
-    { key: 'native', label: 'DSH', path: '/', machine: 'local' },
-    { key: 'codex', label: 'Codex', path: '/codex/', machine: 'dev3' },
-    { key: 'omp', label: 'OMP', path: '/omp/', machine: 'dev3' },
-  ]
-  const groups = machineGroups(rows)
-  assert.deepEqual(groups, [
-    { machine: 'local', agents: [rows[0]] },
-    { machine: 'dev3', agents: [rows[1], rows[2]] },
-  ])
-  assert.ok(groups.length > 1, 'more than one group → the menu draws a heading + divider per group after the first')
-})
-
-test('machine grouping: an all-local roster (the wire\'s today shape) is ONE group in roster order', () => {
-  const rows = [
-    { key: 'native', label: 'DSH', path: '/', machine: 'local' },
-    { key: 'codex', label: 'Codex', path: '/codex/', machine: 'local' },
-  ]
-  assert.deepEqual(machineGroups(rows), [{ machine: 'local', agents: rows }])
-  assert.deepEqual(machineGroups([]), [])
-})
-
 // ---- the flag-off Hub-rows shape (path-separation Part 2, T-E closeout) ---
 // Flag OFF on a ctx0 page = NO foreign entry at all (T-C retired the
 // /<label>/ routes, T-D retired the world web UIs — there is nothing a row

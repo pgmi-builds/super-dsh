@@ -3,9 +3,11 @@ import { IconChevronDownOutlineRegular, Menu, type MenuEntry } from '@deepseek-a
 import { SuperdToastHost } from './toast.js'
 import { HubGlyph } from './glyph.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
+import { fetchMachines } from './mesh-api.js'
+import { groupByMachine, machineLabelsFrom } from './mesh-groups.js'
 import { RuntimeMark } from './runtime-icons.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
-import { activeAgentName, hubRowActive, machineGroups, seatClickDecision, switchAffordance } from '../switch-core.js'
+import { activeAgentName, hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 
 /**
  * The Hub sidebar row's icon share (`sidebar.panellist`, list id `hub`): the
@@ -36,11 +38,12 @@ import { activeAgentName, hubRowActive, machineGroups, seatClickDecision, switch
  * view-options dropdown uses) with `dense`, `portal` and `align="end"` — its
  * card, rows, section headings, hairlines and trailing check are the shell's
  * own, so this surface cannot drift from the native chrome. The roster is
- * grouped by machine (`machineGroups` — `AgentLink.machine`, the wire-carried
- * field the roster parser guarantees, groups in first-appearance order), each
- * group a heading row; every entry leads with the Hub page's runtime mark
- * (`RuntimeMark`) at menu-icon scale. Pure restyle — the click contract below
- * is untouched.
+ * grouped by machine (`groupByMachine` — mesh-groups.ts, fed the machines
+ * API's label map: 'This machine' first, then one section per remote machine
+ * by display label); every entry leads with the Hub page's runtime mark
+ * (`RuntimeMark`) at menu-icon scale. Without machine labels (the machines
+ * face failed before ever answering) the menu degrades to the flat roster.
+ * Pure restyle — the click contract below is untouched.
  *
  * Geometry: the native panel row renders this component inside its 16px glyph
  * span, so the selector is `position: fixed` against the row button's measured
@@ -89,6 +92,9 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
   const [hover, setHover] = React.useState(false)
   const [box, setBox] = React.useState<RowBox | null>(null)
   const [agents, setAgents] = React.useState<AgentLink[]>(() => rosterFromGlobal() ?? [NATIVE_LINK])
+  // Machine key → display label for the menu's sections; undefined until the
+  // machines face has answered once — the flat-menu degrade state.
+  const [machineLabels, setMachineLabels] = React.useState<Record<string, string> | undefined>(undefined)
   // Baked before app boot and never mutated afterwards: per-page constant.
   const fusion = fusionPage()
   // The flag-off shape (T-E): the selector is a switch affordance; with no
@@ -152,6 +158,12 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
     void fetchRoster()
       .then((list) => { if (!cancelled) setAgents(list) })
       .catch(() => { /* keep the seeded roster; the row must never throw */ })
+    // The machine labels for the menu's sections, lazily once per open (the
+    // roster refresh's own cadence). A failure keeps the last-known labels —
+    // a never-loaded one keeps the menu flat (never a throw).
+    void fetchMachines()
+      .then((list) => { if (!cancelled) setMachineLabels(machineLabelsFrom(list)) })
+      .catch(() => { /* degrade: keep the labels we have, flat when never loaded */ })
     return () => { cancelled = true }
   }, [open, switchUi.available])
 
@@ -179,17 +191,25 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
     setOpen((value) => !value)
   }
 
-  // The menu's rows: one heading per machine group (the native view-options
-  // dropdown's label rows), a hairline between groups, and one leading-icon row
-  // per runtime.
+  // The menu's rows: with machine labels in hand, one heading per machine
+  // group ('This machine' first, remotes by display label — groupByMachine),
+  // a hairline between groups, and one leading-icon row per runtime.
+  // Without them (the machines face never answered) the menu degrades to
+  // the flat roster — every entry stays switchable, only the sections go.
   const items: MenuEntry[] = []
-  machineGroups(agents).forEach((group, groupIndex) => {
-    if (groupIndex > 0) items.push({ type: 'separator', id: `machine-divider:${group.machine}` })
-    items.push({ type: 'label', id: `machine:${group.machine}`, text: group.machine })
-    for (const agent of group.agents) {
+  if (machineLabels !== undefined) {
+    groupByMachine(agents, machineLabels).forEach((group, groupIndex) => {
+      if (groupIndex > 0) items.push({ type: 'separator', id: `machine-divider:${group.key}` })
+      items.push({ type: 'label', id: `machine:${group.key}`, text: group.label })
+      for (const agent of group.agents) {
+        items.push({ id: agent.key, label: agent.label, icon: <RuntimeMark agentKey={agent.key} size={14} /> })
+      }
+    })
+  } else {
+    for (const agent of agents) {
       items.push({ id: agent.key, label: agent.label, icon: <RuntimeMark agentKey={agent.key} size={14} /> })
     }
-  })
+  }
 
   /**
    * A menu pick. The row is a `menuitem` button — there is no anchor default

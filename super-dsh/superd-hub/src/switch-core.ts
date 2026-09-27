@@ -665,8 +665,13 @@ export interface HubRosterRow {
   readonly label: string
   /** The row's mount path. */
   readonly path: string
-  /** Machine the runtime comes from (the roster parser guarantees it — `'local'` when an older host shape omitted it). */
-  readonly machine: string
+  /**
+   * Machine the runtime comes from (mesh P2): `'local'` for this machine's
+   * rows, the owning machine's m4 for federated rows. Optional — the wire
+   * may omit it and the grouping now lives client-side (mesh-groups.ts,
+   * fed the machines API's label map).
+   */
+  readonly machine?: string
 }
 
 /**
@@ -681,44 +686,6 @@ export interface HubRosterRow {
 export function activeAgentName(activeAgent: string | undefined, roster: readonly HubRosterRow[]): string | undefined {
   if (activeAgent === undefined || activeAgent === '') return undefined
   return roster.find((row) => row.key === activeAgent)?.label ?? activeAgent
-}
-
-/** Which machine one roster row groups under: the row's own machine (parser-guaranteed). */
-export function machineGroup(row: HubRosterRow): string {
-  return row.machine
-}
-
-/** One machine's group of roster rows, in roster order. */
-export interface MachineGroup {
-  /** The grouping key (the members' shared `machine`). */
-  readonly machine: string
-  /** The rows of this machine, keeping the roster's own order. */
-  readonly agents: readonly HubRosterRow[]
-}
-
-/**
- * Group a roster by machine for the HubPanelIcon chevron menu's native
- * workspace-list look: one group per distinct `machineGroup` key, groups in
- * first-appearance order, members keeping the roster's order inside their
- * group. A single-group roster (today's local-only shape) renders exactly
- * like the old flat list minus the card border.
- *
- * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
- */
-export function machineGroups(rows: readonly HubRosterRow[]): readonly MachineGroup[] {
-  const groups: { machine: string; agents: HubRosterRow[] }[] = []
-  const byMachine = new Map<string, { machine: string; agents: HubRosterRow[] }>()
-  for (const row of rows) {
-    const machine = machineGroup(row)
-    let group = byMachine.get(machine)
-    if (group === undefined) {
-      group = { machine, agents: [] }
-      byMachine.set(machine, group)
-      groups.push(group)
-    }
-    group.agents.push(row)
-  }
-  return groups
 }
 
 /**

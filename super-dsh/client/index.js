@@ -294,7 +294,7 @@ function coerceAgents(raw) {
 			key,
 			label: typeof label === "string" ? label : FALLBACK_LABELS[key] ?? key,
 			path,
-			machine: typeof machine === "string" ? machine : "local",
+			machine: typeof machine === "string" && machine !== "" ? machine : void 0,
 			ready: entry.ready === true,
 			failed: entry.failed === true
 		});
@@ -308,7 +308,8 @@ function rosterFromGlobal() {
 }
 /** Normalize the current mount root: `/omp` and `/omp/` are the same page. */
 function currentMountPath() {
-	const pathname = typeof location === "undefined" ? "/" : location.pathname;
+	const location$1 = globalThis.location;
+	const pathname = location$1 === void 0 ? "/" : location$1.pathname;
 	if (pathname === "" || pathname === "/") return "/";
 	return pathname.endsWith("/") ? pathname : `${pathname}/`;
 }
@@ -518,6 +519,75 @@ function validTokenUrl(input) {
 	if (url.protocol !== "http:" && url.protocol !== "https:") return false;
 	const token = url.searchParams.get("token");
 	return token !== null && token !== "";
+}
+
+//#endregion
+//#region src/client/mesh-groups.ts
+/** The machine key every LOCAL roster row carries (older host shapes may omit the field — grouping treats absent as local). */
+const LOCAL_MACHINE_KEY = "local";
+/** The LOCAL section's fixed display label — this machine needs no registry row to be named. */
+const LOCAL_MACHINE_LABEL = "This machine";
+/** Whether a row's machine field parks it in the local section: `'local'` or absent (the coercion drops unknown values). */
+function isLocalMachine(machine) {
+	return machine === void 0 || machine === LOCAL_MACHINE_KEY;
+}
+/**
+* Group a roster into machine sections for the switch menu and the Hub
+* roster rows: the LOCAL group first (label {@link LOCAL_MACHINE_LABEL};
+* rows whose `machine` is `'local'` or absent), then one group per remote
+* machine sorted by display label (code-unit order) with the machine key as
+* the tiebreak. Members keep the roster's given order inside their group;
+* groups only exist for machines actually present in the roster (no empty
+* local section when every row is federated). An unknown label map entry —
+* missing, or an empty string — falls back to the raw machine key.
+*
+* @param links - the roster rows (any order; the section order is derived, not inherited).
+* @param machineLabels - machine key (m4) → display label; the machines API answer via {@link machineLabelsFrom}.
+* @returns the sections, local first.
+*/
+function groupByMachine(links, machineLabels) {
+	const local = [];
+	const byKey = /* @__PURE__ */ new Map();
+	for (const link of links) {
+		if (isLocalMachine(link.machine)) {
+			local.push(link);
+			continue;
+		}
+		const machine = link.machine;
+		const bucket = byKey.get(machine);
+		if (bucket === void 0) byKey.set(machine, [link]);
+		else bucket.push(link);
+	}
+	const labelOf = (key) => {
+		const label = machineLabels[key];
+		return typeof label === "string" && label !== "" ? label : key;
+	};
+	const remote = [...byKey.entries()].map(([key, agents]) => ({
+		key,
+		label: labelOf(key),
+		agents
+	})).sort((a, b) => a.label !== b.label ? a.label < b.label ? -1 : 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+	return local.length > 0 ? [{
+		key: LOCAL_MACHINE_KEY,
+		label: LOCAL_MACHINE_LABEL,
+		agents: local
+	}, ...remote] : remote;
+}
+/**
+* The machines API answer → the grouping label map: every remote row's
+* `id → label` (mesh-api's coercion already collapsed an empty label to the
+* machine name) plus the self block's own `m4 → label`. An absent list is
+* the empty map — the caller's degrade-to-flat trigger, never a throw.
+*
+* @param list - the coerced `fetchMachines()` answer, when it succeeded.
+* @returns machine key → display label (the raw key stays absent, not mapped).
+*/
+function machineLabelsFrom(list) {
+	const labels = {};
+	if (list === void 0) return labels;
+	for (const machine of list.machines) labels[machine.id] = machine.label !== "" ? machine.label : machine.name;
+	if (list.self !== void 0) labels[list.self.id] = list.self.label;
+	return labels;
 }
 
 //#endregion
@@ -990,37 +1060,6 @@ function switchAffordance(fusion) {
 function activeAgentName(activeAgent, roster) {
 	if (activeAgent === void 0 || activeAgent === "") return void 0;
 	return roster.find((row) => row.key === activeAgent)?.label ?? activeAgent;
-}
-/** Which machine one roster row groups under: the row's own machine (parser-guaranteed). */
-function machineGroup(row) {
-	return row.machine;
-}
-/**
-* Group a roster by machine for the HubPanelIcon chevron menu's native
-* workspace-list look: one group per distinct `machineGroup` key, groups in
-* first-appearance order, members keeping the roster's order inside their
-* group. A single-group roster (today's local-only shape) renders exactly
-* like the old flat list minus the card border.
-*
-* Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
-*/
-function machineGroups(rows) {
-	const groups = [];
-	const byMachine = /* @__PURE__ */ new Map();
-	for (const row of rows) {
-		const machine = machineGroup(row);
-		let group = byMachine.get(machine);
-		if (group === void 0) {
-			group = {
-				machine,
-				agents: []
-			};
-			byMachine.set(machine, group);
-			groups.push(group);
-		}
-		group.agents.push(row);
-	}
-	return groups;
 }
 /**
 * Build the switch machine over an injected {@link SwitchHost}.
@@ -1610,6 +1649,15 @@ const listStyle = {
 	flexDirection: "column",
 	gap: 2
 };
+/** The machine section head inside the roster list (the grouped shape's caption row). */
+const sectionHeadStyle = {
+	padding: "8px 8px 2px",
+	fontSize: 11,
+	lineHeight: "16px",
+	color: "var(--dsw-alias-label-caption)",
+	whiteSpace: "nowrap",
+	listStyle: "none"
+};
 /** A row that lights its surface on hover (inline styles have no :hover). */
 function HoverRow({ children, onClick, clickable }) {
 	const [hover, setHover] = react.useState(false);
@@ -1747,6 +1795,71 @@ function HubPage() {
 			attempt: () => attemptSwitch(agent.key)
 		}).preventDefault) event.preventDefault();
 	};
+	const machineLabels = meshLoaded && meshError === null ? machineLabelsFrom(mesh) : void 0;
+	const groups = agents !== null && machineLabels !== void 0 ? groupByMachine(agents, machineLabels) : void 0;
+	/**
+	* One Agent Runtimes row — the SAME row in both shapes; `showMachine`
+	* keeps the flat fallback's per-row machine text (the grouped shape moves
+	* it onto the section head). The click contract is untouched: every row
+	* still runs the `seatClickDecision` table.
+	*/
+	const renderRow = (agent, showMachine) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, {
+		clickable: switchUi.available,
+		onClick: switchUi.available ? (event) => {
+			rowDecision(agent, event);
+		} : void 0,
+		children: [
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
+				agentKey: agent.key,
+				size: 20
+			}),
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				style: {
+					fontWeight: 500,
+					whiteSpace: "nowrap"
+				},
+				children: agent.label
+			}),
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				style: {
+					flex: 1,
+					minWidth: 0,
+					overflow: "hidden",
+					textOverflow: "ellipsis",
+					whiteSpace: "nowrap",
+					fontSize: 12.5,
+					color: "var(--dsw-alias-label-tertiary)"
+				},
+				children: showMachine ? agent.machine : null
+			}),
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				style: {
+					...chip,
+					fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+					fontSize: 10.5
+				},
+				children: displayPath(agent.path)
+			}),
+			isActive(agent) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				style: chipSelf,
+				children: "current"
+			}),
+			switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+				"aria-current": isActive(agent) ? "page" : void 0,
+				style: {
+					fontSize: 12.5,
+					color: "var(--dsh-alias-label-secondary)",
+					textDecoration: "none",
+					cursor: "pointer"
+				},
+				onClick: (event) => {
+					event.stopPropagation();
+					rowDecision(agent, event);
+				},
+				children: "switch"
+			})
+		]
+	}, agent.key);
 	/** Bump the reload sequence — every mutating op refreshes through the API. */
 	const reloadMachines = () => {
 		setMeshReloads((n) => n + 1);
@@ -2200,71 +2313,23 @@ function HubPage() {
 						}),
 						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("ul", {
 							style: listStyle,
-							children: [agents === null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
-								style: {
-									padding: "9px 8px",
-									fontSize: 13,
-									color: "var(--dsw-alias-label-tertiary)",
-									listStyle: "none"
-								},
-								children: "Loading roster…"
-							}), agents?.map((agent) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, {
-								clickable: switchUi.available,
-								onClick: switchUi.available ? (event) => {
-									rowDecision(agent, event);
-								} : void 0,
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
-										agentKey: agent.key,
-										size: 20
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: {
-											fontWeight: 500,
-											whiteSpace: "nowrap"
-										},
-										children: agent.label
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: {
-											flex: 1,
-											minWidth: 0,
-											overflow: "hidden",
-											textOverflow: "ellipsis",
-											whiteSpace: "nowrap",
-											fontSize: 12.5,
-											color: "var(--dsw-alias-label-tertiary)"
-										},
-										children: agent.machine
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: {
-											...chip,
-											fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-											fontSize: 10.5
-										},
-										children: displayPath(agent.path)
-									}),
-									isActive(agent) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: chipSelf,
-										children: "current"
-									}),
-									switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
-										"aria-current": isActive(agent) ? "page" : void 0,
-										style: {
-											fontSize: 12.5,
-											color: "var(--dsw-alias-label-secondary)",
-											textDecoration: "none",
-											cursor: "pointer"
-										},
-										onClick: (event) => {
-											event.stopPropagation();
-											rowDecision(agent, event);
-										},
-										children: "switch"
-									})
-								]
-							}, agent.key))]
+							children: [
+								agents === null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+									style: {
+										padding: "9px 8px",
+										fontSize: 13,
+										color: "var(--dsw-alias-label-tertiary)",
+										listStyle: "none"
+									},
+									children: "Loading roster…"
+								}),
+								groups !== void 0 && groups.map((group) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+									"aria-hidden": true,
+									style: sectionHeadStyle,
+									children: group.label
+								}), group.agents.map((agent) => renderRow(agent, false))] }, group.key)),
+								groups === void 0 && agents?.map((agent) => renderRow(agent, true))
+							]
 						})
 					]
 				})] })
@@ -2324,6 +2389,7 @@ function HubPanelIcon({ size }) {
 	const [hover, setHover] = react.useState(false);
 	const [box, setBox] = react.useState(null);
 	const [agents, setAgents] = react.useState(() => rosterFromGlobal() ?? [NATIVE_LINK]);
+	const [machineLabels, setMachineLabels] = react.useState(void 0);
 	const fusion = fusionPage();
 	const switchUi = switchAffordance(fusion);
 	const [activeKey, setActiveKey] = react.useState(() => fusion ? uiState()?.activeAgent : void 0);
@@ -2375,6 +2441,9 @@ function HubPanelIcon({ size }) {
 		fetchRoster().then((list) => {
 			if (!cancelled) setAgents(list);
 		}).catch(() => {});
+		fetchMachines().then((list) => {
+			if (!cancelled) setMachineLabels(machineLabelsFrom(list));
+		}).catch(() => {});
 		return () => {
 			cancelled = true;
 		};
@@ -2397,15 +2466,15 @@ function HubPanelIcon({ size }) {
 		setOpen((value) => !value);
 	};
 	const items = [];
-	machineGroups(agents).forEach((group, groupIndex) => {
+	if (machineLabels !== void 0) groupByMachine(agents, machineLabels).forEach((group, groupIndex) => {
 		if (groupIndex > 0) items.push({
 			type: "separator",
-			id: `machine-divider:${group.machine}`
+			id: `machine-divider:${group.key}`
 		});
 		items.push({
 			type: "label",
-			id: `machine:${group.machine}`,
-			text: group.machine
+			id: `machine:${group.key}`,
+			text: group.label
 		});
 		for (const agent of group.agents) items.push({
 			id: agent.key,
@@ -2415,6 +2484,14 @@ function HubPanelIcon({ size }) {
 				size: 14
 			})
 		});
+	});
+	else for (const agent of agents) items.push({
+		id: agent.key,
+		label: agent.label,
+		icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
+			agentKey: agent.key,
+			size: 14
+		})
 	});
 	/**
 	* A menu pick. The row is a `menuitem` button — there is no anchor default

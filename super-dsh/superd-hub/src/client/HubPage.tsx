@@ -12,6 +12,7 @@ import {
   type MeshMachineStatus,
   type MeshMachineView,
 } from './mesh-api.js'
+import { groupByMachine, machineLabelsFrom } from './mesh-groups.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 
@@ -22,7 +23,10 @@ import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-cor
  * agent-adapter roster the hub currently bridges. Machines ride the real
  * mesh API (mesh-api.ts — `/api/superd/machines`: the self block + paired
  * remotes, same-origin fetch, one reload after every mutating op); the
- * adapter list is the live `/api/agent-runtime` roster.
+ * adapter list is the live `/api/agent-runtime` roster, grouped by machine
+ * (mesh-groups.ts, mesh P2 Task 4): 'This machine' first, then one section
+ * per remote machine by display label — the machines answer doubles as the
+ * label map, and without it (load failed) the rows stay flat.
  *
  * Switch surface (T-B, switch-only since T-C): the Agent Runtimes rows are
  * the agent selector. Every row click runs the `seatClickDecision` table —
@@ -185,6 +189,16 @@ const listStyle: React.CSSProperties = {
   gap: 2,
 }
 
+/** The machine section head inside the roster list (the grouped shape's caption row). */
+const sectionHeadStyle: React.CSSProperties = {
+  padding: '8px 8px 2px',
+  fontSize: 11,
+  lineHeight: '16px',
+  color: 'var(--dsw-alias-label-caption)',
+  whiteSpace: 'nowrap',
+  listStyle: 'none',
+}
+
 /** A row that lights its surface on hover (inline styles have no :hover). */
 function HoverRow({ children, onClick, clickable }: {
   children: React.ReactNode
@@ -314,6 +328,72 @@ export function HubPage(): React.JSX.Element {
     })
     if (decision.preventDefault) event.preventDefault()
   }
+
+  // The roster's machine sections (mesh P2 Task 4): the machines panel's
+  // own answer doubles as the label map — 'This machine' first, then one
+  // section per remote machine by display label. A failed (or still
+  // loading) machines face leaves the rows flat — today's shape — rather
+  // than guessing section heads from raw m4 ids.
+  const machineLabels = meshLoaded && meshError === null ? machineLabelsFrom(mesh) : undefined
+  const groups = agents !== null && machineLabels !== undefined ? groupByMachine(agents, machineLabels) : undefined
+
+  /**
+   * One Agent Runtimes row — the SAME row in both shapes; `showMachine`
+   * keeps the flat fallback's per-row machine text (the grouped shape moves
+   * it onto the section head). The click contract is untouched: every row
+   * still runs the `seatClickDecision` table.
+   */
+  const renderRow = (agent: AgentLink, showMachine: boolean): React.JSX.Element => (
+    <HoverRow
+      key={agent.key}
+      clickable={switchUi.available}
+      onClick={switchUi.available ? (event) => { rowDecision(agent, event) } : undefined}
+    >
+      <RuntimeMark agentKey={agent.key} size={20} />
+      <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{agent.label}</span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          fontSize: 12.5,
+          color: 'var(--dsw-alias-label-tertiary)',
+        }}
+      >
+        {showMachine ? agent.machine : null}
+      </span>
+      <span
+        style={{
+          ...chip,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontSize: 10.5,
+        }}
+      >
+        {displayPath(agent.path)}
+      </span>
+      {isActive(agent) && <span style={chipSelf}>current</span>}
+      {/* Switch affordance (T-C switch-only; T-E flag-off shape): fusion
+          page: the `switch` action, no href — every click runs the
+          seatClickDecision table (intercept + in-place switch; the handler
+          stops propagation so the row-level handler does not double-run the
+          attempt — one click, one decision). Flag off: nothing renders per
+          row. */}
+      {switchUi.available && (
+        <a
+          aria-current={isActive(agent) ? 'page' : undefined}
+          style={{ fontSize: 12.5, color: 'var(--dsh-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer' }}
+          onClick={(event) => {
+            event.stopPropagation()
+            rowDecision(agent, event)
+          }}
+        >
+          switch
+        </a>
+      )}
+    </HoverRow>
+  )
 
   /** Bump the reload sequence — every mutating op refreshes through the API. */
   const reloadMachines = (): void => { setMeshReloads((n) => n + 1) }
@@ -611,60 +691,15 @@ export function HubPage(): React.JSX.Element {
                 Loading roster…
               </li>
             )}
-            {agents?.map((agent) => (
-              <HoverRow
-                key={agent.key}
-                clickable={switchUi.available}
-                onClick={switchUi.available ? (event) => { rowDecision(agent, event) } : undefined}
-              >
-                <RuntimeMark agentKey={agent.key} size={20} />
-                <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{agent.label}</span>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    fontSize: 12.5,
-                    color: 'var(--dsw-alias-label-tertiary)',
-                  }}
-                >
-                  {agent.machine}
-                </span>
-                <span
-                  style={{
-                    ...chip,
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                    fontSize: 10.5,
-                  }}
-                >
-                  {displayPath(agent.path)}
-                </span>
-                {isActive(agent) && <span style={chipSelf}>current</span>}
-                {/* Switch affordance (T-C switch-only; T-E flag-off shape):
-                    fusion page: the `switch` action, no href — every click
-                    runs the seatClickDecision table (intercept + in-place
-                    switch; the handler stops propagation so the row-level
-                    handler does not double-run the attempt — one click, one
-                    decision). Flag off: nothing renders per row — the
-                    affordance is gone and the degradation hint lives once
-                    under the section head (no /<label>/ route exists to
-                    reach, and no href ships anywhere in the Hub UI). */}
-                {switchUi.available && (
-                  <a
-                    aria-current={isActive(agent) ? 'page' : undefined}
-                    style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer' }}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      rowDecision(agent, event)
-                    }}
-                  >
-                    switch
-                  </a>
-                )}
-              </HoverRow>
+            {groups !== undefined && groups.map((group) => (
+              <React.Fragment key={group.key}>
+                <li aria-hidden style={sectionHeadStyle}>{group.label}</li>
+                {group.agents.map((agent) => renderRow(agent, false))}
+              </React.Fragment>
             ))}
+            {/* Flat fallback (the machines face never answered): today's
+                rows, the raw machine id riding each row. */}
+            {groups === undefined && agents?.map((agent) => renderRow(agent, true))}
           </ul>
         </section>
         </>)}
