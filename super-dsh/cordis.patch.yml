@@ -4,13 +4,9 @@
 # exports, so every row below is individually toggleable on the plugin page
 # (cordis hmr; docs/06 §二.5 — insert rows = the "Components" lines).
 #
-#   - super-dsh/hub            the hub host library (selector + roster +
-#                              per-world mount carrier + V5 gateway
-#                              delegation) — ships for the adapters' relative
-#                              imports (world spawn/mount/carrier/web-trust);
-#                              the ctx0 control-plane row and ui client half
-#                              were stripped in 0.1.4 (archival final state
-#                              of the multi-webui path)
+#   - super-dsh/hub            the hub: selector + roster + per-world mount
+#                              carrier + V5 gateway delegation (wraps the live
+#                              typertGateway; upstream dispatch untouched)
 #   - super-dsh/agents/<label>  one world plugin per adapter (activation IS
 #                              roster membership, S2) — each spawns its own
 #                              zero-port sibling root, mounted under /<label>
@@ -29,8 +25,25 @@
 # Profile-layer values (webserver port/host, settings path) stay in the USER's
 # profile patch layer, never here.
 - insert:
+    # BARE package row: subpath rows (…/agents/omp) are permanently not client
+    # rows in client-modules' scan (exactPackageSpecifier), so THIS row is
+    # what registers the package's client half — the sidebar selector.
+    - id: superd-hub
+      name: 'super-dsh'
     - id: superd-web-trust
       name: 'super-dsh/web-trust'
+    # Native UI fusion transport (plan Task 3): the ctx0 page-level state atom
+    # + five call-time patches, flag-gated (SUPERD_UI_FUSION, default off).
+    # ROW ORDER IS LOAD ORDER and the row MUST stay after superd-web-trust:
+    # the trust script's non-merging `if(!window.__DSH_TRANSPORT__)` verdict
+    # must be evaluated before the fusion script could own that global
+    # (spec §3.4, hard; precedent world-web-server.ts renderIndex).
+    # On/off (Task 5 formalization): env `SUPERD_UI_FUSION` derives the
+    # schema default (off when unset); a profile layer may restate this row
+    # (same id, same name) with `config: {enabled: true|false}` to override.
+    # Off = the component registers nothing: no script, no flag global.
+    - id: superd-fusion-transport
+      name: 'super-dsh/fusion-transport'
     - id: agent-omp
       name: 'super-dsh/agents/omp'
     - id: agent-codex

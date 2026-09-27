@@ -15,7 +15,7 @@ import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { listAgents } from './roster.js'
 import { takeHostMount } from './world-host.js'
 
-/** One selectable runtime: its key, its label, and the path that addresses it. */
+/** One selectable runtime: its key, its label, the path that addresses it, its machine. */
 export interface AgentLink {
   /** `native` for ctx0, otherwise the adapter's runtime key. */
   key: string
@@ -23,10 +23,15 @@ export interface AgentLink {
   label: string
   /** Mount root, always trailing-slashed except the native `/`. */
   path: string
+  /** Machine the runtime runs on — the Hub UI's grouping key. */
+  machine: string
 }
 
+/** Machine of every roster row today — the local constant; the extension point a multi-machine registry replaces. */
+const LOCAL_MACHINE = 'local'
+
 /** The native runtime's synthetic entry (no adapter plugin backs it). */
-const NATIVE: AgentLink = { key: 'native', label: 'DSH', path: '/' }
+const NATIVE: AgentLink = { key: 'native', label: 'DSH', path: '/', machine: LOCAL_MACHINE }
 
 /** The global this module publishes the roster under. */
 export const AGENT_ROSTER_GLOBAL = '__DSH_AGENT_ROSTER__'
@@ -43,7 +48,7 @@ export function agentLinks(): AgentLink[] {
     const mount = takeHostMount(agent.key)
     if (mount === undefined) continue
     const path = mount.labelPath.endsWith('/') ? mount.labelPath : `${mount.labelPath}/`
-    links.push({ key: agent.key, label: agent.label, path })
+    links.push({ key: agent.key, label: agent.label, path, machine: LOCAL_MACHINE })
   }
   return links
 }

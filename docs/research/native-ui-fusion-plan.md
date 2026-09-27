@@ -90,6 +90,13 @@ web-trust 注入脚本是 `if(!window.__DSH_TRANSPORT__){…ownsHost:true}`，**
 4. `connection.reconnect()` → 新树事件流 + `connection/reset` 订阅者重拉 → UI 自愈；左下角 reconnecting = 原生自带行为；
 5. 失败兜底：切换后一致性校验不过 / 目标 world 不可达 / WS 超时 → 回退 native + 可见提示（评审 §4.8-2）。
 
+> **勘误（2026-09-26，T-A 实证修订）**：步骤 3 的 new-chat 落位**不得在 reconnect 前执行**——上游 `startSession()` 从 wire 缓存解析 `currentWorkspaceId ?? recent`（navigation.ts:223-238），彼时缓存仍是上一个 agent 平面的数据 → `workspace/not-found` + 死会话钉屏（live 验收缺陷，用户第 1-3 轮）。修订：指针落位保持即时（session-targeted，不解析 workspace，第 4 轮行为不变）；new-chat 落位**推迟到 reconnect 后目标平面 baseline 落地**（`workspaces.list` items 引用替换 = 缓存已新），解析语义即该平面原生 new-chat 按钮。回退/新切换接管取消未落地的落位。chat 区不清空、无骨架（裁决 7）不变。
+
+> **勘误（2026-09-26，T-F 定稿，取代上一条勘误的「指针落位保持即时」，user 裁决「按原生的语义去理解…把这个 last visit session 也做一下」）**：落位整体重做为**原生 fresh-load restore 语义**（upstream `watchNavigation`/`restoreSelection`，navigation.ts:284-347）：
+> 1. **闸门 = 双列表齐备**：reconnect 后等 `workspaces.list` 与 `sessions.list` **都**重新 ready（baseline 落地、items/ids 引用替换）才做任何落位决策——这正是 upstream `watchNavigation` 自己的 ready 闸（navigation.ts:292）。T-A 只盯 `workspaces.list` 是 live 缺陷根源：sessions 仍持旧平面数据时指针在 `byId` 里查空 → 掉进 new-chat，连 native 自己的 last-visited 恢复也被打断。
+> 2. **决策 = 完整 restoreSelection 优先级**（对 NS 分区后的 `'<label>:dsh.sessions.current'`，经 Task-3 patch 的 Storage 读取）：`subagentAddress` → `openSession(address)`；`sessionId` 在**新** `sessions.byId` 里命中 → 非 blank 开该会话、blank 落其所在 workspace（`startSession(workspaceId)` 公开面精确覆盖私有的 `reuseBlank`/`connectWorkspace` 行为）；指针失效 → recent workspace（`updatedAt` 最新者，`recentWorkspace` 复刻）落新会话；两列表全空 → default workspace 镜像（`workspaces.initializeDefault` + `openWorkspace`，标题按 locale 语言分支）。**没有发明任何无条件 new-chat**：no-pointer 的 foreign 平面走 fresh-boot 等价路径。
+> 3. **被接受的代价（取代裁决 7 的「chat 原地停留」）**：落位改到闸门后执行，旧视图会被落位结果整体换掉——视觉上等价一次 fresh load；user 确认可接受（「既然已经换了一个 new session…效果是一样的」）。取消机制不变（回退/新切换取消未落地的落位 + staleness watchdog）。
+
 ## 4. 模块图同构不变量（评审 §3.2 重写）
 
 - **不变量**：任何 adapter 不得**新增**自定义 client 模块；ctx0 客户端图是唯一 UI 面（裁决 2）。

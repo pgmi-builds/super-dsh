@@ -27,6 +27,7 @@ import { dump } from 'js-yaml'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import { existsSync, writeFileSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
+import { superdTrustedHosts } from './world-mount.js'
 
 /**
  * The host (ctx0) surface spawnWorld needs: cordis `ctx.get`, which locates
@@ -219,7 +220,7 @@ export async function spawnWorld(opts: SpawnWorldOptions) {
     try {
       const rows = composed
       const pick = (id: string) => rows.find((r) => r.id === id)
-      for (const id of ['webserver', 'hmr', 'modules', 'superd-world-mount', 'superd-hub', 'agent-preset-registry']) {
+      for (const id of ['webserver', 'hmr', 'web-runtime', 'client-hmr', 'modules', 'superd-world-mount', 'superd-hub', 'agent-preset-registry']) {
         const row = pick(id)
         process.stderr.write(`[spawn-world:${opts.appName}] ${id}: ${row === undefined ? 'ABSENT' : JSON.stringify({ disabled: row.disabled, inject: 'inject' in row ? row.inject : undefined, name: row.name })}\n`)
       }
@@ -258,8 +259,9 @@ export async function spawnWorld(opts: SpawnWorldOptions) {
   // Worlds take no flags and never open a browser; exit = dispose own fiber.
   // LAN authorities for the world's trust fence (deploy-level, env-driven):
   // the world webserver must accept the Host the browser actually sends.
-  const trusted = (process.env.SUPERD_TRUSTED_HOSTS ?? '')
-    .split(/[\s,]+/).filter(Boolean)
+  // (Same derivation worldMountPatches carries into the mount row's neutral
+  // webRuntime facts — one source, `superdTrustedHosts`.)
+  const trusted = superdTrustedHosts(process.env.SUPERD_TRUSTED_HOSTS)
     .flatMap((h) => ['--trusted-host', h])
   let fiber: { dispose(): unknown } | undefined
   // Launcher parity (0.1.7): a profileContext-carrying tree runs the profile

@@ -1,8 +1,8 @@
 # super-dsh — Super D agent hub for the DeepSeek Harness
 
 One [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) plugin that joins local
-foreign-agent runtimes into the DSH Web UI: one zero-port world per runtime
-mounted under `/<label>` —
+foreign-agent runtimes into the DSH Web UI: a runtime selector in the sidebar,
+a live roster, and one zero-port world per runtime mounted under `/<label>` —
 same browser shell, same auth domain, per-world session separation.
 
 **Owns no runtimes and stores no conversations.** Every adapter keeps its
@@ -14,12 +14,12 @@ the foreign store.
 ## Install
 
 ```bash
-dsh plugin --profile <name> add super-dsh@0.1.4
+dsh plugin --profile <name> add super-dsh@0.1.0
 ```
 
 That single package composes the whole line (`@pgmi-builds/superd-hub` plus the
-six `@pgmi-builds/agent-*` packages). Restart the profile and each world
-provisions its own nested DSH
+six `@pgmi-builds/agent-*` packages). Restart the profile and the
+sidebar gains the runtime selector; each world provisions its own nested DSH
 home under `<DSH_HOME>/agents/<label>/` on first boot.
 
 ## Runtimes
@@ -35,8 +35,7 @@ home under `<DSH_HOME>/agents/<label>/` on first boot.
 
 ## Design
 
-- **S1** addressing is one hop: the addressed world is the request's mount
-  path; the dispatcher never addresses sessions.
+- **S1** selector handoff is one hop; the dispatcher never addresses sessions.
 - **S2** activation is roster membership; worlds spawn as sibling roots
   (`boot()` on the CTX0 tree), never through `runProfile()`.
 - **S3/S7** `<DSH_HOME>/agents/<runtime>/` is that runtime's whole world; native

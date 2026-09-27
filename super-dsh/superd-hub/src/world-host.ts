@@ -4,33 +4,27 @@
  * A world runs as its OWN cordis ROOT (events are root-scoped — probe
  * 2026-09-16), so ctx0 and the world cannot share service instances through
  * the context tree. They DO share this module (the profile links
- * `@pgmi-builds/superd-hub` at the same path), which is where the host hands the
- * world everything it needs to mount itself:
+ * `@pgmi-builds/superd-hub` at the same path), which is where the host hands
+ * the world what it needs to mount itself:
  *
- *   ctx0 hub  → registerHostMount({ key, labelPath, real })   (before spawn)
+ *   ctx0 hub  → registerHostMount({ key, labelPath })         (before spawn)
  *   world     → takeHostMount(key) → provides the virtual `webServer`
+ *
+ * T-C (2026-09-26): the `real`/`authorize` legs were RETIRED with the
+ * per-label URL family. T-D (2026-09-26) swept the vestiges: the mount record
+ * is the world's ADDRESSABILITY entry only (`{ key, labelPath }`) — no ctx0
+ * webServer instance, no index gate; the adapter world-plugins' call sites
+ * were updated in the same round.
  *
  * No selection state: the key is the world's own identity, fixed at spawn.
  */
-import type { RealWebServerFace } from './world-web-server.js'
 
-/** What a world needs to mount its surface onto ctx0's real webServer. */
+/** What the host publishes for one world mount (the world's identity record). */
 export interface HostMount {
   /** Runtime key (`omp`, `codex`, …) — equals the mount label. */
   key: string
   /** Mount root (`/omp`). */
   labelPath: string
-  /** ctx0's webServer instance (live object, passed across roots). */
-  real: RealWebServerFace
-  /**
-   * ctx0's index authorization (the SAME gate the native index goes through).
-   * The mount is the only ingress and answers the world's pages/assets itself,
-   * so auth is decided in ctx0's domain — by the cookie that authenticated
-   * `<label>` — and never by the world's own browser-auth gate (a different
-   * tree, a different secret). Returning false means the authorizer already
-   * answered (401, or the token→cookie 303).
-   */
-  authorize?(req: unknown, res: unknown): boolean
 }
 
 const mounts = new Map<string, HostMount>()
@@ -84,10 +78,11 @@ export interface WorldFetchHandler {
 const worldFetchHandlers = new Map<string, WorldFetchHandler>()
 
 /**
- * Publish one world's shared `/api` fetch handler so the carrier can forward
- * non-envelope traffic on `/<label>/api` into the world's registered routes
- * (session-log export and friends). Called from inside the world root
- * (`world-entry`); read from the host root (`carrier`). Idempotent replace.
+ * Publish one world's shared `/api` fetch handler so the hub's `/hub` family
+ * can forward non-envelope traffic (`?agent=<label>` GET/HEAD) into the
+ * world's registered routes (session-log export and friends). Called from
+ * inside the world root (`world-entry`); read from the host root
+ * (`carrier`). Idempotent replace.
  */
 export function publishWorldFetch(key: string, handler: WorldFetchHandler): () => void {
   worldFetchHandlers.set(key, handler)

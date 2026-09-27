@@ -9,14 +9,18 @@
  * adapter's `/world` entry is deliberately inert and is joined HERE).
  *
  *   1. roster membership (activation IS membership, spec S2);
- *   2. ctx0 publishes the host mount (real webServer instance) before spawn;
+ *   2. ctx0 publishes the host mount record — the world's addressability
+ *      entry only since T-D (no webServer instance, no fence: those legs
+ *      retired with the world pages);
  *   3. `spawnWorld` boots the sibling ROOT from the world's own nested home
  *      (`<home>/agents/<key>/profiles/web` — provisioned here via
  *      `provisionWorldProfile`, or by the line bootstrap when the adapter
  *      package is not resolvable from this module), with the world mount
- *      patches (no listener, virtual webServer);
- *   4. the world's gateway becomes a foreign target; the carrier answers
- *      `/<key>/api` + `/<key>/api/remote.mux` in ctx0's auth domain.
+ *      patches (no listener, no webui rows — T-D);
+ *   4. the world's gateway becomes a foreign target; the hub's `/hub` family
+ *      answers `?agent=<key>` traffic in ctx0's auth domain (T-C: the
+ *      per-label `/<key>/api` + `/<key>/api/remote.mux` mounts are retired —
+ *      `/hub` is the sole entry).
  *
  * Cordis identifies a plugin by its module, so ONE joiner row per tree — a
  * second joined world needs either its own adapter-side plugin (omp/codex
@@ -33,7 +37,6 @@ import { registerForeignTarget } from './targets.js'
 import { spawnWorld } from './spawn-world.js'
 import { provisionWorldProfile, resolveInstallAnchor } from './world-provision.js'
 import { registerHostMount } from './world-host.js'
-import { mountWorld } from './carrier.js'
 import { worldMountPatches } from './world-mount.js'
 
 /** Stable Cordis plugin name. */
@@ -80,22 +83,10 @@ export function apply(ctx: HostContext, config?: Partial<Config>): void {
     worldHome,
   })
   const world = (async () => {
-    // Wait for ctx0's listening stack: the mount needs the real webServer and
-    // the browser-trust fence from the live connection service.
-    const host = await new Promise<Record<string, any>>((resolve) => {
-      ctx.inject(['webServer', 'connection'], (hostCtx) => { resolve(hostCtx as Record<string, any>) })
-    })
-    const real = host['webServer']
-    const connection = host['connection']
-    const dropHostMount = registerHostMount({
-      key,
-      labelPath: `/${key}`,
-      real,
-      // ctx0's index gate, applied by the mount to this world's pages and
-      // assets: the world is reached in-ctx and owns no listener, so ctx0
-      // decides auth (one auth domain).
-      authorize: (req, res) => (connection as { authorizeIndex(req: unknown, res: unknown): boolean }).authorizeIndex(req, res),
-    })
+    // T-D: the mount record is addressability only — no ctx0 listening-stack
+    // wait, no webServer instance, no authorize leg (the /hub family wires
+    // its own gate in ctx0, see gateway.ts).
+    const dropHostMount = registerHostMount({ key, labelPath: `/${key}` })
     const ctxW = await spawnWorld({
       appName: `superd-${key}`,
       profileName: 'web',
@@ -110,16 +101,10 @@ export function apply(ctx: HostContext, config?: Partial<Config>): void {
     })
     const gateway = ctxW.get('typertGateway') as never
     registerForeignTarget({ key, gateway })
-    const mounted = mountWorld({
-      real,
-      label: key,
-      gateway,
-      requestRejection: (request) => (connection as { requestRejection(req: unknown): number | undefined })
-        .requestRejection(request),
-    })
+    // T-C: no per-label mount anymore — the gateway above is the world's
+    // whole ingress, reached through the /hub family's `?agent=<key>` demux.
     setReady(key, true)
     ctx.effect?.(() => () => {
-      mounted.dispose()
       dropHostMount()
     }, `superd-join: ${key} mount`)
     return ctxW
