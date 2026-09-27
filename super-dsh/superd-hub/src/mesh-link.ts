@@ -6,7 +6,6 @@
  *
  * Pure module — no cordis dependencies. Outbound calls use the global
  * fetch (injectable via `fetchImpl` / `deps.fetchImpl` for tests) with
- * a 10s AbortSignal timeout. Cookies live in an in-process jar keyed by
  * a 10s AbortSignal timeout. The minted cookie is persisted on the machine
  * row (`MachineRow.cookie`, D1 sensitivity, §3.3/§4) so hub restarts keep the
  * remote's 30-day session; an in-process jar fronts the row as a write-through

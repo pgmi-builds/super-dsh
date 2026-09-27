@@ -112,7 +112,7 @@ export function saveMachines(home: string, file: MachinesFile): void {
   mkdirSync(dir, { recursive: true })
   const target = machinesPath(home)
   const tmp = `${target}.tmp`
-  writeFileSync(tmp, JSON.stringify(file, null, 2) + '\n', 'utf8')
+  writeFileSync(tmp, JSON.stringify(file, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
   chmodSync(tmp, 0o600)
   renameSync(tmp, target)
 }

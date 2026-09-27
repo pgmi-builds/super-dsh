@@ -49,7 +49,7 @@ function saveAgentIds(home: string, map: AgentIdMap): void {
   mkdirSync(dir, { recursive: true })
   const target = agentIdsPath(home)
   const tmp = `${target}.tmp`
-  writeFileSync(tmp, JSON.stringify(map, null, 2) + '\n', 'utf8')
+  writeFileSync(tmp, JSON.stringify(map, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
   chmodSync(tmp, 0o600)
   renameSync(tmp, target)
 }
