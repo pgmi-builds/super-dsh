@@ -36,7 +36,9 @@ async function startHub(options = {}) {
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://fixture.local')
-    if (url.pathname !== '/hub/api') {
+    // Both lanes of the peer family: /hub/api (foreign face, ?agent= demux)
+    // and /api (native face — NO demux key, ctx0's own envelope surface).
+    if (url.pathname !== '/hub/api' && url.pathname !== '/api') {
       res.writeHead(404)
       res.end()
       return
@@ -79,7 +81,9 @@ async function startHub(options = {}) {
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://fixture.local')
-    if (url.pathname !== '/hub/api/remote.mux') {
+    // Both mux lanes: the /hub family's (foreign, ?agent=) and ctx0's own
+    // /api/remote.mux (native face, no query).
+    if (url.pathname !== '/hub/api/remote.mux' && url.pathname !== '/api/remote.mux') {
       socket.destroy()
       return
     }
@@ -396,6 +400,43 @@ test('a socket killed mid-uplink-pump terminates the stream cleanly with no unha
   await delay(150) // let the dead-window bridge/abort/cancel paths run their course
   assert.equal(tracker.seen.length, 0, 'the kill window raised no unhandled rejection')
   tracker.done()
+  gw.dispose()
+  await hub.stop()
+})
+
+test('native face: dispatchRpc POSTs <origin>/api with NO ?agent= demux key (envelope + cookie verbatim)', async () => {
+  const hub = await startHub()
+  const native = gateway(hub, { face: 'native' })
+  const foreign = gateway(hub)
+  const result = await native.dispatchRpc('sessions/list', { page: 1 }, freshSignal())
+  assert.deepEqual(result, { ok: true, value: { echoed: { page: 1 }, method: 'sessions/list' } },
+    'the envelope and verbatim-Result contract are identical on the native lane')
+  assert.equal(hub.requests.at(-1).url, '/api', 'no ?agent= query — the native face addresses ctx0 directly')
+  assert.equal(hub.requests.at(-1).cookie, COOKIE, 'the pairing cookie is unchanged')
+  assert.deepEqual(JSON.parse(hub.requests.at(-1).raw).payload, { page: 1 })
+  // contrast: the default (foreign) face on the SAME hub keeps the demux key
+  await foreign.dispatchRpc('sessions/list', {}, freshSignal())
+  assert.equal(hub.requests.at(-1).url, `/hub/api?agent=${AGENT_KEY}`, 'the foreign face is exactly today\'s path')
+  native.dispose()
+  foreign.dispose()
+  await hub.stop()
+})
+
+test('native face: openWireStream connects <origin ws(s)>/api/remote.mux with no query and round-trips', async () => {
+  const opened = []
+  const hub = await startHub({
+    open: async (endpoint, payload, uplink) => {
+      void uplink
+      opened.push({ endpoint, payload })
+      return (async function* () { yield { endpoint, payload } })()
+    },
+  })
+  const gw = gateway(hub, { face: 'native' })
+  assert.deepEqual(await collect(gw.openWireStream('agent/native/$events', { x: 1 }, freshSignal())),
+    [{ endpoint: 'agent/native/$events', payload: { x: 1 } }])
+  assert.equal(hub.upgrades[0].url, '/api/remote.mux', 'the mux upgrade carries no ?agent= on the native lane')
+  assert.equal(hub.upgrades[0].cookie, COOKIE)
+  assert.equal(hub.upgradeCount(), 1)
   gw.dispose()
   await hub.stop()
 })

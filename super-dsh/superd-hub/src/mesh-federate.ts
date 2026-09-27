@@ -4,6 +4,12 @@
  * and visible exactly like a local world:
  *
  *   targets.ts  `registerForeignTarget({key: a6, gateway})` — the a6-keyed
+ *               The peer's NATIVE agent row federates the same way — its
+ *               row carries a minted a6 plus `key:'native'`, and its gateway
+ *               is built with the NATIVE face (Task 2's `face` option): the
+ *               peer's ctx0 `/api` surface, no demux key — exactly how a
+ *               browser ON the peer consumes its native DSH (the `/hub`
+ *               family would 404 `?agent=native` as foreign-only).
  *               wire gateway (Task 2's `createRemoteGateway`), so the `/hub`
  *               family demuxes `?agent=<a6>` to the peer's `/hub` family
  *               carrying the remote RUNTIME key (`?agent=codex` at the peer).
@@ -13,6 +19,12 @@
  *
  * The a6 IS the local registration key (spec §3.2): runtime keys are NOT
  * reused across machines (a remote `codex` would collide with — and silently
+ * adopted verbatim — EVERY row federates, the peer's native included (the
+ * face selector is `agent.key === 'native'`, never an a6 test). Cross-machine
+ * a6 collision (two peers minting the same id, p ≈ 36⁻¹² per pair) and
+ * a6-vs-local-key collision (p ≈ 36⁻⁶ per adoption) are accepted at P2
+ * machine counts — the registry replaces last-write-wins, same ruling as
+ * spec §3.1's m4 collision roughness.
  * replace — the local codex world), while a6s are owner-minted 6-char ids
  * adopted verbatim. Cross-machine a6 collision (two peers minting the same
  * id, p ≈ 36⁻¹² per pair) and a6-vs-local-key collision (p ≈ 36⁻⁶ per
@@ -52,7 +64,9 @@ import { registerForeignTarget, unregisterForeignTarget, getTarget, type Gateway
 export interface FederatedAgent {
   /** The remote-owner-minted a6 — the LOCAL registration key. */
   id: string
-  /** The remote RUNTIME key (`codex`, `omp`, …) — the peer's `?agent=` demux key on the wire. */
+  /** The remote RUNTIME key (`codex`, `omp`, …) — the peer's `?agent=` demux
+   *  key on the wire; `'native'` selects the NATIVE face (peer ctx0 `/api`, no
+   *  demux key) in the wiring's gateway factory. */
   key: string
   label: string
   ready: boolean
@@ -78,6 +92,7 @@ interface GatewayMemo {
   machineId: string
   origin: string
   agentKey: string
+  face: 'foreign' | 'native'
 }
 
 const gatewayMemo = new Map<string, GatewayMemo>()
@@ -104,15 +119,18 @@ function dropA6(a6: string): void {
  * untouched (zero roster churn on repeated probes); a changed row is
  * unregistered then re-registered (`registerAgent` throws on duplicate keys —
  * federate always unregisters first, so repeated probes never throw).
- * Agents with an empty id (unkeyable) or the reserved demux key `native`
- * (the `/hub` family's foreign-only exclusion) are skipped.
+ * Agents with an empty id (unkeyable) are skipped; EVERY keyed row
+ * federates — the peer's native row included (its `key:'native'` selects the
+ * native gateway face; see {@link gatewayFor}).
  * @param machine - the peer's identity (m4 + name; the name lands in every label suffix).
  * @param agents - the probe's agent snapshot (a6 `id`, remote `key`, label, ready, failed).
- * @param gatewayOf - gateway factory per a6 (the wiring's memoized wire builder; tests inject fakes).
+ * @param gatewayOf - gateway factory receiving the FULL agent row (the wiring
+ * derives the face from `agent.key`; tests inject fakes) — called once per
+ * (re)registration and once per converged-row target re-arm.
  */
-export function federateAgents(machine: FederatedMachine, agents: FederatedAgent[], gatewayOf: (a6: string) => GatewayFace): void {
+export function federateAgents(machine: FederatedMachine, agents: FederatedAgent[], gatewayOf: (agent: FederatedAgent) => GatewayFace): void {
   for (const agent of agents) {
-    if (agent.id === '' || agent.id === 'native') continue
+    if (agent.id === '') continue
     const desired = {
       key: agent.id,
       label: `${agent.label} · ${machine.name}`,
@@ -130,12 +148,12 @@ export function federateAgents(machine: FederatedMachine, agents: FederatedAgent
     ) {
       // Converged — but never trust a half-state: the roster row may survive
       // a target that something else dropped. Re-arm the registration only.
-      if (getTarget(agent.id) === undefined) registerForeignTarget({ key: agent.id, gateway: gatewayOf(agent.id) })
+      if (getTarget(agent.id) === undefined) registerForeignTarget({ key: agent.id, gateway: gatewayOf(agent) })
       continue
     }
     if (existing !== undefined) unregisterAgent(agent.id) // defeats registerAgent's duplicate-key throw
     unregisterForeignTarget(agent.id) // explicit replace, not map-overwrite
-    registerForeignTarget({ key: agent.id, gateway: gatewayOf(agent.id) })
+    registerForeignTarget({ key: agent.id, gateway: gatewayOf(agent) })
     registerAgent(desired)
   }
 }
@@ -189,11 +207,16 @@ export function federatedGatewayOf(a6: string): GatewayFace | undefined {
   return gatewayMemo.get(a6)?.gateway
 }
 
-/** The wiring's gateway factory: memoized per a6, rebuilt on peer-fact change. */
-function gatewayFor(event: Extract<MeshFederationEvent, { type: 'federated' }>, a6: string, deps: FederationWireDeps): RemoteGateway {
-  const agentKey = event.agents.find((a) => a.id === a6)?.key ?? a6
+/** The wiring's gateway factory: memoized per a6, rebuilt on peer-fact
+ * change (origin, remote runtime key, or face flip). The FACE is selected
+ * from the agent ROW — `key === 'native'` → the peer's ctx0 `/api` surface,
+ * anything else → the `/hub` family with the runtime-key demux. */
+function gatewayFor(event: Extract<MeshFederationEvent, { type: 'federated' }>, agent: FederatedAgent, deps: FederationWireDeps): RemoteGateway {
+  const a6 = agent.id
+  const face: 'foreign' | 'native' = agent.key === 'native' ? 'native' : 'foreign'
+  const agentKey = agent.key
   const memo = gatewayMemo.get(a6)
-  if (memo !== undefined && memo.machineId === event.machineId && memo.origin === event.origin && memo.agentKey === agentKey) {
+  if (memo !== undefined && memo.machineId === event.machineId && memo.origin === event.origin && memo.agentKey === agentKey && memo.face === face) {
     return memo.gateway
   }
   if (memo !== undefined) {
@@ -203,11 +226,12 @@ function gatewayFor(event: Extract<MeshFederationEvent, { type: 'federated' }>, 
   const gateway = createRemoteGateway({
     origin: event.origin,
     agentKey,
+    face,
     cookie: () => cookieOf(event.machineId, deps.home),
     fetchImpl: deps.fetchImpl,
     wsFactory: deps.wsFactory,
   })
-  gatewayMemo.set(a6, { gateway, machineId: event.machineId, origin: event.origin, agentKey })
+  gatewayMemo.set(a6, { gateway, machineId: event.machineId, origin: event.origin, agentKey, face })
   return gateway
 }
 
@@ -230,7 +254,7 @@ export function startMeshFederation(deps: FederationWireDeps): () => void {
       federateAgents(
         { id: event.machineId, name: event.machineName },
         event.agents,
-        (a6) => gatewayFor(event, a6, deps),
+        (agent) => gatewayFor(event, agent, deps),
       )
       defederateStaleMachine(event.machineId, new Set(event.agents.map((a) => a.id)))
     } else if (event.type === 'degraded') {

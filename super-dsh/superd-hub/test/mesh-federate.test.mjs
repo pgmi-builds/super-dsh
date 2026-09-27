@@ -58,6 +58,7 @@ function startRemoteHub(opts = {}) {
     agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false }],
     probeStatus: undefined, // set → /api/agent-runtime answers this status (unreachable probe)
     validCookies: new Set(),
+    posts: [], // native-face POSTs: { url, agent } — pins the no-query shape
   }
   let seq = 0
   const server = createServer((req, res) => {
@@ -79,6 +80,19 @@ function startRemoteHub(opts = {}) {
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/json')
       res.end(JSON.stringify({ available: true, agents: state.agents, hub: { machineId: state.machineId, version: '0.1.6' } }))
+      return
+    }
+    if (url.pathname === '/api' && req.method === 'POST') {
+      // ctx0's own envelope surface (native face): NO ?agent= demux key
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', () => {
+        state.posts.push({ url: req.url, agent: url.searchParams.get('agent') })
+        const env = JSON.parse(raw)
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ type: 'server-response', rpcId: env.rpcId, result: { ok: true, value: 'wire:native' } }))
+      })
       return
     }
     if (url.pathname === '/hub/api' && req.method === 'POST') {
@@ -141,30 +155,35 @@ function envelopeReq(url) {
  *  (a6 exact) first, then the shared local target registry (label aliases). */
 const demux = (label) => federatedGatewayOf(label) ?? getTarget(label)?.gateway
 
-test('federateAgents：a6 行进 targets+roster；label=<Label> · <name>；machine 字段就位；保留键跳过', () => {
+test('federateAgents：a6 行进 targets+roster；label=<Label> · <name>；machine 字段就位；空 a6 跳过；peer native 行照常采纳', () => {
   sweep()
-  const gw = { codex: fakeGateway('gw-codex'), omp: fakeGateway('gw-omp') }
+  const gw = { codex: fakeGateway('gw-codex'), omp: fakeGateway('gw-omp'), native: fakeGateway('gw-native') }
+  const seen = []
   federateAgents(
     { id: 'k3f9', name: 'dev3' },
     [
       { id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false },
       { id: 'ab12cd', key: 'omp', label: 'OMP', ready: false, failed: true },
-      { id: '', key: 'junk', label: 'Junk', ready: true, failed: false }, // 空 id：不可 keyed
-      { id: 'native', key: 'junk2', label: 'Junk2', ready: true, failed: false }, // 保留 demux 键
+      { id: 'zz9nat', key: 'native', label: 'Native', ready: true, failed: false }, // peer 的 native 行：a6 采纳，不跳过
+      { id: '', key: 'junk', label: 'Junk', ready: true, failed: false }, // 空 a6：不可 keyed
     ],
-    (a6) => gw[a6 === 'q7m2xp' ? 'codex' : 'omp'],
+    (agent) => { seen.push(agent.key); return gw[agent.key] },
   )
   assert.deepEqual(listAgents(), [
     { key: 'q7m2xp', label: 'Codex · dev3', machine: 'k3f9', ready: true, failed: false },
     { key: 'ab12cd', label: 'OMP · dev3', machine: 'k3f9', ready: false, failed: true },
+    { key: 'zz9nat', label: 'Native · dev3', machine: 'k3f9', ready: true, failed: false },
   ])
+  assert.equal(getTarget('zz9nat').gateway, gw.native, "the peer's native row registers its gateway like any other row")
   assert.equal(getTarget('q7m2xp').gateway, gw.codex)
   assert.equal(getTarget('ab12cd').gateway, gw.omp)
-  assert.ok(listRuntimeKeys().includes('q7m2xp') && listRuntimeKeys().includes('ab12cd'))
-  assert.equal(listRuntimeKeys().filter((k) => k === 'native').length, 1, 'native 不因 a6 采纳而重复')
+  assert.deepEqual(seen, ['codex', 'omp', 'native'], 'the factory receives the full agent row (face selection material)')
+  assert.ok(listRuntimeKeys().includes('zz9nat'))
+  assert.equal(listRuntimeKeys().filter((k) => k === 'native').length, 1, 'the LOCAL native reserve is untouched by adoption')
   sweep()
   assert.deepEqual(listAgents(), [])
   assert.equal(getTarget('q7m2xp'), undefined)
+  assert.equal(getTarget('zz9nat'), undefined)
 })
 
 test('幂等：重复 federate 无 throw、零 roster churn；ready/label 变化 → 替换行', () => {
@@ -394,5 +413,46 @@ test('排序钉：native → local → 远端（机器 label 再 agent label）�
     dropMount()
     sweep()
     rmSync(h, { recursive: true, force: true })
+  }
+})
+
+test('peer 的 native 行：native face gateway 指向 peer /api（无 ?agent=）；foreign 行不变', async () => {
+  sweep()
+  resetMachineStatus()
+  const hub = await startRemoteHub({
+    machineId: 'k3f9', token: 'nat-tok',
+    agents: [
+      { id: 'n4t1ve', key: 'native', label: 'Native', ready: true, failed: false },
+      { id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false },
+    ],
+  })
+  const h = home()
+  const stop = startMeshFederation({ home: h })
+  try {
+    await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=nat-tok` })
+    // Both rows federated: the native row alongside the foreign one
+    assert.deepEqual(listAgents().map((e) => e.key), ['n4t1ve', 'q7m2xp'])
+    const nativeGw = federatedGatewayOf('n4t1ve')
+    const foreignGw = federatedGatewayOf('q7m2xp')
+    assert.notEqual(nativeGw, undefined)
+    assert.notEqual(foreignGw, undefined)
+    assert.notEqual(nativeGw, foreignGw)
+
+    // Native face: the wire POST lands on /api with NO ?agent= (ctx0's own surface)
+    const nativeResult = await nativeGw.dispatchRpc('session.list', {}, new AbortController().signal)
+    assert.deepEqual(nativeResult, { ok: true, value: 'wire:native' })
+    assert.equal(hub.state.posts.length, 1)
+    assert.equal(hub.state.posts[0].url, '/api', 'no demux key on the native lane')
+    assert.equal(hub.state.posts[0].agent, null)
+
+    // Foreign face unchanged: the same call rides /hub/api?agent=codex
+    const foreignResult = await foreignGw.dispatchRpc('session.list', {}, new AbortController().signal)
+    assert.deepEqual(foreignResult, { ok: true, value: 'wire:codex' })
+    assert.equal(hub.state.posts.length, 1, 'the foreign lane never touches /api')
+  } finally {
+    stop()
+    sweep()
+    rmSync(h, { recursive: true, force: true })
+    await hub.close()
   }
 })

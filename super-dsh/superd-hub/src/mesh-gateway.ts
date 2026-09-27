@@ -1,12 +1,21 @@
 /**
  * RemoteGatewayFace (machine-mesh P2 Task 2) — the wire form of a
  * {@link GatewayFace}: one paired remote agent's dispatch/stream surface,
- * reached over the PEER hub's `/hub` route family exactly as that hub would
- * serve it locally (hub-route is the server half of the same family):
+ * reached over the PEER hub exactly as that hub would serve it locally —
+ * on ONE of two surfaces, selected by {@link RemoteGatewayOptions.face}:
  *
- *   dispatchRpc     POST <origin>/hub/api?agent=<agentKey>          (envelope.ts)
- *   openWireStream  WS   <origin ws(s)>/hub/api/remote.mux?agent=   (world-mux.ts client half, via T1 MuxClient)
+ *   foreign (default) — the `/hub` family (hub-route is the server half):
+ *     dispatchRpc     POST <origin>/hub/api?agent=<agentKey>
+ *     openWireStream  WS   <origin ws(s)>/hub/api/remote.mux?agent=<agentKey>
+ *   native — ctx0's OWN envelope+mux surface, exactly how a browser ON the
+ *     peer consumes its native DSH (NO demux key anywhere — the peer's
+ *     native agent row federates as `key:'native'` with a minted a6, and the
+ *     `/hub` family would 404 it as foreign-only):
+ *     dispatchRpc     POST <origin>/api
+ *     openWireStream  WS   <origin ws(s)>/api/remote.mux
  *
+ * Everything else (envelope shape, cookie, Result verbatim, error taxonomy,
+ * connection lifecycle) is face-independent.
  * Every call rides the machine's pairing cookie ({@link RemoteGatewayOptions.cookie},
  * the per-machine jar fronting the persisted `MachineRow.cookie`).
  *
@@ -171,7 +180,7 @@ export function defaultWsFactory(url: string, headers: Record<string, string>): 
 export interface RemoteGatewayOptions {
   /** The peer hub origin (`http(s)://host[:port]`; the mux lane maps it to ws(s)). */
   origin: string
-  /** The remote agent's demux key (`?agent=` on both lanes). */
+  /** The remote agent's demux key (`?agent=` on both lanes; ignored by the native face). */
   agentKey: string
   /** The machine's pairing cookie, read per call (the jar fronting `MachineRow.cookie`). */
   cookie: () => string
@@ -179,6 +188,11 @@ export interface RemoteGatewayOptions {
   fetchImpl?: typeof fetch
   /** Socket factory override (tests); defaults to {@link defaultWsFactory}. */
   wsFactory?: (url: string, headers: Record<string, string>) => MuxClientSocket
+  /** Which peer surface to address (see the header's face table): 'foreign' =
+   * the `/hub` family with the `?agent=` demux (default); 'native' = ctx0's
+   * own `/api` surface, no demux key — how a browser ON the peer consumes its
+   * native DSH. */
+  face?: 'foreign' | 'native'
   /** Idle ms with zero live streams before the ws closes (default 30 s; test hook for short real timers). */
   idleCloseMs?: number
 }
@@ -197,12 +211,13 @@ export interface RemoteGateway extends GatewayFace {
   dispose(): void
 }
 
-/** The ws(s) URL of the peer's mux lane. */
-function muxUrlOf(origin: string, agentKey: string): string {
+/** The ws(s) URL of the peer's mux lane (foreign: the `/hub` family with
+ * the demux key; native: ctx0's own surface, no query). */
+function muxUrlOf(origin: string, agentKey: string, face: 'foreign' | 'native'): string {
   const url = new URL(origin)
   url.protocol = url.protocol === 'https:' || url.protocol === 'wss:' ? 'wss:' : 'ws:'
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}/hub/api/remote.mux`
-  url.search = `agent=${encodeURIComponent(agentKey)}`
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}${face === 'native' ? '/api/remote.mux' : '/hub/api/remote.mux'}`
+  if (face === 'foreign') url.search = `agent=${encodeURIComponent(agentKey)}`
   return url.toString()
 }
 
@@ -239,6 +254,7 @@ class RemoteGatewayImpl implements RemoteGateway {
   private readonly fetchImpl: typeof fetch
   private readonly wsFactory: (url: string, headers: Record<string, string>) => MuxClientSocket
   private readonly idleCloseMs: number
+  private readonly face: 'foreign' | 'native'
   private readonly muxUrl: string
   private nextRpcId = 1
   private connection: MuxConnection | undefined
@@ -251,11 +267,16 @@ class RemoteGatewayImpl implements RemoteGateway {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch
     this.wsFactory = options.wsFactory ?? defaultWsFactory
     this.idleCloseMs = options.idleCloseMs ?? DEFAULT_IDLE_CLOSE_MS
-    this.muxUrl = muxUrlOf(options.origin, options.agentKey)
+    this.face = options.face ?? 'foreign'
+    this.muxUrl = muxUrlOf(options.origin, options.agentKey, this.face)
   }
 
   async dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal | undefined): Promise<unknown> {
-    const url = `${this.origin}/hub/api?agent=${encodeURIComponent(this.agentKey)}`
+    // Foreign: the /hub family with the demux key; native: ctx0's own /api,
+    // no query — a browser on the peer addresses the same surface.
+    const url = this.face === 'native'
+      ? `${this.origin}/api`
+      : `${this.origin}/hub/api?agent=${encodeURIComponent(this.agentKey)}`
     const rpcId = String(this.nextRpcId)
     this.nextRpcId += 1
     const body = JSON.stringify({
