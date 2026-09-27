@@ -73,4 +73,36 @@ export {
 export { withSystemHead, type HeadAwareSessionFace, type HeadPlaceholder, type WithSystemHead } from './system-head.js'
 export { default as worldApply, name as worldPluginName, type Config as WorldEntryConfig } from './world-entry.js'
 export { default as joinApply, name as worldJoinPluginName, type Config as WorldJoinConfig } from './world-join.js'
+export {
+  createA2aService,
+  A2A_MESSAGE_TEMPLATE,
+  A2A_UNTITLED,
+  A2A_BUFFER_MAX,
+  A2A_NO_SESSION_CLOSE_REASON,
+  renderA2aEnvelope,
+  loadConversations,
+  saveConversations,
+  shortIdFor,
+  type A2aService,
+  type A2aServiceDeps,
+  type A2aGateway,
+  type A2aAddress,
+  type A2aInitiator,
+  type A2aDelivery,
+  type A2aSendRequest,
+  type A2aReceipt,
+  type A2aReceiptOutcome,
+  type A2aReceiptError,
+  type A2aConversationRef,
+  type A2aCompletion,
+  type A2aCompletionCb,
+  type A2aErrorCb,
+  type A2aSubscribeOptions,
+  type A2aStopScope,
+  type A2aStopResult,
+  type A2aBufferedMessage,
+  type A2aBufferInput,
+  type ConversationRow,
+  type ConversationsFile,
+} from './a2a-service.js'
 export { default } from './gateway.js'
