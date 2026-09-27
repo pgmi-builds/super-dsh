@@ -81,7 +81,7 @@ address m4 ──► machine table：self? ──► agent 表（a6 → 本地 w
 
 | 文件 | 内容 |
 |---|---|
-| `machines.json` | `{self: {id, label}, remotes: [{id, name, label, origin, token, enabled, addedAt}]}` |
+| `machines.json` | `{self: {id, label}, remotes: [{id, name, label, origin, token, cookie?, enabled, addedAt}]}`（cookie 随 mint/re-mint 持久化——hub 自身重启不重贴 token，spec §4） |
 | `agent-ids.json` | `{ [label]: a6 }`（本地 agent） |
 | `a2a-conversations.json` | conversation 注册表（P3）：短 ID ↔ 全长 session id + {machine, agent, title, createdAt, lastActivityAt} |
 
@@ -101,6 +101,10 @@ token 存明文本地文件（0600、用户 home 内）——与 cookie 本身�
 - **单向添加**（D2）：本机持有远端 cookie ≠ 远端知道本机。反向添加留待讨论。
 - 出站请求不带浏览器 Origin（服务端发起，Host 即远端 authority，天然过
   browser-trust 栅栏）。
+- ~~前置代理 gate（可选 per-machine `gateUrl`）~~ → **撤回（2026-09-28 user 裁决）**：
+  不为反代 gate 特殊情况做产品面——同种认证出现两次（hub token + 反代 gate）属
+  部署错误而非产品需求，正确解法是拆掉多余的那层（dev3 Caddy gate 已删，
+  `Caddyfile.bak.2026-09-28_gate-removal` 备份）。配对只走 token URL。
 - exec 额外旋钮：per-machine `execEnabled`（默认 true）+ 审计事件（§9）。
 
 ## 5. 架构总览（全部挂 CTX0 hub host 半边，D15）
