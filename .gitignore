@@ -1,7 +1,15 @@
 # runtime / build / cache (machine-local)
 .tests/
-node_modules/
-upstream/
+# Bare `node_modules` (no trailing slash) matches a directory AND a symlink, at
+# any depth. The slash form matches directories only — which is how six
+# self-referential `super-dsh/agent-*/node_modules` symlinks got committed in
+# 0ff0322 (2026-09-26) and then let every checkout clobber the real installs.
+node_modules
+# Same trap for the vendored checkout: the main repo holds a real directory
+# while a `.worktrees/*` checkout carries a symlink into it, so a trailing
+# slash silently exempted the symlink form. A bare `/upstream` matches both,
+# and `upstream` must never be a repo artifact at all.
+/upstream
 .dsh_better_edit/
 .npm-cache/
 
