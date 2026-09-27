@@ -15,6 +15,8 @@ export interface RosterEntry {
   label: string
   /** True once the adapter's world context is spawned and its target registered. */
   ready: boolean
+  /** True once the world's spawn REJECTED (world-join catch) — stays mounted for diagnosis. */
+  failed?: boolean
 }
 
 const entries = new Map<string, RosterEntry>()
@@ -28,7 +30,7 @@ function emit(): void {
 /** Register an agent. Duplicate keys are a plugin bug — throw loud. */
 export function registerAgent(entry: RosterEntry): void {
   if (entries.has(entry.key)) throw new Error(`roster: duplicate agent key ${entry.key}`)
-  entries.set(entry.key, { ...entry })
+  entries.set(entry.key, { ...entry, failed: entry.failed ?? false })
   emit()
 }
 
@@ -43,6 +45,14 @@ export function setReady(key: string, ready: boolean): void {
   const e = entries.get(key)
   if (!e) throw new Error(`roster: unknown agent ${key}`)
   e.ready = ready
+  emit()
+}
+
+/** Flip failure (world spawn rejected). Unknown keys are a plugin bug. */
+export function setFailed(key: string, failed: boolean): void {
+  const e = entries.get(key)
+  if (!e) throw new Error(`roster: unknown agent ${key}`)
+  e.failed = failed
   emit()
 }
 
