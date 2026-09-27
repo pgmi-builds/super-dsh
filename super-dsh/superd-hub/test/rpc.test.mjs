@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { handleAgentRuntime, registerSelectorRpc } from '../dist/rpc.js'
-import { registerAgent, unregisterAgent } from '../dist/index.js'
+import { registerAgent, setFailed, unregisterAgent } from '../dist/index.js'
 import { registerHostMount } from '../dist/world-host.js'
 import { agentRosterRow } from '../dist/agent-roster.js'
 
@@ -30,7 +30,7 @@ test('GET exposes the available worlds AND the roster paths the selector navigat
   assert.deepEqual(body.available, ['native', 'omp'])
   // `agents` is the roster: native always, plus every key that currently owns a
   // host mount (none in this unit test), so the selector has a path per entry.
-  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/', machine: 'local' }])
+  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false }])
 })
 
 test('POST carries NO switch: selection is per-request (mount path)', async () => {
@@ -56,7 +56,7 @@ test('registerSelectorRpc mounts the control face on the shared /api channel', a
   const res = await ctx.routes[0].fetch(new Request('http://x/api/agent-runtime'))
   const body = await res.json()
   assert.deepEqual(body.available, ['native'])
-  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/', machine: 'local' }])
+  assert.deepEqual(body.agents, [{ key: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false }])
 })
 
 test('the roster wire carries machine on native AND adapter rows (local constant)', async () => {
@@ -68,8 +68,8 @@ test('the roster wire carries machine on native AND adapter rows (local constant
     })
     const body = await res.json()
     assert.deepEqual(body.agents, [
-      { key: 'native', label: 'DSH', path: '/', machine: 'local' },
-      { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' },
+      { key: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false },
+      { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local', ready: true, failed: false },
     ])
     // The baked-index emitter (gateway's `webserver/index-inject` global,
     // seeding the first paint) projects the same rows — one wire shape.
@@ -78,4 +78,17 @@ test('the roster wire carries machine on native AND adapter rows (local constant
     disposeMount()
     unregisterAgent('omp')
   }
+})
+
+test('agent-runtime rows carry ready and failed for the switch pre-flight', async () => {
+  registerAgent({ key: 't-flags', label: 'TF', ready: false })
+  setFailed('t-flags', true)
+  const drop = registerHostMount({ key: 't-flags', labelPath: '/t-flags/' })
+  const source = { listRuntimes: () => ['native', 't-flags'] }
+  const res = await handleAgentRuntime(new Request('http://x/api/agent-runtime'), source)
+  const row = (await res.json()).agents.find((a) => a.key === 't-flags')
+  assert.equal(row.ready, false)
+  assert.equal(row.failed, true)
+  drop()
+  unregisterAgent('t-flags')
 })

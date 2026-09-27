@@ -268,7 +268,9 @@ const NATIVE_LINK = {
 	key: "native",
 	label: "DSH",
 	path: "/",
-	machine: "local"
+	machine: "local",
+	ready: true,
+	failed: false
 };
 /** Labels for the read-only face's bare keys (it reports keys, not labels). */
 const FALLBACK_LABELS = {
@@ -292,7 +294,9 @@ function coerceAgents(raw) {
 			key,
 			label: typeof label === "string" ? label : FALLBACK_LABELS[key] ?? key,
 			path,
-			machine: typeof machine === "string" ? machine : "local"
+			machine: typeof machine === "string" ? machine : "local",
+			ready: entry.ready === true,
+			failed: entry.failed === true
 		});
 	}
 	return links.length > 0 ? links : void 0;
@@ -329,7 +333,8 @@ async function fetchRoster() {
 				key,
 				label: FALLBACK_LABELS[key] ?? key,
 				path: `/${key}/`,
-				machine: "local"
+				machine: "local",
+				ready: key === "native"
 			});
 		}
 		if (links.length > 0) return links;

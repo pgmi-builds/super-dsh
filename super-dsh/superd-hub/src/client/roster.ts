@@ -21,10 +21,14 @@ export interface AgentLink {
    * `'local'` right here — the parse boundary is the only defensive default.
    */
   readonly machine: string
+  /** Whether the world's data plane is up. Optional: older hosts omit it (parse boundary default). */
+  readonly ready?: boolean
+  /** Whether the world's spawn REJECTED. Optional: older hosts omit it. */
+  readonly failed?: boolean
 }
 
 /** The native runtime every composition can fall back to. */
-export const NATIVE_LINK: AgentLink = { key: 'native', label: 'DSH', path: '/', machine: 'local' }
+export const NATIVE_LINK: AgentLink = { key: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false }
 
 /** Labels for the read-only face's bare keys (it reports keys, not labels). */
 const FALLBACK_LABELS: Record<string, string> = {
@@ -52,6 +56,8 @@ function coerceAgents(raw: unknown): AgentLink[] | undefined {
       // The parse boundary's one defensive default: older host shapes without
       // machine are local-machine rosters.
       machine: typeof machine === 'string' ? machine : 'local',
+      ready: (entry as { ready?: unknown }).ready === true,
+      failed: (entry as { failed?: unknown }).failed === true,
     })
   }
   return links.length > 0 ? links : undefined
@@ -89,7 +95,7 @@ export async function fetchRoster(): Promise<AgentLink[]> {
       if (typeof key !== 'string') continue
       links.push(key === 'native'
         ? NATIVE_LINK
-        : { key, label: FALLBACK_LABELS[key] ?? key, path: `/${key}/`, machine: 'local' })
+        : { key, label: FALLBACK_LABELS[key] ?? key, path: `/${key}/`, machine: 'local', ready: key === 'native' })
     }
     if (links.length > 0) return links
   }

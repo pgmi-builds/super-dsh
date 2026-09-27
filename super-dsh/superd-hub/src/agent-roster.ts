@@ -25,13 +25,17 @@ export interface AgentLink {
   path: string
   /** Machine the runtime runs on — the Hub UI's grouping key. */
   machine: string
+  /** Whether the world's data plane is up (spawn resolved). Native is always ready. */
+  ready: boolean
+  /** Whether the world's spawn REJECTED (mount stays for diagnosis). */
+  failed: boolean
 }
 
 /** Machine of every roster row today — the local constant; the extension point a multi-machine registry replaces. */
 const LOCAL_MACHINE = 'local'
 
 /** The native runtime's synthetic entry (no adapter plugin backs it). */
-const NATIVE: AgentLink = { key: 'native', label: 'DSH', path: '/', machine: LOCAL_MACHINE }
+const NATIVE: AgentLink = { key: 'native', label: 'DSH', path: '/', machine: LOCAL_MACHINE, ready: true, failed: false }
 
 /** The global this module publishes the roster under. */
 export const AGENT_ROSTER_GLOBAL = '__DSH_AGENT_ROSTER__'
@@ -48,7 +52,7 @@ export function agentLinks(): AgentLink[] {
     const mount = takeHostMount(agent.key)
     if (mount === undefined) continue
     const path = mount.labelPath.endsWith('/') ? mount.labelPath : `${mount.labelPath}/`
-    links.push({ key: agent.key, label: agent.label, path, machine: LOCAL_MACHINE })
+    links.push({ key: agent.key, label: agent.label, path, machine: LOCAL_MACHINE, ready: agent.ready === true, failed: agent.failed === true })
   }
   return links
 }
