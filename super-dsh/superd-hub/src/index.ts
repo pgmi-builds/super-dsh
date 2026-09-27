@@ -33,6 +33,7 @@ export {
   worldMountPatches,
   superdTrustedHosts,
   WORLD_WAVE1_DISABLED_ROWS,
+  WORLD_WAVE2_DISABLED_ROWS,
   WORLD_MOUNT_PLUGIN,
   WORLD_MOUNT_ROW_ID,
   WORLD_HUB_PLUGIN,

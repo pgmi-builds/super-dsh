@@ -104,6 +104,41 @@ export const WORLD_WAVE1_DISABLED_ROWS: readonly string[] = [
   'ui-settings-agent-loop',
 ]
 
+
+/**
+ * Wave-2 of world composition minimization: the CLIENT lane. The
+ * multi-ctx-multi-ui → native-ui-only transition (0.1.5 / T-D) retired the
+ * world's own web UI (webserver/hmr/web-runtime/client-hmr above); wave-2
+ * completes it by stripping the browser-half rows of the web-app bundle —
+ * every dsh-client-* row plus the cordis client runner. In a world these
+ * only registered modules into a table no browser ever reads.
+ *
+ * Dependency-cleared 2026-09-27: the KEEP side (api controllers, gateway,
+ * session core, adapters) injects none of their services with ONE
+ * exception — `connection` (dsh-client-connection) stays: the world's
+ * typert gateway injects it. The former `{ id: 'modules', inject:
+ * ['webServer'] }` restatement is superseded (the row is disabled outright).
+ */
+export const WORLD_WAVE2_DISABLED_ROWS: readonly string[] = [
+  'cordis-client-runner',
+  'directory-picker-browse-surface',
+  'file-upload',
+  'locale',
+  'modules',
+  'resources',
+  'ui-agent-preset', 'ui-approval', 'ui-attachment', 'ui-brand-official',
+  'ui-chat', 'ui-commands', 'ui-conversation', 'ui-cordis', 'ui-deliverables',
+  'ui-goal', 'ui-input-trigger', 'ui-layout', 'ui-message-feedback',
+  'ui-model-selection', 'ui-open-in-app', 'ui-permission', 'ui-plan',
+  'ui-plugin-manager', 'ui-reference', 'ui-renderer', 'ui-session',
+  'ui-settings', 'ui-settings-account', 'ui-settings-general',
+  'ui-settings-models', 'ui-settings-plugin-inventory', 'ui-settings-plugins',
+  'ui-settings-shell', 'ui-settings-web-search', 'ui-sidebar',
+  'ui-sidebar-browser', 'ui-sidebar-documentpreview', 'ui-sidebar-files',
+  'ui-sidebar-right', 'ui-sidebar-terminal', 'ui-theme', 'ui-tool',
+  'ui-trajectory', 'ui-user-questions', 'ui-workflow-run', 'ui-workspace',
+]
+
 export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
   if (typeof key !== 'string' || key === '' || key.includes('/')) {
     throw new Error(`world-mount: invalid key ${JSON.stringify(key)}`)
@@ -132,7 +167,6 @@ export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
     // literals; the deploy-level trusted-host extras ride along).
     { id: 'web-runtime', disabled: true },
     { id: 'client-hmr', disabled: true },
-    { id: 'modules', inject: ['webServer'] },
     { insert: [
       { id: WORLD_MOUNT_ROW_ID, name: WORLD_MOUNT_PLUGIN, config: { key } },
       { id: WORLD_HUB_ROW_ID, name: WORLD_HUB_PLUGIN },
@@ -140,5 +174,8 @@ export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
     // Wave-1 minimization: the foreign runtimes replace the native agent
     // machinery — these rows never mount in a world tree.
     ...WORLD_WAVE1_DISABLED_ROWS.map((id) => ({ id, disabled: true })),
+    // Wave-2 minimization: the client lane (native-ui-only completion) —
+    // no browser ever reads a world's module table.
+    ...WORLD_WAVE2_DISABLED_ROWS.map((id) => ({ id, disabled: true })),
   ]
 }
