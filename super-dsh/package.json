@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pgmi-builds/superd.git"
+    "url": "git+https://github.com/pgmi-builds/super-dsh.git"
   },
   "exports": {
     ".": "./superd-hub/dist/index.js",
