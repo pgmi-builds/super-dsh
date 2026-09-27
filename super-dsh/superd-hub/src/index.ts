@@ -32,6 +32,7 @@ export { registerHostMount, takeHostMount, listHostMounts, noteWorldServer, worl
 export {
   worldMountPatches,
   superdTrustedHosts,
+  WORLD_WAVE1_DISABLED_ROWS,
   WORLD_MOUNT_PLUGIN,
   WORLD_MOUNT_ROW_ID,
   WORLD_HUB_PLUGIN,

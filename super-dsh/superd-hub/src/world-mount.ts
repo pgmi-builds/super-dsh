@@ -79,6 +79,31 @@ export type WorldPatchLayer =
  * @param key - runtime key (`omp`, `codex`, …) — the mount label.
  * @returns patch layers to append to the world's composition.
  */
+
+/**
+ * Wave-1 of world composition minimization (spec
+ * docs/specs/world-composition-minimization): native-agent machinery the
+ * foreign runtimes replace. Dependency-cleared 2026-09-27 against the KEEP
+ * set (api controllers, session core, adapters' agents/sessions/llm/
+ * agentDefaultModel/settings/agentPresets). Wave-2 candidates (client-ui
+ * family, tools, bash-sandbox, terminal-controller, …) live in the spec,
+ * NOT here.
+ */
+export const WORLD_WAVE1_DISABLED_ROWS: readonly string[] = [
+  'agent-loop',
+  'mcp-resources',
+  // skills
+  'skill', 'skill-filesystem', 'skill-badge', 'tool-skill', 'ui-skill',
+  // jobs
+  'jobs', 'tool-jobs', 'ui-jobs', 'job-controller',
+  // subagents
+  'subagent', 'subagent-spawn-in-process', 'subagent-fork-in-process',
+  'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent',
+  'tool-subagent-fork', 'tool-subagent-codex', 'tool-subagent-claude-code',
+  'subagent-model-selection-settings', 'ui-subagent', 'ui-settings-subagent',
+  'ui-settings-agent-loop',
+]
+
 export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
   if (typeof key !== 'string' || key === '' || key.includes('/')) {
     throw new Error(`world-mount: invalid key ${JSON.stringify(key)}`)
@@ -112,5 +137,8 @@ export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
       { id: WORLD_MOUNT_ROW_ID, name: WORLD_MOUNT_PLUGIN, config: { key } },
       { id: WORLD_HUB_ROW_ID, name: WORLD_HUB_PLUGIN },
     ] },
+    // Wave-1 minimization: the foreign runtimes replace the native agent
+    // machinery — these rows never mount in a world tree.
+    ...WORLD_WAVE1_DISABLED_ROWS.map((id) => ({ id, disabled: true })),
   ]
 }

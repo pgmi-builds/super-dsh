@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   worldMountPatches,
+  WORLD_WAVE1_DISABLED_ROWS,
   superdTrustedHosts,
   WORLD_MOUNT_PLUGIN,
   WORLD_MOUNT_ROW_ID,
@@ -39,7 +40,21 @@ test('worldMountPatches disables the listener AND the webui rows, keeps modules 
     },
     { id: WORLD_HUB_ROW_ID, name: WORLD_HUB_PLUGIN },
   ])
-  assert.equal(worldMountPatches('omp').length, 6, 'no web-trust row, no fusion row — six layers exactly')
+  // No web-trust row, no fusion row; the tail beyond the insert layer is
+  // the wave-1 disable block (asserted in its own test).
+  assert.equal('insert' in patches[5], true)
+})
+
+test('wave-1: dead native-agent rows are disabled in every world composition', () => {
+  const patches = worldMountPatches('omp')
+  assert.equal(patches.length, 6 + WORLD_WAVE1_DISABLED_ROWS.length)
+  const disabled = new Set(patches.filter((p) => 'id' in p && p.disabled === true).map((p) => p.id))
+  for (const id of WORLD_WAVE1_DISABLED_ROWS) assert.equal(disabled.has(id), true, id + ' must be disabled')
+  // KEEP invariants (spec): adapters inject agents/sessions/llm/agentDefaultModel/settings/agentPresets
+  for (const keep of ['agent', 'agent-default-model', 'settings', 'agent-preset-registry']) {
+    assert.equal(disabled.has(keep), false, keep + ' must stay enabled')
+  }
+  assert.equal(WORLD_WAVE1_DISABLED_ROWS.length, 24, 'wave-1 is exactly the 24 dependency-cleared rows')
 })
 
 test('worldMountPatches keys the row with the runtime key and rejects malformed keys', () => {
