@@ -343,78 +343,181 @@ async function fetchRoster() {
 }
 
 //#endregion
-//#region src/client/machines-store.ts
-/** Storage slot for the ledger (v1 shape; bump the suffix on breaking edits). */
-const STORAGE_KEY = "superd-hub.machines.v1";
+//#region src/client/mesh-api.ts
 /**
-* The self row is DERIVED, never stored: this machine's label tracks the
-* product copy and its URL tracks the serving origin on every load. Only
-* remote machines persist.
+* Machine-mesh data access for the Hub machines panel (mesh P1, Task 5):
+* the client half of `/api/superd/machines` (host side: mesh-rpc.ts) —
+* same-origin fetch behind the standard browser-trust + cookie fence, the
+* roster face's house style (`credentials: 'same-origin'`). The localStorage
+* ledger era (machines-store.ts, retired with this module) ended: the hub's
+* registry is the single source of truth, this file only fetches it and
+* coerces the wire answer into row views.
+*
+* Node-safe by construction — no DOM, no react, no @deepseek-ai imports —
+* so the host tsc emits it to `dist/client/mesh-api.js` and
+* test/client-mesh-view.test.mjs runs the pure halves (coercion, token-URL
+* pre-check) under `node --test` without jsdom: the switch-core/toast-core
+* precedent in reverse (pure logic kept beside the fetch wrappers, all under
+* src/client). No fetch happens at import time.
+*
+* @module superd-hub/client/mesh-api
 */
-function selfMachine() {
+/**
+* Base path of the mesh machines API — the client-side spelling of the
+* host's `MESH_API_BASE` (mesh-rpc.ts). Duplicated deliberately: importing
+* the host module would drag its node:fs-backed dependencies into the
+* browser bundle; a path literal cannot drift silently because the mesh-rpc
+* route registration and this file are reviewed together.
+*/
+const MESH_API_BASE = "/api/superd/machines";
+/** The statuses the wire may carry; anything else coerces to `'pending'`. */
+const STATUSES = [
+	"pending",
+	"reachable",
+	"unreachable",
+	"auth-expired"
+];
+/** Coerce the self block; a shape without a non-empty string id + string label is simply absent. */
+function coerceSelf(raw) {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return void 0;
+	const { id, label } = raw;
+	if (typeof id !== "string" || id === "" || typeof label !== "string") return void 0;
 	return {
-		id: "self",
-		name: "local",
-		label: "This machine",
-		url: typeof location === "undefined" ? "" : location.origin,
-		self: true,
-		addedAt: 0
+		id,
+		label
 	};
 }
 /**
-* Read the ledger; a missing or unreadable store resets to the self row.
+* Coerce a raw GET body into the panel's view list. Any bad shape degrades
+* to the empty list (rows dropped individually, self dropped as a block) —
+* the UI never crashes on a malformed answer.
 *
-* @returns the machines: the derived self row first, then the stored remotes.
+* @param raw - the parsed JSON body (or anything else the wire produced).
+* @returns self (when usable) + the coerced remote rows.
 */
-function loadMachines() {
-	const remotes = readStoredRemotes();
-	return [selfMachine(), ...remotes];
-}
-/** Parse the stored remote machines; storage failures degrade to none. */
-function readStoredRemotes() {
-	if (typeof localStorage === "undefined") return [];
-	let parsed;
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		if (raw === null) return [];
-		parsed = JSON.parse(raw);
-	} catch {
-		return [];
-	}
-	if (!Array.isArray(parsed)) return [];
-	const list = [];
-	for (const entry of parsed) {
-		if (typeof entry !== "object" || entry === null) continue;
-		const { id, name, label, url, self, addedAt } = entry;
-		if (self === true) continue;
-		if (typeof id !== "string" || typeof name !== "string" || typeof url !== "string") continue;
-		list.push({
-			id,
-			name,
-			label: typeof label === "string" ? label : name,
-			url,
-			self: false,
-			addedAt: typeof addedAt === "number" ? addedAt : 0
+function coerceMachineList(raw) {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { machines: [] };
+	const record = raw;
+	const self = coerceSelf(record.self);
+	const machines = [];
+	if (Array.isArray(record.machines)) for (const entry of record.machines) {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+		const row = entry;
+		if (typeof row.id !== "string" || row.id === "") continue;
+		if (typeof row.name !== "string" || row.name === "") continue;
+		if (typeof row.origin !== "string" || row.origin === "") continue;
+		const status = typeof row.status === "string" && STATUSES.includes(row.status) ? row.status : "pending";
+		const base = {
+			id: row.id,
+			name: row.name,
+			label: typeof row.label === "string" && row.label !== "" ? row.label : row.name,
+			origin: row.origin,
+			status,
+			self: self !== void 0 && row.id === self.id
+		};
+		if (typeof row.lastProbeAt === "number") machines.push({
+			...base,
+			lastProbeAt: row.lastProbeAt
 		});
+		else machines.push(base);
 	}
-	return list;
+	return self === void 0 ? { machines } : {
+		self,
+		machines
+	};
+}
+/** Read a non-2xx body's `{error}` message; degrade to the bare status line. */
+async function errorText(response) {
+	try {
+		const body = await response.json();
+		if (typeof body?.error === "string" && body.error !== "") return body.error;
+	} catch {}
+	return `HTTP ${response.status}`;
 }
 /**
-* Persist the ledger; storage failures degrade silently to in-memory state.
+* GET the machine list (self + remotes).
 *
-* @param list - the machines to store (self row included).
+* @returns the coerced list — a malformed body degrades to the empty list, never a throw.
+* @throws when the request fails or the face answers non-2xx.
 */
-function saveMachines(list) {
-	if (typeof localStorage === "undefined") return;
-	try {
-		localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-	} catch {}
+async function fetchMachines() {
+	const response = await fetch(MESH_API_BASE, { credentials: "same-origin" });
+	if (!response.ok) throw new Error(await errorText(response));
+	return coerceMachineList(await response.json().catch(() => void 0));
 }
-/** A fresh row id (UUID when available, time+random otherwise). */
-function freshMachineId() {
-	const cryptoRef = globalThis.crypto;
-	if (typeof cryptoRef?.randomUUID === "function") return cryptoRef.randomUUID();
-	return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+/**
+* POST a pairing `{name, label?, tokenUrl}` (label omitted → the server
+* collapses it to the name).
+*
+* @throws Error(body.error) when the face answers non-2xx — the message is
+* mesh-link's own, already token-redacted.
+*/
+async function addMachine(input) {
+	const body = {
+		name: input.name,
+		tokenUrl: input.tokenUrl
+	};
+	if (typeof input.label === "string" && input.label !== "") body.label = input.label;
+	const response = await fetch(MESH_API_BASE, {
+		credentials: "same-origin",
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body)
+	});
+	if (!response.ok) throw new Error(await errorText(response));
+}
+/**
+* DELETE one remote row by id (`{removed: boolean}` answers even for
+* unknown ids — a false removal is a reload, not an error).
+*
+* @throws Error(body.error) on a non-2xx answer.
+*/
+async function removeMachine(id) {
+	const response = await fetch(`${MESH_API_BASE}?id=${encodeURIComponent(id)}`, {
+		credentials: "same-origin",
+		method: "DELETE"
+	});
+	if (!response.ok) throw new Error(await errorText(response));
+}
+/**
+* POST `{op: 'reprobe', id}` — a fresh probe of one remote; the outcome
+* (even unreachable/auth-expired) lands in the status table server-side, so
+* the caller reloads rather than interpreting the probe body.
+*
+* @throws Error(body.error) on a non-2xx answer (the op itself failed).
+*/
+async function reprobeMachine(id) {
+	const response = await fetch(MESH_API_BASE, {
+		credentials: "same-origin",
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			op: "reprobe",
+			id
+		})
+	});
+	if (!response.ok) throw new Error(await errorText(response));
+}
+/**
+* Client-side pre-check before a pairing submit: a parseable absolute
+* http(s) URL carrying a non-empty `token` query param. The server re-parses
+* authoritatively (mesh-link's parseTokenUrl); this only keeps obviously
+* dead drafts off the wire.
+*
+* @param input - the raw token-URL draft (trim before calling).
+* @returns whether the draft is submit-shaped.
+*/
+function validTokenUrl(input) {
+	if (typeof input !== "string" || input === "") return false;
+	let url;
+	try {
+		url = new URL(input);
+	} catch {
+		return false;
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+	const token = url.searchParams.get("token");
+	return token !== null && token !== "";
 }
 
 //#endregion
@@ -1370,7 +1473,7 @@ function attemptSwitch(label) {
 //#region src/client/HubPage.tsx
 const EMPTY_DRAFT = {
 	name: "",
-	url: ""
+	tokenUrl: ""
 };
 /** Chip text: drop the trailing slash for concision ('/claude/' → '/claude'). */
 function displayPath(path) {
@@ -1394,6 +1497,93 @@ const chipPending = {
 	...chip,
 	color: "var(--dsw-alias-label-caption)"
 };
+const chipWarn = {
+	...chip,
+	color: "var(--dsw-alias-state-warn-primary)"
+};
+const chipError = {
+	...chip,
+	color: "var(--dsw-alias-state-error-primary)"
+};
+/** Machine id chip (the m4): the monospace chip look the roster's path tags use. */
+const chipMonoId = {
+	...chip,
+	fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+	fontSize: 10.5
+};
+/** The status dot's fixed part (the color is decided per row). */
+const dotStyle = {
+	width: 8,
+	height: 8,
+	borderRadius: "50%",
+	flex: "none"
+};
+/** The machine origin column: monospace, eats the leftover row width. */
+const originStyle = {
+	flex: 1,
+	minWidth: 0,
+	overflow: "hidden",
+	textOverflow: "ellipsis",
+	whiteSpace: "nowrap",
+	fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+	fontSize: 12,
+	color: "var(--dsw-alias-label-secondary)"
+};
+/** The quiet text action (reprobe) — the switch link's look. */
+const textActionStyle = {
+	border: "none",
+	background: "transparent",
+	padding: 0,
+	font: "inherit",
+	fontSize: 12.5,
+	color: "var(--dsw-alias-label-secondary)",
+	cursor: "pointer",
+	whiteSpace: "nowrap"
+};
+/** The icon action (remove ✕) seat. */
+const iconActionStyle = {
+	display: "inline-flex",
+	alignItems: "center",
+	justifyContent: "center",
+	width: 22,
+	height: 22,
+	borderRadius: 6,
+	border: "none",
+	background: "transparent",
+	color: "var(--dsw-alias-label-caption)",
+	font: "inherit",
+	cursor: "pointer"
+};
+/** The status dot's color: reachable green, pending grey, unreachable amber, auth-expired red. */
+function statusDotColor(status) {
+	if (status === "reachable") return "var(--dsw-alias-state-success-primary)";
+	if (status === "auth-expired") return "var(--dsw-alias-state-error-primary)";
+	if (status === "unreachable") return "var(--dsw-alias-state-warn-primary)";
+	return "var(--dsw-alias-label-caption)";
+}
+/** The status chip (style + text) for one remote row. */
+function statusChip(machine) {
+	if (machine.status === "reachable") return {
+		style: chipSelf,
+		text: "reachable"
+	};
+	if (machine.status === "auth-expired") return {
+		style: chipError,
+		text: "auth expired"
+	};
+	if (machine.status === "unreachable") return {
+		style: chipWarn,
+		text: "unreachable"
+	};
+	return {
+		style: chipPending,
+		text: "pending"
+	};
+}
+/** One line of error text for the panel's inline error line. */
+function errText(err) {
+	return err instanceof Error ? err.message : String(err);
+}
 const inputStyle = {
 	boxSizing: "border-box",
 	width: "100%",
@@ -1477,7 +1667,11 @@ function GroupHead({ title, count, action }) {
 	});
 }
 function HubPage() {
-	const [machines, setMachines] = react.useState(() => loadMachines());
+	const [mesh, setMesh] = react.useState({ machines: [] });
+	const [meshLoaded, setMeshLoaded] = react.useState(false);
+	const [meshError, setMeshError] = react.useState(null);
+	const [meshBusy, setMeshBusy] = react.useState(false);
+	const [meshReloads, setMeshReloads] = react.useState(0);
 	const [showAdd, setShowAdd] = react.useState(false);
 	const [draft, setDraft] = react.useState(EMPTY_DRAFT);
 	const [agents, setAgents] = react.useState(() => rosterFromGlobal() ?? null);
@@ -1504,6 +1698,24 @@ function HubPage() {
 		};
 	}, []);
 	react.useEffect(() => {
+		let cancelled = false;
+		fetchMachines().then((list) => {
+			if (!cancelled) {
+				setMesh(list);
+				setMeshError(null);
+				setMeshLoaded(true);
+			}
+		}).catch((err) => {
+			if (!cancelled) {
+				setMeshError(errText(err));
+				setMeshLoaded(true);
+			}
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [meshReloads]);
+	react.useEffect(() => {
 		if (!fusion) return;
 		const state = uiState();
 		if (state === void 0) return;
@@ -1512,6 +1724,7 @@ function HubPage() {
 		});
 	}, [fusion]);
 	const here = currentMountPath();
+	const hereOrigin = typeof location === "undefined" ? "" : location.origin;
 	const isActive = (agent) => hubRowActive({
 		fusion,
 		agentKey: agent.key,
@@ -1534,30 +1747,46 @@ function HubPage() {
 			attempt: () => attemptSwitch(agent.key)
 		}).preventDefault) event.preventDefault();
 	};
-	const persist = (next) => {
-		const list = [...next];
-		setMachines(list);
-		saveMachines(list);
+	/** Bump the reload sequence — every mutating op refreshes through the API. */
+	const reloadMachines = () => {
+		setMeshReloads((n) => n + 1);
 	};
-	const addMachine = () => {
+	const addRemote = () => {
 		const name = draft.name.trim();
-		const url = draft.url.trim();
-		if (name === "" || url === "") return;
-		persist([...machines, {
-			id: freshMachineId(),
+		const tokenUrl = draft.tokenUrl.trim();
+		if (name === "" || !validTokenUrl(tokenUrl)) return;
+		setMeshBusy(true);
+		addMachine({
 			name,
-			label: name,
-			url,
-			self: false,
-			addedAt: Date.now()
-		}]);
-		setDraft(EMPTY_DRAFT);
-		setShowAdd(false);
+			tokenUrl
+		}).then(() => {
+			setDraft(EMPTY_DRAFT);
+			setShowAdd(false);
+			setMeshError(null);
+			reloadMachines();
+		}).catch((err) => {
+			setMeshError(errText(err));
+		}).finally(() => {
+			setMeshBusy(false);
+		});
 	};
-	const removeMachine = (id) => {
-		persist(machines.filter((machine) => machine.id !== id));
+	const removeRemote = (id) => {
+		removeMachine(id).then(() => {
+			setMeshError(null);
+			reloadMachines();
+		}).catch((err) => {
+			setMeshError(errText(err));
+		});
 	};
-	const draftValid = draft.name.trim() !== "" && draft.url.trim() !== "";
+	const reprobeRemote = (id) => {
+		reprobeMachine(id).then(() => {
+			setMeshError(null);
+			reloadMachines();
+		}).catch((err) => {
+			setMeshError(errText(err));
+		});
+	};
+	const draftValid = draft.name.trim() !== "" && validTokenUrl(draft.tokenUrl.trim());
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 		style: {
 			display: "flex",
@@ -1685,7 +1914,7 @@ function HubPage() {
 					children: [
 						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(GroupHead, {
 							title: "Machines",
-							count: machines.length,
+							count: (mesh.self !== void 0 ? 1 : 0) + mesh.machines.length,
 							action: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
 								type: "button",
 								onClick: () => {
@@ -1728,81 +1957,130 @@ function HubPage() {
 							},
 							children: "Add another DSH from remote machines, provide the token URL."
 						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						meshError !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+							style: {
+								margin: 0,
+								fontSize: 12.5,
+								lineHeight: "20px",
+								color: "var(--dsw-alias-state-error-primary)"
+							},
+							children: meshError
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("ul", {
 							style: listStyle,
-							children: machines.map((machine) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, { children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									"aria-hidden": true,
+							children: [
+								!meshLoaded && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
 									style: {
-										width: 8,
-										height: 8,
-										borderRadius: "50%",
-										flex: "none",
-										background: machine.self ? "var(--dsw-alias-state-success-primary)" : "var(--dsw-alias-label-caption)"
-									}
+										padding: "9px 8px",
+										fontSize: 13,
+										color: "var(--dsw-alias-label-tertiary)",
+										listStyle: "none"
+									},
+									children: "Loading machines…"
 								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								meshLoaded && meshError === null && mesh.machines.length === 0 && mesh.self === void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
 									style: {
-										fontWeight: 500,
-										whiteSpace: "nowrap"
+										padding: "9px 8px",
+										fontSize: 13,
+										color: "var(--dsw-alias-label-tertiary)",
+										listStyle: "none"
 									},
-									children: machine.name
+									children: "No machines yet — add the first one with its token URL."
 								}),
-								machine.label !== machine.name && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									style: chip,
-									children: machine.label
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									style: {
-										flex: 1,
-										minWidth: 0,
-										overflow: "hidden",
-										textOverflow: "ellipsis",
-										whiteSpace: "nowrap",
-										fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-										fontSize: 12,
-										color: "var(--dsw-alias-label-secondary)"
-									},
-									children: machine.url
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									style: machine.self ? chipSelf : chipPending,
-									children: machine.self ? "self" : "link pending"
-								}),
-								!machine.self && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									"aria-label": `Remove ${machine.name}`,
-									onClick: () => {
-										removeMachine(machine.id);
-									},
-									style: {
-										display: "inline-flex",
-										alignItems: "center",
-										justifyContent: "center",
-										width: 22,
-										height: 22,
-										borderRadius: 6,
-										border: "none",
-										background: "transparent",
-										color: "var(--dsw-alias-label-caption)",
-										font: "inherit",
-										cursor: "pointer"
-									},
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-										width: "11",
-										height: "11",
-										viewBox: "0 0 11 11",
-										fill: "none",
-										"aria-hidden": "true",
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", {
-											d: "M2.5 2.5L8.5 8.5M8.5 2.5L2.5 8.5",
-											stroke: "currentColor",
-											strokeWidth: "1.4",
-											strokeLinecap: "round"
-										})
+								mesh.self !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, { children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										"aria-hidden": true,
+										style: {
+											...dotStyle,
+											background: "var(--dsw-alias-state-success-primary)"
+										}
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										style: {
+											fontWeight: 500,
+											whiteSpace: "nowrap"
+										},
+										children: mesh.self.label
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										style: originStyle,
+										children: hereOrigin
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										style: chipMonoId,
+										children: mesh.self.id
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										style: chipSelf,
+										children: "self"
 									})
+								] }),
+								mesh.machines.map((machine) => {
+									const status = statusChip(machine);
+									return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, { children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											"aria-hidden": true,
+											style: {
+												...dotStyle,
+												background: statusDotColor(machine.status)
+											}
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: {
+												fontWeight: 500,
+												whiteSpace: "nowrap"
+											},
+											children: machine.name
+										}),
+										machine.label !== machine.name && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: chip,
+											children: machine.label
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: originStyle,
+											children: machine.origin
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: chipMonoId,
+											children: machine.id
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: status.style,
+											children: status.text
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											"aria-label": `Reprobe ${machine.name}`,
+											onClick: () => {
+												reprobeRemote(machine.id);
+											},
+											style: textActionStyle,
+											children: "reprobe"
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											"aria-label": `Remove ${machine.name}`,
+											onClick: () => {
+												removeRemote(machine.id);
+											},
+											style: iconActionStyle,
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+												width: "11",
+												height: "11",
+												viewBox: "0 0 11 11",
+												fill: "none",
+												"aria-hidden": "true",
+												children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", {
+													d: "M2.5 2.5L8.5 8.5M8.5 2.5L2.5 8.5",
+													stroke: "currentColor",
+													strokeWidth: "1.4",
+													strokeLinecap: "round"
+												})
+											})
+										})
+									] }, machine.id);
 								})
-							] }, machine.id))
+							]
 						}),
 						showAdd && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							style: {
@@ -1831,15 +2109,15 @@ function HubPage() {
 								})] }),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 									style: fieldLabel,
-									children: "URL"
+									children: "Token URL"
 								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
 									style: inputStyle,
-									value: draft.url,
-									placeholder: "http://192.0.2.130:4999",
+									value: draft.tokenUrl,
+									placeholder: "https://192.0.2.130:4999/?token=…",
 									onChange: (event) => {
 										setDraft({
 											...draft,
-											url: event.target.value
+											tokenUrl: event.target.value
 										});
 									}
 								})] }),
@@ -1869,9 +2147,9 @@ function HubPage() {
 										children: "Cancel"
 									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 										type: "button",
-										disabled: !draftValid,
+										disabled: !draftValid || meshBusy,
 										onClick: () => {
-											addMachine();
+											addRemote();
 										},
 										style: {
 											padding: "7px 14px",

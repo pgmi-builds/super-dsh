@@ -2,7 +2,16 @@ import * as React from 'react'
 import { HubGlyph } from './glyph.js'
 import { RuntimeMark } from './runtime-icons.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
-import { freshMachineId, loadMachines, saveMachines, type HubMachine } from './machines-store.js'
+import {
+  addMachine,
+  fetchMachines,
+  removeMachine,
+  reprobeMachine,
+  validTokenUrl,
+  type MeshList,
+  type MeshMachineStatus,
+  type MeshMachineView,
+} from './mesh-api.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 
@@ -10,9 +19,10 @@ import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-cor
  * The Hub main panel (`main`, key `hub`): the hub-functionality home page.
  * The hub is this tool as a whole; machines are the sources of agent
  * runtimes. Home lists the machines with the add-machine form, then the
- * agent-adapter roster the hub currently bridges. Machines are the UI-first
- * half of the concept — the client-side ledger owns them until the pairing
- * backend lands; the adapter list is the live `/api/agent-runtime` roster.
+ * agent-adapter roster the hub currently bridges. Machines ride the real
+ * mesh API (mesh-api.ts — `/api/superd/machines`: the self block + paired
+ * remotes, same-origin fetch, one reload after every mutating op); the
+ * adapter list is the live `/api/agent-runtime` roster.
  *
  * Switch surface (T-B, switch-only since T-C): the Agent Runtimes rows are
  * the agent selector. Every row click runs the `seatClickDecision` table —
@@ -27,13 +37,13 @@ import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-cor
  * @module superd-hub/client/HubPage
  */
 
-/** The add-machine form's editable fields. */
+/** The add-machine form's editable fields (label is server-side — it collapses to the name). */
 interface AddDraft {
   readonly name: string
-  readonly url: string
+  readonly tokenUrl: string
 }
 
-const EMPTY_DRAFT: AddDraft = { name: '', url: '' }
+const EMPTY_DRAFT: AddDraft = { name: '', tokenUrl: '' }
 
 /** Chip text: drop the trailing slash for concision ('/claude/' → '/claude'). */
 function displayPath(path: string): string {
@@ -59,6 +69,91 @@ const chipSelf: React.CSSProperties = {
 const chipPending: React.CSSProperties = {
   ...chip,
   color: 'var(--dsw-alias-label-caption)',
+}
+
+const chipWarn: React.CSSProperties = {
+  ...chip,
+  color: 'var(--dsw-alias-state-warn-primary)',
+}
+
+const chipError: React.CSSProperties = {
+  ...chip,
+  color: 'var(--dsw-alias-state-error-primary)',
+}
+
+/** Machine id chip (the m4): the monospace chip look the roster's path tags use. */
+const chipMonoId: React.CSSProperties = {
+  ...chip,
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: 10.5,
+}
+
+/** The status dot's fixed part (the color is decided per row). */
+const dotStyle: React.CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  flex: 'none',
+}
+
+/** The machine origin column: monospace, eats the leftover row width. */
+const originStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+/** The quiet text action (reprobe) — the switch link's look. */
+const textActionStyle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  padding: 0,
+  font: 'inherit',
+  fontSize: 12.5,
+  color: 'var(--dsw-alias-label-secondary)',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+
+/** The icon action (remove ✕) seat. */
+const iconActionStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 22,
+  height: 22,
+  borderRadius: 6,
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-caption)',
+  font: 'inherit',
+  cursor: 'pointer',
+}
+
+/** The status dot's color: reachable green, pending grey, unreachable amber, auth-expired red. */
+function statusDotColor(status: MeshMachineStatus): string {
+  if (status === 'reachable') return 'var(--dsw-alias-state-success-primary)'
+  if (status === 'auth-expired') return 'var(--dsw-alias-state-error-primary)'
+  if (status === 'unreachable') return 'var(--dsw-alias-state-warn-primary)'
+  return 'var(--dsw-alias-label-caption)'
+}
+
+/** The status chip (style + text) for one remote row. */
+function statusChip(machine: MeshMachineView): { style: React.CSSProperties; text: string } {
+  if (machine.status === 'reachable') return { style: chipSelf, text: 'reachable' }
+  if (machine.status === 'auth-expired') return { style: chipError, text: 'auth expired' }
+  if (machine.status === 'unreachable') return { style: chipWarn, text: 'unreachable' }
+  return { style: chipPending, text: 'pending' }
+}
+
+/** One line of error text for the panel's inline error line. */
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 const inputStyle: React.CSSProperties = {
@@ -134,7 +229,11 @@ function GroupHead({ title, count, action }: { title: string; count: number; act
 }
 
 export function HubPage(): React.JSX.Element {
-  const [machines, setMachines] = React.useState<HubMachine[]>(() => loadMachines())
+  const [mesh, setMesh] = React.useState<MeshList>({ machines: [] })
+  const [meshLoaded, setMeshLoaded] = React.useState(false)
+  const [meshError, setMeshError] = React.useState<string | null>(null)
+  const [meshBusy, setMeshBusy] = React.useState(false)
+  const [meshReloads, setMeshReloads] = React.useState(0)
   const [showAdd, setShowAdd] = React.useState(false)
   const [draft, setDraft] = React.useState<AddDraft>(EMPTY_DRAFT)
   const [agents, setAgents] = React.useState<AgentLink[] | null>(() => rosterFromGlobal() ?? null)
@@ -168,6 +267,18 @@ export function HubPage(): React.JSX.Element {
     return () => { cancelled = true }
   }, [])
 
+  // The machines panel's data plane: initial load on mount, then one reload
+  // after every mutating op (add/remove/reprobe bump `meshReloads` — the
+  // server's registry + status table are the single source of truth; a
+  // failed load degrades to the inline error line, never a crash).
+  React.useEffect(() => {
+    let cancelled = false
+    fetchMachines()
+      .then((list) => { if (!cancelled) { setMesh(list); setMeshError(null); setMeshLoaded(true) } })
+      .catch((err: unknown) => { if (!cancelled) { setMeshError(errText(err)); setMeshLoaded(true) } })
+    return () => { cancelled = true }
+  }, [meshReloads])
+
   React.useEffect(() => {
     if (!fusion) return
     const state = uiState()
@@ -176,6 +287,9 @@ export function HubPage(): React.JSX.Element {
   }, [fusion])
 
   const here = currentMountPath()
+  // The self row's origin: where this page is served from (the API's self
+  // block carries the identity, not the origin).
+  const hereOrigin = typeof location === 'undefined' ? '' : location.origin
   const isActive = (agent: AgentLink): boolean => hubRowActive({
     fusion,
     agentKey: agent.key,
@@ -201,33 +315,38 @@ export function HubPage(): React.JSX.Element {
     if (decision.preventDefault) event.preventDefault()
   }
 
-  const persist = (next: readonly HubMachine[]): void => {
-    const list = [...next]
-    setMachines(list)
-    saveMachines(list)
-  }
+  /** Bump the reload sequence — every mutating op refreshes through the API. */
+  const reloadMachines = (): void => { setMeshReloads((n) => n + 1) }
 
-  const addMachine = (): void => {
+  const addRemote = (): void => {
     const name = draft.name.trim()
-    const url = draft.url.trim()
-    if (name === '' || url === '') return
-    persist([...machines, {
-      id: freshMachineId(),
-      name,
-      label: name,
-      url,
-      self: false,
-      addedAt: Date.now(),
-    }])
-    setDraft(EMPTY_DRAFT)
-    setShowAdd(false)
+    const tokenUrl = draft.tokenUrl.trim()
+    if (name === '' || !validTokenUrl(tokenUrl)) return
+    setMeshBusy(true)
+    void addMachine({ name, tokenUrl })
+      .then(() => {
+        setDraft(EMPTY_DRAFT)
+        setShowAdd(false)
+        setMeshError(null)
+        reloadMachines()
+      })
+      .catch((err: unknown) => { setMeshError(errText(err)) })
+      .finally(() => { setMeshBusy(false) })
   }
 
-  const removeMachine = (id: string): void => {
-    persist(machines.filter((machine) => machine.id !== id))
+  const removeRemote = (id: string): void => {
+    void removeMachine(id)
+      .then(() => { setMeshError(null); reloadMachines() })
+      .catch((err: unknown) => { setMeshError(errText(err)) })
   }
 
-  const draftValid = draft.name.trim() !== '' && draft.url.trim() !== ''
+  const reprobeRemote = (id: string): void => {
+    void reprobeMachine(id)
+      .then(() => { setMeshError(null); reloadMachines() })
+      .catch((err: unknown) => { setMeshError(errText(err)) })
+  }
+
+  const draftValid = draft.name.trim() !== '' && validTokenUrl(draft.tokenUrl.trim())
 
   return (
     <div
@@ -308,7 +427,7 @@ export function HubPage(): React.JSX.Element {
         <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <GroupHead
             title="Machines"
-            count={machines.length}
+            count={(mesh.self !== undefined ? 1 : 0) + mesh.machines.length}
             action={(
               <button
                 type="button"
@@ -337,64 +456,64 @@ export function HubPage(): React.JSX.Element {
           <p style={{ margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' }}>
             Add another DSH from remote machines, provide the token URL.
           </p>
+          {meshError !== null && (
+            <p style={{ margin: 0, fontSize: 12.5, lineHeight: '20px', color: 'var(--dsw-alias-state-error-primary)' }}>
+              {meshError}
+            </p>
+          )}
           <ul style={listStyle}>
-            {machines.map((machine) => (
-              <HoverRow key={machine.id}>
-                <span
-                  aria-hidden
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: '50%',
-                    flex: 'none',
-                    background: machine.self
-                      ? 'var(--dsw-alias-state-success-primary)'
-                      : 'var(--dsw-alias-label-caption)',
-                  }}
-                />
-                <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{machine.name}</span>
-                {machine.label !== machine.name && <span style={chip}>{machine.label}</span>}
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                    fontSize: 12,
-                    color: 'var(--dsw-alias-label-secondary)',
-                  }}
-                >
-                  {machine.url}
-                </span>
-                <span style={machine.self ? chipSelf : chipPending}>{machine.self ? 'self' : 'link pending'}</span>
-                {!machine.self && (
+            {!meshLoaded && (
+              <li style={{ padding: '9px 8px', fontSize: 13, color: 'var(--dsw-alias-label-tertiary)', listStyle: 'none' }}>
+                Loading machines…
+              </li>
+            )}
+            {meshLoaded && meshError === null && mesh.machines.length === 0 && mesh.self === undefined && (
+              <li style={{ padding: '9px 8px', fontSize: 13, color: 'var(--dsw-alias-label-tertiary)', listStyle: 'none' }}>
+                No machines yet — add the first one with its token URL.
+              </li>
+            )}
+            {/* The self row: rendered from the response's self block (never a
+                wire row) — its origin is where this page is served from. */}
+            {mesh.self !== undefined && (
+              <HoverRow>
+                <span aria-hidden style={{ ...dotStyle, background: 'var(--dsw-alias-state-success-primary)' }} />
+                <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{mesh.self.label}</span>
+                <span style={originStyle}>{hereOrigin}</span>
+                <span style={chipMonoId}>{mesh.self.id}</span>
+                <span style={chipSelf}>self</span>
+              </HoverRow>
+            )}
+            {mesh.machines.map((machine) => {
+              const status = statusChip(machine)
+              return (
+                <HoverRow key={machine.id}>
+                  <span aria-hidden style={{ ...dotStyle, background: statusDotColor(machine.status) }} />
+                  <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{machine.name}</span>
+                  {machine.label !== machine.name && <span style={chip}>{machine.label}</span>}
+                  <span style={originStyle}>{machine.origin}</span>
+                  <span style={chipMonoId}>{machine.id}</span>
+                  <span style={status.style}>{status.text}</span>
+                  <button
+                    type="button"
+                    aria-label={`Reprobe ${machine.name}`}
+                    onClick={() => { reprobeRemote(machine.id) }}
+                    style={textActionStyle}
+                  >
+                    reprobe
+                  </button>
                   <button
                     type="button"
                     aria-label={`Remove ${machine.name}`}
-                    onClick={() => { removeMachine(machine.id) }}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 22,
-                      height: 22,
-                      borderRadius: 6,
-                      border: 'none',
-                      background: 'transparent',
-                      color: 'var(--dsw-alias-label-caption)',
-                      font: 'inherit',
-                      cursor: 'pointer',
-                    }}
+                    onClick={() => { removeRemote(machine.id) }}
+                    style={iconActionStyle}
                   >
                     <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
                       <path d="M2.5 2.5L8.5 8.5M8.5 2.5L2.5 8.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
                     </svg>
                   </button>
-                )}
-              </HoverRow>
-            ))}
+                </HoverRow>
+              )
+            })}
           </ul>
           {showAdd && (
             <div
@@ -418,12 +537,12 @@ export function HubPage(): React.JSX.Element {
                 />
               </label>
               <label>
-                <span style={fieldLabel}>URL</span>
+                <span style={fieldLabel}>Token URL</span>
                 <input
                   style={inputStyle}
-                  value={draft.url}
-                  placeholder="http://192.0.2.130:4999"
-                  onChange={(event) => { setDraft({ ...draft, url: event.target.value }) }}
+                  value={draft.tokenUrl}
+                  placeholder="https://192.0.2.130:4999/?token=…"
+                  onChange={(event) => { setDraft({ ...draft, tokenUrl: event.target.value }) }}
                 />
               </label>
               <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -445,8 +564,8 @@ export function HubPage(): React.JSX.Element {
                 </button>
                 <button
                   type="button"
-                  disabled={!draftValid}
-                  onClick={() => { addMachine() }}
+                  disabled={!draftValid || meshBusy}
+                  onClick={() => { addRemote() }}
                   style={{
                     padding: '7px 14px',
                     borderRadius: 8,
