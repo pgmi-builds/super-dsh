@@ -91,15 +91,17 @@ import {
  * Log-only session event keys this adapter appends that the locally-resolved
  * dsh-session build does not know (upstream declares `todo/write` in
  * packages/todo/tool-todo and `compaction/*` in packages/compaction, whose
- * types this project does not reference; `approval/policy` comes from
- * dsh-user-approval's own augmentation and is reached through the trailing
- * cast). Mirrors the local-declaration pattern of permission.ts.
+ * types this project does not reference). Mirrors the local-declaration
+ * pattern of permission.ts. `approval/policy` is deliberately NOT mirrored
+ * here: dsh-user-approval's canonical augmentation (`{ policy: ApprovalPolicy;
+ * source?: "delegation" }`) reaches this compilation through the hub-dist
+ * type chain (superd-hub/dist/hub-tool.d.ts → dsh-tools → dsh-user-approval),
+ * and a local loose `{ policy: string }` mirror collides with it (TS2717).
  */
 declare module "@deepseek-ai/dsh-session/types" {
   interface SessionEventMap {
     "agent-preset/selected": { agentPreset: string };
     "todo/write": { todos: { content: string; status: "pending" | "in_progress" | "completed" }[] };
-    "approval/policy": { policy: string };
     "compaction/start": { compactionId: string; turn: number | null };
     "compaction/end": { compactionId: string; turn: number | null; error?: string };
   }
