@@ -32,7 +32,7 @@
 import { mkdirSync } from 'node:fs'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { join } from 'node:path'
-import { registerAgent, setReady } from './roster.js'
+import { registerAgent, setFailed, setReady } from './roster.js'
 import { registerForeignTarget } from './targets.js'
 import { spawnWorld } from './spawn-world.js'
 import { provisionWorldProfile, resolveInstallAnchor } from './world-provision.js'
@@ -109,9 +109,11 @@ export function apply(ctx: HostContext, config?: Partial<Config>): void {
     }, `superd-join: ${key} mount`)
     return ctxW
   })().catch((cause: unknown) => {
-    // A failed world degrades to a not-ready roster row; a rejected provided
-    // promise would fail the entire host boot (loader entry apply).
+    // A failed world degrades to a FAILED roster row (mount stays for
+    // diagnosis; ready stays false); a rejected provided promise would fail
+    // the entire host boot (loader entry apply).
     console.error(`[super-dsh] ${key} world failed:`, cause)
+    try { setFailed(key, true) } catch { /* roster row already gone */ }
     return null
   })
   ctx.provide(`superd.world.${key}`, world)
