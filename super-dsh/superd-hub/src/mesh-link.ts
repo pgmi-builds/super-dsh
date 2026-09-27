@@ -18,7 +18,7 @@
 import { type MachineRow, loadMachines, saveMachines, upsertRemote, listRemotes } from './machines.js'
 
 /** One roster agent as seen through a successful probe (§6.2 additive fields). */
-interface ProbeAgent {
+export interface ProbeAgent {
   id: string
   key: string
   label: string
@@ -187,6 +187,68 @@ export function resetMachineStatus(): void {
   machineStatusTable.clear()
 }
 
+/**
+ * Federation lifecycle event (mesh P2 Task 3) — emitted HERE, at the machine
+ * orchestration points, so the federation registrar (mesh-federate.ts) can
+ * react WITHOUT mesh-link ever importing it (the import direction is frozen:
+ * mesh-federate → mesh-link, never the reverse; the seam is this bus):
+ *
+ *  - `federated` — a probe SUCCEEDED (pairMachine or reprobeMachine): the
+ *    machine identity (m4 + name), its origin, and the adopted agent list
+ *    (each row carrying its remote a6 `id`, the remote RUNTIME key `key` —
+ *    the wire `?agent=` demux key at the peer — label, ready, failed). The
+ *    consumer converges its registries onto this snapshot and defederates
+ *    rows whose a6s no longer appear (roster convergence).
+ *  - `degraded` — a probe FAILED after the machine was already probed at
+ *    least once (unreachable peer or auth-expired cookie). Degrade semantics:
+ *    federated rows are KEPT with `ready` flipped false — visible but not
+ *    servable (orchestra downgrade, never a silent vanish).
+ *  - `defederated` — the machine row was removed (mesh-rpc DELETE →
+ *    {@link emitMachineRemoved}); the consumer drops every row of the machine.
+ */
+export type MeshFederationEvent =
+  | { type: 'federated'; machineId: string; machineName: string; origin: string; agents: ProbeAgent[] }
+  | { type: 'degraded'; machineId: string; reason: 'unreachable' | 'auth-expired'; error: string }
+  | { type: 'defederated'; machineId: string }
+
+const federationListeners = new Set<(event: MeshFederationEvent) => void>()
+
+/** Subscribe to federation lifecycle events; returns an unsubscribe function. */
+export function onMeshFederationEvent(fn: (event: MeshFederationEvent) => void): () => void {
+  federationListeners.add(fn)
+  return () => {
+    federationListeners.delete(fn)
+  }
+}
+
+function emitFederation(event: MeshFederationEvent): void {
+  for (const fn of federationListeners) fn(event)
+}
+
+/**
+ * Announce a machine removal on the federation bus (`{type: 'defederated'}`).
+ * Called by mesh-rpc's DELETE path AFTER a successful `removeRemote` — the
+ * route module stays free of federation logic (one-way imports: mesh-rpc →
+ * mesh-link, the registrar subscribes at wiring time).
+ */
+export function emitMachineRemoved(machineId: string): void {
+  emitFederation({ type: 'defederated', machineId })
+}
+
+/**
+ * The machine's CURRENT pairing cookie: the in-process jar first (warm after
+ * every mint this process — pair and reprobe both write it before any
+ * federation event fires), then the persisted `MachineRow.cookie` (only when
+ * `home` is given; the defensive cold path for gateways built without a probe
+ * in this process), else `''` (wire calls then simply omit the Cookie header).
+ */
+export function cookieOf(machineId: string, home?: string): string {
+  const jarred = cookieJar.get(machineId)
+  if (jarred !== undefined) return jarred
+  if (home === undefined) return ''
+  return listRemotes(home).find((r) => r.id === machineId)?.cookie ?? ''
+}
+
 function recordStatus(id: string, status: string, error?: string): void {
   machineStatusTable.set(id, error === undefined ? { status, lastProbeAt: Date.now() } : { status, lastProbeAt: Date.now(), error })
 }
@@ -237,6 +299,7 @@ export async function pairMachine(home: string, input: { name: string; label?: s
   persistRow(home, row, deps)
   cookieJar.set(row.id, cookie)
   recordStatus(row.id, 'reachable')
+  emitFederation({ type: 'federated', machineId: row.id, machineName: row.name, origin, agents: probe.agents })
   return { machineId: row.id, row, probe }
 }
 
@@ -271,10 +334,13 @@ export async function reprobeMachine(home: string, id: string, deps?: LinkDeps):
   if (probe.ok) {
     cookieJar.set(id, cookie)
     recordStatus(id, 'reachable')
+    emitFederation({ type: 'federated', machineId: id, machineName: row.name, origin, agents: probe.agents })
   } else if (probe.status === 'auth-expired') {
     recordStatus(id, 'auth-expired', probe.error)
+    emitFederation({ type: 'degraded', machineId: id, reason: 'auth-expired', error: probe.error })
   } else {
     recordStatus(id, 'unreachable', probe.error)
+    emitFederation({ type: 'degraded', machineId: id, reason: probe.status, error: probe.error })
   }
   return probe
 }

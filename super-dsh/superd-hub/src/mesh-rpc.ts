@@ -30,7 +30,12 @@
  *                                           message is mesh-link's own,
  *                                           already token-redacted)
  *   DELETE /api/superd/machines?id=<m4>    → `{removed: true|false}`
- *
+ *   DELETE /api/superd/machines?id=<m4>    → `{removed: true|false}`; a successful
+ *                                           removal ALSO announces `emitMachineRemoved`
+ *                                           on mesh-link's federation bus (mesh P2
+ *                                           Task 3) — the registrar defederates the
+ *                                           machine's rows; this module stays
+ *                                           route+handler only (no mesh-federate import)
  * `DELETE` note: upstream's declared `ConnectionFetchMethod` union is
  * `GET | HEAD | POST`, but the runtime route table dispatches through an
  * untyped `methods.has(method)` set and `assertFetchRoute` never inspects
@@ -40,7 +45,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { type MachineRow, ensureSelf, listRemotes, removeRemote } from './machines.js'
-import { machineStatus, pairMachine, reprobeMachine, type ProbeResult } from './mesh-link.js'
+import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type ProbeResult } from './mesh-link.js'
 
 /** The shared-channel Fetch route path this API owns. */
 export const MESH_API_BASE = '/api/superd/machines'
@@ -183,7 +188,9 @@ async function handlePost(request: Request, deps: MeshDeps): Promise<Response> {
 function handleRemove(request: Request, deps: MeshDeps): Response {
   const id = new URL(request.url).searchParams.get('id') ?? ''
   if (id === '') return json(400, { error: `mesh-api: DELETE on ${MESH_API_BASE} requires a non-empty ?id= query parameter` })
-  return json(200, { removed: removeRemote(deps.home, id) })
+  const removed = removeRemote(deps.home, id)
+  if (removed) emitMachineRemoved(id) // federation bus: the registrar drops every row of the machine
+  return json(200, { removed })
 }
 
 /**

@@ -12,11 +12,19 @@
  * per-world mount registers through `carrier.ts` (AW-B tasks 2-9), which calls
  * the addressed world's own `typertGateway` instance directly — again without
  * any shared selection value.
+ *
+ * Mesh P2 Task 3 adds the federation wiring: mesh-link's machine lifecycle
+ * events drive mesh-federate's registrar (pair/reprobe success → converge the
+ * remote roster into the registries, probe failure → degrade, removal →
+ * defederate), and the `/hub` family's demux gains the federation table ahead
+ * of the local target registry (spec §3.2 dual-key: a6 canonical, label
+ * aliases compatible).
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { registerSelectorRpc, registryTargets } from './rpc.js'
 import { registerMeshRpc } from './mesh-rpc.js'
+import { federatedGatewayOf, startMeshFederation } from './mesh-federate.js'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { agentRosterRow } from './agent-roster.js'
 import { getTarget } from './targets.js'
@@ -30,7 +38,7 @@ export const name = 'superd-hub'
 /**
  * The plugin form (row contract): applied when the row mounts.
  *
- * Three CTX0-owned contributions, none carrying any selection value:
+ * CTX0-owned contributions, none carrying any selection value:
  *   - the world inventory control plane (read-only);
  *   - the agent roster row baked into ctx0's own index, so the selector lists
  *     every mount path the hub currently serves;
@@ -39,12 +47,16 @@ export const name = 'superd-hub'
  *     World trees compose this same row, but their `webServer` is the VIRTUAL
  *     per-world translation surface — the `/hub` family belongs to ctx0's
  *     real listener only (one family per process, demuxed by `?agent=`).
+ *   - the mesh federation wiring (mesh P2 Task 3): home resolved HERE at
+ *     registration time (mesh-rpc stays a pure route module; tests inject a
+ *     tmpdir home instead); the one-way seam is mesh-link's federation event
+ *     bus — mesh-federate subscribes, mesh-link never imports it.
  */
 export function apply(ctx: Context): void {
   registerSelectorRpc(ctx, registryTargets)
-  // Machine mesh (P1): home resolved HERE at registration time — mesh-rpc stays
-  // a pure route module; tests inject a tmpdir home instead (MeshDeps seam).
-  registerMeshRpc(ctx, { home: resolveDshHome() })
+  const home = resolveDshHome()
+  registerMeshRpc(ctx, { home })
+  ctx.effect(() => startMeshFederation({ home }), 'superd-hub: mesh federation wiring')
   const on = (ctx as unknown as { on?: (event: string, listener: (table: IndexInjection[]) => void) => void }).on
   on?.call(ctx, 'webserver/index-inject', (table) => { table.push(agentRosterRow()) })
   ctx.inject(['webServer', 'connection'], (host) => {
@@ -59,11 +71,20 @@ export function apply(ctx: Context): void {
     // table — never a shared selection. The requestRejection face is the
     // ctx0 browser-trust fence: auth first, then Host/Origin — the family is
     // never weaker than the neighbors carrying identical traffic.
+    //
+    // Demux (mesh P2 Task 3, spec §3.2 dual-key): the mesh FEDERATION table
+    // first — an exact a6 match is the canonical spelling and beats label
+    // aliases — then the shared local target registry (local runtime keys;
+    // federated a6s are registered there too, so the fallback re-arms a
+    // registration whose memo was cleared independently). Local label aliases
+    // and `?agent=<a6>` therefore both demux; under the astronomically rare
+    // a6↔local-key collision the federation wins deterministically (documented
+    // in mesh-federate's header) instead of last-write-wins in the registry.
     const dispose = registerHubRoute({
       real: real as RealWebServerFace,
       authorize: (req, res) => connection.authorizeIndex(req, res),
       requestRejection: (req) => connection.requestRejection(req),
-      gatewayOf: (label) => getTarget(label)?.gateway as CarrierGatewayFace | undefined,
+      gatewayOf: (label) => (federatedGatewayOf(label) ?? getTarget(label)?.gateway) as CarrierGatewayFace | undefined,
     })
     ctx.effect(() => dispose, 'superd-hub: /hub route family')
   })

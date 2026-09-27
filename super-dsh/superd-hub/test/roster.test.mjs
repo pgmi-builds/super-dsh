@@ -64,3 +64,44 @@ test('agentLinks: every row carries a stable a6 id — NATIVE included (tmpdir h
     rmSync(h, { recursive: true, force: true })
   }
 })
+
+test('roster: machine 字段加性——带 machine 行透传、不带行无该键（mesh P2 Task 3）', () => {
+  registerAgent({ key: 'fed1', label: 'Codex · dev3', ready: true, failed: false, machine: 'k3f9' })
+  registerAgent({ key: 'loc1', label: 'OMP', ready: true })
+  try {
+    const rows = Object.fromEntries(listAgents().filter((e) => e.key === 'fed1' || e.key === 'loc1').map((e) => [e.key, e]))
+    assert.equal(rows.fed1.machine, 'k3f9')
+    assert.equal('machine' in rows.loc1, false, '本地行不携带 machine 键（缺省 = local）')
+  } finally {
+    unregisterAgent('fed1')
+    unregisterAgent('loc1')
+  }
+})
+
+test('agentLinks: federated 行无需 host mount——machine 填充、a6 即 id、path 走 /hub demux；排序 native → local → remote（与注册顺序无关）', () => {
+  const h = mkdtempSync(join(tmpdir(), 'superd-roster-fed-'))
+  // federated 行先注册、local 行后注册：排序仍 native → local → remote
+  registerAgent({ key: 'q7m2xp', label: 'Codex · dev3', ready: true, failed: false, machine: 'k3f9' })
+  registerAgent({ key: 'z9remote', label: 'OMP · dev3', ready: false, failed: false, machine: 'k3f9' })
+  registerAgent({ key: 'omp', label: 'OMP', ready: true })
+  const drop = registerHostMount({ key: 'omp', labelPath: '/omp' })
+  try {
+    const links = agentLinks(h)
+    assert.deepEqual(links.map((l) => l.key), ['native', 'omp', 'q7m2xp', 'z9remote'])
+    const fed = links.find((l) => l.key === 'q7m2xp')
+    assert.equal(fed.id, 'q7m2xp', 'a6 即行 id（采纳原值，不本地铸造）')
+    assert.equal(fed.machine, 'k3f9')
+    assert.equal(fed.path, '/hub/?agent=q7m2xp')
+    assert.equal(fed.ready, true)
+    assert.equal(links.find((l) => l.key === 'z9remote').ready, false)
+    const local = links.find((l) => l.key === 'omp')
+    assert.equal(local.machine, 'local')
+    assert.equal(local.path, '/omp/')
+  } finally {
+    drop()
+    unregisterAgent('q7m2xp')
+    unregisterAgent('z9remote')
+    unregisterAgent('omp')
+    rmSync(h, { recursive: true, force: true })
+  }
+})

@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleMeshMachines, registerMeshRpc, MESH_API_BASE } from '../dist/mesh-rpc.js'
-import { machineStatus, resetMachineStatus } from '../dist/mesh-link.js'
+import { machineStatus, resetMachineStatus, onMeshFederationEvent } from '../dist/mesh-link.js'
 import { listRemotes, upsertRemote } from '../dist/machines.js'
 
 const home = () => mkdtempSync(join(tmpdir(), 'superd-mesh-rpc-'))
@@ -236,6 +236,8 @@ test('reprobe 不可达结局仍是 200 {probe}（探测有答案 ≠ 操作失�
 
 test('DELETE ?id=：删行 {removed:true}；再删 {removed:false}；缺 ?id → 400', async () => {
   const h = home()
+  const events = []
+  const off = onMeshFederationEvent((e) => { events.push(e) })
   try {
     upsertRemote(h, row({ id: 'm4xx' }))
     const res = await handleMeshMachines(new Request(`http://x${MESH_API_BASE}?id=m4xx`, { method: 'DELETE' }), { home: h })
@@ -246,11 +248,16 @@ test('DELETE ?id=：删行 {removed:true}；再删 {removed:false}；缺 ?id →
     const again = await handleMeshMachines(new Request(`http://x${MESH_API_BASE}?id=m4xx`, { method: 'DELETE' }), { home: h })
     assert.equal(again.status, 200)
     assert.deepEqual(await again.json(), { removed: false })
+    // mesh P2 Task 3：删除成功 → 联邦总线收到 defederated；再删（removed:false）不重复发
+    assert.deepEqual(events, [{ type: 'defederated', machineId: 'm4xx' }])
 
     const miss = await handleMeshMachines(new Request(`http://x${MESH_API_BASE}`, { method: 'DELETE' }), { home: h })
     assert.equal(miss.status, 400)
     assert.match((await miss.json()).error, /id/)
-  } finally { rmSync(h, { recursive: true, force: true }) }
+  } finally {
+    off()
+    rmSync(h, { recursive: true, force: true })
+  }
 })
 
 test('registerMeshRpc：fake ctx 上注册唯一精确路由（GET/POST/DELETE、buffered），fetch 闭包带 deps', async () => {
