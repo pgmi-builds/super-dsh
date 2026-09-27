@@ -81,7 +81,7 @@ address m4 ──► machine table：self? ──► agent 表（a6 → 本地 w
 
 | 文件 | 内容 |
 |---|---|
-| `machines.json` | `{self: {id, label}, remotes: [{id, name, label, origin, token, enabled, addedAt}]}` |
+| `machines.json` | `{self: {id, label}, remotes: [{id, name, label, origin, token, cookie?, enabled, addedAt}]}`（cookie 随 mint/re-mint 持久化——hub 自身重启不重贴 token，spec §4） |
 | `agent-ids.json` | `{ [label]: a6 }`（本地 agent） |
 | `a2a-conversations.json` | conversation 注册表（P3）：短 ID ↔ 全长 session id + {machine, agent, title, createdAt, lastActivityAt} |
 
