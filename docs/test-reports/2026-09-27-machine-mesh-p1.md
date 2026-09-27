@@ -33,3 +33,13 @@
 - user 浏览器亲测：`https://test.pc.internal.test/?token=<redacted>`（或 local `http://127.0.0.1:4999/?token=…`）——Hub 面板 machines 区。测完 `systemctl --user stop superd-4999-test superd-lan-4999-relay`。
 - dev3 真跨机实装属 release 闸门（根 AGENTS §〇.1），随 P1 收尾轮执行，不在本报告范围。
 - 4996 临时实例已停；其 home `.tests/mesh-remote` 保留（复配对可重跑）。
+
+---
+
+## 补录：真实跨机配对（dev3，2026-09-28）
+
+- **dev3 换装**：super-dsh 0.1.5-a → **0.1.6-b**（worktree mesh-p1 构建，`corepack pnpm@10.33.2 add file:` + dsh.service 重启，user 授权）；`world failed` 0（注：hermes/codex 各 1 行 "did not activate" warning，非 world 失败，留观）。
+- **拓扑发现**：`dsh.dev3.internal.test` = dev3 自身 Caddy 反代 + **cookie gate**（`/gate-8653…` → `dshgate` 30d，无则 403 于 dsh 之前；Host 重写 loopback 过栅栏）→ 催生 mesh-link 前置 gate 支持（`gateUrl` + 多 cookie jar，commit `4d0418b`，spec §4 补录）。
+- **真实配对**：`POST /api/superd/machines {tokenUrl, gateUrl}` → 201，dev3 自铸 id `bfwu` 采纳，reachable。
+- **roster 联邦数据面**：reprobe 返回 dev3 全 roster——7 agents（native/claude/omp/codex/pi/hermes/agy）各带 dev3 铸 a6 id（`0kdzjk…yuaisr`）——owner-minted 传播按 spec §3.1 兑现；gate 访问经济性成立（pair 一次，reprobe 重放 jar）。
+- **边界**：remote agents 进 switch/roster 切换面 = P2（RemoteGatewayFace）；P1 的 UI 可见面 = Hub 面板 machines 区 DEV3 行（绿色）。
