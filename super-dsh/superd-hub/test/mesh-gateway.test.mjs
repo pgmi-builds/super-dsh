@@ -321,3 +321,81 @@ test('the idle timer closes the connection after the last stream retires, and a 
   gw.dispose()
   await hub.stop()
 })
+
+/** Count unhandled rejections during one test window (the runner also flags them; this asserts explicitly). */
+function unhandledTracker() {
+  const seen = []
+  const onUnhandled = (error) => { seen.push(error) }
+  process.on('unhandledRejection', onUnhandled)
+  return { seen, done: () => { process.off('unhandledRejection', onUnhandled) } }
+}
+
+/** A TCP port that was just freed, so connecting to it refuses. */
+async function refusedPort() {
+  const probe = createServer()
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
+  const port = probe.address().port
+  await new Promise((resolve) => probe.close(resolve))
+  return port
+}
+
+test('an unreachable peer fails the stream with a gateway error and never crashes the process', async () => {
+  const tracker = unhandledTracker()
+  const port = await refusedPort()
+  const gw = createRemoteGateway({ origin: `http://127.0.0.1:${port}`, agentKey: AGENT_KEY, cookie: () => COOKIE })
+  const first = await rejection(collect(gw.openWireStream('a/one', null, freshSignal())))
+  assert.equal(first.code, 'gateway/socket-closed', 'ECONNREFUSED lands in the socket-cut classification, not an uncaught ws error')
+  const second = await rejection(collect(gw.openWireStream('a/two', null, freshSignal())))
+  assert.equal(second.code, 'gateway/socket-closed', 'the next call redials (and fails cleanly again) — no wedge')
+  await delay(50)
+  assert.equal(tracker.seen.length, 0, 'no unhandled rejection escaped the adapter')
+  tracker.done()
+  gw.dispose()
+})
+
+test('a rejected (HTTP 401) ws upgrade classifies as a socket cut without crashing', async () => {
+  const tracker = unhandledTracker()
+  const server = createServer((req, res) => { res.writeHead(404); res.end() })
+  server.on('upgrade', (req, socket) => {
+    // the dead-cookie shape: an authoritative non-101 answer, no ws takeover
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    socket.destroy()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const gw = createRemoteGateway({ origin: `http://127.0.0.1:${server.address().port}`, agentKey: AGENT_KEY, cookie: () => COOKIE })
+  const error = await rejection(collect(gw.openWireStream('b/one', null, freshSignal())))
+  assert.equal(error.code, 'gateway/socket-closed', 'WS-lane auth failure classifies as a socket cut post-fix; the POST lane reports auth-expired')
+  await delay(50)
+  assert.equal(tracker.seen.length, 0)
+  tracker.done()
+  gw.dispose()
+  await new Promise((resolve) => server.close(resolve))
+})
+
+test('a socket killed mid-uplink-pump terminates the stream cleanly with no unhandled rejection', async () => {
+  const tracker = unhandledTracker()
+  const pumped = []
+  const hub = await startHub({
+    open: async (endpoint, payload, uplink) => {
+      for await (const value of uplink) pumped.push(value) // the pump consumer; never settles on its own
+      return (async function* () {})()
+    },
+  })
+  const gw = gateway(hub)
+  async function* slowUplink() {
+    for (let i = 0; i < 50; i += 1) {
+      await delay(25)
+      yield { i }
+    }
+  }
+  const failing = rejection(collect(gw.openWireStream('pump/x', null, slowUplink(), undefined, freshSignal(), new AbortController())))
+  await waitFor(() => pumped.length >= 2, 3000) // the uplink pump is demonstrably live
+  hub.killSockets()
+  const error = await failing
+  assert.equal(error.code, 'gateway/socket-closed')
+  await delay(150) // let the dead-window bridge/abort/cancel paths run their course
+  assert.equal(tracker.seen.length, 0, 'the kill window raised no unhandled rejection')
+  tracker.done()
+  gw.dispose()
+  await hub.stop()
+})

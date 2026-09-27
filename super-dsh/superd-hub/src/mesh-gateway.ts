@@ -42,7 +42,8 @@
  *    — the exact order `worldMuxOf` calls with. The uplink is bridged into
  *    the wire upstream lane with the T1 channel idiom
  *    `for await (const v of uplink) await upstream.next(v); handle.end()`
- *    (read-one-send-one, zero buffering). `control` is accepted for shape
+ *    (read-one-send-one, zero buffering; a `done` read — dead stream — stops
+ *    the pump quietly). `control` is accepted for shape
  *    parity only — cancellation rides the mux `cancel` frame, which is what
  *    actually stops the server-side stream.
  *
@@ -84,6 +85,7 @@ const DEFAULT_IDLE_CLOSE_MS = 30_000
 interface WsSocketLike {
   send(data: unknown): void
   on(event: 'open', listener: () => void): unknown
+  on(event: 'error', listener: (error: unknown) => void): unknown
   on(event: 'message', listener: (data: unknown) => void): unknown
   on(event: 'close', listener: () => void): unknown
   close(): void
@@ -109,25 +111,53 @@ function loadWs(): WsConstructorLike {
  * riding the upgrade request (the pairing Cookie), presented as T1's
  * {@link MuxClientSocket}.
  *
- * `ws` THROWS on sends made before the handshake completes (readyState
- * CONNECTING), so the adapter queues them and flushes in order on 'open' —
- * the mux client may open a stream immediately after construction. WS-level
- * pings stay at the WS layer: `on('message')` fires for text data frames
- * only, so protocol-level ping/pong NEVER surfaces as text.
+ * The adapter is crash-proof by construction (fix round 1):
+ *  - an `'error'` listener is ALWAYS registered: an unreachable peer
+ *    (ECONNREFUSED) or a rejected upgrade (non-101, e.g. a dead cookie's
+ *    HTTP 401) emits `'error'` with no listener of its own — an uncaught
+ *    exception that kills the hub process. The listener is a no-op: ws
+ *    guarantees `'close'` follows `'error'`, and the close path already
+ *    classifies (in-flight streams fail `gateway/socket-closed`) and retires
+ *    the connection for redial. WS-lane auth failure therefore classifies
+ *    as a socket cut post-fix — acceptable: the next POST-lane call is the
+ *    one that reports `gateway/auth-expired`.
+ *  - `ws` THROWS on sends made while CONNECTING, and its post-close send
+ *    bookkeeping can itself throw in teardown windows, so every send is
+ *    guarded: pre-open sends queue (flushed in order on 'open'), post-close
+ *    sends are swallowed — the stream is dead and the close path owns the
+ *    teardown. WS-level pings stay at the WS layer: `on('message')` fires
+ *    for text data frames only, so protocol-level ping/pong NEVER surfaces
+ *    as text.
  */
 export function defaultWsFactory(url: string, headers: Record<string, string>): MuxClientSocket {
   const WebSocketCtor = loadWs()
   const socket = new WebSocketCtor(url, { headers })
+  socket.on('error', () => {}) // crash guard: 'close' (and its classification) always follows
   let open = false
+  let closed = false
   const pending: string[] = []
   socket.on('open', () => {
     open = true
     for (const data of pending.splice(0)) socket.send(data)
   })
+  socket.on('close', () => {
+    closed = true
+    open = false
+    pending.length = 0
+  })
   return {
     send: (data: string): void => {
-      if (open) socket.send(data)
-      else pending.push(data)
+      if (closed) return
+      if (!open) {
+        pending.push(data)
+        return
+      }
+      try {
+        socket.send(data)
+      } catch {
+        // CONNECTING/CLOSING race or sendAfterClose bookkeeping — the close
+        // path owns teardown; a lost frame on a dying socket changes nothing.
+      }
     },
     onMessage: (cb: (data: string) => void): void => {
       socket.on('message', (data: unknown) => { cb(String(data)) })
@@ -306,12 +336,16 @@ class RemoteGatewayImpl implements RemoteGateway {
         // a server handler reading uplink sees EOF instead of hanging.
         handle.end()
       } else {
-        // T1 ruling idiom, verbatim: one read of the channel iterator sends
-        // one item frame; empty/errored uplink settles to end/cancel.
+        // T1 ruling idiom: one read of the channel iterator sends one item
+        // frame; empty/errored uplink settles to end/cancel. A `done` read
+        // means the stream died (socket cut / cancel) — stop pumping quietly
+        // instead of draining the source against a dead wire.
         const push = handle.upstream[Symbol.asyncIterator]()
         void (async () => {
           try {
-            for await (const value of uplink) await push.next(value)
+            for await (const value of uplink) {
+              if ((await push.next(value)).done) return
+            }
           } catch {
             handle.cancel()
             return
