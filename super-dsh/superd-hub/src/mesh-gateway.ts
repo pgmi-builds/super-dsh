@@ -11,8 +11,16 @@
  *     peer consumes its native DSH (NO demux key anywhere — the peer's
  *     native agent row federates as `key:'native'` with a minted a6, and the
  *     `/hub` family would 404 it as foreign-only):
- *     dispatchRpc     POST <origin>/api
+ *     dispatchRpc     POST <origin>/api/<endpoint>   (endpoint in the PATH)
  *     openWireStream  WS   <origin ws(s)>/api/remote.mux
+ *
+ *   The native unary URL mirrors upstream byte-exactly: the client builds
+ *   `` `${channel}/${endpoint}`.slice(1) `` and the server decodes with
+ *   `endpointFromPath` (a raw pathname slice, NO decodeURIComponent) — so the
+ *   endpoint rides the path RAW, never percent-encoded (an encoded path would
+ *   fail the server's ENDPOINT_SEGMENT_PATTERN; segments are already
+ *   restricted to `[A-Za-z0-9_$.-]`, so nothing ever needs encoding). A bare
+ *   `/api` carries no endpoint → 404.
  *
  * Everything else (envelope shape, cookie, Result verbatim, error taxonomy,
  * connection lifecycle) is face-independent.
@@ -272,10 +280,11 @@ class RemoteGatewayImpl implements RemoteGateway {
   }
 
   async dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal | undefined): Promise<unknown> {
-    // Foreign: the /hub family with the demux key; native: ctx0's own /api,
-    // no query — a browser on the peer addresses the same surface.
+    // Foreign: the /hub family with the demux key. Native: ctx0's own
+    // surface with the endpoint in the PATH, raw (see the header's URL-truth
+    // note) — exactly the URL a browser on the peer posts.
     const url = this.face === 'native'
-      ? `${this.origin}/api`
+      ? `${this.origin}/api/${endpoint}`
       : `${this.origin}/hub/api?agent=${encodeURIComponent(this.agentKey)}`
     const rpcId = String(this.nextRpcId)
     this.nextRpcId += 1

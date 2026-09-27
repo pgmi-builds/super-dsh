@@ -37,8 +37,9 @@ async function startHub(options = {}) {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://fixture.local')
     // Both lanes of the peer family: /hub/api (foreign face, ?agent= demux)
-    // and /api (native face — NO demux key, ctx0's own envelope surface).
-    if (url.pathname !== '/hub/api' && url.pathname !== '/api') {
+    // and /api/<endpoint> (native face — endpoint-in-path, upstream
+    // endpointFromPath semantics; bare /api carries no endpoint → 404).
+    if (url.pathname !== '/hub/api' && !url.pathname.startsWith('/api/')) {
       res.writeHead(404)
       res.end()
       return
@@ -404,16 +405,21 @@ test('a socket killed mid-uplink-pump terminates the stream cleanly with no unha
   await hub.stop()
 })
 
-test('native face: dispatchRpc POSTs <origin>/api with NO ?agent= demux key (envelope + cookie verbatim)', async () => {
+test('native face: dispatchRpc POSTs <origin>/api/<endpoint> — endpoint in the PATH, raw, no query', async () => {
   const hub = await startHub()
   const native = gateway(hub, { face: 'native' })
   const foreign = gateway(hub)
   const result = await native.dispatchRpc('sessions/list', { page: 1 }, freshSignal())
   assert.deepEqual(result, { ok: true, value: { echoed: { page: 1 }, method: 'sessions/list' } },
     'the envelope and verbatim-Result contract are identical on the native lane')
-  assert.equal(hub.requests.at(-1).url, '/api', 'no ?agent= query — the native face addresses ctx0 directly')
+  assert.equal(hub.requests.at(-1).url, '/api/sessions/list', 'the endpoint rides the path (upstream endpointFromPath); no ?agent= query')
   assert.equal(hub.requests.at(-1).cookie, COOKIE, 'the pairing cookie is unchanged')
   assert.deepEqual(JSON.parse(hub.requests.at(-1).raw).payload, { page: 1 })
+  // Dot-named method: the endpoint is RAW in the path — no percent-encoding
+  // (upstream builds `${channel}/${endpoint}` and slices the pathname back;
+  // an encoded path would fail its ENDPOINT_SEGMENT_PATTERN)
+  await native.dispatchRpc('a.b.c', {}, freshSignal())
+  assert.equal(hub.requests.at(-1).url, '/api/a.b.c', 'dot-named endpoint lands byte-exact, never %2E-encoded')
   // contrast: the default (foreign) face on the SAME hub keeps the demux key
   await foreign.dispatchRpc('sessions/list', {}, freshSignal())
   assert.equal(hub.requests.at(-1).url, `/hub/api?agent=${AGENT_KEY}`, 'the foreign face is exactly today\'s path')

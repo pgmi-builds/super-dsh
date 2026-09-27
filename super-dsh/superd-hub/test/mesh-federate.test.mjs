@@ -82,8 +82,9 @@ function startRemoteHub(opts = {}) {
       res.end(JSON.stringify({ available: true, agents: state.agents, hub: { machineId: state.machineId, version: '0.1.6' } }))
       return
     }
-    if (url.pathname === '/api' && req.method === 'POST') {
-      // ctx0's own envelope surface (native face): NO ?agent= demux key
+    if (url.pathname.startsWith('/api/') && url.pathname !== '/api/agent-runtime' && req.method === 'POST') {
+      // ctx0's own envelope surface (native face): endpoint-in-path (upstream
+      // endpointFromPath), NO ?agent= demux key
       let raw = ''
       req.on('data', (c) => { raw += c })
       req.on('end', () => {
@@ -442,7 +443,7 @@ test('peer 的 native 行：native face gateway 指向 peer /api（无 ?agent=�
     const nativeResult = await nativeGw.dispatchRpc('session.list', {}, new AbortController().signal)
     assert.deepEqual(nativeResult, { ok: true, value: 'wire:native' })
     assert.equal(hub.state.posts.length, 1)
-    assert.equal(hub.state.posts[0].url, '/api', 'no demux key on the native lane')
+    assert.equal(hub.state.posts[0].url, '/api/session.list', 'endpoint-in-path on the native lane, no demux key')
     assert.equal(hub.state.posts[0].agent, null)
 
     // Foreign face unchanged: the same call rides /hub/api?agent=codex
