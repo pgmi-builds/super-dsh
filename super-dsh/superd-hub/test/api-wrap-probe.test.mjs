@@ -15,11 +15,10 @@ import { createRuntimeResolution, loadProfile, PluginPackages, boot } from '@dee
 import { Context } from '@deepseek-ai/cordis'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const LINE = join(HERE, '../../..')  // super-dsh
-const REPO_WT = dirname(LINE)
-const REPO = dirname(REPO_WT)
-const ANCHOR = join(REPO, 'upstream', 'deepseek-harness', 'apps', 'cli', 'package.json')
-const FARM = join(LINE, 'node_modules', '@deepseek-ai')
+const REPO = join(HERE, '../../..')  // repo root (worktree or main checkout alike)
+const ANCHOR = process.env.SUPERD_DSH_ANCHOR
+  ?? join(REPO, 'upstream', 'deepseek-harness', 'apps', 'cli', 'package.json')
+const FARM = join(REPO, 'super-dsh', 'node_modules', '@deepseek-ai')
 
 function probeHome(tag) {
   const home = mkdtempSync(join(tmpdir(), `superd-api-${tag}-`))
