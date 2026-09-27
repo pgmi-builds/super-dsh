@@ -394,7 +394,8 @@ interface FollowState {
   armedSeen: boolean
   armedTurn: number | undefined
   fired: Set<number>
-  completedHistorical: Set<number>
+  /** Historical turn/end records (snapshot-replayed): turn → terminal `reason.kind`, read back at armed-history fire time. */
+  completedHistorical: Map<number, string>
 }
 
 // ---------------------------------------------------------------- service
@@ -575,7 +576,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         armedSeen: false,
         armedTurn: undefined,
         fired: new Set(),
-        completedHistorical: new Set(),
+        completedHistorical: new Map(),
       }
       let disposed = false
       const dispose = (): void => {
@@ -634,7 +635,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
               ? data['reason']['kind']
               : 'unknown'
             if (!live) {
-              state.completedHistorical.add(turn)
+              state.completedHistorical.set(turn, reason)
               break
             }
             const shouldFire = opts.requestId === undefined
@@ -653,8 +654,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         if (opts.requestId === undefined) return
         if (!state.armedSeen || state.armedTurn === undefined) return
         if (state.fired.has(state.armedTurn) || !state.completedHistorical.has(state.armedTurn)) return
-        const reason = 'completed'
-        fire(state.armedTurn, reason)
+        fire(state.armedTurn, state.completedHistorical.get(state.armedTurn) ?? 'unknown')
       }
 
       const handleFrame = (frame: unknown): void => {

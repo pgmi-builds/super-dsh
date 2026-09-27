@@ -351,6 +351,57 @@ test('subscribeCompletion stream death: exactly one resubscribe; second death �
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
+test('subscribeCompletion armed history: terminal reason passes through verbatim (aborted turn in snapshot)', async () => {
+  const gw = fakeGateway()
+  seedConversation(gw)
+  const { home, svc } = mkService(gw)
+  try {
+    const { shortId: conversationId } = await svc.newConversation(ADDR)
+    const fired = []
+    gw.stream({
+      frames: [snap([
+        ev('turn/start', { turn: 1 }, 1),
+        userMsg('a2a-stop', 2),
+        asstMsg(1, 'partial work', 3),
+        turnEnd(1, 4, 'aborted'), // the turn ended ABORTED inside the snapshot
+      ])],
+    })
+    svc.subscribeCompletion({ to: ADDR, conversationId }, (c) => fired.push(c), { requestId: 'a2a-stop' })
+    await until(() => fired.length === 1)
+    assert.equal(fired[0].reason, 'aborted') // NOT the hardcoded 'completed'
+    assert.equal(fired[0].text, 'partial work')
+    await settle()
+    assert.equal(fired.length, 1)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('subscribeCompletion: duplicate turn/end frame delivery fires the cb exactly once', async () => {
+  const gw = fakeGateway()
+  seedConversation(gw)
+  const { home, svc } = mkService(gw)
+  try {
+    const { shortId: conversationId } = await svc.newConversation(ADDR)
+    const fired = []
+    gw.stream({
+      frames: [
+        ev('turn/start', { turn: 1 }, 1),
+        asstMsg(1, 'once only', 2),
+        turnEnd(1, 3),
+        turnEnd(1, 3), // duplicate frame (replay/retry) — must not re-fire
+        ev('turn/start', { turn: 2 }, 4),
+        asstMsg(2, 'second turn', 5),
+        turnEnd(2, 6),
+      ],
+    })
+    const dispose = svc.subscribeCompletion({ to: ADDR, conversationId }, (c) => fired.push(c))
+    await until(() => fired.length === 2) // both turns complete...
+    await settle()
+    assert.equal(fired.length, 2) // ...and turn 1 fired exactly once despite the duplicate
+    assert.deepEqual(fired.map((f) => [f.turn, f.text]), [[1, 'once only'], [2, 'second turn']])
+    dispose()
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
 // ---------------------------------------------------------------- stop
 
 test('stop: turn scope → session/cancel mirror payload; session scope → turn-only degradation with typed reason', async () => {
