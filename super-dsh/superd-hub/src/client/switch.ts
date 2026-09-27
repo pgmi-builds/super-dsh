@@ -54,6 +54,7 @@ import {
   type SwitchHost,
 } from '../switch-core.js'
 import { showSuperdToast } from '../toast-core.js'
+import { fetchMachines } from './mesh-api.js'
 import { fetchRoster } from './roster.js'
 
 /** The Task-3 page-level state atom the fused page boots with. */
@@ -154,6 +155,34 @@ export function uiState(): SuperdUiState | undefined {
  */
 function showToast(message: string): void {
   showSuperdToast(message)
+}
+
+/**
+ * I1(c) feedback: a degraded FEDERATED row fails fast with an actionable
+ * machine-error message — never "starting…", never the readiness wait. The
+ * machines face (already part of the client half — the Hub machines panel's
+ * own cheap same-origin GET) enriches the toast when it answers: the
+ * machine's display label and, when the hub knows it, the status word
+ * (`unreachable` / `auth-expired`). Any failure or miss degrades to the
+ * generic federated-not-ready wording; the toast itself never blocks.
+ */
+function reportMachineDown(label: string, row: PreFlightRow & { label?: string }): void {
+  void (async () => {
+    let machineName = row.machine
+    let status: 'unreachable' | 'auth-expired' | undefined
+    try {
+      const found = (await fetchMachines()).machines.find((entry) => entry.id === row.machine)
+      if (found !== undefined) {
+        machineName = found.label
+        if (found.status === 'unreachable' || found.status === 'auth-expired') status = found.status
+      }
+    } catch { /* enrichment is optional — the generic wording is fine */ }
+    const who = row.label ?? label
+    const machine = machineName ?? 'its machine'
+    showToast(status === undefined
+      ? `Super D: ${who} is unavailable — machine ${machine} is not ready. Reprobe or re-add it in the Hub machines panel.`
+      : `Super D: ${who} is unavailable — machine ${machine} reports ${status}. Reprobe or re-add it in the Hub machines panel.`)
+  })()
 }
 
 /** The bound `switchAgent`, or `undefined` until the entry binds it. */
@@ -280,7 +309,10 @@ let pendingWait: ReadinessWaiter | undefined
  * `label`, gated on the target world's readiness (C1): a not-ready world
  * holds the UI on native with starting feedback and a bounded poll; a
  * failed world reports and never switches; a ready/native/unknown target
- * runs the machine (whose roster probe stays the fallback).
+ * runs the machine (whose roster probe stays the fallback). A not-ready
+ * FEDERATED row skips all of that — an immediate machine-error toast
+ * (I1(c), `machine-down`), never a wait loop.
+ *
  * @returns `true` when the fusion switch took the click over; `false` when
  *   this page is not a fusion page or the orchestration is unbound.
  *   Informational only — the interception contract (`seatClickDecision`)
@@ -304,6 +336,15 @@ export function attemptSwitch(label: string): boolean {
       showToast(`Super D: ${label} failed to start — see the service log.`)
       return
     }
+    // I1(c): a degraded FEDERATED row fails fast — the hub's own probe
+    // already knows the machine is unreachable/auth-expired, so "starting…"
+    // plus the 120s wait would be a lie. Actionable toast, no wait loop, no
+    // revert (the page stays where it is, like the failed branch).
+    if (decision === 'machine-down') {
+      if (row !== undefined) reportMachineDown(label, row)
+      return
+    }
+
     if (decision === 'wait') {
       showToast(`Super D: ${label} is starting…`)
       const waiter = createReadinessWaiter({

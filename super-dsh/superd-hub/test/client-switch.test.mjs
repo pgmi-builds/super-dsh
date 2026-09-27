@@ -1070,6 +1070,16 @@ test('decidePreFlight: native and unknown rows run; failed reports; not-ready wa
   assert.equal(decidePreFlight('pi', {}), 'wait', 'absent ready (older host shape) waits')
 })
 
+test('decidePreFlight: a not-ready FEDERATED row fails fast (I1(c)); local spawning semantics unchanged', () => {
+  assert.equal(decidePreFlight('pi', { ready: false, machine: 'm4x1' }), 'machine-down', 'degraded federated row = immediate failure, never a wait loop')
+  assert.equal(decidePreFlight('pi', { ready: false, failed: false, machine: 'm4x1' }), 'machine-down')
+  assert.equal(decidePreFlight('pi', { machine: 'm4x1' }), 'machine-down', 'absent ready (older host shape) on a federated row also fails fast')
+  assert.equal(decidePreFlight('pi', { ready: false, machine: 'local' }), 'wait', 'a not-ready LOCAL row still waits (C1 spawn semantics untouched)')
+  assert.equal(decidePreFlight('pi', { ready: true, machine: 'm4x1' }), 'run', 'a healthy federated row runs')
+  assert.equal(decidePreFlight('pi', { ready: false, failed: true, machine: 'm4x1' }), 'failed', 'failed precedence unchanged (peer-reported spawn rejection)')
+})
+
+
 test('readiness waiter: polls until the row flips ready', async () => {
   const rows = [{ ready: false }, { ready: false }, { ready: true }]
   const timers = []

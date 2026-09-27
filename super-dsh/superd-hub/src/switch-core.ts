@@ -1027,26 +1027,51 @@ export function createSwitchController(host: SwitchHost, options: SwitchOptions 
 // feedback and polls; a failed world reports and never switches; a ready
 // (or unknown/native) row runs the machine unchanged (the machine's own
 // probe stays the fallback for roster misses).
+//
+// I1(c) (P2 final review): a NOT-READY FEDERATED row is a different animal —
+// the hub's own probe already flipped it degraded (the machine unreachable
+// or its auth expired), so "starting…" + the bounded poll would be a two-
+// minute lie. Such rows fail FAST with an actionable machine-error message;
+// the local-world spawning semantics above are untouched (C1 unchanged).
 
-/** What attemptSwitch does with a roster row: run the machine / report failure / wait for readiness. */
-export type PreFlightDecision = 'run' | 'failed' | 'wait'
+/** What attemptSwitch does with a roster row: run the machine / report failure / wait for readiness / fail fast on a degraded federated row. */
+export type PreFlightDecision = 'run' | 'failed' | 'wait' | 'machine-down'
 
-/** The roster fields the pre-flight reads (the projection carries both since C1 task 3). */
+/**
+ * The roster fields the pre-flight reads (the projection carries both since
+ * C1 task 3; `machine` since the mesh P2 roster dimension).
+ */
 export interface PreFlightRow {
   ready?: boolean
   failed?: boolean
+  /**
+   * Owning machine (m4) for FEDERATED rows — `'local'` or absent means this
+   * machine's own world (the C1 spawn-wait semantics). The client's
+   * `AgentLink` satisfies this structurally; the field decides the I1(c)
+   * fail-fast branch.
+   */
+  machine?: string
 }
 
 /**
  * The pure pre-flight decision. `native` always runs; an absent row (roster
  * fetch failed, or the key is not listed) also runs — the machine's roster
- * probe is the authority on unknown targets, exactly as before C1.
+ * probe is the authority on unknown targets, exactly as before C1. A
+ * not-ready FEDERATED row (`machine` set and not `'local'`) decides
+ * `'machine-down'` — an immediate actionable failure, never a wait loop
+ * (the hub's probe already knows the machine is unreachable or its auth
+ * expired); `failed` keeps precedence everywhere (a peer-reported spawn
+ * rejection still reports as failed).
  */
 export function decidePreFlight(label: string, row: PreFlightRow | undefined): PreFlightDecision {
   if (label === NATIVE_AGENT) return 'run'
   if (row === undefined) return 'run'
   if (row.failed === true) return 'failed'
-  if (row.ready !== true) return 'wait'
+  if (row.ready !== true) {
+    // I1(c): a federated not-ready row is DEGRADED, not spawning — fail fast.
+    if (row.machine !== undefined && row.machine !== 'local') return 'machine-down'
+    return 'wait'
+  }
   return 'run'
 }
 

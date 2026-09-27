@@ -457,3 +457,27 @@ test('peer 的 native 行：native face gateway 指向 peer /api（无 ?agent=�
     await hub.close()
   }
 })
+
+test('T3-M1：空 remote key → wire agentKey 回落 a6（空串绝不上 wire 当 ?agent=）', async () => {
+  sweep()
+  resetMachineStatus()
+  const hub = await startRemoteHub({
+    machineId: 'k3f9', token: 'empty-tok',
+    agents: [{ id: 'a6k3y9', key: '', label: 'Nameless', ready: true, failed: false }],
+  })
+  const h = home()
+  const stop = startMeshFederation({ home: h })
+  try {
+    await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=empty-tok` })
+    const gw = federatedGatewayOf('a6k3y9')
+    assert.notEqual(gw, undefined)
+    const result = await gw.dispatchRpc('session.list', {}, new AbortController().signal)
+    assert.deepEqual(result, { ok: true, value: 'wire:a6k3y9' }, '空 remote key 回落 a6，peer 看到的 ?agent= 是 a6 而非空串')
+  } finally {
+    stop()
+    sweep()
+    rmSync(h, { recursive: true, force: true })
+    await hub.close()
+  }
+})
+

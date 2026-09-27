@@ -4,33 +4,29 @@
  * and visible exactly like a local world:
  *
  *   targets.ts  `registerForeignTarget({key: a6, gateway})` — the a6-keyed
+ *               wire gateway (Task 2's `createRemoteGateway`), so the `/hub`
+ *               family demuxes `?agent=<a6>` to the peer's `/hub` family
+ *               carrying the remote RUNTIME key (`?agent=codex` at the peer).
  *               The peer's NATIVE agent row federates the same way — its
  *               row carries a minted a6 plus `key:'native'`, and its gateway
  *               is built with the NATIVE face (Task 2's `face` option): the
  *               peer's ctx0 `/api` surface, no demux key — exactly how a
  *               browser ON the peer consumes its native DSH (the `/hub`
  *               family would 404 `?agent=native` as foreign-only).
- *               wire gateway (Task 2's `createRemoteGateway`), so the `/hub`
- *               family demuxes `?agent=<a6>` to the peer's `/hub` family
- *               carrying the remote RUNTIME key (`?agent=codex` at the peer).
  *   roster.ts   one row per agent: `{key: a6, label: '<Label> · <machine
  *               name>', machine: m4, ready, failed}` — `machine` set marks
  *               the row federated; `agentLinks` projects it into the UI rows.
  *
  * The a6 IS the local registration key (spec §3.2): runtime keys are NOT
  * reused across machines (a remote `codex` would collide with — and silently
- * adopted verbatim — EVERY row federates, the peer's native included (the
- * face selector is `agent.key === 'native'`, never an a6 test). Cross-machine
- * a6 collision (two peers minting the same id, p ≈ 36⁻¹² per pair) and
- * a6-vs-local-key collision (p ≈ 36⁻⁶ per adoption) are accepted at P2
- * machine counts — the registry replaces last-write-wins, same ruling as
- * spec §3.1's m4 collision roughness.
  * replace — the local codex world), while a6s are owner-minted 6-char ids
- * adopted verbatim. Cross-machine a6 collision (two peers minting the same
- * id, p ≈ 36⁻¹² per pair) and a6-vs-local-key collision (p ≈ 36⁻⁶ per
- * adoption, only 'native' is pre-screened as a hard reserve) are accepted at
- * P2 machine counts — the registry replaces last-write-wins, same ruling as
- * spec §3.1's m4 collision roughness.
+ * adopted verbatim. EVERY row federates, the peer's native included — the
+ * face selector is `agent.key === 'native'`, never an a6 test (only
+ * `'native'` is pre-screened as a hard reserve). Cross-machine a6 collision
+ * (two peers minting the same id, p ≈ 36⁻¹² per pair) and a6-vs-local-key
+ * collision (p ≈ 36⁻⁶ per adoption) are accepted at P2 machine counts — the
+ * registry replaces last-write-wins, same ruling as spec §3.1's m4 collision
+ * roughness.
  *
  * ## Import direction (frozen): mesh-federate → {mesh-link, mesh-gateway,
  * ## roster, targets} — NEVER the reverse. mesh-link emits machine lifecycle
@@ -66,8 +62,11 @@ export interface FederatedAgent {
   id: string
   /** The remote RUNTIME key (`codex`, `omp`, …) — the peer's `?agent=` demux
    *  key on the wire; `'native'` selects the NATIVE face (peer ctx0 `/api`, no
-   *  demux key) in the wiring's gateway factory. */
+   *  demux key) in the wiring's gateway factory. An EMPTY key cannot address
+   *  anything at the peer; {@link gatewayFor} falls back to the a6 there
+   *  (T3-M1) rather than shipping `?agent=` on the wire. */
   key: string
+
   label: string
   ready: boolean
   failed: boolean
@@ -214,7 +213,12 @@ export function federatedGatewayOf(a6: string): GatewayFace | undefined {
 function gatewayFor(event: Extract<MeshFederationEvent, { type: 'federated' }>, agent: FederatedAgent, deps: FederationWireDeps): RemoteGateway {
   const a6 = agent.id
   const face: 'foreign' | 'native' = agent.key === 'native' ? 'native' : 'foreign'
-  const agentKey = agent.key
+  // T3-M1: an empty remote key must not ride the wire as `?agent=` (the
+  // nullish class miss — '' is not nullish); fall back to the a6 so the
+  // registration stays addressable and the wrong key fails LOUDLY at the
+  // peer (its demux 404s the unknown key) instead of silently here.
+  const agentKey = agent.key !== '' ? agent.key : agent.id
+
   const memo = gatewayMemo.get(a6)
   if (memo !== undefined && memo.machineId === event.machineId && memo.origin === event.origin && memo.agentKey === agentKey && memo.face === face) {
     return memo.gateway

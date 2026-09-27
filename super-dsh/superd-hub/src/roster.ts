@@ -15,11 +15,13 @@ export interface RosterEntry {
   label: string
   /** True once the adapter's world context is spawned and its target registered. */
   ready: boolean
-  /** True once the world's spawn REJECTED (world-join catch) — stays mounted for diagnosis. */
-  /** Owning machine id (m4) for FEDERATED rows (mesh P2 Task 3); absent = this
-   *  machine's local world. The a6-keyed row's owner; `agentLinks` projects it
-   *  onto AgentLink.machine and derives remote grouping/ordering from it. */
+  /**
+   * Owning machine id (m4) for FEDERATED rows (mesh P2 Task 3); absent = this
+   * machine's local world. The a6-keyed row's owner; `agentLinks` projects it
+   * onto AgentLink.machine and derives remote grouping/ordering from it.
+   */
   machine?: string
+  /** True once the world's spawn REJECTED (world-join catch) — stays mounted for diagnosis. */
   failed?: boolean
 }
 
