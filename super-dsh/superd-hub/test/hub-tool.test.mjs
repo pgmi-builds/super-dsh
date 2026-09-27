@@ -543,12 +543,14 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
     assert.ok(ctx.state.effects.some((e) => e.label === 'superd-a2a: a2a completion watch'))
 
     // THE bridge pin: canonical 6-arg order onto the raw instance — the
-    // uplink is an async iterable (NOT the signal), signal 5th, control 6th
+    // uplink undefined = the canonical no-lane spelling (the gateway
+    // substitutes EMPTY_ASYNC_ITERABLE itself), peer undefined, signal 5th,
+    // control 6th — the raw instance never sees a shifted signal
     assert.equal(raw.calls.openWireStream.length, 1)
     const [call] = raw.calls.openWireStream
     assert.equal(call.endpoint, 'session/follow')
-    assert.equal(typeof call.uplink?.[Symbol.asyncIterator], 'function')
-    assert.ok(!(call.uplink instanceof AbortSignal))
+    assert.equal(call.uplink, undefined)
+    assert.equal(call.peer, undefined)
     assert.ok(call.signal instanceof AbortSignal)
     assert.ok(call.control instanceof AbortController)
 

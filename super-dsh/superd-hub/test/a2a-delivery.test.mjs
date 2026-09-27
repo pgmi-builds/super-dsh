@@ -19,7 +19,7 @@ import {
   renderA2aRelayText,
   A2A_NOTICE_SUMMARY_MAX,
 } from '../dist/a2a-delivery.js'
-import { createA2aService } from '../dist/a2a-service.js'
+import { createA2aService, saveConversations } from '../dist/a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from '../dist/a2a-host.js'
 import { ensureAgentId, agentIdMap } from '../dist/agent-ids.js'
 import { ensureSelf } from '../dist/machines.js'
@@ -297,7 +297,26 @@ test('wireCompletionToDelivery: real Task-2 service + real buffer leg on a missi
   }
 })
 
-// ---------------------------------------------------------------- host wiring
+/** ---------------------------------------------------------------- host wiring */
+
+/** RAW typertGateway recorder: canonical 6-arg stream face, scripted frames. */
+function rawGatewayRecorder(frames = []) {
+  const g = {
+    calls: { dispatchRpc: [], openWireStream: [] },
+    async dispatchRpc(endpoint, payload, signal) {
+      g.calls.dispatchRpc.push({ endpoint, payload, signal })
+      return { ok: true, value: {} }
+    },
+    openWireStream(endpoint, payload, uplink, peer, signal, control) {
+      g.calls.openWireStream.push({ endpoint, payload, uplink, peer, signal, control })
+      return (async function* () {
+        for (const frame of frames) yield frame
+      })()
+    },
+  }
+  return g
+}
+
 
 const cleanupRegistries = () => {
   for (const m of ['k3f9', 'zz99']) defederateMachine(m)
@@ -305,29 +324,107 @@ const cleanupRegistries = () => {
   for (const k of ['native', 'omp', 'q7m2xp']) unregisterForeignTarget(k)
 }
 
-test('resolveA2aGatewayFor: federated a6 → federation table, local a6 → target registry, native → injected face', () => {
+test('resolveA2aGatewayFor: federated wire adapters pass through UNWRAPPED; local rows + the native seam are bridged raw instances', () => {
   const home = mkdtempSync(join(tmpdir(), 'superd-a2a-host-'))
   try {
-    // seed the local id map + the local 'omp' target
+    // seed the local id map + the local 'omp' target (a RAW 6-arg instance)
     const ompA6 = ensureAgentId(home, 'omp')
     const nativeA6 = ensureAgentId(home, 'native')
-    const ompGateway = { dispatchRpc: () => { }, openWireStream: () => { } }
-    registerForeignTarget({ key: 'omp', gateway: ompGateway })
-    // federate one remote agent (memo table + target registry, roster row)
-    const remoteGateway = { dispatchRpc: () => { }, openWireStream: () => { } }
+    const ompRaw = rawGatewayRecorder()
+    registerForeignTarget({ key: 'omp', gateway: ompRaw })
+    // federate one remote agent (memo table + target registry, roster row) —
+    // a wire adapter with mesh-gateway's dual-face stream dispatch
+    const remoteGateway = { dispatchRpc: () => {}, openWireStream: () => {} }
     federateAgents(
       { id: 'k3f9', name: 'peer-pc' },
       [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false }],
       () => remoteGateway,
     )
-    const nativeGateway = { dispatchRpc: () => { }, openWireStream: () => { } }
-    const gatewayFor = resolveA2aGatewayFor({ home, nativeGateway })
+    const nativeRaw = rawGatewayRecorder()
+    const gatewayFor = resolveA2aGatewayFor({ home, nativeGateway: nativeRaw })
     const selfM4 = ensureSelf(home, 'local').id
 
-    assert.equal(gatewayFor({ machine: 'k3f9', id: 'q7m2xp' }), remoteGateway) // federated first
-    assert.equal(gatewayFor({ machine: selfM4, id: ompA6 }), ompGateway) // local via id-map inversion → getTarget
-    assert.equal(gatewayFor({ machine: selfM4, id: nativeA6 }), nativeGateway) // local native → injected in-process face
+    // FEDERATED: identity passthrough — wrapping a wire adapter would flip its
+    // 3rd-argument dispatch (isUplinkLane(undefined) → false) and silently
+    // drop the 5th-position abort signal (the double-bridge hazard)
+    assert.equal(gatewayFor({ machine: 'k3f9', id: 'q7m2xp' }), remoteGateway)
+
+    // LOCAL world row: NOT the raw instance — a bridge delegating in the
+    // canonical order (carrier.ts:238-style positional pin)
+    const ompBridge = gatewayFor({ machine: selfM4, id: ompA6 })
+    assert.notEqual(ompBridge, ompRaw)
+    const signal = new AbortController().signal
+    ompBridge.openWireStream('session/follow', { args: {} }, signal)
+    assert.equal(ompRaw.calls.openWireStream.length, 1)
+    const [streamCall] = ompRaw.calls.openWireStream
+    assert.equal(streamCall.endpoint, 'session/follow')
+    assert.deepEqual(streamCall.payload, { args: {} })
+    assert.equal(streamCall.uplink, undefined) // no-lane spelling (upstream substitutes EMPTY_ASYNC_ITERABLE)
+    assert.equal(streamCall.peer, undefined)
+    assert.equal(streamCall.signal, signal) // position 5 — NOT shifted into uplink
+    assert.ok(streamCall.control instanceof AbortController)
+    // dispatchRpc passes through as-is
+    ompBridge.dispatchRpc('session/create', { args: {} }, signal)
+    assert.deepEqual(ompRaw.calls.dispatchRpc, [{ endpoint: 'session/create', payload: { args: {} }, signal }])
+
+    // NATIVE seam: the same bridge, the same canonical pin
+    const nativeBridge = gatewayFor({ machine: selfM4, id: nativeA6 })
+    assert.notEqual(nativeBridge, nativeRaw)
+    nativeBridge.openWireStream('session/follow', { args: {} }, signal)
+    assert.equal(nativeRaw.calls.openWireStream[0].uplink, undefined)
+    assert.equal(nativeRaw.calls.openWireStream[0].signal, signal)
+    assert.ok(nativeRaw.calls.openWireStream[0].control instanceof AbortController)
+
     assert.equal(gatewayFor({ machine: selfM4, id: 'unknown' }), undefined) // unknown a6
+  } finally {
+    cleanupRegistries()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('resolveA2aGatewayFor (fix round 1): completion streams FLOW over a local raw gateway — the 3/6-arg misbind is gone', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-host-'))
+  try {
+    const ompA6 = ensureAgentId(home, 'omp')
+    const selfM4 = ensureSelf(home, 'local').id
+    // RAW instance yielding one snapshot (history) + one live turn/end —
+    // under the old misbind the signal landed in `uplink` and this stream
+    // never reached a frame consumer sanely
+    const raw = rawGatewayRecorder([
+      {
+        type: 'snapshot',
+        records: [
+          { type: 'event', event: { type: 'turn/start', seq: 1, data: { turn: 1 } } },
+          { type: 'event', event: { type: 'assistant/message', seq: 2, data: { turn: 1, message: { content: [{ type: 'text', text: 'bridged reply' }] } } } },
+        ],
+      },
+      { type: 'event', event: { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'completed' } } } },
+    ])
+    registerForeignTarget({ key: 'omp', gateway: raw })
+    saveConversations(home, {
+      conversations: [{ shortId: 'aaa11111', machine: selfM4, agent: ompA6, sessionId: 'sess-omp-1', createdAt: 1, lastActivityAt: 1 }],
+    })
+    const svc = createA2aService({ home, gatewayFor: resolveA2aGatewayFor({ home }) })
+    const completions = []
+    const dispose = svc.subscribeCompletion(
+      { to: { machine: selfM4, id: ompA6 }, conversationId: 'aaa11111' },
+      (completion) => completions.push(completion),
+    )
+    for (let i = 0; i < 100 && completions.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    dispose()
+    assert.equal(completions.length, 1)
+    assert.equal(completions[0].conversationId, 'aaa11111')
+    assert.equal(completions[0].turn, 1)
+    assert.equal(completions[0].reason, 'completed')
+    assert.equal(completions[0].text, 'bridged reply')
+    // and the raw instance saw the canonical 6-arg call
+    const [call] = raw.calls.openWireStream
+    assert.equal(call.uplink, undefined)
+    assert.equal(call.peer, undefined)
+    assert.ok(call.signal instanceof AbortSignal)
+    assert.ok(call.control instanceof AbortController)
   } finally {
     cleanupRegistries()
     rmSync(home, { recursive: true, force: true })

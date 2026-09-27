@@ -124,7 +124,14 @@ export {
   type A2aDeliveryOutcome,
   type A2aCompletionSource,
 } from './a2a-delivery.js'
-export { resolveA2aGatewayFor, localA2aInitiator, createA2aHost, type A2aHostOptions } from './a2a-host.js'
+export {
+  resolveA2aGatewayFor,
+  localA2aInitiator,
+  createA2aHost,
+  bridgeTypertGateway,
+  type A2aHostOptions,
+  type RawTypertGatewayFace,
+} from './a2a-host.js'
 export {
   createSuperdHubTool,
   parseAgentAddress,
@@ -139,7 +146,6 @@ export {
 } from './hub-tool.js'
 export {
   wireHubToolRow,
-  bridgeTypertGateway,
   name as a2aRowName,
   default as a2aRow,
   type HubToolRowOptions,

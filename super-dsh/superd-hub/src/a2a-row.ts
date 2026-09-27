@@ -25,23 +25,27 @@
  * plane exist. `tools.register` scopes the registration to the calling
  * fiber, so the tool unregisters with the row.
  *
- * The native seam bridge: T2's `A2aGateway` declares a 3-arg
+ * The stream-face bridge: T2's `A2aGateway` declares a 3-arg
  * `openWireStream(endpoint, payload, signal)`, but a RAW typertGateway
  * instance speaks the upstream canonical 6-arg order
  * `openWireStream(endpoint, payload, uplink, peer, signal, control)`
  * (dsh-api-gateway/src/index.ts:434; the 0.1.3-j lesson — positional
- * misbinding strands streams forever). `bridgeTypertGateway` below feeds the
- * canonical order with an immediately-done uplink: session-plane traffic is
+ * misbinding strands streams forever). This row hands the RAW ctx0
+ * instance to `createA2aHost`; the resolver bridges it. It ALSO used to
+ * leave LOCAL world rows from the shared target registry RAW (world-join.ts
+ * registers the instance
  * downstream-only. NOTE: T3's resolver hands LOCAL world rows from the
  * shared target registry RAW (world-join.ts registers the instance
- * verbatim), so completion streams over LOCAL worlds still need the same
- * bridge at that layer — reported for T5; this row owns only ctx0's seam.
+ * verbatim) — fixed in round 1 (2026-09-28 review): the resolver now bridges
+ * ALL local rows + the native seam through the shared `bridgeTypertGateway`
+ * (a2a-host.ts), and FEDERATED wire adapters pass through unwrapped.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { createSuperdHubTool } from './hub-tool.js'
 import type { HubRosterView } from './hub-tool.js'
 import { createA2aHost, localA2aInitiator } from './a2a-host.js'
+import type { RawTypertGatewayFace } from './a2a-host.js'
 import type { A2aAgentHandle, A2aDeliveryCtx } from './a2a-delivery.js'
 import type { A2aGateway } from './a2a-service.js'
 import { ensureSelf, listRemotes } from './machines.js'
@@ -57,40 +61,6 @@ export const inject: string[] = []
 export interface HubToolRowOptions {
   /** Hub home backing the registries; defaults to `resolveDshHome()` at wiring time. */
   home?: string
-}
-
-/** The RAW typertGateway service face — upstream canonical 6-arg stream order. */
-interface RawTypertGatewayFace {
-  dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
-  openWireStream(
-    endpoint: string,
-    payload: unknown,
-    uplink: AsyncIterable<unknown>,
-    peer: undefined,
-    signal: AbortSignal,
-    control: AbortController,
-  ): Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
-}
-
-/** A fresh immediately-done uplink: session-plane streams are downstream-only. */
-function emptyUplink(): AsyncIterable<unknown> {
-  return (async function*() { })()
-}
-
-/**
- * Bridge one raw typertGateway instance to T2's 3-arg `A2aGateway` face.
- * The remote-wire gateways (mesh-gateway) already accept BOTH faces via
- * their 3rd-argument dispatch, so a canonical call is safe there too — this
- * bridge is the ONE spelling for raw in-process instances.
- * @param real - ctx0's own typertGateway service instance.
- * @returns the gateway T2's service consumes.
- */
-export function bridgeTypertGateway(real: RawTypertGatewayFace): A2aGateway {
-  return {
-    dispatchRpc: (endpoint, payload, signal) => real.dispatchRpc(endpoint, payload, signal),
-    openWireStream: (endpoint, payload, signal) =>
-      real.openWireStream(endpoint, payload, emptyUplink(), undefined, signal, new AbortController()),
-  }
 }
 
 /** The live-agent registry face (structural subset of ctx.agents / AgentRegistry). */
@@ -131,8 +101,10 @@ function rosterViewOf(home: string): HubRosterView {
 export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void {
   const home = opts.home ?? resolveDshHome()
   ctx.inject(['tools', 'typertGateway'], (t) => {
+    // RAW instance in, bridged at the resolver (fix round 1: one shared
+    // bridge in a2a-host.ts covers the native seam AND all local world rows).
     const raw = t.get('typertGateway') as RawTypertGatewayFace | undefined
-    const service = createA2aHost({ home, nativeGateway: raw === undefined ? undefined : bridgeTypertGateway(raw) })
+    const service = createA2aHost({ home, nativeGateway: raw })
     const delivery: A2aDeliveryCtx = {
       agents: { get: (sessionId) => liveAgentHandle(ctx, sessionId) },
       buffer: (initiatorSessionId, message) => { service.buffer(initiatorSessionId, message) },

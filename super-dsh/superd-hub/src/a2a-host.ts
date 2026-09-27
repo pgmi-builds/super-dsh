@@ -38,11 +38,12 @@ export interface A2aHostOptions {
   /** Hub home (a6 id store + machines registry live under `<home>/superd/`). */
   home: string
   /**
-   * ctx0's own in-process session-plane gateway — serves the LOCAL 'native'
-   * row (its a6); injected by the plugin wiring, undefined before the hub
-   * process has its own face.
+   * ctx0's own RAW in-process typertGateway instance — serves the LOCAL
+   * 'native' row (its a6); injected by the plugin wiring, undefined before
+   * the hub process has its own face. Bridged to T2's face by the resolver
+   * ({@link bridgeTypertGateway}).
    */
-  nativeGateway?: A2aGateway
+  nativeGateway?: RawTypertGatewayFace
 }
 
 /**
@@ -57,10 +58,57 @@ function localKeyOfA6(home: string, a6: string): string | undefined {
 }
 
 /**
+ * The RAW typertGateway service face — upstream canonical stream order
+ * `openWireStream(endpoint, payload, uplink, peer, signal, control)`
+ * (dsh-api-gateway/src/index.ts:434; the 0.1.3-j positional-misbind lesson).
+ * LOCAL worlds and ctx0's own row hand out RAW instances (world-join.ts
+ * registers `ctxW.get('typertGateway')` verbatim); FEDERATED rows hand out
+ * mesh-gateway wire adapters (dual-face, 3rd-argument dispatch).
+ */
+export interface RawTypertGatewayFace {
+  dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
+  openWireStream(
+    endpoint: string,
+    payload: unknown,
+    uplink: undefined,
+    peer: undefined,
+    signal: AbortSignal,
+    control: AbortController,
+  ): Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
+}
+
+/**
+ * Bridge one RAW typertGateway instance to Task 2's 3-arg `A2aGateway` face
+ * (fix round 1, 2026-09-28 review: the positional mismatch stranded completion
+ * streams). `uplink: undefined` is the canonical NO-LANE spelling upstream —
+ * the gateway substitutes `EMPTY_ASYNC_ITERABLE` itself
+ * (dsh-api-gateway/src/index.ts:712) — and `dispatchRpc` passes through as-is.
+ *
+ * FEDERATED WIRE ADAPTERS MUST NOT BE WRAPPED: mesh-gateway's dual-face
+ * dispatch reads the THIRD argument (`isUplinkLane(undefined)` → false), so a
+ * canonical 6-arg call would take its 3-arg branch and read the abort signal
+ * from position 3 (undefined) — silently losing cancellation. The resolver
+ * therefore passes federated rows through untouched.
+ * @param real - a raw in-process typertGateway instance (ctx0's own or a local world's).
+ * @returns the gateway Task 2's service consumes.
+ */
+export function bridgeTypertGateway(real: RawTypertGatewayFace): A2aGateway {
+  return {
+    dispatchRpc: (endpoint, payload, signal) => real.dispatchRpc(endpoint, payload, signal),
+    openWireStream: (endpoint, payload, signal) =>
+      real.openWireStream(endpoint, payload, undefined, undefined, signal, new AbortController()),
+  }
+}
+
+/**
  * Build the gatewayFor resolver Task 2's service consumes: federated table
  * first, shared target registry second, local id-map inversion third,
- * injected native face last.
- * @param options - hub home + optional in-process native gateway.
+ * injected native face last. LOCAL rows (runtime-key targets + the native
+ * seam) are RAW instances and get {@link bridgeTypertGateway}; FEDERATED rows
+ * (federation memo + a6-keyed registry entries) are wire adapters and pass
+ * through UNTOWRAPPED (see the bridge's JSDoc for why wrapping them loses
+ * the abort signal).
+ * @param options - hub home + optional raw in-process native gateway.
  * @returns the resolver (undefined = no gateway for that address).
  */
 export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress) => A2aGateway | undefined {
@@ -71,8 +119,12 @@ export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress
     if (registered !== undefined) return registered
     const key = localKeyOfA6(options.home, addr.id)
     if (key === undefined) return undefined
-    if (key === 'native') return options.nativeGateway
-    return getTarget(key)?.gateway
+    if (key === 'native') {
+      return options.nativeGateway === undefined ? undefined : bridgeTypertGateway(options.nativeGateway)
+    }
+    // The registry's declared GatewayFace (targets.ts) types the stream
+    const local = getTarget(key)?.gateway
+    return local === undefined ? undefined : bridgeTypertGateway(local as unknown as RawTypertGatewayFace)
   }
 }
 
