@@ -39,7 +39,12 @@
  *      baselines ({@link observeCachesRefreshed} — the T-A gate watched
  *      `workspaces.list` alone, so a plane whose sessions list landed later
  *      served stale rows to the decision and broke native's own
- *      last-visited restore), then reads the target NS's persisted
+ *      last-visited restore; T-G additionally holds the gate while a
+ *      persisted pointer has not yet joined the freshly minted INCREMENTAL
+ *      sessions list — membership via `byId` — firing on membership or on
+ *      the quiet-window ladder, {@link LANDING_QUIET_MS}, so partial-list
+ *      first edges stop laddering every switch into a brand-new session),
+ *      then reads the target NS's persisted
  *      `dsh.sessions.current` (the NS swap has long since happened) and
  *      executes {@link planRestoreLanding}'s precedence through the public
  *      faces. The landing is BOUNDED: if the baselines never install within
@@ -106,6 +111,24 @@ export const SESSIONS_CURRENT_KEY = 'dsh.sessions.current'
  * human-scale constant; Task 5's config face may expose it later.
  */
 export const SWITCH_FALLBACK_MS = 10_000
+
+/**
+ * The membership-wait quiet window (T-G): after both navigation caches are
+ * fresh, a persisted pointer the sessions list has not shown yet holds the
+ * landing gate — the list is minted INCREMENTALLY post-reconnect (upstream
+ * `handleSessionAdded` applies one session at a time, each application
+ * re-projecting the store with a fresh `ids` array, service.ts:677), so the
+ * first fresh edge sees a partial `byId` that legitimately lacks the
+ * pointer's session. The gate fires on membership; while the pointer is
+ * still absent, this window of list SILENCE (no `ids` identity change) is
+ * the concession point: the gate fires anyway and the plan takes the ladder
+ * — an honest miss, because a stored blank pointer legitimately never
+ * appears (matching upstream's own boot restore of a stale/absent id). An
+ * identity change during the window restarts it (the list is still growing).
+ * The machine's post-settle staleness watchdog remains the hard bound on
+ * the whole wait.
+ */
+export const LANDING_QUIET_MS = 600
 
 /**
  * The storage namespace for an active agent: native prefixes nothing
@@ -297,6 +320,18 @@ export interface NavigationCacheFace {
   getSnapshot(): { items: readonly unknown[]; phase: unknown }
   /** Subscribe to snapshot invalidation; the returned disposer stops it. */
   subscribe(listener: () => void): () => void
+  /**
+   * T-G membership face: does the store's CURRENT snapshot contain `id` as
+   * a listed session? The client binding answers from the sessions
+   * projection's `byId` (the same face upstream's boot restore resolves the
+   * pointer against, navigation.ts:324) — NOT from `ids`, and deliberately
+   * not from a stale copy: `byId` can gain a row without a new `ids`
+   * identity (publishRetention re-sets `byId` alone, service.ts:565), so
+   * the face must read the live snapshot at call time. Optional; without
+   * it the gate can never observe membership and the quiet window becomes
+   * the pointer's only concession point (the watchdog still bounds it).
+   */
+  contains?(id: string): boolean
 }
 
 /** The structural face of the connection generation observable. */
@@ -308,10 +343,35 @@ export interface GenerationFace {
 }
 
 /**
- * The caches-fresh gate behind the deferred landing (T-F): fires `listener`
- * exactly once, when BOTH navigation caches demonstrably hold the TARGET
- * plane's data — the client-face equivalent of upstream's both-lists ready
- * gate (`watchNavigation`, navigation.ts:292: `workspace.phase !== 'ready'
+ * What the membership-aware gate needs beyond the two lists (T-G), all
+ * injected so this module stays host-half pure. Every field is optional:
+ * an absent/empty options object restores the T-F gate verbatim (fire on
+ * the first fresh edge of both lists — the no-pointer fresh-boot path).
+ */
+export interface LandingGateOptions {
+  /**
+   * Read the landing pointer's plain session id at DECISION time — on every
+   * gate check, not once at arming. `undefined` means no navigable pointer
+   * OR a subagent-address pointer (which opens directly, upstream
+   * navigation.ts:320-323, and needs no cache consultation): either way the
+   * gate falls back to the T-F first-fresh-edge behavior. A throwing read
+   * is an honest `undefined` (the machine's own landing read treats a
+   * storage failure as `null` → the same ladder).
+   */
+  pointerSessionId?(): string | undefined
+  /** The quiet window in ms; defaults to {@link LANDING_QUIET_MS}. */
+  quietMs?: number
+  /** Timer injection for the quiet window (the SwitchHost faces in practice). */
+  setTimeout?(fn: () => void, ms: number): unknown
+  clearTimeout?(handle: unknown): void
+}
+
+/**
+ * The caches-fresh gate behind the deferred landing (T-F; T-G made it
+ * pointer-membership-aware): fires `listener` AT MOST once, when BOTH
+ * navigation caches demonstrably hold the TARGET plane's data — the
+ * client-face equivalent of upstream's both-lists ready gate
+ * (`watchNavigation`, navigation.ts:292: `workspace.phase !== 'ready'
  * || sessions.phase !== 'ready'` → return).
  *
  * The freshness token is each snapshot's `items` ARRAY IDENTITY: upstream's
@@ -327,58 +387,144 @@ export interface GenerationFace {
  * page whose first baseline never arrived. Both edges are tracked
  * independently, in either arrival order (the T-A gap: watching workspaces
  * alone let a late sessions baseline leave the pointer lookup reading stale
- * `byId` rows); the listener fires once, when the SECOND edge lands.
+ * `byId` rows).
+ *
+ * T-G — the pointer holds the gate. The sessions list is minted
+ * INCREMENTALLY after the reconnect (one `handleSessionAdded` per session,
+ * each re-projecting the store with a fresh `ids` array), so the first fresh
+ * edge sees a partial `byId` that legitimately lacks the pointer's session;
+ * consuming the landing there laddered every switch into a brand-new
+ * session (the browser-proven defect). When a pointer exists (the injected
+ * {@link LandingGateOptions.pointerSessionId} face, read at decision time),
+ * the gate therefore does NOT fire on the first fresh edge. It fires when:
+ *   - the sessions list CONTAINS the pointer's session — the membership
+ *     face (`byId`, consulted on EVERY sessions notification: `byId` can
+ *     gain a row without a new `ids` identity, service.ts:565), or
+ *   - the sessions list has gone QUIET — no `ids` identity change for the
+ *     configured quiet window ({@link LANDING_QUIET_MS}; an identity change
+ *     during the window restarts it) while the pointer is still absent:
+ *     the honest miss, firing with the ladder exactly like upstream's boot
+ *     restore of a stored id its fresh list does not know.
+ * No pointer → the first fresh edge fires, byte-identical to T-F (the
+ * fresh-boot path). The machine's post-settle staleness watchdog bounds the
+ * whole membership wait: it disposes this gate, which also cancels a
+ * running quiet window.
  *
  * Establishment strictly precedes any target-plane baseline (the follow
- * streams re-open on top of the established generation), so this single edge
- * implies both "generation established" and "repull landed" — the two
- * preconditions of a correct landing resolution.
+ * streams re-open on top of the established generation), so a fire implies
+ * both "generation established" and "repull landed" — the two preconditions
+ * of a correct landing resolution.
  *
  * Host-half pure logic: the client binding composes it with the real
  * `ctx.workspaces.list` + `ctx.sessions.list` stores and the connection
  * generation observable; the machine consumes it through
  * {@link SwitchHost.onCachesRefreshed}.
  *
- * @returns the disposer stopping all three subscriptions.
+ * @returns the disposer stopping all three subscriptions (and the quiet window).
  */
 export function observeCachesRefreshed(
   workspaces: NavigationCacheFace,
   sessions: NavigationCacheFace,
   generation: GenerationFace,
   listener: () => void,
+  gate: LandingGateOptions = {},
 ): () => void {
   // Establishment is an event, not a level: a live OLD generation at arming
   // time must not open the gate to that plane's churn. Monotonic — a later
   // generation loss mints no arrays, a re-establishment retakes the anchors.
   let established = false
+  // At most once per subscription — the SwitchHost contract. (The machine
+  // also disposes its gate at fire time; this flag makes the factory honest
+  // on its own.)
+  let fired = false
   let workspacesAnchor = workspaces.getSnapshot().items
   let sessionsAnchor = sessions.getSnapshot().items
   let workspacesFresh = false
   let sessionsFresh = false
+  // The quiet window's live handle, `undefined` while not holding.
+  let quietTimer: unknown
+  const quietMs = gate.quietMs ?? LANDING_QUIET_MS
+  const clearQuiet = (): void => {
+    if (quietTimer === undefined) return
+    if (gate.clearTimeout !== undefined) gate.clearTimeout(quietTimer)
+    quietTimer = undefined
+  }
+  const fire = (): void => {
+    if (fired) return
+    fired = true
+    clearQuiet()
+    listener()
+  }
+  const pointerSessionId = (): string | undefined => {
+    try {
+      return gate.pointerSessionId?.()
+    } catch {
+      return undefined // a pointer read failure is the no-pointer path (same ladder)
+    }
+  }
+  /**
+   * The decision point, run on every workspaces/sessions notification once
+   * establishment happened. `sessionsIdentityChanged` distinguishes a real
+   * list growth (restarts the quiet window) from a same-identity
+   * notification like publishRetention's byId-only set (consults
+   * membership, must NOT restart the window).
+   */
+  const check = (sessionsIdentityChanged: boolean): void => {
+    if (fired || !established || !workspacesFresh || !sessionsFresh) return
+    const pointer = pointerSessionId()
+    if (pointer === undefined) {
+      fire() // no pointer: the T-F first-fresh-edge behavior (fresh-boot path)
+      return
+    }
+    if (sessions.contains?.(pointer)) {
+      fire() // membership: the pointer's session has arrived in the fresh list
+      return
+    }
+    // Holding: the pointer has not shown up in the (possibly still growing)
+    // list. A real identity change restarts the window; so does arriving
+    // here with no window running (the first hold).
+    if (sessionsIdentityChanged || quietTimer === undefined) {
+      clearQuiet()
+      if (gate.setTimeout !== undefined) {
+        quietTimer = gate.setTimeout(() => {
+          quietTimer = undefined
+          fire() // quiet + still no membership → the honest miss (the ladder)
+        }, quietMs)
+      }
+      // Without a timer face the hold is membership-only; the machine's
+      // watchdog remains the bound (it disposes this gate).
+    }
+  }
   const disposeGeneration = generation.subscribe(() => {
     if (generation.getSnapshot() === undefined) return
     established = true
     workspacesFresh = false
     sessionsFresh = false
+    clearQuiet() // a re-establishment re-anchors: the old window's silence says nothing now
     workspacesAnchor = workspaces.getSnapshot().items
     sessionsAnchor = sessions.getSnapshot().items
   })
-  const check = (): void => {
-    if (workspacesFresh && sessionsFresh) listener()
-  }
   const disposeWorkspaces = workspaces.subscribe(() => {
     if (!established) return
     const snapshot = workspaces.getSnapshot()
     if (snapshot.phase === 'ready' && snapshot.items !== workspacesAnchor) workspacesFresh = true
-    check()
+    check(false)
   })
   const disposeSessions = sessions.subscribe(() => {
     if (!established) return
     const snapshot = sessions.getSnapshot()
-    if (snapshot.phase === 'ready' && snapshot.items !== sessionsAnchor) sessionsFresh = true
-    check()
+    let identityChanged = false
+    if (snapshot.phase === 'ready' && snapshot.items !== sessionsAnchor) {
+      sessionsFresh = true
+      identityChanged = true
+      // Retake the anchor so the NEXT same-reference notification is not
+      // mistaken for growth (quiet-window restart discipline).
+      sessionsAnchor = snapshot.items
+    }
+    check(identityChanged)
   })
   return () => {
+    clearQuiet()
     disposeWorkspaces()
     disposeSessions()
     disposeGeneration()
@@ -576,6 +722,27 @@ export function machineGroups(rows: readonly HubRosterRow[]): readonly MachineGr
 }
 
 /**
+ * What the machine hands the host's gate composition (T-G): the machine-side
+ * ingredients of {@link LandingGateOptions}. Structurally a full
+ * `LandingGateOptions` — the binding passes it straight through after adding
+ * its own membership face on the sessions store.
+ */
+export interface LandingGateRequest {
+  /**
+   * The persisted pointer's plain session id, read at DECISION time through
+   * this host's {@link readPersistedSelection} + {@link parseLandingTarget}
+   * — the same storage face and precedence the landing callback itself uses
+   * at fire time. `undefined` for no pointer or a subagent-address pointer.
+   */
+  pointerSessionId(): string | undefined
+  /** The quiet window ({@link SwitchOptions.quietWindowMs} ?? {@link LANDING_QUIET_MS}). */
+  quietMs: number
+  /** This host's timer faces, so the quiet window is drivable in tests. */
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
+/**
  * The effects the switch machine needs, all injected. Every method used by
  * the guarded steps ({@link setAgent}, the landing reads/writes,
  * {@link reconnect}, {@link toast}) may throw; the machine contains the
@@ -622,12 +789,21 @@ export interface SwitchHost {
   /**
    * Observe the target plane's wire-derived navigation caches being replaced
    * after the switch began — BOTH stores' post-`connection/reset` repull
-   * baselines landed (workspaces and sessions, either order). The all-clear
+   * baselines landed (workspaces and sessions, either order), AND — T-G —
+   * when the landing pointer exists, the sessions list contains its session
+   * or has gone quiet for {@link LandingGateRequest.quietMs}. The all-clear
    * for the landing: only then do the snapshots hold the target agent's data
    * and upstream's resolution faces read the target plane. The listener must
-   * fire at most once per subscription; the returned disposer stops it.
+   * fire at most once per subscription; the returned disposer stops it (and
+   * any running quiet window).
+   *
+   * The `gate` request carries what the MACHINE owns — the pointer face
+   * (over this host's {@link readPersistedSelection}), the quiet window from
+   * {@link SwitchOptions.quietWindowMs}, and this host's own timers — so the
+   * binding can compose the membership-aware {@link observeCachesRefreshed}
+   * by adding only its membership face (`sessions.list` `byId`).
    */
-  onCachesRefreshed(listener: () => void): () => void
+  onCachesRefreshed(listener: () => void, gate: LandingGateRequest): () => void
   /** Replace the connection attempt immediately (step 3, and the revert). */
   reconnect(): void
   /**
@@ -651,6 +827,12 @@ export interface SwitchHost {
 export interface SwitchOptions {
   /** Fallback window in ms; defaults to {@link SWITCH_FALLBACK_MS}. */
   fallbackMs?: number
+  /**
+   * T-G: the landing gate's membership-wait quiet window in ms; defaults to
+   * {@link LANDING_QUIET_MS}. Ridden through {@link LandingGateRequest} to
+   * the gate the binding composes.
+   */
+  quietWindowMs?: number
 }
 
 /** The produced orchestration interface (brief: `switchAgent(label): Promise<void>`). */
@@ -702,6 +884,7 @@ interface AttemptState {
  */
 export function createSwitchController(host: SwitchHost, options: SwitchOptions = {}): SwitchController {
   const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS
+  const quietWindowMs = options.quietWindowMs ?? LANDING_QUIET_MS
   let current: AttemptState | undefined
   // The cancel closure of the latest attempt's still-armed deferred landing,
   // surviving that attempt's settle. Every subsequent run() disarms it first
@@ -811,6 +994,28 @@ export function createSwitchController(host: SwitchHost, options: SwitchOptions 
         landingArmed = true
         const cancelThisLanding = (): void => { attempt.cancelLanding() }
         armedLanding = cancelThisLanding
+        // T-G: the machine's side of the membership-aware gate. The pointer
+        // face reads the SAME persisted-selection source the landing callback
+        // below reads at fire time — at gate DECISION time the NS swap has
+        // long since happened (step 1 precedes the reconnect), and the active
+        // agent only changes again on a revert/supersede, both of which kill
+        // this landing before the read could go stale. A throwing read is
+        // `undefined`: the no-pointer path, the same ladder a failed read
+        // reaches through the callback's own guard.
+        const gateRequest: LandingGateRequest = {
+          pointerSessionId: () => {
+            let parsed: string | object | null
+            try {
+              parsed = parseLandingTarget(host.readPersistedSelection())
+            } catch {
+              return undefined
+            }
+            return typeof parsed === 'string' && parsed !== '' ? parsed : undefined
+          },
+          quietMs: quietWindowMs,
+          setTimeout: (fn, ms) => host.setTimeout(fn, ms),
+          clearTimeout: (handle) => host.clearTimeout(handle),
+        }
         disposeLanding = host.onCachesRefreshed(() => {
           if (attempt.dead) return
           if (armedLanding === cancelThisLanding) armedLanding = undefined
@@ -837,7 +1042,7 @@ export function createSwitchController(host: SwitchHost, options: SwitchOptions 
             else if (plan.kind === 'start-session') host.startSession(plan.workspaceId)
             else host.openDefaultWorkspace()
           } catch { /* landing never throws */ }
-        })
+        }, gateRequest)
         void host.probeTarget(label).then(
           (alive) => { if (alive !== true) revert('probe') },
           () => { revert('probe') },

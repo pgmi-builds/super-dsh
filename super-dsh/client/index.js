@@ -455,7 +455,12 @@ function freshMachineId() {
 *      baselines ({@link observeCachesRefreshed} — the T-A gate watched
 *      `workspaces.list` alone, so a plane whose sessions list landed later
 *      served stale rows to the decision and broke native's own
-*      last-visited restore), then reads the target NS's persisted
+*      last-visited restore; T-G additionally holds the gate while a
+*      persisted pointer has not yet joined the freshly minted INCREMENTAL
+*      sessions list — membership via `byId` — firing on membership or on
+*      the quiet-window ladder, {@link LANDING_QUIET_MS}, so partial-list
+*      first edges stop laddering every switch into a brand-new session),
+*      then reads the target NS's persisted
 *      `dsh.sessions.current` (the NS swap has long since happened) and
 *      executes {@link planRestoreLanding}'s precedence through the public
 *      faces. The landing is BOUNDED: if the baselines never install within
@@ -519,6 +524,23 @@ const SESSIONS_CURRENT_KEY = "dsh.sessions.current";
 * human-scale constant; Task 5's config face may expose it later.
 */
 const SWITCH_FALLBACK_MS = 1e4;
+/**
+* The membership-wait quiet window (T-G): after both navigation caches are
+* fresh, a persisted pointer the sessions list has not shown yet holds the
+* landing gate — the list is minted INCREMENTALLY post-reconnect (upstream
+* `handleSessionAdded` applies one session at a time, each application
+* re-projecting the store with a fresh `ids` array, service.ts:677), so the
+* first fresh edge sees a partial `byId` that legitimately lacks the
+* pointer's session. The gate fires on membership; while the pointer is
+* still absent, this window of list SILENCE (no `ids` identity change) is
+* the concession point: the gate fires anyway and the plan takes the ladder
+* — an honest miss, because a stored blank pointer legitimately never
+* appears (matching upstream's own boot restore of a stale/absent id). An
+* identity change during the window restarts it (the list is still growing).
+* The machine's post-settle staleness watchdog remains the hard bound on
+* the whole wait.
+*/
+const LANDING_QUIET_MS = 600;
 /**
 * The persisted-selection parse feeding {@link planRestoreLanding}.
 *
@@ -625,10 +647,11 @@ function planRestoreLanding(parsed, caches) {
 	if (caches.workspaces.items.length === 0 && caches.sessions.ids.length === 0) return { kind: "default-workspace" };
 }
 /**
-* The caches-fresh gate behind the deferred landing (T-F): fires `listener`
-* exactly once, when BOTH navigation caches demonstrably hold the TARGET
-* plane's data — the client-face equivalent of upstream's both-lists ready
-* gate (`watchNavigation`, navigation.ts:292: `workspace.phase !== 'ready'
+* The caches-fresh gate behind the deferred landing (T-F; T-G made it
+* pointer-membership-aware): fires `listener` AT MOST once, when BOTH
+* navigation caches demonstrably hold the TARGET plane's data — the
+* client-face equivalent of upstream's both-lists ready gate
+* (`watchNavigation`, navigation.ts:292: `workspace.phase !== 'ready'
 * || sessions.phase !== 'ready'` → return).
 *
 * The freshness token is each snapshot's `items` ARRAY IDENTITY: upstream's
@@ -644,50 +667,122 @@ function planRestoreLanding(parsed, caches) {
 * page whose first baseline never arrived. Both edges are tracked
 * independently, in either arrival order (the T-A gap: watching workspaces
 * alone let a late sessions baseline leave the pointer lookup reading stale
-* `byId` rows); the listener fires once, when the SECOND edge lands.
+* `byId` rows).
+*
+* T-G — the pointer holds the gate. The sessions list is minted
+* INCREMENTALLY after the reconnect (one `handleSessionAdded` per session,
+* each re-projecting the store with a fresh `ids` array), so the first fresh
+* edge sees a partial `byId` that legitimately lacks the pointer's session;
+* consuming the landing there laddered every switch into a brand-new
+* session (the browser-proven defect). When a pointer exists (the injected
+* {@link LandingGateOptions.pointerSessionId} face, read at decision time),
+* the gate therefore does NOT fire on the first fresh edge. It fires when:
+*   - the sessions list CONTAINS the pointer's session — the membership
+*     face (`byId`, consulted on EVERY sessions notification: `byId` can
+*     gain a row without a new `ids` identity, service.ts:565), or
+*   - the sessions list has gone QUIET — no `ids` identity change for the
+*     configured quiet window ({@link LANDING_QUIET_MS}; an identity change
+*     during the window restarts it) while the pointer is still absent:
+*     the honest miss, firing with the ladder exactly like upstream's boot
+*     restore of a stored id its fresh list does not know.
+* No pointer → the first fresh edge fires, byte-identical to T-F (the
+* fresh-boot path). The machine's post-settle staleness watchdog bounds the
+* whole membership wait: it disposes this gate, which also cancels a
+* running quiet window.
 *
 * Establishment strictly precedes any target-plane baseline (the follow
-* streams re-open on top of the established generation), so this single edge
-* implies both "generation established" and "repull landed" — the two
-* preconditions of a correct landing resolution.
+* streams re-open on top of the established generation), so a fire implies
+* both "generation established" and "repull landed" — the two preconditions
+* of a correct landing resolution.
 *
 * Host-half pure logic: the client binding composes it with the real
 * `ctx.workspaces.list` + `ctx.sessions.list` stores and the connection
 * generation observable; the machine consumes it through
 * {@link SwitchHost.onCachesRefreshed}.
 *
-* @returns the disposer stopping all three subscriptions.
+* @returns the disposer stopping all three subscriptions (and the quiet window).
 */
-function observeCachesRefreshed(workspaces, sessions, generation, listener) {
+function observeCachesRefreshed(workspaces, sessions, generation, listener, gate = {}) {
 	let established = false;
+	let fired = false;
 	let workspacesAnchor = workspaces.getSnapshot().items;
 	let sessionsAnchor = sessions.getSnapshot().items;
 	let workspacesFresh = false;
 	let sessionsFresh = false;
+	let quietTimer;
+	const quietMs = gate.quietMs ?? LANDING_QUIET_MS;
+	const clearQuiet = () => {
+		if (quietTimer === void 0) return;
+		if (gate.clearTimeout !== void 0) gate.clearTimeout(quietTimer);
+		quietTimer = void 0;
+	};
+	const fire = () => {
+		if (fired) return;
+		fired = true;
+		clearQuiet();
+		listener();
+	};
+	const pointerSessionId = () => {
+		try {
+			return gate.pointerSessionId?.();
+		} catch {
+			return;
+		}
+	};
+	/**
+	* The decision point, run on every workspaces/sessions notification once
+	* establishment happened. `sessionsIdentityChanged` distinguishes a real
+	* list growth (restarts the quiet window) from a same-identity
+	* notification like publishRetention's byId-only set (consults
+	* membership, must NOT restart the window).
+	*/
+	const check = (sessionsIdentityChanged) => {
+		if (fired || !established || !workspacesFresh || !sessionsFresh) return;
+		const pointer = pointerSessionId();
+		if (pointer === void 0) {
+			fire();
+			return;
+		}
+		if (sessions.contains?.(pointer)) {
+			fire();
+			return;
+		}
+		if (sessionsIdentityChanged || quietTimer === void 0) {
+			clearQuiet();
+			if (gate.setTimeout !== void 0) quietTimer = gate.setTimeout(() => {
+				quietTimer = void 0;
+				fire();
+			}, quietMs);
+		}
+	};
 	const disposeGeneration = generation.subscribe(() => {
 		if (generation.getSnapshot() === void 0) return;
 		established = true;
 		workspacesFresh = false;
 		sessionsFresh = false;
+		clearQuiet();
 		workspacesAnchor = workspaces.getSnapshot().items;
 		sessionsAnchor = sessions.getSnapshot().items;
 	});
-	const check = () => {
-		if (workspacesFresh && sessionsFresh) listener();
-	};
 	const disposeWorkspaces = workspaces.subscribe(() => {
 		if (!established) return;
 		const snapshot = workspaces.getSnapshot();
 		if (snapshot.phase === "ready" && snapshot.items !== workspacesAnchor) workspacesFresh = true;
-		check();
+		check(false);
 	});
 	const disposeSessions = sessions.subscribe(() => {
 		if (!established) return;
 		const snapshot = sessions.getSnapshot();
-		if (snapshot.phase === "ready" && snapshot.items !== sessionsAnchor) sessionsFresh = true;
-		check();
+		let identityChanged = false;
+		if (snapshot.phase === "ready" && snapshot.items !== sessionsAnchor) {
+			sessionsFresh = true;
+			identityChanged = true;
+			sessionsAnchor = snapshot.items;
+		}
+		check(identityChanged);
 	});
 	return () => {
+		clearQuiet();
 		disposeWorkspaces();
 		disposeSessions();
 		disposeGeneration();
@@ -835,6 +930,7 @@ function machineGroups(rows) {
 */
 function createSwitchController(host, options = {}) {
 	const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS;
+	const quietWindowMs = options.quietWindowMs ?? LANDING_QUIET_MS;
 	let current;
 	let armedLanding;
 	return { run(label) {
@@ -911,6 +1007,20 @@ function createSwitchController(host, options = {}) {
 				attempt.cancelLanding();
 			};
 			armedLanding = cancelThisLanding;
+			const gateRequest = {
+				pointerSessionId: () => {
+					let parsed;
+					try {
+						parsed = parseLandingTarget(host.readPersistedSelection());
+					} catch {
+						return;
+					}
+					return typeof parsed === "string" && parsed !== "" ? parsed : void 0;
+				},
+				quietMs: quietWindowMs,
+				setTimeout: (fn, ms) => host.setTimeout(fn, ms),
+				clearTimeout: (handle) => host.clearTimeout(handle)
+			};
 			disposeLanding = host.onCachesRefreshed(() => {
 				if (attempt.dead) return;
 				if (armedLanding === cancelThisLanding) armedLanding = void 0;
@@ -937,7 +1047,7 @@ function createSwitchController(host, options = {}) {
 					else if (plan.kind === "start-session") host.startSession(plan.workspaceId);
 					else host.openDefaultWorkspace();
 				} catch {}
-			});
+			}, gateRequest);
 			host.probeTarget(label).then((alive) => {
 				if (alive !== true) revert("probe");
 			}, () => {
@@ -1052,7 +1162,7 @@ function bindSwitchAgent(deps) {
 		},
 		openDefaultWorkspace,
 		readRestoreCaches,
-		onCachesRefreshed(listener) {
+		onCachesRefreshed(listener, gate) {
 			return observeCachesRefreshed(deps.workspaces.list, {
 				getSnapshot: () => {
 					const snapshot = deps.sessions.list.getSnapshot();
@@ -1061,8 +1171,9 @@ function bindSwitchAgent(deps) {
 						phase: snapshot.phase
 					};
 				},
-				subscribe: (fn) => deps.sessions.list.subscribe(fn)
-			}, deps.connection.generation, listener);
+				subscribe: (fn) => deps.sessions.list.subscribe(fn),
+				contains: (id) => deps.sessions.list.getSnapshot().byId[id] !== void 0
+			}, deps.connection.generation, listener, gate);
 		},
 		reconnect() {
 			deps.connection.reconnect();

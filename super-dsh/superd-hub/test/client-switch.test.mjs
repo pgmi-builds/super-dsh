@@ -25,6 +25,7 @@ import {
   NATIVE_AGENT,
   SESSIONS_CURRENT_KEY,
   SWITCH_FALLBACK_MS,
+  LANDING_QUIET_MS,
   FUSION_OFF_HINT,
   namespacedKey,
   storageNamespace,
@@ -213,16 +214,21 @@ function fakeHost(overrides = {}) {
     onGenerationEstablished(fn) {
       return genFace.subscribe(() => { if (genFace.getSnapshot() !== undefined) fn() })
     },
-    onCachesRefreshed(fn) {
-      // The client binding's composition: sessions.ids plays items.
+    onCachesRefreshed(fn, gate) {
+      // The client binding's composition: sessions.ids plays items, and the
+      // T-G membership face answers from byId (the face the restore pointer
+      // resolves against). The machine's gate request (pointer face, quiet
+      // window, timers) rides through untouched, so the machine-level tests
+      // exercise the same membership-aware gate the client binding wires.
       const sessionsFace = {
         getSnapshot: () => {
           const s = sessions.face.getSnapshot()
           return { items: s.ids, phase: s.phase }
         },
         subscribe: (l) => sessions.face.subscribe(l),
+        contains: (id) => sessions.face.getSnapshot().byId[id] !== undefined,
       }
-      return observeCachesRefreshed(workspaces.face, sessionsFace, genFace, fn)
+      return observeCachesRefreshed(workspaces.face, sessionsFace, genFace, fn, gate)
     },
     probeTarget() { return Promise.resolve(true) },
     toast(message) { log.toast.push(message); seq.push('toast') },
@@ -302,7 +308,10 @@ test('blank pointer: the landing connects the pointer\'s workspace (reuseBlank n
   assert.deepEqual(fx.log.openSession, [])
 })
 
-test('stale pointer: a sessionId the fresh list no longer knows falls to the recent-workspace ladder', async () => {
+test('stale pointer: a sessionId the fresh list never shows ladders after the quiet window (T-G)', async () => {
+  // T-G semantic: a pointer that is not a list member no longer ladders on
+  // the fresh edge (the list may still be growing incrementally) — it holds
+  // for the quiet window, then takes the ladder as an honest miss.
   const fx = fakeHost()
   fx.setStored('omp', JSON.stringify({ sessionId: 'gone-s1' }))
   const done = createSwitchController(fx.host).run('omp')
@@ -316,6 +325,10 @@ test('stale pointer: a sessionId the fresh list no longer knows falls to the rec
     a1: { id: 'a1', blank: false, updatedAt: 10 },
     b1: { id: 'b1', blank: false, updatedAt: 999 },
   } })
+  assert.deepEqual(fx.log.startSession, [], 'T-G: the ladder waits — the list may still be growing')
+  const quiet = fx.timers.find((t) => t.ms === LANDING_QUIET_MS)
+  assert.ok(quiet !== undefined, 'the quiet window is armed while a non-member pointer holds the gate')
+  fx.fireTimer(quiet)
   assert.deepEqual(fx.log.startSession, ['ws-new'], 'recent = latest session updatedAt (native recentWorkspace)')
   assert.deepEqual(fx.log.openSession, [], 'the dead id is never opened')
 })
@@ -358,8 +371,11 @@ test('a landing face throwing at gate time never escapes run(); the machine stil
   fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7' }))
   const done = createSwitchController(fx.host).run('omp')
   fx.establish()
-  fx.refreshCaches()
   await done
+  // T-G: the pointer must be a list MEMBER for the gate to hand the landing
+  // over — the baseline below carries it, so the throwing face is reached.
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['omp-s7'], byId: { 'omp-s7': { id: 'omp-s7', blank: false, updatedAt: 5 } } })
   assert.deepEqual(fx.log.setAgent, ['omp'], 'no revert: the switch itself succeeded')
   assert.deepEqual(fx.log.toast, [], 'a failed landing is contained, not a revert')
 })
@@ -564,6 +580,159 @@ test('the landing reads the pointer through the target NS (setAgent-first orderi
   assert.deepEqual(fx.log.openSession, ['codex-s9'], 'the read resolved the codex NS (active at gate time), not the omp one')
 })
 
+// ---- T-G: the membership-aware landing gate (machine level) ---------------
+// Browser-proven defect (rig probes .scratch/switch-probe/): the sessions
+// list is minted INCREMENTALLY post-reconnect (upstream handleSessionAdded →
+// projectList re-sets the store with a fresh ids array PER ADDED session,
+// service.ts:677) — the T-F gate consumed the landing on the FIRST
+// post-establishment identity change, when byId was still partial and lacked
+// the pointer's session, so every switch laddered into a brand-new session.
+// The gate now holds while a pointer exists but is not yet a list MEMBER
+// (byId face), firing on membership — or, when the list goes quiet (no
+// identity change for a configurable window, default LANDING_QUIET_MS), on
+// the quiet ladder (honest miss: stored blanks legitimately never appear).
+// No pointer → the first fresh edge still fires (fresh-boot path unchanged).
+// The machine's staleness watchdog remains the hard bound on the whole wait.
+
+test('T-G incremental growth: the gate rides out partial-list edges and lands the pointer the moment its row arrives', async () => {
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-s7' }))
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline(FRESH_WS)
+  // Upstream shape: the list grows ONE session per edge, each with a fresh
+  // ids array identity (handleSessionAdded one at a time).
+  fx.installSessionsBaseline({ ids: ['a1'], byId: { a1: { id: 'a1', blank: false, updatedAt: 1 } } })
+  assert.deepEqual(fx.log.openSession, [], 'edge 1: byId partial, pointer absent — no landing, no ladder')
+  assert.deepEqual(fx.log.startSession, [], 'the defect: the old gate laddered into a new session HERE')
+  fx.installSessionsBaseline({ ids: ['a1', 'b1'], byId: {
+    a1: { id: 'a1', blank: false, updatedAt: 1 },
+    b1: { id: 'b1', blank: false, updatedAt: 2 },
+  } })
+  assert.deepEqual(fx.log.openSession, [], 'edge 2: still partial — the gate keeps holding')
+  assert.deepEqual(fx.log.startSession, [])
+  fx.installSessionsBaseline({ ids: ['a1', 'b1', 'omp-s7'], byId: {
+    a1: { id: 'a1', blank: false, updatedAt: 1 },
+    b1: { id: 'b1', blank: false, updatedAt: 2 },
+    'omp-s7': { id: 'omp-s7', blank: false, updatedAt: 3 },
+  } })
+  assert.deepEqual(fx.log.openSession, ['omp-s7'], 'the pointer lands the moment its session joins the list')
+  assert.deepEqual(fx.log.startSession, [], 'membership, not the ladder — startSession is never called')
+  const quiet = fx.timers.find((t) => t.ms === LANDING_QUIET_MS)
+  assert.ok(quiet !== undefined, 'a quiet window was armed while holding')
+  assert.equal(quiet.cleared, true, 'the quiet window is off once membership fired')
+})
+
+test('T-G quiet-window ladder: the pointer never appears, edges stop, the ladder fires exactly once', async () => {
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'gone-s1' }))
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['a1'], byId: { a1: { id: 'a1', blank: false, updatedAt: 1 } } })
+  assert.deepEqual(fx.log.startSession, [], 'holding: a non-member pointer does not ladder on the fresh edge')
+  const firstQuiet = fx.timers.find((t) => t.ms === LANDING_QUIET_MS)
+  assert.ok(firstQuiet !== undefined, 'the quiet window arms at the default LANDING_QUIET_MS')
+  // Growth resumes: an identity change during the window restarts it.
+  fx.installSessionsBaseline({ ids: ['a1', 'b1'], byId: {
+    a1: { id: 'a1', blank: false, updatedAt: 1 },
+    b1: { id: 'b1', blank: false, updatedAt: 2 },
+  } })
+  assert.equal(firstQuiet.cleared, true, 'an identity change during the window restarts it (the list is still growing)')
+  const secondQuiet = fx.timers.filter((t) => t.ms === LANDING_QUIET_MS).at(-1)
+  assert.ok(secondQuiet !== undefined && secondQuiet !== firstQuiet, 'a fresh window is armed after the restart')
+  fx.fireTimer(secondQuiet)
+  assert.deepEqual(fx.log.startSession, ['ws-1'], 'quiet + still no membership → the honest-miss ladder fires')
+  assert.equal(fx.log.startSession.length, 1, 'exactly one landing')
+  assert.deepEqual(fx.log.openSession, [], 'the never-listed id is never opened')
+  fx.installSessionsBaseline({ ids: ['a1', 'b1', 'c1'], byId: { c1: { id: 'c1', blank: false, updatedAt: 3 } } })
+  assert.equal(fx.log.startSession.length, 1, 'the fired landing is inert to later edges')
+})
+
+test('T-G blank pointer the list never shows: quiet, then the ladder (upstream stored-blank semantics)', async () => {
+  // byId legitimately excludes some blanks (and a stored blank from another
+  // plane never appears in the target list at all): the quiet ladder is the
+  // faithful miss — startSession resolves recent/current like upstream's own
+  // stale-pointer boot path, never a second blank.
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-blank-elsewhere' }))
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['a1'], byId: { a1: { id: 'a1', blank: false, updatedAt: 1 } } })
+  assert.deepEqual(fx.log.startSession, [], 'no instant ladder for the invisible blank')
+  fx.fireTimer(fx.timers.filter((t) => t.ms === LANDING_QUIET_MS).at(-1))
+  assert.deepEqual(fx.log.startSession, ['ws-1'], 'the quiet miss ladders into the recent workspace, once')
+  assert.deepEqual(fx.log.openSession, [])
+})
+
+test('T-G no-pointer mode: the first fresh edge still fires immediately, with no quiet window at all', async () => {
+  const fx = fakeHost()
+  const done = createSwitchController(fx.host).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['a1'], byId: { a1: { id: 'a1', blank: false, updatedAt: 1 } } })
+  assert.deepEqual(fx.log.startSession, ['ws-1'], 'fresh-boot path unchanged: fires on the first fresh edge')
+  assert.equal(fx.timers.some((t) => t.ms === LANDING_QUIET_MS), false, 'no pointer → no quiet window ever armed')
+  assert.deepEqual(fx.log.openSession, [])
+})
+
+test('T-G the staleness watchdog bounds the membership wait: disarm, no landing, quiet timer torn down', async () => {
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'gone-s1' }))
+  // A quiet window far longer than the fallback: only the watchdog may end this switch.
+  const done = createSwitchController(fx.host, { fallbackMs: 50, quietWindowMs: 10_000 }).run('omp')
+  fx.establish()
+  await done
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['a1'], byId: { a1: { id: 'a1', blank: false, updatedAt: 1 } } })
+  const quiet = fx.timers.find((t) => t.ms === 10_000)
+  assert.ok(quiet !== undefined, 'the configured quiet window is what arms')
+  const watchdog = fx.timers[1]
+  assert.equal(watchdog.ms, 50, 'the machine-level watchdog (post-settle) is armed')
+  fx.fireTimer(watchdog)
+  assert.equal(quiet.cleared, true, 'the watchdog tears the quiet window down with the gate')
+  fx.fireTimer(quiet) // even a fired stale handle lands nothing
+  fx.installSessionsBaseline({ ids: ['a1', 'x1'], byId: { x1: { id: 'x1', blank: false, updatedAt: 2 } } })
+  assert.deepEqual(fx.log.startSession, [], 'the membership wait never outlives the watchdog')
+  assert.deepEqual(fx.log.openSession, [])
+  assert.equal(fx.gateSubscriptions(), 0, 'the watchdog disarmed the whole landing, as today')
+})
+
+test('T-G rapid double-switch: the controller-scope supersede still kills a quiet-held landing', async () => {
+  const fx = fakeHost()
+  fx.setStored('omp', JSON.stringify({ sessionId: 'omp-slow' })) // never a member → holds with the quiet window armed
+  fx.setStored('codex', JSON.stringify({ sessionId: 'codex-s2' }))
+  const controller = createSwitchController(fx.host)
+  const first = controller.run('omp')
+  fx.establish()
+  await first
+  fx.installWorkspacesBaseline(FRESH_WS)
+  fx.installSessionsBaseline({ ids: ['a1'], byId: { a1: { id: 'a1', blank: false, updatedAt: 1 } } })
+  const heldQuiet = fx.timers.find((t) => t.ms === LANDING_QUIET_MS)
+  assert.ok(heldQuiet !== undefined, 'A is holding with its quiet window armed')
+  const second = controller.run('codex') // supersede AFTER the settle, mid-hold
+  assert.equal(heldQuiet.cleared, true, 'the supersede disarms the held window through the controller-scope handle')
+  fx.establish() // B's establishment re-anchors the surviving gate
+  // B's own re-pull mints NEW baseline arrays (identity is the freshness
+  // token — re-sending A's already-installed arrays would rightly count as
+  // no baseline at all).
+  fx.installWorkspacesBaseline({ items: [
+    { workspaceId: 'ws-codex', sessionIds: ['codex-s2'], createdAt: '2026-02-01T00:00:00.000Z' },
+  ] })
+  fx.installSessionsBaseline({ ids: ['codex-s2'], byId: { 'codex-s2': { id: 'codex-s2', blank: false, updatedAt: 3 } } })
+  assert.deepEqual(fx.log.openSession, ['codex-s2'], 'B lands its pointer through the same extended gate')
+  assert.deepEqual(fx.log.startSession, [], 'red line: A\'s quiet ladder never fires over B')
+  fx.fireTimer(heldQuiet) // belt: even a fired stale handle lands nothing
+  assert.deepEqual(fx.log.startSession, [])
+  await second
+  assert.deepEqual(fx.log.toast, [], 'supersede stays silent')
+})
+
 // ---- the both-lists caches-fresh gate (host-half pure factory) ------------
 // The client binding composes this with the real `workspaces.list` +
 // `sessions.list` stores (sessions.ids playing items) + the connection
@@ -657,6 +826,39 @@ test('gate: same-reference notifications and non-ready phases do not count; the 
   dispose()
   fx.installSessions(['another-s1'])
   assert.equal(fired, 1, 'disposed: no further fires')
+})
+
+test('gate T-G: a non-member pointer holds the gate; a byId-only gain (same ids identity) opens it', () => {
+  // Upstream publishRetention re-sets byId WITHOUT minting a new ids array
+  // (service.ts:565) — membership must be consulted on EVERY sessions
+  // notification, identity change or not, or such a gain would sit unseen
+  // until the quiet ladder.
+  const fx = cacheGateFixture()
+  let fired = 0
+  const members = new Set(['stale-s1'])
+  const sessionsFace = {
+    getSnapshot: (fx.sessions).getSnapshot,
+    subscribe: (fx.sessions).subscribe,
+    contains: (id) => members.has(id),
+  }
+  const quietTimers = []
+  const dispose = observeCachesRefreshed(fx.workspaces, sessionsFace, fx.generationFace, () => { fired += 1 }, {
+    pointerSessionId: () => 'wanted',
+    setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; quietTimers.push(t); return t },
+    clearTimeout: (t) => { t.cleared = true },
+    quietMs: 1234,
+  })
+  fx.establish()
+  fx.installWorkspaces(['fresh-ws'])
+  fx.installSessions(['a1'])
+  assert.equal(fired, 0, 'both lists fresh but the pointer is not a member — the gate holds')
+  assert.equal(quietTimers.length, 1, 'the quiet window armed while holding')
+  assert.equal(quietTimers[0].ms, 1234, 'the configured quiet window is what arms')
+  members.add('wanted')
+  fx.sessions.churnSameReference() // the publishRetention shape: membership gains, ids identity unchanged
+  assert.equal(fired, 1, 'membership consulted on the same-identity notification')
+  assert.equal(quietTimers[0].cleared, true, 'the quiet window is off once fired')
+  dispose()
 })
 
 // ---- the __SUPERD_UI_FUSION__ baked global (review §4.6 双半边通道) ------

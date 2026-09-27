@@ -106,7 +106,10 @@ export interface SwitchSessionSummary {
  * landing pointer resolves against (upstream `restoreSelection` reads
  * `sessions.byId`, navigation.ts:324) and the second freshness edge of the
  * both-lists gate (the T-A gap: without it the gate could fire while `byId`
- * still held the previous plane's rows).
+ * still held the previous plane's rows). T-G: its `byId` is also the gate's
+ * membership face — the list is minted incrementally post-reconnect, so the
+ * gate holds until the pointer's session joins `byId` (or the list goes
+ * quiet) instead of trusting the first partial-list edge.
  */
 export interface SwitchSessions {
   readonly list: {
@@ -231,21 +234,29 @@ export function bindSwitchAgent(deps: {
     startSession(workspaceId) { deps.uiWorkspace.startSession(workspaceId) },
     openDefaultWorkspace,
     readRestoreCaches,
-    onCachesRefreshed(listener) {
-      // The T-F freshness gate over the real stores: the first
-      // post-establishment baseline replacement in BOTH `workspaces.list`
-      // and `sessions.list` — upstream's watchNavigation ready gate
-      // (navigation.ts:292). The sessions store adapts its projection's
-      // `ids` array to the freshness token (a fresh array is minted on
-      // every projection).
+    onCachesRefreshed(listener, gate) {
+      // The T-F freshness gate over the real stores, extended T-G with the
+      // membership face: the first post-establishment baseline replacement
+      // in BOTH `workspaces.list` and `sessions.list` — upstream's
+      // watchNavigation ready gate (navigation.ts:292) — held until the
+      // persisted pointer's session JOINS the freshly (incrementally) minted
+      // list, or the list goes quiet. The sessions store adapts its
+      // projection's `ids` array to the freshness token (a fresh array is
+      // minted on every projection); membership answers from the LIVE `byId`
+      // snapshot — the face upstream's boot restore resolves the pointer
+      // against (navigation.ts:324), and the only one that can gain a row
+      // without a new `ids` identity (publishRetention, service.ts:565).
+      // The machine's gate request (pointer face, quiet window, timers)
+      // rides through structurally — it is a full LandingGateOptions.
       const sessionsFace: NavigationCacheFace = {
         getSnapshot: () => {
           const snapshot = deps.sessions.list.getSnapshot()
           return { items: snapshot.ids, phase: snapshot.phase }
         },
         subscribe: (fn) => deps.sessions.list.subscribe(fn),
+        contains: (id) => deps.sessions.list.getSnapshot().byId[id] !== undefined,
       }
-      return observeCachesRefreshed(deps.workspaces.list, sessionsFace, deps.connection.generation, listener)
+      return observeCachesRefreshed(deps.workspaces.list, sessionsFace, deps.connection.generation, listener, gate)
     },
     reconnect() { deps.connection.reconnect() },
     onGenerationEstablished(listener) {
