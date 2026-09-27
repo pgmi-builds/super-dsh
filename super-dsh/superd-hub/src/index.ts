@@ -24,7 +24,7 @@ export { parseClientRequest, serverResponse, serverError, serverResult, wireErro
 export { WorldMuxServer, parseClientMessage, defaultFailure, type MuxOpen, type MuxFailure, type WorldMuxOptions } from './world-mux.js'
 export { forwardApiCall, forwardWorldFetch, worldMuxOf, writeJson, type CarrierGatewayFace, type ForwardOptions } from './carrier.js'
 export { registerHubRoute, HUB_MOUNT_PATH, HUB_MUX_PATH, type HubRouteOptions } from './hub-route.js'
-export { renderFusionTransport, deriveFusionFlag, FUSION_FLAG_ENV, FUSION_FLAG_GLOBAL, type FusionConfig } from './fusion-transport.js'
+export { renderFusionTransport, FUSION_FLAG_GLOBAL, type FusionConfig } from './fusion-transport.js'
 export { createSwitchController, parseLandingTarget, namespacedKey, storageNamespace, seatClickDecision, NATIVE_AGENT, SESSIONS_CURRENT_KEY, SWITCH_FALLBACK_MS, type SwitchHost, type SwitchController, type SwitchOptions, type SeatClickInput, type SeatClickDecision } from './switch-core.js'
 export { agentLinks, agentRosterRow, AGENT_ROSTER_GLOBAL, type AgentLink } from './agent-roster.js'
 export { createOwnershipIndex, type OwnershipIndex, type OwnershipRow } from './ownership.js'

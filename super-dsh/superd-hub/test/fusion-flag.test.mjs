@@ -1,40 +1,40 @@
-// Fusion flag (native-ui-fusion Task 5): the formal SUPERD_UI_FUSION test
-// surface — the plan-named home of the flag contract, on top of the minimal
-// gate Task 3 built into fusion-transport.ts.
+// Row gate (native-ui-fusion Task 5, retuned 2026-09-27): the formal surface
+// of the fusion row's on/off, on top of the gate built into
+// fusion-transport.ts. The gate is ROW COMPOSITION — no environment variable.
 //
-// The flag has two halves that must never disagree (spec §5 双半边):
-//   - server half: ONE gated `webserver/index-inject` listener pushing the
+// The two halves that must never disagree (spec §5 双半边):
+//   - server half: ONE `webserver/index-inject` listener pushing the
 //     transport script AND the `__SUPERD_UI_FUSION__` baked global — or,
-//     when off, NOTHING at all (评审 §5: 多一个 script 标签都不该有);
+//     when the row is off, NOTHING at all (评审 §5: 多一个 script 标签都不该有);
 //   - client half: the Hub UI switch surfaces' fusion branch (T-B: the
 //     sole switch surface since the sidebar-bottom RuntimeSeat retirement)
 //     reading `__SUPERD_UI_FUSION__ === true` off the delivered client bundle.
 //
 // Faces pinned here, per the brief's Step 1:
-//   1. the name/derivation contract and the schema default (env absent → off,
+//   1. the page-global contract and the row-config default (composed → on,
 //      explicit row config wins — the web-trust formalization shape);
 //   2. the 双半边 name contract against the DELIVERED composite client bundle
 //      (super-dsh/client/index.js — the tracked artifact consumers load; the
 //      ctx0-client-row precedent of pinning the delivered face);
 //   3. world discipline: world mounts never carry a fusion row or the flag
 //      global (world pages keep the real hyperlinks);
-//   4. flag OFF on the SERVED ctx0 index (in-process boot replica, the
-//      ctx0-client-row recipe): zero fusion rows — the equivalence bar, ruled
-//      to cover fusion INJECTIONS only (the bare-name `super-dsh` client-half
-//      composition row is not gated and not part of the bar). T-E closeout:
-//      flag OFF = NO foreign entry at all; the Hub rows degrade client-side
-//      (inert + hint, never dead hrefs — pinned at the delivered artifact);
-//   5. flag ON row config face on the SERVED index: web-trust row first, the
-//      fusion pair (transport script + flag global) after it, adjacent and
-//      last among the super-dsh rows — the served-order pin Task 3's review
-//      deferred here (no daemons: both replicas boot in-process, port 0).
+//   4. row OFF (explicit `enabled: false`) on the SERVED ctx0 index
+//      (in-process boot replica, the ctx0-client-row recipe): zero fusion
+//      rows — the equivalence bar, ruled to cover fusion INJECTIONS only (the
+//      bare-name `super-dsh` client-half composition row is not gated and not
+//      part of the bar). T-E closeout: OFF = NO foreign entry at all; the Hub
+//      rows degrade client-side (inert + hint, never dead hrefs — pinned at
+//      the delivered artifact);
+//   5. row ON (the shipped default, no overlay) on the SERVED index:
+//      web-trust row first, the fusion pair (transport script + flag global)
+//      after it, adjacent and last among the super-dsh rows — the served-order
+//      pin Task 3's review deferred here (no daemons: both replicas boot
+//      in-process, port 0).
 //
-// Env hygiene BEFORE any dist import: the schema defaults bake at module load
-// (the web-trust default-derivation shape), so this file fixes the env FIRST
-// and imports the dist modules dynamically — one-shot per process, which is
-// exactly how a launcher boot bakes them. The env-spelling table and the
-// component-level emission tests stay in fusion-transport.test.mjs /
-// client-switch.test.mjs; this file pins the flag surface across the halves.
+// Env hygiene BEFORE any dist import: the defaults bake at module load (the
+// web-trust default-derivation shape), so this file fixes the env FIRST and
+// imports the dist modules dynamically — one-shot per process, which is
+// exactly how a launcher boot bakes them.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -51,12 +51,9 @@ const ANCHOR = join(REPO_WT, 'upstream', 'deepseek-harness', 'apps', 'cli', 'pac
 // ---- the one-shot env bake (must precede the dist imports below) ----------
 delete process.env.DSH_TRUSTED_HOSTS // upstream spelling must not shadow the test authority
 process.env.SUPERD_TRUSTED_HOSTS = 'fusion-flag.test' // web-trust default ON: the order pin needs a trust row
-delete process.env.SUPERD_UI_FUSION // the shipped default: flag OFF bakes into the schema defaults
 
 const {
-  FUSION_FLAG_ENV,
   FUSION_FLAG_GLOBAL,
-  deriveFusionFlag,
   Config,
 } = await import('../dist/fusion-transport.js')
 const { worldMountPatches } = await import('../dist/index.js')
@@ -66,20 +63,11 @@ const { Context } = await import('@deepseek-ai/cordis')
 
 // ---- 1. the flag contract: names, derivation, schema default --------------
 
-test('the flag contract: env name, page global, derivation, schema default', () => {
-  assert.equal(FUSION_FLAG_ENV, 'SUPERD_UI_FUSION')
+test('the row gate contract: one page global, ON when composed, explicit config decides', () => {
   assert.equal(FUSION_FLAG_GLOBAL, '__SUPERD_UI_FUSION__')
-  // Shipped default (env absent) is OFF; truthy spellings opt in; the schema
-  // default flows from the SAME derivation (full spelling table:
-  // fusion-transport.test.mjs).
-  assert.equal(deriveFusionFlag(undefined), false, 'env absent → off (the shipped default)')
-  assert.equal(deriveFusionFlag(''), false)
-  assert.equal(deriveFusionFlag('0'), false)
-  assert.equal(deriveFusionFlag('1'), true)
-  assert.equal(deriveFusionFlag('true'), true)
-  // This process baked env-absent: the schema default IS off, and an explicit
-  // row config always wins (the web-trust formalization shape).
-  assert.equal(Config({}).enabled, false, 'env absent bakes the default off')
+  // Composed row = the surface is on; there is no env-derived default (the
+  // gate is row composition, visible to patch layers and the plugin manager).
+  assert.equal(Config({}).enabled, true, 'composed without config → on (the shipped default)')
   assert.equal(Config({ enabled: true }).enabled, true)
   assert.equal(Config({ enabled: false }).enabled, false)
 })
@@ -198,16 +186,21 @@ async function servedCtx0Index(extraProfileRows) {
   }
 }
 
-// ---- 4. flag OFF: the equivalence bar (zero fusion injections) -------------
+// ---- 4. row OFF (explicit): the equivalence bar (zero fusion injections) ---
 //
 // T-E closeout semantics: with T-C (per-label URL family retired) and T-D
-// (world webui rows disabled) landed, flag OFF means NO foreign entry at all.
+// (world webui rows disabled) landed, OFF means NO foreign entry at all.
 // The served ctx0 index still composes the full native face — including the
 // Hub UI client row, whose agent rows degrade client-side (inert + hint,
 // `switchAffordance`) rather than by composition absence.
 
-test('flag off (shipped default): the served ctx0 index carries zero fusion rows', async () => {
-  const html = await servedCtx0Index([])
+test('row off (explicit `enabled: false`): the served ctx0 index carries zero fusion rows', async () => {
+  const html = await servedCtx0Index([
+    '- id: superd-fusion-transport',
+    "  name: 'super-dsh/fusion-transport'",
+    '  config:',
+    '    enabled: false',
+  ])
   // The bar: NO fusion script, NO flag global — not even one extra script tag.
   assert.ok(!html.includes(FUSION_FLAG_GLOBAL), 'no __SUPERD_UI_FUSION__ anywhere on the served page')
   assert.ok(!html.includes('__SUPERD_UI_STATE__'), 'no fusion transport script (its atom marker) anywhere')
@@ -253,17 +246,14 @@ test('flag off Hub rows: the delivered client half ships the hint and zero hrefs
   )
 })
 
-// ---- 5. flag ON (row config face): web-trust first, fusion pair last -------
+// ---- 5. row ON (the shipped default): web-trust first, fusion pair last ----
 
-test('flag on (row config): trust script, then the adjacent fusion pair, last among the super-dsh rows', async () => {
-  // The operator face: a profile layer restates the row (整行重述 semantics —
-  // same id, same name, the config key overridden whole).
-  const html = await servedCtx0Index([
-    '- id: superd-fusion-transport',
-    "  name: 'super-dsh/fusion-transport'",
-    '  config:',
-    '    enabled: true',
-  ])
+test('row on (shipped default, no overlay): trust script, then the adjacent fusion pair, last among the super-dsh rows', async () => {
+  // The operator face: the composite patch composes the row with no config, so
+  // the fused surface is what ships. A deployment that wants it off restates
+  // the row (整行重述 — same id, same name, the config key overridden whole)
+  // or drops it from the composition; that face is pinned in test 4.
+  const html = await servedCtx0Index([])
   const trustAt = html.indexOf('__DSH_TRANSPORT__')
   const fusionAt = html.indexOf('__SUPERD_UI_STATE__')
   const flagAt = html.indexOf(`globalThis["${FUSION_FLAG_GLOBAL}"] = true`)

@@ -253,3 +253,34 @@ Rig：`SUPERD_HOME_DIR=<worktree>/.tests/superd-t-f SUPERD_UI_FUSION=1 SUPERD_PO
 
 - selector 的视觉分量（50×28 pill + 3.5× 命中区）与卡片宽度（144px，内容自适应）是否合意；
 - 机器 grouping 的 heading 文案（当前是 wire 原值 `local`，未做大小写/本地化修饰）是否要换措辞。
+
+---
+
+## 附录四：融合面开关从 env 旋钮改为「行组合」（0.1.5-a，2026-09-27 user 裁决）
+
+**user 裁决**：`SUPERD_UI_FUSION` 是「创可贴」——env 派生的 release gate 是补丁层看不见的部署态；DSH 本就有 plugin manager / 行组合可以开关，不该在代码库里留测试味的环境旋钮。**并且**：默认 OFF 让每个新装都拿到一个死的 Hub UI（dev3 的实际症状），出厂形态必须是 native-ui-only 的完整面。
+
+### 改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `superd-hub/src/fusion-transport.ts` | 删 `FUSION_FLAG_ENV` + `deriveFusionFlag`；`Config.enabled` 默认 **true**；`apply` 守卫由 `config?.enabled !== true` 改为 `config?.enabled === false`（compose 即开，缺 config 键不会静默关面）；语义 doc 重写为「开关 = 行组合」 |
+| `superd-hub/src/index.ts` | 停止 re-export 两个已删符号 |
+| `cordis.patch.yml` | 行注释重写：compose 即开；要关 = 整行重述 `config: {enabled: false}` / `disabled: true` / 从组合移除 |
+| `test/start-4999.sh` | 删 `FUSION_PROPS` 透传块（测试脚手架不再有 flag 旋钮） |
+| `superd-hub/test/fusion-transport.test.mjs` | gate 用例重写（composed → on、显式 false 胜出）+ **产物断言**：`dist/fusion-transport.js` 不含 `process.env.SUPERD_UI_FUSION` |
+| `superd-hub/test/fusion-flag.test.mjs` | 契约用例改为「composed → on」；OFF 等价面改为**显式** `enabled: false` 覆盖；served-order pin 改为**无 overlay 的出厂默认**（证明默认即开） |
+| `super-dsh/AGENTS.md` | 时代注记补「融合面的开关 = 行组合，无 env 旋钮」 |
+
+保留不动的是**页面全局** `__SUPERD_UI_FUSION__`：它不是配置旋钮，而是「这一页装了融合 shim」的浏览器侧标记（世界页不带、ctx0 带），双半边的契约靠它对齐。
+
+### 证据
+
+- `superd-hub` 全量 **185/185 pass**（含改写后的 gate / 等价面用例）；client lane tsc 干净。
+- **旗舰证据**：4999 交付形态 rig 的 **unit env 无 `SUPERD_UI_FUSION`**（`systemctl --user show` 实证），served index 仍 `__SUPERD_UI_FUSION__` ×1、`__SUPERD_UI_STATE__` ×4 —— 出厂默认即开，env 已完全退出决策。
+- 浏览器实测（同 rig）：行 label `Hub`、selector 50×28 `title="Agent selector: DSH"`、菜单 144×237 / heading `local` / 7 行、Escape 关闭、console errors 0。
+- 关闭面仍可达且已测：整行重述 `config: {enabled: false}` → served index 零 fusion 行。
+
+### 遗留给 user
+
+- dev3 的 `dsh.service` 装的是旧 tarball，需装 `0.1.5-a` 才能看到（本轮未动 dev3，等 user 放行）。

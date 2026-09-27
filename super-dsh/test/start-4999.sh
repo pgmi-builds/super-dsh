@@ -125,16 +125,6 @@ fi
 cp -f "$HOME/.dsh/.env" "$DSH_HOME_DIR/.env"
 chmod 600 "$DSH_HOME_DIR/.env"
 
-# systemd parses space-separated tokens as separate assignments — a
-# space-containing value needs its own inner quoting.
-# ---- fusion flag knob (native-ui-fusion Task 6): forward SUPERD_UI_FUSION
-# into the daemon env ONLY when the operator sets it (1/true/yes/on = ON per
-# deriveFusionFlag); unset stays unset = the shipped default OFF.
-FUSION_PROPS=()
-if [ -n "${SUPERD_UI_FUSION:-}" ]; then
-  FUSION_PROPS+=(--property=Environment="SUPERD_UI_FUSION=${SUPERD_UI_FUSION}")
-fi
-
 # ctx0's native /api + /hub fences read the CONNECTION service's trustedHosts
 # (= webRuntime: bind-derived loopback literals + EXPLICIT --trusted-host
 # extras). SUPERD_TRUSTED_HOSTS above feeds only the world fence leg and the
@@ -150,7 +140,6 @@ systemd-run --user --unit="$UNIT" \
   --property="Environment=\"SUPERD_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:${PORT}\"" \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
   --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-  "${FUSION_PROPS[@]}" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
   "$NODE_BIN" "$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js" \

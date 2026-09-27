@@ -48,9 +48,9 @@
  * so cordis's FIFO effect order guarantees trust pushes first and fusion
  * pushes last — the non-merging `if(!window.__DSH_TRANSPORT__)` verdict in the
  * trust script is always evaluated before anything could own that global.
- * Flag gate (minimal, Task 5 formalizes the config face): row config
- * `enabled`, defaulting OFF from the `SUPERD_UI_FUSION` env — while the flag
- * is off the component stays dormant and injects no row at all.
+ * Row gate: the row config `enabled`, ON by default — the composite patch
+ * composing this row is the switch. `enabled: false` (or `disabled: true`)
+ * leaves the component dormant: no listener, no script, no flag global.
  *
  * @module @pgmi-builds/superd-hub/fusion-transport
  */
@@ -326,29 +326,26 @@ try {
 })()`
 }
 
-/** The env name the minimal Task-3 gate reads; Task 5 builds the config face on it. */
-export const FUSION_FLAG_ENV = 'SUPERD_UI_FUSION'
-
 /**
- * The page global the ctx0 index carries when the gate is on: the client
+ * The page global the ctx0 index carries when this row is on: the client
  * half's fusion-branch discriminator (the Hub UI switch surfaces read its
  * presence to intercept agent clicks into the switch orchestration instead
  * of letting the hyperlinks navigate — the sole switch surface since the T-B
  * RuntimeSeat retirement; world pages never carry it, so they keep the real
- * navigation half — spec §5 双半边). Baked by the SAME gated listener as the
+ * navigation half — spec §5 双半边). Baked by the SAME listener as the
  * transport script, so the two halves can never disagree.
  */
 export const FUSION_FLAG_GLOBAL = '__SUPERD_UI_FUSION__'
 
 /**
- * The flag's SEMANTICS after the path-separation Part 2 closeout (T-C/T-D
+ * The row's SEMANTICS after the path-separation Part 2 closeout (T-C/T-D
  * landed; this block is the T-E closeout record) — native-ui-only, there is
  * no fallback route anywhere:
  *
  *   - ON: the ctx0 page fuses. The transport script arms the in-place switch
  *     and `/hub` is the sole surface for every runtime. The per-label URL
  *     family (`/<label>/` ctx0 pages, T-C) and the world web UIs (T-D) are
- *     RETIRED from the product, not gated by this flag — there is nothing
+ *     RETIRED from the product, not gated by this row — there is nothing
  *     navigational behind them to fall back to.
  *   - OFF: NO foreign entry exists AT ALL. The served product is the bare
  *     native UI plus the Hub panel as an information surface: the roster
@@ -358,26 +355,27 @@ export const FUSION_FLAG_GLOBAL = '__SUPERD_UI_FUSION__'
  *     has no /<label>/ page to reach and the Hub UI ships no hrefs to reach
  *     one with.
  *
- * The shipped default stays OFF (truthy env opt-in). Moving the default ON is
- * the user's 放行 (acceptance/release) round — a two-gate decision per repo
- * §〇.1, never a code-side choice.
- *
- * Derivation: truthy spellings only (`1` / `true` / `yes` / `on`,
- * case-insensitive, trimmed). Anything else — unset included — is OFF.
+ * The switch is ROW COMPOSITION, exactly like every other row here: the
+ * composite patch composes this row, so the fused surface is what the product
+ * ships. A deployment that does not want it turns the row off where cordis
+ * already owns that decision — a profile layer restating the row with
+ * `config: { enabled: false }` (整行重述: same id, same name) or
+ * `disabled: true`, or dropping `super-dsh/fusion-transport` from the
+ * composition entirely. There is deliberately no env-derived default: a
+ * release gate living in an environment variable is deployment state that no
+ * patch layer can see, read, or diff.
  */
-export function deriveFusionFlag(env: string | undefined): boolean {
-  return ['1', 'true', 'yes', 'on'].includes((env ?? '').trim().toLowerCase())
-}
-
-/** Row config schema face. */
 export interface FusionConfig {
-  /** Master gate: inject the transport script on ctx0's index. Default off. */
+  /**
+   * Whether this row injects the transport script and the flag global on
+   * ctx0's index. Default on — the row being composed is the switch.
+   */
   enabled?: boolean
 }
 
-/** Row config (schema-level default derives from the {@link FUSION_FLAG_ENV} env). */
+/** Row config: ON unless a patch layer restates the row with `enabled: false`. */
 export const Config = z.object({
-  enabled: z.boolean().default(deriveFusionFlag(process.env[FUSION_FLAG_ENV])),
+  enabled: z.boolean().default(true),
 })
 
 /** Cordis plugin name. */
@@ -398,13 +396,15 @@ export const inject: string[] = []
  * the {@link FUSION_FLAG_GLOBAL} baked global row (Task 4): one gate, both
  * halves.
  *
- * Flag off → the component registers nothing: no listener, no row, no script,
+ * Off → the component registers nothing: no listener, no row, no script,
  * no flag global.
  * @param ctx - host plugin context.
- * @param config - the row config.
+ * @param config - the row config (`enabled`, default on).
  */
 export function apply(ctx: Context, config: FusionConfig | undefined): void {
-  if (config?.enabled !== true) return
+  // Composed row = on. Only an explicit `enabled: false` turns it off, so a
+  // composition that omits the config key cannot silently disable the surface.
+  if (config?.enabled === false) return
   ctx.inject(['webServer'], () => {
     ctx.on('webserver/index-inject', (table) => {
       table.push({ kind: 'script', placement: 'head', text: renderFusionTransport() })

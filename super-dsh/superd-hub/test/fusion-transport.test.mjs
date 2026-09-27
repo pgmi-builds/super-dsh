@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
-import { renderFusionTransport, deriveFusionFlag, Config, apply as applyFusion } from '../dist/fusion-transport.js'
+import { renderFusionTransport, Config, apply as applyFusion } from '../dist/fusion-transport.js'
 import { apply as applyWebTrust } from '../dist/web-trust.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -521,15 +521,14 @@ test('the composite patch orders the fusion row after web-trust', () => {
   assert.ok(fusion > trust, `fusion must load after web-trust (saw ${JSON.stringify(ids)})`)
 })
 
-test('the flag gate: SUPERD_UI_FUSION, default off, explicit config wins', () => {
-  for (const [env, want] of [
-    [undefined, false], ['', false], ['0', false], ['false', false], ['off', false], ['no', false],
-    ['1', true], ['true', true], ['TRUE', true], ['yes', true], ['on', true], [' 1 ', true],
-  ]) {
-    assert.equal(deriveFusionFlag(env), want, `SUPERD_UI_FUSION=${JSON.stringify(env)}`)
-  }
-  // The schema default reads the env at load; an explicit row config always wins.
-  assert.equal(Config({}).enabled, deriveFusionFlag(process.env.SUPERD_UI_FUSION))
+test('the row gate: on when composed, explicit config decides, no env knob', () => {
+  // Composed row = the surface is on. Only an explicit `enabled: false` turns
+  // it off; there is no environment variable in the decision — the gate lives
+  // in row composition, where patch layers and the plugin manager can see it.
+  assert.equal(Config({}).enabled, true, 'composed without config → on')
   assert.equal(Config({ enabled: true }).enabled, true)
   assert.equal(Config({ enabled: false }).enabled, false)
+  // The artifact proves it: the built component reads no env knob at all.
+  const built = readFileSync(join(HERE, '..', 'dist', 'fusion-transport.js'), 'utf8')
+  assert.ok(!built.includes('process.env.SUPERD_UI_FUSION'), 'no env-derived default survives in the delivered component')
 })
