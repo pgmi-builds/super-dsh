@@ -115,16 +115,17 @@ export const WORLD_WAVE1_DISABLED_ROWS: readonly string[] = [
  *
  * Dependency-cleared 2026-09-27: the KEEP side (api controllers, gateway,
  * session core, adapters) injects none of their services with ONE
- * exception — `connection` (dsh-client-connection) stays: the world's
- * typert gateway injects it. The former `{ id: 'modules', inject:
- * ['webServer'] }` restatement is superseded (the row is disabled outright).
+ * exceptions — `connection` (dsh-client-connection: the world's typert
+ * gateway injects it) and `modules` (dsh-client-modules: its activation
+ * work fails in world trees ("client bundles not found") and at least one
+ * fiber treats it as required — the load-bearing parking restatement
+ * `inject: [webServer]` keeps it waiting forever, superseding a disable).
  */
 export const WORLD_WAVE2_DISABLED_ROWS: readonly string[] = [
   'cordis-client-runner',
   'directory-picker-browse-surface',
   'file-upload',
   'locale',
-  'modules',
   'resources',
   'ui-agent-preset', 'ui-approval', 'ui-attachment', 'ui-brand-official',
   'ui-chat', 'ui-commands', 'ui-conversation', 'ui-cordis', 'ui-deliverables',
@@ -167,6 +168,11 @@ export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
     // literals; the deploy-level trusted-host extras ride along).
     { id: 'web-runtime', disabled: true },
     { id: 'client-hmr', disabled: true },
+    // PARKED, not disabled: the modules row's activation work fails in world
+    // trees (no built client bundles) and the omp fiber treats it as
+    // required — waiting on the never-provided webServer keeps it inert
+    // without a startup failure (2026-09-27 wave-2 rig evidence).
+    { id: 'modules', inject: ['webServer'] },
     { insert: [
       { id: WORLD_MOUNT_ROW_ID, name: WORLD_MOUNT_PLUGIN, config: { key } },
       { id: WORLD_HUB_ROW_ID, name: WORLD_HUB_PLUGIN },

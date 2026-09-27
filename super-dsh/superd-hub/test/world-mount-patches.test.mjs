@@ -27,10 +27,10 @@ test('worldMountPatches disables the listener AND the webui rows, keeps modules 
   // no browser handoff, no client reload chain. Zero webui composition.
   assert.deepEqual(patches[2], { id: 'web-runtime', disabled: true })
   assert.deepEqual(patches[3], { id: 'client-hmr', disabled: true })
-  // Wave-2 (native-ui-only completion): the `modules` row is disabled
-  // outright — its inject-on-webServer restatement is superseded — so the
-  // insert layer follows the posture directly.
-  const insert = patches[4]
+  // The modules row stays PARKED on the never-provided webServer (its
+  // activation fails in world trees; wave-2 rig evidence) — not disabled.
+  assert.deepEqual(patches[4], { id: 'modules', inject: ['webServer'] })
+  const insert = patches[5]
   assert.equal(Array.isArray(insert.insert), true)
   // T-D: the world page-trust row is GONE — its only consumer was the world
   // page. The insert list is exactly mount + hub.
@@ -44,12 +44,12 @@ test('worldMountPatches disables the listener AND the webui rows, keeps modules 
   ])
   // No web-trust row, no fusion row; the tail beyond the insert layer is
   // the wave-1 + wave-2 disable blocks (asserted in their own tests).
-  assert.equal('insert' in patches[4], true)
+  assert.equal('insert' in patches[5], true)
 })
 
 test('wave-1: dead native-agent rows are disabled in every world composition', () => {
   const patches = worldMountPatches('omp')
-  assert.equal(patches.length, 5 + WORLD_WAVE1_DISABLED_ROWS.length + WORLD_WAVE2_DISABLED_ROWS.length)
+  assert.equal(patches.length, 6 + WORLD_WAVE1_DISABLED_ROWS.length + WORLD_WAVE2_DISABLED_ROWS.length)
   const disabled = new Set(patches.filter((p) => 'id' in p && p.disabled === true).map((p) => p.id))
   for (const id of WORLD_WAVE1_DISABLED_ROWS) assert.equal(disabled.has(id), true, id + ' must be disabled')
   // KEEP invariants (spec): adapters inject agents/sessions/llm/agentDefaultModel/settings/agentPresets
@@ -60,7 +60,7 @@ test('wave-1: dead native-agent rows are disabled in every world composition', (
 })
 
 test('worldMountPatches keys the row with the runtime key and rejects malformed keys', () => {
-  assert.equal(worldMountPatches("codex")[4].insert[0].config.key, "codex")
+  assert.equal(worldMountPatches("codex")[5].insert[0].config.key, "codex")
   assert.throws(() => worldMountPatches(''), /invalid key/)
   assert.throws(() => worldMountPatches('a/b'), /invalid key/)
 })
@@ -75,11 +75,13 @@ test('wave-2: the client lane is stripped (native-ui-only completion)', () => {
   const patches = worldMountPatches('omp')
   const disabled = new Set(patches.filter((p) => 'id' in p && p.disabled === true).map((p) => p.id))
   for (const id of WORLD_WAVE2_DISABLED_ROWS) assert.equal(disabled.has(id), true, id + ' must be disabled')
-  // The one client-lane KEEP: the world's typert gateway injects `connection`.
+  // Client-lane KEEPs: the gateway injects `connection`; `modules` is parked
+  // (inject-on-webServer), not disabled.
   assert.equal(disabled.has('connection'), false, 'connection stays (gateway inject)')
+  assert.equal(disabled.has('modules'), false, 'modules stays parked, not disabled')
   // KEEP invariants still enabled.
   for (const keep of ['agent', 'agent-default-model', 'settings', 'agent-preset-registry']) {
     assert.equal(disabled.has(keep), false, keep + ' must stay enabled')
   }
-  assert.equal(WORLD_WAVE2_DISABLED_ROWS.length, 47, 'wave-2 = 46 dsh-client-* rows + cordis-client-runner')
+  assert.equal(WORLD_WAVE2_DISABLED_ROWS.length, 46, 'wave-2 = 45 dsh-client-* rows + cordis-client-runner (modules parked, connection kept)')
 })
