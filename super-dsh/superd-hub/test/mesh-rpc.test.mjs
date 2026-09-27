@@ -32,11 +32,24 @@ function startRemoteHub(opts = {}) {
     token: opts.token ?? 'ok',
     agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false }],
     validCookies: new Set(),
+    gateValid: new Set(),
     mintCount: 0,
   }
   let seq = 0
   const server = createServer((req_, res) => {
     const url = new URL(req_.url, 'http://127.0.0.1')
+    if (opts.gate === true && url.pathname === '/gate-gtok') {
+      state.gateValid.add('g1')
+      res.statusCode = 302
+      res.setHeader('Location', '/')
+      res.setHeader('Set-Cookie', 'dshgate=g1; Path=/; HttpOnly')
+      res.end()
+      return
+    }
+    if (opts.gate === true) {
+      const gateOk = (req_.headers.cookie ?? '').split(';').map((s) => s.trim()).some((p) => p.startsWith('dshgate=') && state.gateValid.has(p.slice('dshgate='.length)))
+      if (!gateOk) { res.statusCode = 403; res.end('gate'); return }
+    }
     if (url.pathname === '/') {
       state.mintCount += 1
       if (url.searchParams.get('token') !== state.token) { res.statusCode = 403; res.end('bad token'); return }
@@ -65,6 +78,7 @@ function startRemoteHub(opts = {}) {
       resolve({
         state,
         origin: `http://127.0.0.1:${port}`,
+        gateUrl: `http://127.0.0.1:${port}/gate-gtok`,
         close: () => new Promise((done) => { server.closeAllConnections(); server.close(done) }),
       })
     })
@@ -279,4 +293,38 @@ test('未注册方法（PUT/HEAD）→ 直连 handler 应答 405', async () => {
     const head = await handleMeshMachines(new Request(`http://x${MESH_API_BASE}`, { method: 'HEAD' }), { home: h })
     assert.equal(head.status, 405)
   } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('POST pair with gateUrl 透传：gated fixture 真往返 → 201；行持久化 gateUrl+整 jar；wire 投影仍无机密', async () => {
+  resetMachineStatus()
+  const hub = await startRemoteHub({ gate: true, machineId: 'g5e6', token: 'boot' })
+  const h = home()
+  try {
+    const res = await handleMeshMachines(req('POST', { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot`, gateUrl: hub.gateUrl }), { home: h })
+    assert.equal(res.status, 201)
+    const body = await res.json()
+    assert.equal(body.machine.id, 'g5e6')
+    assert.equal(body.machine.status, 'reachable')
+    assert.equal('gateUrl' in body.machine, false) // 投影白名单：gateUrl 不上线
+    assert.equal('token' in body.machine, false)
+    assert.equal('cookie' in body.machine, false)
+    const rows = listRemotes(h)
+    assert.equal(rows[0].gateUrl, hub.gateUrl)
+    assert.equal(rows[0].cookie, 'dshgate=g1; dsh-auth-x=v1')
+    const listed = await handleMeshMachines(req('GET'), { home: h })
+    const lb = await listed.json()
+    assert.equal(lb.machines[0].id, 'g5e6')
+    assert.equal('gateUrl' in lb.machines[0], false)
+    assert.equal('cookie' in lb.machines[0], false)
+  } finally { rmSync(h, { recursive: true, force: true }); await hub.close() }
+})
+
+test('POST pair：gateUrl 空串视为缺省（无 gate fixture 照常 201）', async () => {
+  const hub = await startRemoteHub({ machineId: 'k3f9', token: 'boot' })
+  const h = home()
+  try {
+    const res = await handleMeshMachines(req('POST', { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot`, gateUrl: '' }), { home: h })
+    assert.equal(res.status, 201)
+    assert.equal(listRemotes(h)[0].gateUrl, undefined)
+  } finally { rmSync(h, { recursive: true, force: true }); await hub.close() }
 })

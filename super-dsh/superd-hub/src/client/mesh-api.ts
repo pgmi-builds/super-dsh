@@ -60,11 +60,13 @@ export interface MeshList {
   readonly machines: readonly MeshMachineView[]
 }
 
-/** The pairing input — origin is parsed out of the token URL SERVER-side (mesh-link), never a separate field. */
+/** The pairing input — origin is parsed out of the token URL SERVER-side (mesh-link), never a separate field; `gateUrl` is the optional fronting gate to pass before the mint. */
 export interface AddMachineInput {
   readonly name: string
   readonly label?: string
   readonly tokenUrl: string
+  /** Fronting-gate URL (spec §4), e.g. `https://<host>/gate-…`; its cookies join the machine's persisted jar. */
+  readonly gateUrl?: string
 }
 
 /** Coerce the self block; a shape without a non-empty string id + string label is simply absent. */
@@ -137,8 +139,8 @@ export async function fetchMachines(): Promise<MeshList> {
 }
 
 /**
- * POST a pairing `{name, label?, tokenUrl}` (label omitted → the server
- * collapses it to the name).
+ * POST a pairing `{name, label?, tokenUrl, gateUrl?}` (label omitted → the
+ * server collapses it to the name; gateUrl omitted → no gate pre-step).
  *
  * @throws Error(body.error) when the face answers non-2xx — the message is
  * mesh-link's own, already token-redacted.
@@ -146,6 +148,7 @@ export async function fetchMachines(): Promise<MeshList> {
 export async function addMachine(input: AddMachineInput): Promise<void> {
   const body: Record<string, string> = { name: input.name, tokenUrl: input.tokenUrl }
   if (typeof input.label === 'string' && input.label !== '') body.label = input.label
+  if (typeof input.gateUrl === 'string' && input.gateUrl !== '') body.gateUrl = input.gateUrl
   const response = await fetch(MESH_API_BASE, {
     credentials: 'same-origin',
     method: 'POST',

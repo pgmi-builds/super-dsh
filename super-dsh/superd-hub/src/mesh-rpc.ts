@@ -25,7 +25,9 @@
  *                                           path — one registration, body
  *                                           dispatch; documented per Task 3
  *                                           controller amendment)
- *        otherwise `{name, label?, tokenUrl}` → pairMachine → 201 `{machine}`;
+ *        otherwise `{name, label?, tokenUrl, gateUrl?}` (gateUrl optional — a
+ *                                           fronting gate to pass before the
+ *                                           mint) → pairMachine → 201 `{machine}`;
  *                                           any failure → 400 `{error}` (the
  *                                           message is mesh-link's own,
  *                                           already token-redacted)
@@ -141,7 +143,7 @@ function handleList(deps: MeshDeps): Response {
 }
 
 /** POST: body-dispatched — `{op: 'reprobe', id}` re-probes, anything else is
- *  a pairing input `{name, label?, tokenUrl}`. */
+ *  a pairing input `{name, label?, tokenUrl, gateUrl?}`. */
 async function handlePost(request: Request, deps: MeshDeps): Promise<Response> {
   let body: Record<string, unknown>
   try {
@@ -165,13 +167,14 @@ async function handlePost(request: Request, deps: MeshDeps): Promise<Response> {
   }
   const name = typeof body.name === 'string' && body.name !== '' ? body.name : ''
   const tokenUrl = typeof body.tokenUrl === 'string' && body.tokenUrl !== '' ? body.tokenUrl : ''
+  const gateUrl = typeof body.gateUrl === 'string' && body.gateUrl !== '' ? body.gateUrl : undefined
   if (name === '' || tokenUrl === '') {
-    return json(400, { error: 'mesh-api: pair body must be {name, label?, tokenUrl} with non-empty name and tokenUrl' })
+    return json(400, { error: 'mesh-api: pair body must be {name, label?, tokenUrl, gateUrl?} with non-empty name and tokenUrl' })
   }
   const label = typeof body.label === 'string' && body.label !== '' ? body.label : undefined
   let outcome: Awaited<ReturnType<typeof pairMachine>>
   try {
-    outcome = await pairMachine(deps.home, { name, label, tokenUrl }, { fetchImpl: deps.fetchImpl })
+    outcome = await pairMachine(deps.home, { name, label, tokenUrl, gateUrl }, { fetchImpl: deps.fetchImpl })
   } catch (err) {
     // mesh-link errors are actionable and token-redacted (Task 2 fix round 1).
     return json(400, { error: errMsg(err) })

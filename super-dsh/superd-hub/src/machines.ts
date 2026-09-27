@@ -26,7 +26,9 @@ export interface MachineRow {
   origin: string
   /** Retained auth token for cookie re-mint; same sensitivity as the cookie itself. */
   token?: string
-  /** Last minted request cookie (spec §4): persisted so hub restarts keep the remote's 30-day session instead of forcing a re-mint on every boot. */
+  /** Optional fronting-gate URL (spec §4): visited once before the mint; embeds its own gate token, so it persists at token-grade sensitivity and never projects to the wire. */
+  gateUrl?: string
+  /** Last minted cookie JAR (spec §4) — every cookie the remote fronting issued (gate + dsh-auth), '; '-joined; persisted so hub restarts keep the remote's 30-day session. */
   cookie?: string
   enabled: boolean
   /** Epoch ms when this row was added. */
@@ -57,6 +59,7 @@ function isMachineRow(v: unknown): v is MachineRow {
     typeof r.id === 'string' && typeof r.name === 'string' && typeof r.label === 'string' &&
     typeof r.origin === 'string' && typeof r.enabled === 'boolean' && typeof r.addedAt === 'number' &&
     (r.token === undefined || typeof r.token === 'string') &&
+    (r.gateUrl === undefined || typeof r.gateUrl === 'string') &&
     (r.cookie === undefined || typeof r.cookie === 'string')
   )
 }
