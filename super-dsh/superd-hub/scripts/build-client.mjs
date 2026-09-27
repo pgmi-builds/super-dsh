@@ -13,12 +13,17 @@ const OUT_FILE = 'index.js'
 
 // The loader-table entries the bundle may require at runtime; everything
 // else inlines. Type-only peers stay type-only (purity gate below).
+// `dsh-client-ui-primitives` is a browser platform module (the shell's
+// PLATFORM_MODULES seed), so requiring it hands the plugin the SAME module
+// instance the native chrome uses — never a vendored copy. The Hub row's
+// selector uses the native Menu from it.
 const CLIENT_EXTERNALS = [
   'react',
   'react-dom',
   'react-dom/client',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-primitives',
   '@deepseek-ai/dsh-client-store',
 ]
 

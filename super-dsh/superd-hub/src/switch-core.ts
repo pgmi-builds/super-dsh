@@ -508,9 +508,9 @@ export function switchAffordance(fusion: boolean): SwitchAffordance {
 }
 
 /**
- * Structural slice of one roster row the Hub UI label/grouping helpers read
- * (the client roster's `AgentLink` shape mirrored structurally — this module
- * never imports from the client half).
+ * Structural slice of one roster row the Hub UI helpers read (the client
+ * roster's `AgentLink` shape mirrored structurally — this module never imports
+ * from the client half).
  */
 export interface HubRosterRow {
   /** The roster key (`'native'` or a runtime key). */
@@ -524,23 +524,17 @@ export interface HubRosterRow {
 }
 
 /**
- * The active agent's display name for the sidebar row label: the roster
- * label of the atom's `activeAgent` key; a key the (seeded) roster does not
- * know degrades to the raw key rather than vanishing into the base label.
- * `undefined`/empty (flag off, or no atom read) means "no suffix".
+ * The active agent's display name for the Hub row's right-edge selector: the
+ * roster label of the atom's `activeAgent` key — the name the selector's
+ * `title` carries, since the row label itself is the constant `Hub`. A key the
+ * (seeded) roster does not know degrades to the raw key. `undefined`/empty
+ * (flag off, or no atom read) means "no active agent".
  *
  * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
  */
 export function activeAgentName(activeAgent: string | undefined, roster: readonly HubRosterRow[]): string | undefined {
   if (activeAgent === undefined || activeAgent === '') return undefined
   return roster.find((row) => row.key === activeAgent)?.label ?? activeAgent
-}
-
-/** The sidebar row label: the base row title, plus ` > ` the active agent's name. */
-export function hubRowLabel(base: string, activeAgent?: string): string {
-  return activeAgent === undefined || activeAgent === ''
-    ? base
-    : `${base} > ${activeAgent}`
 }
 
 /** Which machine one roster row groups under: the row's own machine (parser-guaranteed). */

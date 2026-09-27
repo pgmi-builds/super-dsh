@@ -33,7 +33,6 @@ import {
   seatClickDecision,
   hubRowActive,
   activeAgentName,
-  hubRowLabel,
   machineGroup,
   machineGroups,
   switchAffordance,
@@ -818,26 +817,17 @@ test('T-B composition: a Hub row click runs the SAME table the seat ran', () => 
   )
 })
 
-// ---- the sidebar row label + machine grouping (native-workspace-look) -----
-// The hub row reads `Hub` alone today; on a fusion page it must read
-// `Hub > <active agent's display name>` (plain `Hub` with the flag off —
-// no atom, no suffix). The chevron menu groups the roster by machine
-// (`AgentLink.machine` — carried on the wire, defaulted to 'local' once at
-// the roster parse boundary) the way the native workspace list groups
-// its sections, a light divider between groups. Pure halves pinned here;
-// the visual treatment lives in HubPanelIcon, the label push (re-register)
+// ---- the sidebar row selector + machine grouping (native-workspace-look) ---
+// The hub row reads the constant `Hub` on every page: the active agent no
+// longer appends to the label (`Hub > <name>` was round 1) — it rides the
+// row's right-edge selector, whose runtime mark sits beside its chevron
+// (HubPanelIcon), and whose `title` names it via `activeAgentName`. The
+// selector's menu groups the roster by machine (`AgentLink.machine` — carried
+// on the wire, defaulted to 'local' once at the roster parse boundary) as one
+// heading row per machine group, the way the native workspace list groups its
+// sections. Pure halves pinned here; the visual treatment lives in
+// HubPanelIcon, the registration (constant label — no re-registration push)
 // in client/index.ts.
-
-test('hub row label: no active agent → the plain base (flag off / no atom read)', () => {
-  assert.equal(hubRowLabel('Hub'), 'Hub')
-  assert.equal(hubRowLabel('Hub', undefined), 'Hub')
-  assert.equal(hubRowLabel('Hub', ''), 'Hub')
-})
-
-test('hub row label: the active agent appends with the " > " separator', () => {
-  assert.equal(hubRowLabel('Hub', 'DSH'), 'Hub > DSH')
-  assert.equal(hubRowLabel('Hub', 'Codex'), 'Hub > Codex')
-})
 
 test('active agent name: the roster label decides, unknown keys degrade to the raw key', () => {
   const roster = [
@@ -851,11 +841,17 @@ test('active agent name: the roster label decides, unknown keys degrade to the r
   assert.equal(activeAgentName('', roster), undefined)
 })
 
-test('label composition: atom key → roster label → row label (the wiring client/index.ts runs)', () => {
+test('selector title: the atom key resolves through the roster (the wiring HubPanelIcon runs)', () => {
+  // Round 2: the name is the selector's `title`, never a row-label suffix —
+  // the row label is the constant `Hub` and the entry registers once.
   const roster = [{ key: 'native', label: 'DSH', path: '/', machine: 'local' }, { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local' }]
-  assert.equal(hubRowLabel('Hub', activeAgentName('native', roster)), 'Hub > DSH')
-  assert.equal(hubRowLabel('Hub', activeAgentName('omp', roster)), 'Hub > OMP')
-  assert.equal(hubRowLabel('Hub', activeAgentName(undefined, roster)), 'Hub', 'flag off: plain Hub')
+  const title = (key) => {
+    const name = activeAgentName(key, roster)
+    return name === undefined ? 'Agent selector' : `Agent selector: ${name}`
+  }
+  assert.equal(title('native'), 'Agent selector: DSH')
+  assert.equal(title('omp'), 'Agent selector: OMP')
+  assert.equal(title(undefined), 'Agent selector', 'flag off: the bare affordance name')
 })
 
 test('machine group key: the row\'s own machine — no helper fallback (the parse boundary owns the default)', () => {
@@ -878,11 +874,11 @@ test('machine grouping: one group per machine, first-appearance order, members k
   ])
 })
 
-test('machine grouping: two machines → two groups — the divider renders between them', () => {
+test('machine grouping: two machines → two groups — the heading and divider render between them', () => {
   // The wire's live shape now (roster carries machine): this machine's rows
-  // plus a foreign machine's. HubPanelIcon draws its hairline divider exactly
-  // when `groupIndex > 0` over `machineGroups(agents)` — two groups = one
-  // divider, between them.
+  // plus a foreign machine's. HubPanelIcon turns each group into a heading row
+  // (the machine name) followed by its entries, with a separator row before
+  // every group after the first — the native view-options menu's own shape.
   const rows = [
     { key: 'native', label: 'DSH', path: '/', machine: 'local' },
     { key: 'codex', label: 'Codex', path: '/codex/', machine: 'dev3' },
@@ -893,10 +889,10 @@ test('machine grouping: two machines → two groups — the divider renders betw
     { machine: 'local', agents: [rows[0]] },
     { machine: 'dev3', agents: [rows[1], rows[2]] },
   ])
-  assert.ok(groups.length > 1, 'more than one group → the menu draws the between-groups divider')
+  assert.ok(groups.length > 1, 'more than one group → the menu draws a heading + divider per group after the first')
 })
 
-test('machine grouping: an all-local roster (the wire\'s today shape) is ONE group in roster order (renders flat)', () => {
+test('machine grouping: an all-local roster (the wire\'s today shape) is ONE group in roster order', () => {
   const rows = [
     { key: 'native', label: 'DSH', path: '/', machine: 'local' },
     { key: 'codex', label: 'Codex', path: '/codex/', machine: 'local' },

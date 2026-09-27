@@ -214,3 +214,42 @@ path-separation Part 2 五任务全部 landed 且评审干净：T-A `1cefd30`（
 - 页内切换 UX（chevron 菜单 + HubPage 行、native↔foreign 往返、流中切换、失败回退 toast、落位 new-chat/recent）——服务器面与单测已全绿，浏览器手感归 user；
 - flag-OFF 页面的 Hub 行视觉形态（inert 行 + hint chip；本轮以交付 bundle 字节级钉死，浏览器目验待 user）；
 - flag 出厂默认翻 ON 的放行裁决（§〇.1 两道闸门）与 publish 另行请示。
+
+---
+
+## 附录三：native-workspace-look 第二轮（Hub 行 selector + 原生菜单卡片，0.1.3-zm）
+
+user 指令（2026-09-27）：① Hub 行现在读 `Hub > <active agent 名>`，把 active agent 收进右下拉箭头那一组、换成图标（每个 agent 已有图标），顺带把箭头的命中面积做大；② 下拉清单整体往**原生 workspace 清单的下拉菜单**（Workspaces 区 Group by / Order by / Filter sessions 那张卡）靠拢。
+
+### 改动
+
+- **Hub 行 label 收敛为常量 `Hub`**（`superd-hub/src/client/index.ts`）：active agent 不再后缀到 label，因此**退掉整条 label 重注册链**（原 `hubRowLabel` + 每次切换 dispose/re-register 的 push）；`hubRowLabel` 从 `switch-core.ts` 删除（零消费者），`activeAgentName` 保留并改作 selector 的 `title`。
+- **右缘 selector pill**（`superd-hub/src/client/HubPanelIcon.tsx`）：`[active agent 的 runtime mark][chevron]` 合成一个 **50×28** 的 pill（`border-radius: 16px`、`padding: 0 8px`、`gap: 4px`；几何抄原生 `ui-agent-preset` 的 `AgentPresetSeat` `.seat`），整块即命中区 —— 旧实现是 **20×20** 的裸箭头（400px² → **1400px²**，×3.5）。chevron 用原生 `IconChevronDownOutlineRegular`，`title` 走原生 seat 的 `title` 通道（`Agent selector: <名字>`）。定位仍 `position: fixed`（组件挂在 shell 的 16px glyph span 内），量测新增 **ResizeObserver(row)**（原来只挂 window resize）。
+- **菜单换成原生 `Menu` 原语**（`@deepseek-ai/dsh-client-ui-primitives`，`dense` + `portal` + `align="end"`）：卡片/行高/图标槽/勾选/分隔线/圆角/阴影全部来自 shell 自己的 `Menu.module.css`，不再手搓。机器分组 → 每组一条 `label` heading（原生 view-options 菜单的 section 头形态），组间 `separator`，行首 `RuntimeMark`，选中态用原生尾部 ✓（不再自绘 fill + ✓）。手搓的 outside-click / Escape / 定位监听整段删除（原语自带）。
+- **构建面**：两个 client build 的 `CLIENT_EXTERNALS` 加 `@deepseek-ai/dsh-client-ui-primitives` —— 它是 browser platform module（`packages/client/web/src/platform.ts` 的 `PLATFORM_MODULES`），按 upstream 规则 **baseline external 不进任何 package manifest**（`dsh.client.external` / `dsh.client.inject` 均未改）。
+- 版本 `0.1.3-zl` → **`0.1.3-zm`**；交付 bundle `super-dsh/client/index.js` 重建（`require("@deepseek-ai/dsh-client-ui-primitives")` ×1）；drift guard 复绿。
+
+### 测试卫生
+
+- `superd-hub` 全量 **178/178 pass**（`hubRowLabel` 两项测试删除，新增 selector `title` 组装的纯逻辑用例；`machineGroups` 用例随 heading 语义改写）。
+- client lane `tsc -p tsconfig.client.json` **0 error**；`client-bundle-drift.test.mjs` 绿（交付字节 = 现源字节）。
+
+### 第一人称浏览器实测（交付形态 rig，Chromium via playwright）
+
+Rig：`SUPERD_HOME_DIR=<worktree>/.tests/superd-t-f SUPERD_UI_FUSION=1 SUPERD_PORT=4999 bash super-dsh/test/start-4999.sh` → unit `superd-4999-test`，装的是 `super-dsh-0.1.3-zm.tgz`（**保持运行，交 user 目验**）。探针：`.scratch/probe-ui-round2*.mjs`（内含上游首访 Internal Testing Notice 的关闭腿）。
+
+| 观察点 | 实测值 |
+| --- | --- |
+| 行 label | `"Hub"`（后缀消失） |
+| selector | `visible=true`，box **50×28**，`title="Agent selector: DSH"`，命中 **1400px²** / 行 9072px² |
+| selector 静止态 | `background: rgba(0,0,0,0)`、`border-radius: 16px`、`padding: 0 8px`、`gap: 4px`、chevron `rgb(173,178,184)`（= `--dsw-alias-label-caption`） |
+| selector hover | `rgba(38,49,72,0.06)`（= `--dsw-alias-interactive-bg-hover`） |
+| 菜单卡 | portal box `144×237`，right 边 = selector right 边（`align="end"`）；`border-radius:16px`、`padding:3px`、`min-width:144px`、`--dsw-specific-menu` + `--dsw-elevation-prominent` —— 与原生 `Menu.module.css` 逐值一致 |
+| 卡片内容 | heading `local`（机器分组）+ 7 行（DSH/Claude/OMP/Codex/Pi/Hermes/Antigravity），行首 runtime mark，active 行尾 ✓ |
+| 交互契约 | selector 点击 → 菜单开且**不**同开 Hub 面板；Escape 关 + 焦点回 selector；点行体（非 selector）→ Hub 面板照常开；外点关闭 |
+| 切换端到端 | 菜单点 Claude → `title` `DSH`→`Claude`（菜单自动关），再点回 DSH → `DSH`；**console errors: []**（platform module 运行时解析成功） |
+
+### 遗留给 user
+
+- selector 的视觉分量（50×28 pill + 3.5× 命中区）与卡片宽度（144px，内容自适应）是否合意；
+- 机器 grouping 的 heading 文案（当前是 wire 原值 `local`，未做大小写/本地化修饰）是否要换措辞。

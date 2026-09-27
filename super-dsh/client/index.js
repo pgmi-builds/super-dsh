@@ -27,6 +27,8 @@ let react = require("react");
 react = __toESM(react);
 let react_jsx_runtime = require("react/jsx-runtime");
 react_jsx_runtime = __toESM(react_jsx_runtime);
+let __deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+__deepseek_ai_dsh_client_ui_primitives = __toESM(__deepseek_ai_dsh_client_ui_primitives);
 
 //#region src/client/glyph.tsx
 /**
@@ -774,20 +776,17 @@ function switchAffordance(fusion) {
 	};
 }
 /**
-* The active agent's display name for the sidebar row label: the roster
-* label of the atom's `activeAgent` key; a key the (seeded) roster does not
-* know degrades to the raw key rather than vanishing into the base label.
-* `undefined`/empty (flag off, or no atom read) means "no suffix".
+* The active agent's display name for the Hub row's right-edge selector: the
+* roster label of the atom's `activeAgent` key — the name the selector's
+* `title` carries, since the row label itself is the constant `Hub`. A key the
+* (seeded) roster does not know degrades to the raw key. `undefined`/empty
+* (flag off, or no atom read) means "no active agent".
 *
 * Host-half pure logic so `test/client-switch.test.mjs` pins it from `dist/`.
 */
 function activeAgentName(activeAgent, roster) {
 	if (activeAgent === void 0 || activeAgent === "") return void 0;
 	return roster.find((row) => row.key === activeAgent)?.label ?? activeAgent;
-}
-/** The sidebar row label: the base row title, plus ` > ` the active agent's name. */
-function hubRowLabel(base, activeAgent) {
-	return activeAgent === void 0 || activeAgent === "" ? base : `${base} > ${activeAgent}`;
 }
 /** Which machine one roster row groups under: the row's own machine (parser-guaranteed). */
 function machineGroup(row) {
@@ -1739,11 +1738,25 @@ function HubPage() {
 
 //#endregion
 //#region src/client/HubPanelIcon.tsx
+/** Runtime-mark edge inside the selector, and the chevron's own default edge. */
+const MARK_SIZE = 16;
+const CHEVRON_SIZE = 14;
+/**
+* Selector pill metrics (AgentPresetSeat's `.seat`): a 28px control with 8px
+* side padding and a 4px icon gap. Width is the sum, so the pill hugs its two
+* marks instead of leaving the mark floating in a fixed box.
+*/
+const SELECTOR_HEIGHT = 28;
+const SELECTOR_PAD = 8;
+const SELECTOR_GAP = 4;
+/** The row's own horizontal padding (native `.panelRow`): the selector's inset. */
+const ROW_INSET = 8;
 function HubPanelIcon({ size }) {
 	const wide = size <= 16;
 	const rootRef = react.useRef(null);
-	const menuRef = react.useRef(null);
+	const selectorRef = react.useRef(null);
 	const [open, setOpen] = react.useState(false);
+	const [hover, setHover] = react.useState(false);
 	const [box, setBox] = react.useState(null);
 	const [agents, setAgents] = react.useState(() => rosterFromGlobal() ?? [NATIVE_LINK]);
 	const fusion = fusionPage();
@@ -1764,17 +1777,28 @@ function HubPanelIcon({ size }) {
 			return;
 		}
 		const rect = row.getBoundingClientRect();
-		setBox({
+		setBox((prev) => prev !== null && prev.top === rect.top && prev.bottom === rect.bottom && prev.right === rect.right ? prev : {
 			top: rect.top,
 			bottom: rect.bottom,
-			left: rect.left,
-			right: rect.right,
-			width: rect.width
+			right: rect.right
 		});
 	}, []);
 	react.useLayoutEffect(() => {
 		if (!wide || !switchUi.available) return;
 		measure();
+		const row = rootRef.current?.closest("button") ?? null;
+		let observer;
+		if (row !== null && typeof ResizeObserver !== "undefined") {
+			observer = new ResizeObserver(() => {
+				measure();
+			});
+			observer.observe(row);
+		}
+		window.addEventListener("resize", measure);
+		return () => {
+			observer?.disconnect();
+			window.removeEventListener("resize", measure);
+		};
 	}, [
 		wide,
 		switchUi.available,
@@ -1783,31 +1807,17 @@ function HubPanelIcon({ size }) {
 	react.useEffect(() => {
 		if (!open || !switchUi.available) return;
 		let cancelled = false;
-		measure();
 		fetchRoster().then((list) => {
 			if (!cancelled) setAgents(list);
 		}).catch(() => {});
-		const owns = (node) => rootRef.current !== null && rootRef.current.contains(node) || menuRef.current !== null && menuRef.current.contains(node);
-		const onDown = (event) => {
-			if (!owns(event.target)) setOpen(false);
-		};
-		const onKey = (event) => {
-			if (event.key === "Escape") setOpen(false);
-		};
-		document.addEventListener("mousedown", onDown);
-		document.addEventListener("keydown", onKey);
-		window.addEventListener("resize", measure);
 		return () => {
 			cancelled = true;
-			document.removeEventListener("mousedown", onDown);
-			document.removeEventListener("keydown", onKey);
-			window.removeEventListener("resize", measure);
 		};
-	}, [
-		open,
-		switchUi.available,
-		measure
-	]);
+	}, [open, switchUi.available]);
+	react.useEffect(() => {
+		if (!wide || !switchUi.available) setOpen(false);
+	}, [wide, switchUi.available]);
+	const anchorRect = react.useCallback(() => selectorRef.current?.getBoundingClientRect() ?? null, []);
 	const here = currentMountPath();
 	const isActive = (agent) => hubRowActive({
 		fusion,
@@ -1821,121 +1831,105 @@ function HubPanelIcon({ size }) {
 		if (event.type !== "keydown") event.preventDefault();
 		setOpen((value) => !value);
 	};
+	const items = [];
+	machineGroups(agents).forEach((group, groupIndex) => {
+		if (groupIndex > 0) items.push({
+			type: "separator",
+			id: `machine-divider:${group.machine}`
+		});
+		items.push({
+			type: "label",
+			id: `machine:${group.machine}`,
+			text: group.machine
+		});
+		for (const agent of group.agents) items.push({
+			id: agent.key,
+			label: agent.label,
+			icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
+				agentKey: agent.key,
+				size: 14
+			})
+		});
+	});
+	/**
+	* A menu pick. The row is a `menuitem` button — there is no anchor default
+	* to cancel — but the shared table still owns whether the attempt runs
+	* (the active entry is a no-op, the fusion arm never navigates).
+	*/
+	const select = (id) => {
+		setOpen(false);
+		const agent = agents.find((row) => row.key === id);
+		if (agent === void 0) return;
+		seatClickDecision({
+			fusion,
+			active: isActive(agent),
+			attempt: () => attemptSwitch(agent.key)
+		});
+	};
+	const activeLabel = activeAgentName(activeKey, agents);
+	const selectorWidth = SELECTOR_PAD * 2 + CHEVRON_SIZE + (activeKey === void 0 ? 0 : MARK_SIZE + SELECTOR_GAP);
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 		ref: rootRef,
 		style: {
-			position: "relative",
 			display: "inline-flex",
 			alignItems: "center",
 			justifyContent: "center"
 		},
-		children: [
-			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(HubGlyph, { size }),
-			wide && box !== null && switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(HubGlyph, { size }), wide && box !== null && switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Menu, {
+			open,
+			onClose: () => {
+				setOpen(false);
+			},
+			items,
+			selectedIds: activeKey === void 0 ? [] : [activeKey],
+			onSelect: select,
+			dense: true,
+			portal: true,
+			align: "end",
+			getAnchorRect: anchorRect,
+			anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+				ref: selectorRef,
 				role: "button",
 				tabIndex: 0,
 				"aria-label": "Agent selector",
+				"aria-haspopup": "menu",
 				"aria-expanded": open,
-				title: "Agent selector",
+				title: activeLabel === void 0 ? "Agent selector" : `Agent selector: ${activeLabel}`,
 				style: {
 					position: "fixed",
-					left: box.right - 24,
+					left: box.right - ROW_INSET - selectorWidth,
 					top: box.top + (box.bottom - box.top) / 2,
 					transform: "translateY(-50%)",
 					display: "inline-flex",
 					alignItems: "center",
 					justifyContent: "center",
-					width: 20,
-					height: 20,
-					borderRadius: 6,
-					color: open ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-label-caption)",
+					gap: SELECTOR_GAP,
+					boxSizing: "border-box",
+					width: selectorWidth,
+					height: SELECTOR_HEIGHT,
+					padding: `0 ${SELECTOR_PAD}px`,
+					borderRadius: 16,
+					background: hover || open ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+					color: "var(--dsw-alias-label-caption)",
 					cursor: "pointer",
 					zIndex: 50
+				},
+				onMouseEnter: () => {
+					setHover(true);
+				},
+				onMouseLeave: () => {
+					setHover(false);
 				},
 				onClick: toggle,
 				onKeyDown: (event) => {
 					if (event.key === "Enter" || event.key === " ") toggle(event);
 				},
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-					width: "10",
-					height: "10",
-					viewBox: "0 0 10 10",
-					fill: "none",
-					"aria-hidden": "true",
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", {
-						d: "M2 3.6L5 6.4L8 3.6",
-						stroke: "currentColor",
-						strokeWidth: "1.4",
-						strokeLinecap: "round",
-						strokeLinejoin: "round"
-					})
-				})
-			}),
-			open && box !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-				ref: menuRef,
-				style: {
-					position: "fixed",
-					top: box.bottom + 6,
-					left: box.left,
-					width: box.width,
-					zIndex: 60,
-					background: "var(--dsh-surface, #26262b)",
-					borderRadius: 12,
-					boxShadow: "0 8px 24px rgba(0,0,0,.35)",
-					overflow: "hidden",
-					padding: 4,
-					color: "var(--dsw-alias-label-primary)"
-				},
-				children: machineGroups(agents).map((group, groupIndex) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [groupIndex > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { style: {
-					height: 1,
-					margin: "3px 6px",
-					background: "color-mix(in srgb, currentColor 10%, transparent)"
-				} }), group.agents.map((agent) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("a", {
-					"aria-current": isActive(agent) ? "page" : void 0,
-					onClick: (event) => {
-						if (seatClickDecision({
-							fusion,
-							active: isActive(agent),
-							attempt: () => attemptSwitch(agent.key)
-						}).preventDefault) event.preventDefault();
-						if (fusion) event.stopPropagation();
-						setOpen(false);
-					},
-					style: {
-						display: "flex",
-						alignItems: "center",
-						gap: 8,
-						padding: "8px 10px",
-						borderRadius: 7,
-						textDecoration: "none",
-						color: "inherit",
-						fontSize: 13,
-						cursor: "pointer",
-						background: isActive(agent) ? "color-mix(in srgb, currentColor 10%, transparent)" : "transparent"
-					},
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
-							agentKey: agent.key,
-							size: 16
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							style: {
-								flex: 1,
-								textAlign: "left",
-								whiteSpace: "nowrap",
-								overflow: "hidden",
-								textOverflow: "ellipsis"
-							},
-							children: agent.label
-						}),
-						isActive(agent) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							"aria-hidden": true,
-							children: "✓"
-						})
-					]
-				}, agent.key))] }, group.machine))
+				children: [activeKey !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
+					agentKey: activeKey,
+					size: MARK_SIZE
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutlineRegular, { size: CHEVRON_SIZE })]
 			})
-		]
+		})]
 	});
 }
 
@@ -1957,31 +1951,12 @@ function apply(ctx) {
 			name: "main",
 			key: "hub"
 		}, HubPage)), "superd-hub: hub main panel");
-		scope.effect(() => scope.slots.inject("sidebar.panellist", () => {
-			let disposeRow;
-			let shownLabel;
-			const registerRow = () => {
-				const label = hubRowLabel("Hub", activeAgentName(uiState()?.activeAgent, rosterFromGlobal() ?? [NATIVE_LINK]));
-				if (label === shownLabel) return;
-				shownLabel = label;
-				disposeRow?.();
-				disposeRow = scope.slots.register({
-					name: "sidebar.panellist",
-					id: "hub",
-					order: 1,
-					label
-				}, HubPanelIcon);
-			};
-			registerRow();
-			const unbind = (fusionPage() ? uiState() : void 0)?.subscribe(() => {
-				registerRow();
-			});
-			return () => {
-				unbind?.();
-				disposeRow?.();
-				disposeRow = void 0;
-			};
-		}), "superd-hub: hub sidebar row");
+		scope.effect(() => scope.slots.inject("sidebar.panellist", () => scope.slots.register({
+			name: "sidebar.panellist",
+			id: "hub",
+			order: 1,
+			label: "Hub"
+		}, HubPanelIcon)), "superd-hub: hub sidebar row");
 	});
 	ctx.inject([
 		"connection",
