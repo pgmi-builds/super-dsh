@@ -105,4 +105,24 @@ export {
   type ConversationRow,
   type ConversationsFile,
 } from './a2a-service.js'
+export {
+  deliverReply,
+  deliverNotice,
+  wireCompletionToDelivery,
+  renderA2aRelayText,
+  boundNoticeSummary,
+  A2A_NOTICE_SUMMARY_MAX,
+  type A2aRelaySource,
+  type A2aNoticeSource,
+  type A2aNoticeReason,
+  type A2aDeliveredMessage,
+  type A2aAgentHandle,
+  type A2aDeliveryCtx,
+  type A2aReplyMeta,
+  type A2aNoticeMeta,
+  type A2aReplyDelivery,
+  type A2aDeliveryOutcome,
+  type A2aCompletionSource,
+} from './a2a-delivery.js'
+export { resolveA2aGatewayFor, localA2aInitiator, createA2aHost, type A2aHostOptions } from './a2a-host.js'
 export { default } from './gateway.js'
