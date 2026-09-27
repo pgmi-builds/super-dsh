@@ -14,6 +14,7 @@
  * retired `mountWorld` no-op are gone (git history keeps them), and worlds
  * compose as pure data planes (no webui rows).
  */
+export { handleMeshMachines, registerMeshRpc, MESH_API_BASE, type MeshDeps, type MachinePublicRow } from './mesh-rpc.js'
 export { handleAgentRuntime, registerSelectorRpc, AGENT_RUNTIME_RPC_PATH, registryTargets, type RuntimeTargetSource } from './rpc.js'
 export { registerForeignTarget, unregisterForeignTarget, getTarget, listRuntimeKeys, type ForeignTarget, type GatewayFace } from './targets.js'
 export { registerAgent, unregisterAgent, setReady, setFailed, listAgents, onRosterChanged, type RosterEntry } from './roster.js'

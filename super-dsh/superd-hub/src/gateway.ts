@@ -16,6 +16,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { registerSelectorRpc, registryTargets } from './rpc.js'
+import { registerMeshRpc } from './mesh-rpc.js'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { agentRosterRow } from './agent-roster.js'
 import { getTarget } from './targets.js'
 import { registerHubRoute } from './hub-route.js'
@@ -40,6 +42,9 @@ export const name = 'superd-hub'
  */
 export function apply(ctx: Context): void {
   registerSelectorRpc(ctx, registryTargets)
+  // Machine mesh (P1): home resolved HERE at registration time — mesh-rpc stays
+  // a pure route module; tests inject a tmpdir home instead (MeshDeps seam).
+  registerMeshRpc(ctx, { home: resolveDshHome() })
   const on = (ctx as unknown as { on?: (event: string, listener: (table: IndexInjection[]) => void) => void }).on
   on?.call(ctx, 'webserver/index-inject', (table) => { table.push(agentRosterRow()) })
   ctx.inject(['webServer', 'connection'], (host) => {
