@@ -27,6 +27,7 @@ export { forwardApiCall, forwardWorldFetch, worldMuxOf, writeJson, type CarrierG
 export { registerHubRoute, HUB_MOUNT_PATH, HUB_MUX_PATH, type HubRouteOptions } from './hub-route.js'
 export { renderFusionTransport, FUSION_FLAG_GLOBAL, type FusionConfig } from './fusion-transport.js'
 export { createSwitchController, parseLandingTarget, namespacedKey, storageNamespace, seatClickDecision, NATIVE_AGENT, SESSIONS_CURRENT_KEY, SWITCH_FALLBACK_MS, type SwitchHost, type SwitchController, type SwitchOptions, type SeatClickInput, type SeatClickDecision } from './switch-core.js'
+export { ensureAgentId, agentIdMap, type AgentIdMap } from './agent-ids.js'
 export { agentLinks, agentRosterRow, AGENT_ROSTER_GLOBAL, type AgentLink } from './agent-roster.js'
 export { createOwnershipIndex, type OwnershipIndex, type OwnershipRow } from './ownership.js'
 export { registerHostMount, takeHostMount, listHostMounts, noteWorldServer, worldServerOf, type HostMount } from './world-host.js'

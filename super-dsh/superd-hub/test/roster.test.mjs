@@ -1,7 +1,15 @@
 // Roster semantics (S2): register/list/duplicate-throws, setReady notifies,
 // unregister removes, unknown-key loud failure, unsubscribe stops delivery.
+// Mesh P1: every agentLinks row — NATIVE included — carries a stable a6 id
+// minted against the given home (tmpdir here; never the ambient DSH_HOME).
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { agentLinks } from '../dist/agent-roster.js'
+import { registerHostMount } from '../dist/world-host.js'
+import { agentIdMap } from '../dist/agent-ids.js'
 import {
   registerAgent, unregisterAgent, setReady, setFailed, listAgents, onRosterChanged,
 } from '../dist/index.js'
@@ -33,4 +41,26 @@ test('roster: failed flag defaults false, setFailed flips it independently of re
   assert.equal(row?.ready, true, 'failed does not touch ready')
   assert.throws(() => setFailed('nope', true), /unknown agent/)
   unregisterAgent('t-fail')
+})
+
+test('agentLinks: every row carries a stable a6 id — NATIVE included (tmpdir home)', () => {
+  const h = mkdtempSync(join(tmpdir(), 'superd-agentlinks-'))
+  registerAgent({ key: 'omp', label: 'OMP', ready: true })
+  const drop = registerHostMount({ key: 'omp', labelPath: '/omp' })
+  try {
+    const links = agentLinks(h)
+    assert.equal(links.length, 2)
+    const ids = links.map((l) => l.id)
+    for (const id of ids) assert.match(id, /^[a-z0-9]{6}$/)
+    assert.equal(new Set(ids).size, ids.length, 'ids are deduped across rows')
+    const native = links.find((l) => l.key === 'native')
+    assert.match(native.id, /^[a-z0-9]{6}$/, 'NATIVE row carries an id too')
+    // Stable across calls (persisted, not re-minted) and keyed by roster key.
+    assert.deepEqual(agentLinks(h).map((l) => l.id), ids)
+    assert.deepEqual(agentIdMap(h), { native: native.id, omp: links.find((l) => l.key === 'omp').id })
+  } finally {
+    drop()
+    unregisterAgent('omp')
+    rmSync(h, { recursive: true, force: true })
+  }
 })

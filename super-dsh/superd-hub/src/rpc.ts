@@ -14,8 +14,11 @@
  * so two tabs on two worlds cannot step on each other.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { createRequire } from 'node:module'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { listRuntimeKeys } from './targets.js'
 import { agentLinks } from './agent-roster.js'
+import { ensureSelf } from './machines.js'
 
 /** The shared-channel Fetch route path this RPC face owns. */
 export const AGENT_RUNTIME_RPC_PATH = '/api/agent-runtime'
@@ -30,6 +33,20 @@ export interface RuntimeTargetSource {
 export const registryTargets: RuntimeTargetSource = {
   listRuntimes: listRuntimeKeys,
 }
+
+/** Injection seam for the roster/hub identity: the hub home backing the a6
+ * id store and the machines registry. Defaults to `resolveDshHome()`
+ * (registerSelectorRpc passes no deps — the same home the rest of this
+ * process uses); unit tests inject a tmpdir so nothing ever touches an
+ * ambient/prod DSH_HOME. */
+export interface AgentRuntimeDeps {
+  home?: string
+}
+
+/** The hub package's own version, read once at module load. createRequire
+ * keeps it sync and resolves from dist/ too — package.json always ships
+ * beside the compiled output (npm includes it unconditionally). */
+const { version: HUB_VERSION } = createRequire(import.meta.url)('../package.json') as { version: string }
 
 /** Structural type of `ctx.connection.fetch` (upstream: HostConnectionFetch). */
 interface ConnectionFetchFace {
@@ -50,19 +67,30 @@ function json(status: number, body: unknown): Response {
 
 /**
  * The control-plane handler: world inventory only.
+ *
+ * ADDITIVE contract (mesh P1): the GET body gained `hub: {machineId, label,
+ * version}` and every `agents` row gained `id` (a6); `available` and all
+ * pre-existing agents fields are unchanged — old clients ignore the new
+ * fields, new clients read them.
  * @param request - the incoming `/api/agent-runtime` request.
  * @param source - live runtime registry view.
+ * @param deps - optional home override; defaults to `resolveDshHome()`.
  * @returns the JSON response.
  */
 export async function handleAgentRuntime(
   request: Request,
   source: RuntimeTargetSource,
+  deps?: AgentRuntimeDeps,
 ): Promise<Response> {
   const available = source.listRuntimes()
   if (request.method === 'GET' || request.method === 'HEAD') {
     // The selector asks this face for the roster: keys AND the mount path each
-    // key is addressed by. Read-only — the roster carries no selection.
-    return json(200, { available, agents: agentLinks() })
+    // key is addressed by. Read-only — the roster carries no selection. The
+    // hub block (this machine's m4 + label + hub version) rides along for the
+    // multi-machine UI; the a6 row ids ride on every agents row.
+    const home = deps?.home ?? resolveDshHome()
+    const self = ensureSelf(home, 'local')
+    return json(200, { available, agents: agentLinks(home), hub: { machineId: self.id, label: self.label, version: HUB_VERSION } })
   }
   // A POST that used to switch a global selector has no meaning any more:
   // the addressed world is the mount path of the request, not a shared value.
@@ -75,7 +103,9 @@ export async function handleAgentRuntime(
 /**
  * Register the control-plane RPC face on the shared `/api` connection channel
  * (behind the standard browser-trust + auth fence). No-op when the
- * `connection` service is absent (e.g. fake-ctx unit tests).
+ * `connection` service is absent (e.g. fake-ctx unit tests). The route answers
+ * with the DEFAULT home (`resolveDshHome()` at request time); callers needing
+ * a pinned home invoke handleAgentRuntime directly with deps.
  */
 export function registerSelectorRpc(ctx: Context, source: RuntimeTargetSource): void {
   ctx.inject(['connection'], (connCtx) => {
