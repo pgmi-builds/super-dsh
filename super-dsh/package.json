@@ -22,7 +22,8 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./web-trust": "./superd-hub/dist/web-trust.js",
-    "./fusion-transport": "./superd-hub/dist/fusion-transport.js"
+    "./fusion-transport": "./superd-hub/dist/fusion-transport.js",
+    "./a2a": "./superd-hub/dist/a2a-row.js"
   },
   "files": [
     "cordis.patch.yml",
@@ -87,6 +88,7 @@
     "@deepseek-ai/dsh-scope": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-session": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-session-persistence": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-user-approval": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-user-questions": ">=0.1.5-0 <0.3.0-0"
@@ -123,6 +125,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-session-persistence": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
       "optional": true
     },
     "@deepseek-ai/dsh-typert-protocol": {

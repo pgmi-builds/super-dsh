@@ -199,6 +199,19 @@ test('deliverNotice: short summary passes through verbatim; missing initiator bu
   assert.deepEqual(dropped.buffered[0].message.from, { machine: 'k3f9', id: 'q7m2xp' })
 })
 
+test('deliverNotice: conversation-less notice on a missing initiator → dropped, never buffered', () => {
+  const dropped = fakeCtx('idle')
+  dropped.ctx.agents = { get: () => undefined }
+  const out = deliverNotice(dropped.ctx, INITIATOR, 'stop before a conversation existed', {
+    senderMachine: 'k3f9',
+    senderAgent: 'q7m2xp',
+    conversationId: undefined,
+    reason: 'stop',
+  })
+  assert.deepEqual(out, { delivered: 'dropped', reason: 'no-conversation' })
+  assert.equal(dropped.buffered.length, 0)
+})
+
 // ---------------------------------------------------------------- glue
 
 /** Fake service: subscribeCompletion records the cb pair; the test fires them by hand. */
@@ -209,7 +222,8 @@ function fakeService(conversations = []) {
     listConversations: () => conversations,
     subscribeCompletion: (conv, cb, opts = {}) => {
       subs.push({ conv, cb, opts })
-      return () => { subs.splice(subs.indexOf(subs[subs.length - 1]), 1) }
+      const sub = subs[subs.length - 1]
+      return () => { subs.splice(subs.indexOf(sub), 1) }
     },
   }
 }

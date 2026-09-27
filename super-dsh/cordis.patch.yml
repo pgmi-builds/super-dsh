@@ -21,6 +21,10 @@
 #                              On/off: row `disabled: true`, or config
 #                              `trustedPageAuthorities: []` (inert). Default
 #                              derives from the trusted-hosts env.
+#   - super-dsh/a2a            the agent-facing A2A tool face (mesh P3): the
+#                              single `superd-hub` model tool on ctx0's tools
+#                              service (dormant without tools; world trees
+#                              never compose this row — see a2a-row.ts).
 #
 # Profile-layer values (webserver port/host, settings path) stay in the USER's
 # profile patch layer, never here.
@@ -45,6 +49,18 @@
     # composition. Off = the component registers nothing: no script, no global.
     - id: superd-fusion-transport
       name: 'super-dsh/fusion-transport'
+    # A2A tool face (mesh P3 Task 4): composes the single model-facing
+    # `superd-hub` tool onto ctx0's tools service and closes the a2a-host
+    # nativeGateway seam with the hub process's own typertGateway. Subpath row
+    # BY RULING (a2a-row.ts header): world trees provide a tools service too,
+    # so riding the bare superd-hub row would mount a mis-wired tool inside
+    # every world; this row lives only HERE, which world profiles never
+    # compose — ctx0 only, exactly the P3 initiator surface (foreign runtimes
+    # get their own injection in P5, spec §10). Dormant without tools.
+    # Off: restate with `disabled: true` or drop the row — nothing else
+    # registers the tool.
+    - id: superd-a2a
+      name: 'super-dsh/a2a'
     - id: agent-omp
       name: 'super-dsh/agents/omp'
     - id: agent-codex

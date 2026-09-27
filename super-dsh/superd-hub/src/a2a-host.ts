@@ -9,7 +9,6 @@
  *   1. FEDERATED rows: the P2 mesh-federate memo table by a6
  *      (`federatedGatewayOf`) — remote machines' agents, owner-minted a6
  *      adopted verbatim.
- *   2. LOCAL rows: the a6 id store (`agent-ids.json`, roster key → a6)
  *   2. FEDERATED a6s in the SHARED target registry — `federateAgents`
  *      registers the same pair (same gateway instance) into both stores, so
  *      a cold memo still resolves; locals are keyed by runtime key, never by

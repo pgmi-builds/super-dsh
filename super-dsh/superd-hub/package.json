@@ -8,7 +8,8 @@
     "./client": "./lib/client/index.js",
     "./world": "./dist/world-entry.js",
     "./join": "./dist/world-join.js",
-    "./web-trust": "./dist/web-trust.js"
+    "./web-trust": "./dist/web-trust.js",
+    "./a2a": "./dist/a2a-row.js"
   },
   "files": [
     "dist",
@@ -41,6 +42,7 @@
     "@deepseek-ai/dsh-api-gateway": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-home-paths": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0"
   },
   "peerDependenciesMeta": {
@@ -54,6 +56,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
       "optional": true
     },
     "@deepseek-ai/dsh-typert-protocol": {
