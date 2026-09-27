@@ -37,14 +37,13 @@ import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-cor
  * @module superd-hub/client/HubPage
  */
 
-/** The add-machine form's editable fields (label is server-side — it collapses to the name; gate URL optional — left empty for ungated peers). */
+/** The add-machine form's editable fields (label is server-side — it collapses to the name). */
 interface AddDraft {
   readonly name: string
   readonly tokenUrl: string
-  readonly gateUrl: string
 }
 
-const EMPTY_DRAFT: AddDraft = { name: '', tokenUrl: '', gateUrl: '' }
+const EMPTY_DRAFT: AddDraft = { name: '', tokenUrl: '' }
 
 /** Chip text: drop the trailing slash for concision ('/claude/' → '/claude'). */
 function displayPath(path: string): string {
@@ -322,10 +321,9 @@ export function HubPage(): React.JSX.Element {
   const addRemote = (): void => {
     const name = draft.name.trim()
     const tokenUrl = draft.tokenUrl.trim()
-    const gateUrl = draft.gateUrl.trim()
     if (name === '' || !validTokenUrl(tokenUrl)) return
     setMeshBusy(true)
-    void addMachine({ name, tokenUrl, gateUrl: gateUrl === '' ? undefined : gateUrl })
+    void addMachine({ name, tokenUrl })
       .then(() => {
         setDraft(EMPTY_DRAFT)
         setShowAdd(false)
@@ -545,15 +543,6 @@ export function HubPage(): React.JSX.Element {
                   value={draft.tokenUrl}
                   placeholder="https://192.0.2.130:4999/?token=…"
                   onChange={(event) => { setDraft({ ...draft, tokenUrl: event.target.value }) }}
-                />
-              </label>
-              <label style={{ gridColumn: '1 / -1' }}>
-                <span style={fieldLabel}>Gate URL (optional)</span>
-                <input
-                  style={inputStyle}
-                  value={draft.gateUrl}
-                  placeholder="https://<host>/gate-…"
-                  onChange={(event) => { setDraft({ ...draft, gateUrl: event.target.value }) }}
                 />
               </label>
               <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

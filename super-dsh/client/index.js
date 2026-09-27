@@ -446,8 +446,8 @@ async function fetchMachines() {
 	return coerceMachineList(await response.json().catch(() => void 0));
 }
 /**
-* POST a pairing `{name, label?, tokenUrl, gateUrl?}` (label omitted → the
-* server collapses it to the name; gateUrl omitted → no gate pre-step).
+* POST a pairing `{name, label?, tokenUrl}` (label omitted → the server
+* collapses it to the name).
 *
 * @throws Error(body.error) when the face answers non-2xx — the message is
 * mesh-link's own, already token-redacted.
@@ -458,7 +458,6 @@ async function addMachine(input) {
 		tokenUrl: input.tokenUrl
 	};
 	if (typeof input.label === "string" && input.label !== "") body.label = input.label;
-	if (typeof input.gateUrl === "string" && input.gateUrl !== "") body.gateUrl = input.gateUrl;
 	const response = await fetch(MESH_API_BASE, {
 		credentials: "same-origin",
 		method: "POST",
@@ -1474,8 +1473,7 @@ function attemptSwitch(label) {
 //#region src/client/HubPage.tsx
 const EMPTY_DRAFT = {
 	name: "",
-	tokenUrl: "",
-	gateUrl: ""
+	tokenUrl: ""
 };
 /** Chip text: drop the trailing slash for concision ('/claude/' → '/claude'). */
 function displayPath(path) {
@@ -1756,13 +1754,11 @@ function HubPage() {
 	const addRemote = () => {
 		const name = draft.name.trim();
 		const tokenUrl = draft.tokenUrl.trim();
-		const gateUrl = draft.gateUrl.trim();
 		if (name === "" || !validTokenUrl(tokenUrl)) return;
 		setMeshBusy(true);
 		addMachine({
 			name,
-			tokenUrl,
-			gateUrl: gateUrl === "" ? void 0 : gateUrl
+			tokenUrl
 		}).then(() => {
 			setDraft(EMPTY_DRAFT);
 			setShowAdd(false);
@@ -2125,23 +2121,6 @@ function HubPage() {
 										});
 									}
 								})] }),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-									style: { gridColumn: "1 / -1" },
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: fieldLabel,
-										children: "Gate URL (optional)"
-									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-										style: inputStyle,
-										value: draft.gateUrl,
-										placeholder: "https://<host>/gate-…",
-										onChange: (event) => {
-											setDraft({
-												...draft,
-												gateUrl: event.target.value
-											});
-										}
-									})]
-								}),
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									style: {
 										gridColumn: "1 / -1",

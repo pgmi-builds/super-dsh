@@ -10,12 +10,9 @@ import { ensureSelf, listRemotes, upsertRemote } from '../dist/machines.js'
 const home = () => mkdtempSync(join(tmpdir(), 'superd-mesh-link-'))
 
 /** Minimal "remote hub" fixture: GET /?token=<t> mints a dsh-auth cookie (303 + Set-Cookie);
- *  GET /api/agent-runtime answers the roster JSON only for cookie values the server minted.
- *  `gate: true` fronts the whole origin with a Caddy-style cookie gate: GET <gatePath>
- *  issues a `dshgate` cookie; without it EVERY request 403s before reaching dsh. */
+ *  GET /api/agent-runtime answers the roster JSON only for cookie values the server minted. */
 function startRemoteHub(opts = {}) {
   const state = {
-    gatePath: opts.gate === true ? (opts.gatePath ?? '/gate-gtok') : null,
     machineId: opts.machineId ?? 'k3f9',
     version: opts.version ?? '0.1.6',
     token: opts.token ?? 'ok',
@@ -27,25 +24,10 @@ function startRemoteHub(opts = {}) {
     mintCount: 0,
     probeCount: 0,
     lastCookie: null,
-    gateValid: new Set(),
-    gateVisits: 0,
   }
   let seq = 0
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
-    if (state.gatePath !== null && url.pathname === state.gatePath) {
-      state.gateVisits += 1
-      state.gateValid.add('g1')
-      res.statusCode = 302
-      res.setHeader('Location', '/')
-      res.setHeader('Set-Cookie', 'dshgate=g1; Path=/; HttpOnly')
-      res.end()
-      return
-    }
-    if (state.gatePath !== null) {
-      const gateOk = (req.headers.cookie ?? '').split(';').map((s) => s.trim()).some((p) => p.startsWith('dshgate=') && state.gateValid.has(p.slice('dshgate='.length)))
-      if (!gateOk) { res.statusCode = 403; res.end('gate'); return }
-    }
     if (url.pathname === '/') {
       state.mintCount += 1
       if (url.searchParams.get('token') !== state.token) { res.statusCode = 403; res.end('bad token'); return }
@@ -85,7 +67,6 @@ function startRemoteHub(opts = {}) {
         server,
         state,
         origin: `http://127.0.0.1:${port}`,
-        gateUrl: `http://127.0.0.1:${port}${state.gatePath ?? ''}`,
         close: () => new Promise((done) => { server.closeAllConnections(); server.close(done) }),
       })
     })
@@ -343,93 +324,5 @@ test('reprobeMachine：不可达 → unreachable；未知 id throw', async () =>
     await assert.rejects(() => reprobeMachine(h, 'zzzz'), /unknown machine id/)
   } finally {
     rmSync(h, { recursive: true, force: true })
-  }
-})
-
-// ---- 前置 gate（fronting gate）：Caddy cookie gate 拓扑 ----
-
-test('gated pair：先过 gate 收集全部 Set-Cookie → mint → probe 整 jar；两 cookie 入行；gate 恰访一次', async () => {
-  resetMachineStatus()
-  const hub = await startRemoteHub({ gate: true, machineId: 'g7a1', token: 'boot' })
-  const h = home()
-  try {
-    // 无 gate cookie → 一切 403（probe 也一样），属 auth 域失败且点名 gate
-    const bare = await probeMachine(hub.origin, 'dsh-auth-x=v1')
-    assert.equal(bare.ok, false)
-    assert.equal(bare.status, 'auth-expired')
-    assert.match(bare.error, /gate/)
-
-    const out = await pairMachine(h, { name: 'dev3', label: 'DEV3', tokenUrl: `${hub.origin}/?token=boot`, gateUrl: hub.gateUrl })
-    assert.equal(out.machineId, 'g7a1')
-    assert.equal(out.probe.ok, true)
-    assert.equal(hub.state.gateVisits, 1) // gate 恰好访问一次
-    assert.equal(hub.state.lastCookie, 'dshgate=g1; dsh-auth-x=v1') // probe 带整 jar
-    const rows = listRemotes(h)
-    assert.equal(rows[0].cookie, 'dshgate=g1; dsh-auth-x=v1') // 整 jar 持久化
-    assert.equal(rows[0].gateUrl, hub.gateUrl) // gateUrl 随行持久化
-    assert.equal(machineStatus().get('g7a1').status, 'reachable')
-
-    // 不带 gateUrl 直接 pair：被 gate 403 挡死，不落行
-    await assert.rejects(() => pairMachine(h, { name: 'x', tokenUrl: `${hub.origin}/?token=boot` }), /status 403/)
-    assert.equal(listRemotes(h).length, 1)
-  } finally {
-    rmSync(h, { recursive: true, force: true })
-    await hub.close()
-  }
-})
-
-test('gated reprobe：回放持久化 jar，不再过 gate（pair+reprobe 合计仍 1 次 gate 访问）', async () => {
-  const hub = await startRemoteHub({ gate: true, machineId: 'g8b2', token: 'boot' })
-  const h = home()
-  try {
-    await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot`, gateUrl: hub.gateUrl })
-    assert.equal(hub.state.gateVisits, 1)
-    const r = await reprobeMachine(h, 'g8b2')
-    assert.equal(r.ok, true)
-    assert.equal(hub.state.gateVisits, 1) // reprobe 不重过 gate
-    assert.equal(hub.state.mintCount, 1) // cookie 仍有效：不重铸
-    assert.equal(hub.state.lastCookie, 'dshgate=g1; dsh-auth-x=v1') // 整 jar 原样回放
-    assert.equal(listRemotes(h)[0].cookie, 'dshgate=g1; dsh-auth-x=v1')
-  } finally {
-    rmSync(h, { recursive: true, force: true })
-    await hub.close()
-  }
-})
-
-test('gated re-mint：dsh-auth 过期而 gate 仍活 → 重铸只换 dsh-auth 对，gate 对保留', async () => {
-  const hub = await startRemoteHub({ gate: true, machineId: 'g9c3', token: 'boot' })
-  const h = home()
-  try {
-    await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot`, gateUrl: hub.gateUrl })
-    hub.state.validCookies.clear() // dsh-auth 全失效；gate cookie 仍有效
-    const r = await reprobeMachine(h, 'g9c3')
-    assert.equal(r.ok, true)
-    assert.equal(hub.state.mintCount, 2) // 重铸了一次
-    assert.equal(hub.state.gateVisits, 1) // 重铸复用 jar 里的 gate cookie，不过 gate
-    assert.equal(hub.state.lastCookie, 'dshgate=g1; dsh-auth-x=v2') // 只换 dsh-auth 对
-    assert.equal(listRemotes(h)[0].cookie, 'dshgate=g1; dsh-auth-x=v2') // 整 jar 回写
-  } finally {
-    rmSync(h, { recursive: true, force: true })
-    await hub.close()
-  }
-})
-
-test('gate 过期（403）：reprobe → auth-expired 点名 gate，重铸 dsh token 无济于事', async () => {
-  resetMachineStatus()
-  const hub = await startRemoteHub({ gate: true, machineId: 'h1d4', token: 'boot' })
-  const h = home()
-  try {
-    await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot`, gateUrl: hub.gateUrl })
-    hub.state.gateValid.clear() // gate cookie 作废：一切请求 403
-    const r = await reprobeMachine(h, 'h1d4')
-    assert.equal(r.ok, false)
-    assert.equal(r.status, 'auth-expired')
-    assert.match(r.error, /gate/)
-    const st = machineStatus().get('h1d4')
-    assert.equal(st.status, 'auth-expired')
-    assert.match(st.error, /gate/)
-  } finally {
-    rmSync(h, { recursive: true, force: true })
-    await hub.close()
   }
 })

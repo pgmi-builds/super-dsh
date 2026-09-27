@@ -149,24 +149,3 @@ test('validTokenUrl: everything else is rejected before the wire', () => {
     assert.equal(mesh.validTokenUrl(bad), false, bad)
   }
 })
-
-// ---- addMachine request body: the gateUrl field rides only when set -------
-
-test('addMachine body: gateUrl included when set, absent otherwise (label contract unchanged)', async () => {
-  const bodies = []
-  const realFetch = globalThis.fetch
-  globalThis.fetch = async (_input, init) => { bodies.push(init); return new Response('{}', { status: 201 }) }
-  try {
-    await mesh.addMachine({ name: 'dev3', tokenUrl: 'http://h:1/?token=abc', label: 'DEV3', gateUrl: 'https://h/gate-x' })
-    await mesh.addMachine({ name: 'dev3', tokenUrl: 'http://h:1/?token=abc' })
-  } finally {
-    globalThis.fetch = realFetch
-  }
-  const withGate = JSON.parse(bodies[0].body)
-  const bare = JSON.parse(bodies[1].body)
-  assert.equal(withGate.gateUrl, 'https://h/gate-x')
-  assert.equal(withGate.label, 'DEV3')
-  assert.equal('gateUrl' in bare, false)
-  assert.equal(bare.name, 'dev3')
-  assert.equal(bare.tokenUrl, 'http://h:1/?token=abc')
-})
