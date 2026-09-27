@@ -321,7 +321,7 @@ roster 会话维度。experimental agent-team 的 durable mailbox 仅作远期�
 ## 15. 开放问题
 
 1. 反向添加策略（D2）：单向先行；何时需要双向（A2A 回投在单向下的可达性已由"发起方持 cookie 订阅"解决，双向非刚需）。
-2. 常驻 hub-to-hub WS 控制通道（roster 变更推送、A2A 事件推送）vs 现行轮询/订阅混合——P3 后评估。
+2. ~~常驻 hub-to-hub WS 控制通道（roster 变更推送、A2A 事件推送）vs 现行轮询/订阅混合——P3 后评估~~ → **已裁决关闭（2026-09-27 user）**：状态更新走单向 API + 5 分钟周期轮询即可，不做 WebSocket 控制通道（太重）。A2A 回投不受影响——按 §7.3 走 per-conversation 的 mux 会话流订阅（数据面，非控制通道）。
 3. token 迁移 credentials store。
 4. `stop` session 级在 foreign runtime 上的确切语义映射（各 adapter 的 close/dispose 面）——P3 落地时按 adapter 记录。
 5. alphabet 是否剔除易混淆字符（出现人工抄录需求再议）。
