@@ -1051,3 +1051,99 @@ export function createSwitchController(host: SwitchHost, options: SwitchOptions 
     },
   }
 }
+
+// ---- C1: the switch pre-flight (readiness gate) ----------------------------
+//
+// The roster lists a world from mount registration — before its data plane
+// answers. attemptSwitch therefore consults the row BEFORE running the
+// machine: a not-ready world holds the UI on native with "starting…"
+// feedback and polls; a failed world reports and never switches; a ready
+// (or unknown/native) row runs the machine unchanged (the machine's own
+// probe stays the fallback for roster misses).
+
+/** What attemptSwitch does with a roster row: run the machine / report failure / wait for readiness. */
+export type PreFlightDecision = 'run' | 'failed' | 'wait'
+
+/** The roster fields the pre-flight reads (the projection carries both since C1 task 3). */
+export interface PreFlightRow {
+  ready?: boolean
+  failed?: boolean
+}
+
+/**
+ * The pure pre-flight decision. `native` always runs; an absent row (roster
+ * fetch failed, or the key is not listed) also runs — the machine's roster
+ * probe is the authority on unknown targets, exactly as before C1.
+ */
+export function decidePreFlight(label: string, row: PreFlightRow | undefined): PreFlightDecision {
+  if (label === NATIVE_AGENT) return 'run'
+  if (row === undefined) return 'run'
+  if (row.failed === true) return 'failed'
+  if (row.ready !== true) return 'wait'
+  return 'run'
+}
+
+/** Default bound on one readiness wait (the page never locks behind a stuck world). */
+export const WAIT_BOUND_MS = 120_000
+/** Default poll interval for one readiness wait. */
+export const WAIT_POLL_MS = 1_000
+
+/** The waiter's injected faces (tests drive time and the roster by hand). */
+export interface ReadinessWaiterFaces {
+  /** Read the target's roster row; undefined on any failure. */
+  fetchRow(): Promise<PreFlightRow | undefined>
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
+/** One bounded readiness wait. */
+export interface ReadinessWaiter {
+  /** Resolves when the row flips ready ('ready'), reports failure ('failed'), the bound expires ('bound'), or the waiter is cancelled ('cancelled'). */
+  wait(label: string): Promise<'ready' | 'failed' | 'bound' | 'cancelled'>
+  /** A newer switch attempt cancels a pending wait (it resolves 'cancelled'). */
+  cancel(): void
+}
+
+/**
+ * Build a bounded readiness waiter over injected faces. The poll re-reads
+ * the roster row every {@link ReadinessWaiterOptions.pollMs}; `failed`
+ * short-circuits immediately; the bound always terminates the wait.
+ */
+export function createReadinessWaiter(faces: ReadinessWaiterFaces, options: { boundMs?: number; pollMs?: number } = {}): ReadinessWaiter {
+  const boundMs = options.boundMs ?? WAIT_BOUND_MS
+  const pollMs = options.pollMs ?? WAIT_POLL_MS
+  let pending: ((outcome: 'ready' | 'failed' | 'bound' | 'cancelled') => void) | undefined
+  let pollHandle: unknown
+  let boundHandle: unknown
+  let settled = false
+  const settle = (outcome: 'ready' | 'failed' | 'bound' | 'cancelled'): void => {
+    if (settled) return
+    settled = true
+    if (pollHandle !== undefined) faces.clearTimeout(pollHandle)
+    if (boundHandle !== undefined) faces.clearTimeout(boundHandle)
+    pending?.(outcome)
+    pending = undefined
+  }
+  return {
+    wait(label: string): Promise<'ready' | 'failed' | 'bound' | 'cancelled'> {
+      return new Promise((resolve) => {
+        pending = resolve
+        boundHandle = faces.setTimeout(() => { settle('bound') }, boundMs)
+        const tick = (): void => {
+          if (settled) return
+          void faces.fetchRow().then(
+            (row) => {
+              if (settled) return
+              if (row?.failed === true) { settle('failed'); return }
+              if (row?.ready === true) { settle('ready'); return }
+              pollHandle = faces.setTimeout(tick, pollMs)
+            },
+            () => { if (!settled) pollHandle = faces.setTimeout(tick, pollMs) },
+          )
+        }
+        tick()
+      })
+    },
+    cancel(): void { settle('cancelled') },
+  }
+}

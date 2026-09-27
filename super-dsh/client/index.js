@@ -936,10 +936,10 @@ function machineGroups(rows) {
 function createSwitchController(host, options = {}) {
 	const fallbackMs = options.fallbackMs ?? SWITCH_FALLBACK_MS;
 	const quietWindowMs = options.quietWindowMs ?? LANDING_QUIET_MS;
-	let current;
+	let current$1;
 	let armedLanding;
 	return { run(label) {
-		const prior = current;
+		const prior = current$1;
 		return new Promise((resolve) => {
 			let timer;
 			let watchdog;
@@ -966,7 +966,7 @@ function createSwitchController(host, options = {}) {
 					attempt.finished = true;
 					host.clearTimeout(timer);
 					disposer();
-					if (current === attempt) current = void 0;
+					if (current$1 === attempt) current$1 = void 0;
 					if (landingArmed) watchdog = host.setTimeout(() => {
 						attempt.cancelLanding();
 					}, fallbackMs);
@@ -979,9 +979,9 @@ function createSwitchController(host, options = {}) {
 				cancelPriorLanding();
 			}
 			if (prior !== void 0 && !prior.finished) prior.finish();
-			current = attempt;
+			current$1 = attempt;
 			const revert = (reason) => {
-				if (attempt.finished || current !== attempt) return;
+				if (attempt.finished || current$1 !== attempt) return;
 				attempt.cancelLanding();
 				try {
 					host.setAgent(NATIVE_AGENT);
@@ -1004,7 +1004,7 @@ function createSwitchController(host, options = {}) {
 				revert("timeout");
 			}, fallbackMs);
 			disposer = host.onGenerationEstablished(() => {
-				if (attempt.finished || current !== attempt) return;
+				if (attempt.finished || current$1 !== attempt) return;
 				attempt.finish();
 			});
 			landingArmed = true;
@@ -1061,6 +1061,121 @@ function createSwitchController(host, options = {}) {
 		});
 	} };
 }
+/**
+* The pure pre-flight decision. `native` always runs; an absent row (roster
+* fetch failed, or the key is not listed) also runs — the machine's roster
+* probe is the authority on unknown targets, exactly as before C1.
+*/
+function decidePreFlight(label, row) {
+	if (label === NATIVE_AGENT) return "run";
+	if (row === void 0) return "run";
+	if (row.failed === true) return "failed";
+	if (row.ready !== true) return "wait";
+	return "run";
+}
+/** Default bound on one readiness wait (the page never locks behind a stuck world). */
+const WAIT_BOUND_MS = 12e4;
+/** Default poll interval for one readiness wait. */
+const WAIT_POLL_MS = 1e3;
+/**
+* Build a bounded readiness waiter over injected faces. The poll re-reads
+* the roster row every {@link ReadinessWaiterOptions.pollMs}; `failed`
+* short-circuits immediately; the bound always terminates the wait.
+*/
+function createReadinessWaiter(faces, options = {}) {
+	const boundMs = options.boundMs ?? WAIT_BOUND_MS;
+	const pollMs = options.pollMs ?? WAIT_POLL_MS;
+	let pending;
+	let pollHandle;
+	let boundHandle;
+	let settled = false;
+	const settle = (outcome) => {
+		if (settled) return;
+		settled = true;
+		if (pollHandle !== void 0) faces.clearTimeout(pollHandle);
+		if (boundHandle !== void 0) faces.clearTimeout(boundHandle);
+		pending?.(outcome);
+		pending = void 0;
+	};
+	return {
+		wait(label) {
+			return new Promise((resolve) => {
+				pending = resolve;
+				boundHandle = faces.setTimeout(() => {
+					settle("bound");
+				}, boundMs);
+				const tick = () => {
+					if (settled) return;
+					faces.fetchRow().then((row) => {
+						if (settled) return;
+						if (row?.failed === true) {
+							settle("failed");
+							return;
+						}
+						if (row?.ready === true) {
+							settle("ready");
+							return;
+						}
+						pollHandle = faces.setTimeout(tick, pollMs);
+					}, () => {
+						if (!settled) pollHandle = faces.setTimeout(tick, pollMs);
+					});
+				};
+				tick();
+			});
+		},
+		cancel() {
+			settle("cancelled");
+		}
+	};
+}
+
+//#endregion
+//#region src/toast-core.ts
+/** Failures that name what broke need a longer read than a one-liner. */
+const TOAST_DEFAULT_HOLD_MS = 6e3;
+/** The exact props the official primitive receives (pure — the unit seam). */
+function toastProps(text, options = {}) {
+	const props = {
+		text,
+		holdMs: options.holdMs ?? TOAST_DEFAULT_HOLD_MS
+	};
+	if (options.tone !== void 0) props.tone = options.tone;
+	return props;
+}
+let seq = 0;
+let current;
+const listeners = /* @__PURE__ */ new Set();
+function emit() {
+	for (const fn of [...listeners]) try {
+		fn(current);
+	} catch {}
+}
+/** Fire one toast (best-effort: without a mounted owner nothing renders). */
+function showSuperdToast(text, options = {}) {
+	current = {
+		seq: ++seq,
+		text,
+		options
+	};
+	emit();
+}
+/** Clear a shown toast (the fade's `onDone`); stale sequences are no-ops. */
+function clearSuperdToast(done) {
+	if (current === void 0 || current.seq !== done) return;
+	current = void 0;
+	emit();
+}
+/** Subscribe to the store (the host's effect face); returns unsubscribe. */
+function onSuperdToast(fn) {
+	listeners.add(fn);
+	try {
+		fn(current);
+	} catch {}
+	return () => {
+		listeners.delete(fn);
+	};
+}
 
 //#endregion
 //#region src/client/switch.ts
@@ -1076,39 +1191,14 @@ function uiState() {
 	if (typeof state.subscribe !== "function" || typeof state.activeAgent !== "string") return void 0;
 	return state;
 }
-/** How long one revert toast stays on screen. */
-const TOAST_HOLD_MS = 6e3;
 /**
-* One transient message, fixed above the sidebar footer. Self-owned
-* presentation only — no read from any foreign DOM, nothing is a state input.
+* One transient message through the official `Toast` primitive (C1 task 4:
+* the platform's top-center banner — dark surface in both themes, warn icon
+* seat — rendered by the host's React tree from the Hub sidebar row's
+* always-mounted owner; see client/toast.ts).
 */
 function showToast(message) {
-	try {
-		const doc = globalThis.document;
-		if (doc === void 0 || doc.body === null) return;
-		const el = doc.createElement("div");
-		el.textContent = message;
-		el.setAttribute("style", [
-			"position:fixed",
-			"left:50%",
-			"bottom:64px",
-			"transform:translateX(-50%)",
-			"z-index:9999",
-			"max-width:80vw",
-			"padding:10px 14px",
-			"border-radius:8px",
-			"background:rgba(24,24,28,.94)",
-			"color:#ececf0",
-			"font:13px/1.4 system-ui,sans-serif",
-			"box-shadow:0 8px 24px rgba(0,0,0,.35)"
-		].join(";"));
-		doc.body.appendChild(el);
-		globalThis.setTimeout(() => {
-			try {
-				el.remove();
-			} catch {}
-		}, TOAST_HOLD_MS);
-	} catch {}
+	showSuperdToast(message);
 }
 /** The bound `switchAgent`, or `undefined` until the entry binds it. */
 let bound;
@@ -1216,10 +1306,63 @@ function bindSwitchAgent(deps) {
 *   `false` means the click is swallowed, never that the anchor navigates
 *   the fused page away (review round 1).
 */
+let pendingWait;
+/**
+* The Hub switch surfaces' entry point. Attempts the in-page switch for
+* `label`, gated on the target world's readiness (C1): a not-ready world
+* holds the UI on native with starting feedback and a bounded poll; a
+* failed world reports and never switches; a ready/native/unknown target
+* runs the machine (whose roster probe stays the fallback).
+* @returns `true` when the fusion switch took the click over; `false` when
+*   this page is not a fusion page or the orchestration is unbound.
+*   Informational only — the interception contract (`seatClickDecision`)
+*   prevents navigation on every fusion-page left click regardless: a
+*   `false` means the click is swallowed, never that the anchor navigates
+*   the fused page away (review round 1).
+*/
 function attemptSwitch(label) {
 	const run = bound;
 	if (run === void 0 || !fusionPage()) return false;
-	run(label).catch(() => {});
+	pendingWait?.cancel();
+	pendingWait = void 0;
+	(async () => {
+		let row;
+		try {
+			row = (await fetchRoster()).find((agent) => agent.key === label);
+		} catch {
+			row = void 0;
+		}
+		const decision = decidePreFlight(label, row);
+		if (decision === "failed") {
+			showToast(`Super D: ${label} failed to start — see the service log.`);
+			return;
+		}
+		if (decision === "wait") {
+			showToast(`Super D: ${label} is starting…`);
+			const waiter = createReadinessWaiter({
+				fetchRow: async () => {
+					try {
+						return (await fetchRoster()).find((agent) => agent.key === label);
+					} catch {
+						return;
+					}
+				},
+				setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+				clearTimeout: (handle) => globalThis.clearTimeout(handle)
+			});
+			pendingWait = waiter;
+			const outcome = await waiter.wait(label);
+			if (pendingWait === waiter) pendingWait = void 0;
+			if (outcome === "ready") {
+				run(label).catch(() => {});
+				return;
+			}
+			if (outcome === "failed") showToast(`Super D: ${label} failed to start — see the service log.`);
+			else if (outcome === "bound") showToast(`Super D: ${label} is still starting — try again in a moment.`);
+			return;
+		}
+		run(label).catch(() => {});
+	})();
 	return true;
 }
 
@@ -1853,6 +1996,34 @@ function HubPage() {
 }
 
 //#endregion
+//#region src/client/toast.ts
+/**
+* The element for one pending toast: keyed by sequence so a newer toast
+* remounts the primitive and restarts its slide-in cycle (the primitive's
+* own re-show contract).
+*/
+function superdToastElement(toast) {
+	return react.createElement(__deepseek_ai_dsh_client_ui_primitives.Toast, {
+		key: toast.seq,
+		...toastProps(toast.text, toast.options),
+		onDone: () => {
+			clearSuperdToast(toast.seq);
+		}
+	});
+}
+/**
+* The always-mounted owner: subscribes to the store and renders the current
+* toast (nothing while the store is empty). Mounted inside the Hub sidebar
+* row — the primitive's body portal places the banner top-center regardless
+* of where the owner sits.
+*/
+function SuperdToastHost() {
+	const [toast, setToast] = react.useState(void 0);
+	react.useEffect(() => onSuperdToast(setToast), []);
+	return toast === void 0 ? null : superdToastElement(toast);
+}
+
+//#endregion
 //#region src/client/HubPanelIcon.tsx
 /** Runtime-mark edge inside the selector, and the chevron's own default edge. */
 const MARK_SIZE = 16;
@@ -1991,61 +2162,65 @@ function HubPanelIcon({ size }) {
 			alignItems: "center",
 			justifyContent: "center"
 		},
-		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(HubGlyph, { size }), wide && box !== null && switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Menu, {
-			open,
-			onClose: () => {
-				setOpen(false);
-			},
-			items,
-			selectedIds: activeKey === void 0 ? [] : [activeKey],
-			onSelect: select,
-			dense: true,
-			portal: true,
-			align: "end",
-			getAnchorRect: anchorRect,
-			anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-				ref: selectorRef,
-				role: "button",
-				tabIndex: 0,
-				"aria-label": "Agent selector",
-				"aria-haspopup": "menu",
-				"aria-expanded": open,
-				title: activeLabel === void 0 ? "Agent selector" : `Agent selector: ${activeLabel}`,
-				style: {
-					position: "fixed",
-					left: box.right - ROW_INSET - selectorWidth,
-					top: box.top + (box.bottom - box.top) / 2,
-					transform: "translateY(-50%)",
-					display: "inline-flex",
-					alignItems: "center",
-					justifyContent: "center",
-					gap: SELECTOR_GAP,
-					boxSizing: "border-box",
-					width: selectorWidth,
-					height: SELECTOR_HEIGHT,
-					padding: `0 ${SELECTOR_PAD}px`,
-					borderRadius: 16,
-					background: hover || open ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
-					color: "var(--dsw-alias-label-caption)",
-					cursor: "pointer",
-					zIndex: 50
+		children: [
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(HubGlyph, { size }),
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SuperdToastHost, {}),
+			wide && box !== null && switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Menu, {
+				open,
+				onClose: () => {
+					setOpen(false);
 				},
-				onMouseEnter: () => {
-					setHover(true);
-				},
-				onMouseLeave: () => {
-					setHover(false);
-				},
-				onClick: toggle,
-				onKeyDown: (event) => {
-					if (event.key === "Enter" || event.key === " ") toggle(event);
-				},
-				children: [activeKey !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
-					agentKey: activeKey,
-					size: MARK_SIZE
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutlineRegular, { size: CHEVRON_SIZE })]
+				items,
+				selectedIds: activeKey === void 0 ? [] : [activeKey],
+				onSelect: select,
+				dense: true,
+				portal: true,
+				align: "end",
+				getAnchorRect: anchorRect,
+				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+					ref: selectorRef,
+					role: "button",
+					tabIndex: 0,
+					"aria-label": "Agent selector",
+					"aria-haspopup": "menu",
+					"aria-expanded": open,
+					title: activeLabel === void 0 ? "Agent selector" : `Agent selector: ${activeLabel}`,
+					style: {
+						position: "fixed",
+						left: box.right - ROW_INSET - selectorWidth,
+						top: box.top + (box.bottom - box.top) / 2,
+						transform: "translateY(-50%)",
+						display: "inline-flex",
+						alignItems: "center",
+						justifyContent: "center",
+						gap: SELECTOR_GAP,
+						boxSizing: "border-box",
+						width: selectorWidth,
+						height: SELECTOR_HEIGHT,
+						padding: `0 ${SELECTOR_PAD}px`,
+						borderRadius: 16,
+						background: hover || open ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+						color: "var(--dsw-alias-label-caption)",
+						cursor: "pointer",
+						zIndex: 50
+					},
+					onMouseEnter: () => {
+						setHover(true);
+					},
+					onMouseLeave: () => {
+						setHover(false);
+					},
+					onClick: toggle,
+					onKeyDown: (event) => {
+						if (event.key === "Enter" || event.key === " ") toggle(event);
+					},
+					children: [activeKey !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
+						agentKey: activeKey,
+						size: MARK_SIZE
+					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconChevronDownOutlineRegular, { size: CHEVRON_SIZE })]
+				})
 			})
-		})]
+		]
 	});
 }
 

@@ -38,6 +38,8 @@ import {
   machineGroups,
   switchAffordance,
   createSwitchController,
+  createReadinessWaiter,
+  decidePreFlight,
   observeCachesRefreshed,
 } from '../dist/switch-core.js'
 import { FUSION_FLAG_GLOBAL, apply as applyFusion, renderFusionTransport } from '../dist/fusion-transport.js'
@@ -1120,4 +1122,62 @@ test('switch affordance, flag off: unavailable with the degradation hint — nev
   assert.deepEqual(switchAffordance(false), { available: false, hint: FUSION_OFF_HINT })
   assert.ok(FUSION_OFF_HINT.includes('fusion off'), 'the hint names the degradation itself')
   assert.ok(FUSION_OFF_HINT.includes('no foreign entry'), 'the hint states the flag-off reality: no foreign entry exists')
+})
+
+// ---- C1: the switch pre-flight (readiness gate) ----------------------------
+
+test('decidePreFlight: native and unknown rows run; failed reports; not-ready waits', () => {
+  assert.equal(decidePreFlight('native', undefined), 'run')
+  assert.equal(decidePreFlight('pi', undefined), 'run', 'roster miss defers to the machine probe')
+  assert.equal(decidePreFlight('pi', { ready: true, failed: false }), 'run')
+  assert.equal(decidePreFlight('pi', { ready: false, failed: true }), 'failed')
+  assert.equal(decidePreFlight('pi', { ready: false }), 'wait')
+  assert.equal(decidePreFlight('pi', {}), 'wait', 'absent ready (older host shape) waits')
+})
+
+test('readiness waiter: polls until the row flips ready', async () => {
+  const rows = [{ ready: false }, { ready: false }, { ready: true }]
+  const timers = []
+  let i = 0
+  const w = createReadinessWaiter({
+    fetchRow: async () => rows[Math.min(i++, rows.length - 1)],
+    setTimeout: (fn) => { timers.push(fn); return timers.length },
+    clearTimeout: () => {},
+  }, { pollMs: 1 })
+  const done = w.wait('pi')
+  // timers[0] is the BOUND — never fire it; each round drives only the
+  // newest timer (the poll).
+  for (let round = 0; round < 2; round++) {
+    await Promise.resolve(); await Promise.resolve()  // let the fetchRow settle
+    timers[timers.length - 1]()                       // drive the newest poll
+  }
+  await Promise.resolve(); await Promise.resolve()
+  assert.equal(await done, 'ready')
+})
+
+test('readiness waiter: failed short-circuits; bound expires; cancel wins', async () => {
+  const mk = (row) => {
+    const timers = []
+    return { timers, w: createReadinessWaiter({
+      fetchRow: async () => row,
+      setTimeout: (fn) => { timers.push(fn); return timers.length },
+      clearTimeout: () => {},
+    }, { boundMs: 100, pollMs: 1 }) }
+  }
+  let a = mk({ failed: true })
+  let d = a.w.wait('pi')
+  await Promise.resolve(); await Promise.resolve()
+  assert.equal(await d, 'failed')
+
+  let b = mk({ ready: false })
+  d = b.w.wait('pi')
+  await Promise.resolve(); await Promise.resolve()
+  b.timers.splice(0).forEach((fn) => fn())          // first timer is the bound
+  assert.equal(await d, 'bound')
+
+  let c = mk({ ready: false })
+  d = c.w.wait('pi')
+  await Promise.resolve(); await Promise.resolve()
+  c.w.cancel()
+  assert.equal(await d, 'cancelled')
 })

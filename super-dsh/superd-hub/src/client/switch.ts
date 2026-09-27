@@ -41,14 +41,19 @@
  * @module superd-hub/client/switch
  */
 import {
+  createReadinessWaiter,
   createSwitchController,
+  decidePreFlight,
   observeCachesRefreshed,
   SESSIONS_CURRENT_KEY,
   type NavigationCacheFace,
   type RestoreCaches,
   type RestoreWorkspaceView,
+  type PreFlightRow,
+  type ReadinessWaiter,
   type SwitchHost,
 } from '../switch-core.js'
+import { showSuperdToast } from '../toast-core.js'
 import { fetchRoster } from './roster.js'
 
 /** The Task-3 page-level state atom the fused page boots with. */
@@ -141,40 +146,14 @@ export function uiState(): SuperdUiState | undefined {
   return state as SuperdUiState
 }
 
-/** How long one revert toast stays on screen. */
-const TOAST_HOLD_MS = 6_000
-
 /**
- * One transient message, fixed above the sidebar footer. Self-owned
- * presentation only — no read from any foreign DOM, nothing is a state input.
+ * One transient message through the official `Toast` primitive (C1 task 4:
+ * the platform's top-center banner — dark surface in both themes, warn icon
+ * seat — rendered by the host's React tree from the Hub sidebar row's
+ * always-mounted owner; see client/toast.ts).
  */
 function showToast(message: string): void {
-  try {
-    const doc = (globalThis as { document?: Document }).document
-    if (doc === undefined || doc.body === null) return
-    const el = doc.createElement('div')
-    el.textContent = message
-    el.setAttribute('style', [
-      'position:fixed',
-      'left:50%',
-      'bottom:64px',
-      'transform:translateX(-50%)',
-      'z-index:9999',
-      'max-width:80vw',
-      'padding:10px 14px',
-      'border-radius:8px',
-      'background:rgba(24,24,28,.94)',
-      'color:#ececf0',
-      'font:13px/1.4 system-ui,sans-serif',
-      'box-shadow:0 8px 24px rgba(0,0,0,.35)',
-    ].join(';'))
-    doc.body.appendChild(el)
-    globalThis.setTimeout(() => {
-      try {
-        el.remove()
-      } catch { /* already gone */ }
-    }, TOAST_HOLD_MS)
-  } catch { /* feedback is best-effort: never break the page */ }
+  showSuperdToast(message)
 }
 
 /** The bound `switchAgent`, or `undefined` until the entry binds it. */
@@ -294,9 +273,59 @@ export function bindSwitchAgent(deps: {
  *   `false` means the click is swallowed, never that the anchor navigates
  *   the fused page away (review round 1).
  */
+let pendingWait: ReadinessWaiter | undefined
+
+/**
+ * The Hub switch surfaces' entry point. Attempts the in-page switch for
+ * `label`, gated on the target world's readiness (C1): a not-ready world
+ * holds the UI on native with starting feedback and a bounded poll; a
+ * failed world reports and never switches; a ready/native/unknown target
+ * runs the machine (whose roster probe stays the fallback).
+ * @returns `true` when the fusion switch took the click over; `false` when
+ *   this page is not a fusion page or the orchestration is unbound.
+ *   Informational only — the interception contract (`seatClickDecision`)
+ *   prevents navigation on every fusion-page left click regardless: a
+ *   `false` means the click is swallowed, never that the anchor navigates
+ *   the fused page away (review round 1).
+ */
 export function attemptSwitch(label: string): boolean {
   const run = bound
   if (run === undefined || !fusionPage()) return false
-  void run(label).catch(() => { /* the machine resolves, never rejects */ })
+  // A newer attempt supersedes any pending readiness wait.
+  pendingWait?.cancel()
+  pendingWait = undefined
+  void (async () => {
+    let row: PreFlightRow | undefined
+    try {
+      row = (await fetchRoster()).find((agent) => agent.key === label)
+    } catch { row = undefined }
+    const decision = decidePreFlight(label, row)
+    if (decision === 'failed') {
+      showToast(`Super D: ${label} failed to start — see the service log.`)
+      return
+    }
+    if (decision === 'wait') {
+      showToast(`Super D: ${label} is starting…`)
+      const waiter = createReadinessWaiter({
+        fetchRow: async () => {
+          try { return (await fetchRoster()).find((agent) => agent.key === label) } catch { return undefined }
+        },
+        setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+        clearTimeout: (handle) => globalThis.clearTimeout(handle as number),
+      })
+      pendingWait = waiter
+      const outcome = await waiter.wait(label)
+      if (pendingWait === waiter) pendingWait = undefined
+      if (outcome === 'ready') {
+        void run(label).catch(() => { /* the machine resolves, never rejects */ })
+        return
+      }
+      if (outcome === 'failed') showToast(`Super D: ${label} failed to start — see the service log.`)
+      else if (outcome === 'bound') showToast(`Super D: ${label} is still starting — try again in a moment.`)
+      // 'cancelled': a newer attempt owns the page — silence.
+      return
+    }
+    void run(label).catch(() => { /* the machine resolves, never rejects */ })
+  })()
   return true
 }

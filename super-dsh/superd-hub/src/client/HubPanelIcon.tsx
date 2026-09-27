@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { IconChevronDownOutlineRegular, Menu, type MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
+import { SuperdToastHost } from './toast.js'
 import { HubGlyph } from './glyph.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
 import { RuntimeMark } from './runtime-icons.js'
@@ -213,6 +214,9 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
       {/* Exactly the size the sidebar asks for (16 wide / 18 rail) — the same
           treatment as the native Plugins row. */}
       <HubGlyph size={size} />
+      {/* C1: the always-mounted owner of the official Toast primitive —
+          the banner portals to body top-center from here. */}
+      <SuperdToastHost />
       {wide && box !== null && switchUi.available && (
         <Menu
           open={open}
