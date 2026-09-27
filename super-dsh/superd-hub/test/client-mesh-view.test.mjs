@@ -149,3 +149,34 @@ test('validTokenUrl: everything else is rejected before the wire', () => {
     assert.equal(mesh.validTokenUrl(bad), false, bad)
   }
 })
+
+// ---- I2: version-warning coercion + chip presence --------------------------
+
+test('coercion: versionWarning rides the row only when the wire carried a usable string', () => {
+  const view = mesh.coerceMachineList({
+    self: { id: 'a1b2', label: 'local' },
+    machines: [
+      {
+        id: 'm4x9', name: 'dev3', label: 'Dev 3', origin: 'http://192.0.2.130:4999',
+        enabled: true, addedAt: 123, status: 'reachable', lastProbeAt: 456,
+        versionWarning: 'version 0.3.0 ≠ ours 0.1.0',
+      },
+      { id: 'm7q1', name: 'lab2', label: '', origin: 'https://lab2.example.com:4999', enabled: true, addedAt: 234, status: 'pending' },
+      { id: 'm8k2', name: 'lab3', label: '', origin: 'https://lab3.example.com:4999', enabled: true, addedAt: 345, status: 'reachable', versionWarning: 42 },
+    ],
+  })
+  assert.equal(view.machines[0].versionWarning, 'version 0.3.0 ≠ ours 0.1.0')
+  assert.equal('versionWarning' in view.machines[1], false, 'an absent warning stays absent (additive wire field)')
+  assert.equal('versionWarning' in view.machines[2], false, 'a non-string warning is dropped, never coerced to garbage')
+})
+
+test('chip presence: machineVersionChip exists exactly when the row carries a warning', () => {
+  const warned = mesh.coerceMachineList({
+    machines: [{ id: 'm4x9', name: 'dev3', origin: 'http://x:1', status: 'reachable', versionWarning: 'version unknown ("x.y")' }],
+  })
+  const clean = mesh.coerceMachineList({
+    machines: [{ id: 'm7q1', name: 'lab2', origin: 'http://x:2', status: 'reachable' }],
+  })
+  assert.deepEqual(mesh.machineVersionChip(warned.machines[0]), { text: 'version unknown ("x.y")' }, 'a warned row renders a chip carrying the warning text')
+  assert.equal(mesh.machineVersionChip(clean.machines[0]), undefined, 'a clean row renders NO chip')
+})

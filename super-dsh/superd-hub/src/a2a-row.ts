@@ -31,11 +31,8 @@
  * `openWireStream(endpoint, payload, uplink, peer, signal, control)`
  * (dsh-api-gateway/src/index.ts:434; the 0.1.3-j lesson — positional
  * misbinding strands streams forever). This row hands the RAW ctx0
- * instance to `createA2aHost`; the resolver bridges it. It ALSO used to
- * leave LOCAL world rows from the shared target registry RAW (world-join.ts
- * registers the instance
- * downstream-only. NOTE: T3's resolver hands LOCAL world rows from the
- * shared target registry RAW (world-join.ts registers the instance
+ * instance to `createA2aHost`. NOTE: T3's resolver hands LOCAL world rows
+ * from the shared target registry RAW (world-join.ts registers the instance
  * verbatim) — fixed in round 1 (2026-09-28 review): the resolver now bridges
  * ALL local rows + the native seam through the shared `bridgeTypertGateway`
  * (a2a-host.ts), and FEDERATED wire adapters pass through unwrapped.

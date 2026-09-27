@@ -7,6 +7,7 @@ import {
   fetchMachines,
   removeMachine,
   reprobeMachine,
+  machineVersionChip,
   validTokenUrl,
   type MeshList,
   type MeshMachineStatus,
@@ -573,6 +574,13 @@ export function HubPage(): React.JSX.Element {
                   <span style={originStyle}>{machine.origin}</span>
                   <span style={chipMonoId}>{machine.id}</span>
                   <span style={status.style}>{status.text}</span>
+                  {/* I2 version-mismatch chip: present exactly when the hub's
+                      probe found the peer's superd version incompatible —
+                      amber like `unreachable`, full warning text as the chip
+                      (compact by construction), machine id context on hover. */}
+                  {machineVersionChip(machine) !== undefined && (
+                    <span style={chipWarn} title={`machine ${machine.id}`}>{machine.versionWarning}</span>
+                  )}
                   <button
                     type="button"
                     aria-label={`Reprobe ${machine.name}`}

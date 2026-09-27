@@ -39,11 +39,17 @@ export {
   cookieOf,
   onMeshFederationEvent,
   emitMachineRemoved,
+  versionWarningFor,
+  runReprobeSweep,
+  startReprobeSweep,
+  REPROBE_SWEEP_DEFAULT_SEC,
+  REPROBE_SWEEP_MIN_SEC,
   type MeshFederationEvent,
   type ProbeAgent,
   type ProbeResult,
   type PairOutcome,
   type MachineStatusEntry,
+  type ReprobeSweepDeps,
 } from './mesh-link.js'
 export { forwardApiCall, forwardWorldFetch, worldMuxOf, writeJson, type CarrierGatewayFace, type ForwardOptions } from './carrier.js'
 export { registerHubRoute, HUB_MOUNT_PATH, HUB_MUX_PATH, type HubRouteOptions } from './hub-route.js'
@@ -150,4 +156,4 @@ export {
   default as a2aRow,
   type HubToolRowOptions,
 } from './a2a-row.js'
-export { default } from './gateway.js'
+export { default, type HubConfig } from './gateway.js'

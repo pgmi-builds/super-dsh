@@ -1075,6 +1075,70 @@ export function decidePreFlight(label: string, row: PreFlightRow | undefined): P
   return 'run'
 }
 
+// ---- I1(b): the machine-down feedback (preflight light probe) ----------------
+
+/** Bound on the machine-down branch's enrichment fetch (mesh P3 Task 5a:
+ *  the parked P2 minor — an unbounded `fetchMachines` await — folds here; a
+ *  hung hub answer must never swallow the toast). */
+export const MACHINE_DOWN_ENRICH_MS = 3_000
+
+/** The machines-face slice the machine-down feedback reads (the client's
+ *  `fetchMachines()` satisfies this structurally). */
+export interface MachineDownMachinesFace {
+  machines: readonly { id: string; label: string; status: string }[]
+}
+
+/** The branch's injected faces — the browser wiring supplies the real
+ *  fetch/reprobe/toast; tests fake all of them. */
+export interface MachineDownFaces {
+  /** Same-origin GET of the hub machine list (enrichment only). */
+  fetchMachines(): Promise<MachineDownMachinesFace>
+  /** The I1(b) light probe: POST `{op: 'reprobe', id}` — fire-and-forget. */
+  reprobe(id: string): Promise<void>
+  toast(message: string): void
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
+/**
+ * The machine-down branch's pure half (I1(c) feedback + I1(b) light probe,
+ * mesh P3 Task 5a): enrich the toast through the machines face — BOUNDED at
+ * {@link MACHINE_DOWN_ENRICH_MS} — then, after toasting, fire ONE reprobe
+ * for the row's machine and forget it: a stale-unreachable machine gets a
+ * fresh attempt per failed click, so the NEXT click can succeed without
+ * waiting for the hub's 5-minute sweep. Never blocks the UI path (the whole
+ * body is detached), never surfaces a reprobe failure (the sweep retries).
+ */
+export function runMachineDownFeedback(label: string, row: PreFlightRow & { label?: string }, faces: MachineDownFaces): void {
+  void (async () => {
+    let machineName = row.machine
+    let status: 'unreachable' | 'auth-expired' | undefined
+    const enriched = await new Promise<MachineDownMachinesFace | undefined>((resolve) => {
+      const bound = faces.setTimeout(() => resolve(undefined), MACHINE_DOWN_ENRICH_MS)
+      faces.fetchMachines().then(
+        (list) => { faces.clearTimeout(bound); resolve(list) },
+        () => { faces.clearTimeout(bound); resolve(undefined) },
+      )
+    })
+    if (enriched !== undefined) {
+      const found = enriched.machines.find((entry) => entry.id === row.machine)
+      if (found !== undefined) {
+        machineName = found.label
+        if (found.status === 'unreachable' || found.status === 'auth-expired') status = found.status
+      }
+    }
+    const who = row.label ?? label
+    const machine = machineName ?? 'its machine'
+    faces.toast(status === undefined
+      ? `Super D: ${who} is unavailable — machine ${machine} is not ready. Reprobe or re-add it in the Hub machines panel.`
+      : `Super D: ${who} is unavailable — machine ${machine} reports ${status}. Reprobe or re-add it in the Hub machines panel.`)
+    // I1(b): exactly ONE fresh attempt per failed click — keyed by the row's
+    // machine id (the machine-down decision guarantees it is set; a malformed
+    // row simply skips the light probe).
+    if (row.machine !== undefined) faces.reprobe(row.machine).catch(() => { /* best effort — the 5-min sweep retries anyway */ })
+  })()
+}
+
 /** Default bound on one readiness wait (the page never locks behind a stuck world). */
 export const WAIT_BOUND_MS = 120_000
 /** Default poll interval for one readiness wait. */

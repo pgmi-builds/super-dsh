@@ -16,7 +16,13 @@
  *                                           projection — NEVER token/cookie,
  *                                           D1 + Task 2 review's deferred
  *                                           finding: the row carries two
- *                                           secrets and the wire carries none)
+ *                                           secrets and the wire carries
+ *                                           none; since mesh P3 5a (I2) a
+ *                                           row may also carry
+ *                                           `versionWarning` — additive,
+ *                                           present only when the peer's
+ *                                           superd version differs from
+ *                                           ours by more than patch)
  *   POST   /api/superd/machines            → `{op?: 'reprobe', ...}`:
  *        op:'reprobe' + {id}               → `{probe: ProbeResult}` (the
  *                                           brief's `/machines/reprobe` path
@@ -45,7 +51,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { type MachineRow, ensureSelf, listRemotes, removeRemote } from './machines.js'
-import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type ProbeResult } from './mesh-link.js'
+import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type ProbeResult, type MachineStatusEntry } from './mesh-link.js'
 
 /** The shared-channel Fetch route path this API owns. */
 export const MESH_API_BASE = '/api/superd/machines'
@@ -60,7 +66,9 @@ export interface MeshDeps {
 }
 
 /** The GET/POST row shape as it crosses the wire — the persisted MachineRow
- *  minus its two secrets (`token`, `cookie`), plus the joined status. */
+ *  minus its two secrets (`token`, `cookie`), plus the joined status (and,
+ *  additively since I2/mesh P3 5a, the version-mismatch warning when the
+ *  mesh-link status entry carries one). */
 export interface MachinePublicRow {
   id: string
   name: string
@@ -71,6 +79,7 @@ export interface MachinePublicRow {
   status: string
   lastProbeAt?: number
   error?: string
+  versionWarning?: string
 }
 
 /** Structural type of `ctx.connection.fetch` (upstream: HostConnectionFetch).
@@ -97,11 +106,12 @@ function publicRow(row: MachineRow): MachinePublicRow {
   return projectRow(row, machineStatus())
 }
 
-function projectRow(row: MachineRow, status: ReadonlyMap<string, { status: string; lastProbeAt: number; error?: string }>): MachinePublicRow {
+function projectRow(row: MachineRow, status: ReadonlyMap<string, MachineStatusEntry>): MachinePublicRow {
   const entry = status.get(row.id)
   if (entry === undefined) return { id: row.id, name: row.name, label: row.label, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: 'pending' }
   const out: MachinePublicRow = { id: row.id, name: row.name, label: row.label, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: entry.status, lastProbeAt: entry.lastProbeAt }
   if (entry.error !== undefined) out.error = entry.error
+  if (entry.versionWarning !== undefined) out.versionWarning = entry.versionWarning
   return out
 }
 

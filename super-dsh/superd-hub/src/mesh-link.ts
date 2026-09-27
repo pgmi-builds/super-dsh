@@ -12,9 +12,15 @@
  * cache of the same value. Probe outcomes land
  * in the module-level status table exported read-only via
  * `machineStatus()` (mesh API consumes; `resetMachineStatus()` is the
- * test hook). No retry loops, no background probing — P1 is explicit
- * probe-on-demand only.
+ * test hook). P1 was probe-on-demand only; the mesh P3 Task 5a user
+ * mandate ("状态更新走单向 API + 5 分钟周期轮询") adds the PERIODIC sweep
+ * (`startReprobeSweep`) — a timer-discipline layer over the same
+ * `reprobeMachine`, never a second probing path. I2 also lands here: every
+ * successful probe compares the peer's `hub.version` against ours and
+ * records a `versionWarning` on the status entry (diff major/minor or
+ * unparsable → warn; patch-only drift → clean).
  */
+import { createRequire } from 'node:module'
 import { type MachineRow, loadMachines, saveMachines, upsertRemote, listRemotes } from './machines.js'
 
 /** One roster agent as seen through a successful probe (§6.2 additive fields). */
@@ -50,6 +56,55 @@ export interface MachineStatusEntry {
   status: string
   lastProbeAt: number
   error?: string
+  /** I2 version-mismatch warning (mesh P3 Task 5a): present when the peer's
+   *  superd version differs from ours by more than patch, or is
+   *  unparsable/absent — recomputed on every successful probe, so a peer
+   *  converging back onto our major/minor clears it on the next probe. */
+  versionWarning?: string
+}
+
+/**
+ * This hub package's own version — the `ours` side of the I2 comparison.
+ * Read once at module load exactly the way rpc.ts reads its HUB_VERSION
+ * (createRequire keeps it sync and resolves from dist/ too — package.json
+ * always ships beside the compiled output). Kept HERE rather than imported
+ * from rpc.ts so this module stays a pure, route-free dependency leaf.
+ */
+const { version: OWN_VERSION } = createRequire(import.meta.url)('../package.json') as { version: string }
+
+/**
+ * Parse a version's major.minor core (I2): tolerant of a leading `v`, a
+ * missing patch segment, and a prerelease/build suffix — the mismatch rule
+ * ignores everything past `major.minor` by design (patch drift between
+ * paired hubs is routine and harmless).
+ */
+function parseVersionCore(version: string): { major: number; minor: number } | undefined {
+  const m = /^\s*v?(\d+)\.(\d+)/.exec(version)
+  if (m === null) return undefined
+  return { major: Number(m[1]), minor: Number(m[2]) }
+}
+
+/**
+ * The I2 comparator: when to warn about a peer's superd version.
+ *   - different major OR minor → a warning naming both versions;
+ *   - same major+minor (patch-only drift) → `undefined` (clean);
+ *   - unparsable or missing on EITHER side → a warning carrying 'unknown'
+ *     (an unreadable peer version is itself a compatibility fact).
+ * Pure and exported for direct unit testing; the pair/reprobe paths feed it
+ * `probe.version` and the module's {@link OWN_VERSION}.
+ */
+export function versionWarningFor(peer: string | undefined, ours: string): string | undefined {
+  const peerCore = peer !== undefined ? parseVersionCore(peer) : undefined
+  const ourCore = parseVersionCore(ours)
+  if (peerCore === undefined || ourCore === undefined) {
+    if (peer === undefined) return 'version unknown (peer carries none)'
+    if (peerCore === undefined) return `version unknown ("${peer}")`
+    return `version unknown (ours "${ours}")`
+  }
+  if (peerCore.major !== ourCore.major || peerCore.minor !== ourCore.minor) {
+    return `version ${peer} ≠ ours ${ours}`
+  }
+  return undefined
 }
 
 const FETCH_TIMEOUT_MS = 10_000
@@ -249,8 +304,15 @@ export function cookieOf(machineId: string, home?: string): string {
   return listRemotes(home).find((r) => r.id === machineId)?.cookie ?? ''
 }
 
-function recordStatus(id: string, status: string, error?: string): void {
-  machineStatusTable.set(id, error === undefined ? { status, lastProbeAt: Date.now() } : { status, lastProbeAt: Date.now(), error })
+/** Record one probe outcome; the I2 versionWarning (4th arg) lands only on
+ *  reachable probes — every entry is written FRESH, so a re-probe against a
+ *  converged peer replaces a stale warning with a clean entry. */
+function recordStatus(id: string, status: string, error?: string, versionWarning?: string): void {
+  const entry: MachineStatusEntry = error === undefined
+    ? { status, lastProbeAt: Date.now() }
+    : { status, lastProbeAt: Date.now(), error }
+  if (versionWarning !== undefined) entry.versionWarning = versionWarning
+  machineStatusTable.set(id, entry)
 }
 
 /** Persist one remote row; uses `upsertRemote` unless a load/save seam is injected (test isolation). */
@@ -298,7 +360,7 @@ export async function pairMachine(home: string, input: { name: string; label?: s
   }
   persistRow(home, row, deps)
   cookieJar.set(row.id, cookie)
-  recordStatus(row.id, 'reachable')
+  recordStatus(row.id, 'reachable', undefined, versionWarningFor(probe.version, OWN_VERSION))
   emitFederation({ type: 'federated', machineId: row.id, machineName: row.name, origin, agents: probe.agents })
   return { machineId: row.id, row, probe }
 }
@@ -333,7 +395,7 @@ export async function reprobeMachine(home: string, id: string, deps?: LinkDeps):
   }
   if (probe.ok) {
     cookieJar.set(id, cookie)
-    recordStatus(id, 'reachable')
+    recordStatus(id, 'reachable', undefined, versionWarningFor(probe.version, OWN_VERSION))
     emitFederation({ type: 'federated', machineId: id, machineName: row.name, origin, agents: probe.agents })
   } else if (probe.status === 'auth-expired') {
     recordStatus(id, 'auth-expired', probe.error)
@@ -343,4 +405,75 @@ export async function reprobeMachine(home: string, id: string, deps?: LinkDeps):
     emitFederation({ type: 'degraded', machineId: id, reason: probe.status, error: probe.error })
   }
   return probe
+}
+
+// ---- I1(a): the periodic reprobe sweep (mesh P3 Task 5a) ----------------------
+
+/** Default sweep period — the user mandate's 5 minutes (5a I1-a). */
+export const REPROBE_SWEEP_DEFAULT_SEC = 300
+/** Floor for any sweep period: below this a reprobe loop is a self-inflicted storm. */
+export const REPROBE_SWEEP_MIN_SEC = 60
+
+/** Structural interval-timer handle: Node's Timeout (with `unref`), faked in tests. */
+interface SweepTimerHandle { unref?(): void }
+
+/** One full sweep — the timer's entire payload. Reads the registry FRESH at
+ *  start (rows paired/removed since the last tick are honored), probes every
+ *  ENABLED remote through the real {@link reprobeMachine} (success converges
+ *  federation via the existing event hook; failure degrades — no second
+ *  probing path), and swallows every per-machine rejection so one dead peer
+ *  (or a row deleted mid-sweep → unknown-id throw) never rejects the sweep. */
+export async function runReprobeSweep(deps: { home: string; fetchImpl?: typeof fetch }): Promise<void> {
+  for (const row of listRemotes(deps.home)) {
+    if (!row.enabled) continue
+    try {
+      await reprobeMachine(deps.home, row.id, { fetchImpl: deps.fetchImpl })
+    } catch {
+      // Per-machine errors end here — the sweep itself always settles clean.
+    }
+  }
+}
+
+/** Timer-discipline seams: production passes nothing (the platform
+ *  setInterval/clearInterval); tests inject a fake clock and drive ticks by hand. */
+export interface ReprobeSweepDeps {
+  home: string
+  /** Sweep period in seconds; default 300, floored at 60 (config knob: the
+   *  superd-hub row's `reprobeIntervalSec`, gateway.ts Config). */
+  intervalSec?: number
+  fetchImpl?: typeof fetch
+  setIntervalFn?: (fn: () => void, ms: number) => SweepTimerHandle
+  clearIntervalFn?: (handle: SweepTimerHandle) => void
+}
+
+/**
+ * Start the periodic reprobe sweep (I1-a). Discipline, all of it load-bearing:
+ *   - the interval handle is `unref()`d — a freshness sweep never holds the
+ *     hub process (or a test runner) open;
+ *   - a tick while the previous sweep is still in flight is SKIPPED (no
+ *     overlap: a slow peer slows the cadence, it never stacks sweeps);
+ *   - the returned disposer clears the timer AND kills any late tick — the
+ *     hub host wiring registers it as a ctx effect, so the sweep dies with
+ *     the row (dispose-clean); the disposer is idempotent.
+ * The FIRST sweep runs after one full period (a boot-time probe remains the
+ *     mesh UI's explicit reprobe — pairing itself already probes).
+ */
+export function startReprobeSweep(deps: ReprobeSweepDeps): () => void {
+  const seconds = Math.max(REPROBE_SWEEP_MIN_SEC, deps.intervalSec ?? REPROBE_SWEEP_DEFAULT_SEC)
+  const setInt = deps.setIntervalFn ?? ((fn: () => void, ms: number) => globalThis.setInterval(fn, ms) as unknown as SweepTimerHandle)
+  const clearInt = deps.clearIntervalFn ?? ((handle: SweepTimerHandle) => globalThis.clearInterval(handle as Parameters<typeof globalThis.clearInterval>[0]))
+  let inFlight = false
+  let disposed = false
+  const tick = (): void => {
+    if (disposed || inFlight) return
+    inFlight = true
+    void runReprobeSweep(deps).finally(() => { inFlight = false })
+  }
+  const handle = setInt(tick, seconds * 1_000)
+  handle.unref?.()
+  return () => {
+    if (disposed) return
+    disposed = true
+    clearInt(handle)
+  }
 }

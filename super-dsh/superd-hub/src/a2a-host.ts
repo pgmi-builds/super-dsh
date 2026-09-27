@@ -123,6 +123,10 @@ export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress
       return options.nativeGateway === undefined ? undefined : bridgeTypertGateway(options.nativeGateway)
     }
     // The registry's declared GatewayFace (targets.ts) types the stream
+    // face as the 3-arg subset, but a LOCAL row's runtime object is the RAW
+    // typertGateway instance (world-join.ts registers it verbatim) — re-cast
+    // to RawTypertGatewayFace so the bridge above binds the canonical 6-arg
+    // positional order instead of the declared subset.
     const local = getTarget(key)?.gateway
     return local === undefined ? undefined : bridgeTypertGateway(local as unknown as RawTypertGatewayFace)
   }

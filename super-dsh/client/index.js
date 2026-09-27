@@ -416,16 +416,29 @@ function coerceMachineList(raw) {
 			status,
 			self: self !== void 0 && row.id === self.id
 		};
-		if (typeof row.lastProbeAt === "number") machines.push({
+		const withProbe = typeof row.lastProbeAt === "number" ? {
 			...base,
 			lastProbeAt: row.lastProbeAt
-		});
-		else machines.push(base);
+		} : base;
+		machines.push(typeof row.versionWarning === "string" && row.versionWarning !== "" ? {
+			...withProbe,
+			versionWarning: row.versionWarning
+		} : withProbe);
 	}
 	return self === void 0 ? { machines } : {
 		self,
 		machines
 	};
+}
+/**
+* The version-warning chip for one machine row (I2): present EXACTLY when the
+* coerced row carries a `versionWarning` — the Hub machines panel renders
+* the chip iff this returns a value. Kept here beside the coercion so the
+* presence contract stays unit-testable without jsdom (the HubPage seat is
+* a one-line consumer following the existing chip patterns).
+*/
+function machineVersionChip(machine) {
+	return machine.versionWarning === void 0 ? void 0 : { text: machine.versionWarning };
 }
 /** Read a non-2xx body's `{error}` message; degrade to the bare status line. */
 async function errorText(response) {
@@ -1223,6 +1236,46 @@ function decidePreFlight(label, row) {
 	}
 	return "run";
 }
+/** Bound on the machine-down branch's enrichment fetch (mesh P3 Task 5a:
+*  the parked P2 minor — an unbounded `fetchMachines` await — folds here; a
+*  hung hub answer must never swallow the toast). */
+const MACHINE_DOWN_ENRICH_MS = 3e3;
+/**
+* The machine-down branch's pure half (I1(c) feedback + I1(b) light probe,
+* mesh P3 Task 5a): enrich the toast through the machines face — BOUNDED at
+* {@link MACHINE_DOWN_ENRICH_MS} — then, after toasting, fire ONE reprobe
+* for the row's machine and forget it: a stale-unreachable machine gets a
+* fresh attempt per failed click, so the NEXT click can succeed without
+* waiting for the hub's 5-minute sweep. Never blocks the UI path (the whole
+* body is detached), never surfaces a reprobe failure (the sweep retries).
+*/
+function runMachineDownFeedback(label, row, faces) {
+	(async () => {
+		let machineName = row.machine;
+		let status;
+		const enriched = await new Promise((resolve) => {
+			const bound$1 = faces.setTimeout(() => resolve(void 0), MACHINE_DOWN_ENRICH_MS);
+			faces.fetchMachines().then((list) => {
+				faces.clearTimeout(bound$1);
+				resolve(list);
+			}, () => {
+				faces.clearTimeout(bound$1);
+				resolve(void 0);
+			});
+		});
+		if (enriched !== void 0) {
+			const found = enriched.machines.find((entry) => entry.id === row.machine);
+			if (found !== void 0) {
+				machineName = found.label;
+				if (found.status === "unreachable" || found.status === "auth-expired") status = found.status;
+			}
+		}
+		const who = row.label ?? label;
+		const machine = machineName ?? "its machine";
+		faces.toast(status === void 0 ? `Super D: ${who} is unavailable — machine ${machine} is not ready. Reprobe or re-add it in the Hub machines panel.` : `Super D: ${who} is unavailable — machine ${machine} reports ${status}. Reprobe or re-add it in the Hub machines panel.`);
+		if (row.machine !== void 0) faces.reprobe(row.machine).catch(() => {});
+	})();
+}
 /** Default bound on one readiness wait (the page never locks behind a stuck world). */
 const WAIT_BOUND_MS = 12e4;
 /** Default poll interval for one readiness wait. */
@@ -1351,29 +1404,22 @@ function showToast(message) {
 	showSuperdToast(message);
 }
 /**
-* I1(c) feedback: a degraded FEDERATED row fails fast with an actionable
-* machine-error message — never "starting…", never the readiness wait. The
+* I1(c) feedback + I1(b) light probe (mesh P3 Task 5a): the machine-down
+* branch delegates to the pure {@link runMachineDownFeedback} — the
 * machines face (already part of the client half — the Hub machines panel's
-* own cheap same-origin GET) enriches the toast when it answers: the
-* machine's display label and, when the hub knows it, the status word
-* (`unreachable` / `auth-expired`). Any failure or miss degrades to the
-* generic federated-not-ready wording; the toast itself never blocks.
+* own cheap same-origin GET) enriches the toast, bounded at 3s; after
+* toasting, ONE fire-and-forget reprobe POST per failed click refreshes the
+* hub's status table so the NEXT click can succeed without waiting for the
+* 5-minute sweep. Nothing here blocks the UI path.
 */
 function reportMachineDown(label, row) {
-	(async () => {
-		let machineName = row.machine;
-		let status;
-		try {
-			const found = (await fetchMachines()).machines.find((entry) => entry.id === row.machine);
-			if (found !== void 0) {
-				machineName = found.label;
-				if (found.status === "unreachable" || found.status === "auth-expired") status = found.status;
-			}
-		} catch {}
-		const who = row.label ?? label;
-		const machine = machineName ?? "its machine";
-		showToast(status === void 0 ? `Super D: ${who} is unavailable — machine ${machine} is not ready. Reprobe or re-add it in the Hub machines panel.` : `Super D: ${who} is unavailable — machine ${machine} reports ${status}. Reprobe or re-add it in the Hub machines panel.`);
-	})();
+	runMachineDownFeedback(label, row, {
+		fetchMachines,
+		reprobe: reprobeMachine,
+		toast: showToast,
+		setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+		clearTimeout: (handle) => globalThis.clearTimeout(handle)
+	});
 }
 /** The bound `switchAgent`, or `undefined` until the entry binds it. */
 let bound;
@@ -2200,6 +2246,11 @@ function HubPage() {
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 											style: status.style,
 											children: status.text
+										}),
+										machineVersionChip(machine) !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: chipWarn,
+											title: `machine ${machine.id}`,
+											children: machine.versionWarning
 										}),
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 											type: "button",

@@ -22,8 +22,10 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
+import z from '@deepseek-ai/schemastery'
 import { registerSelectorRpc, registryTargets } from './rpc.js'
 import { registerMeshRpc } from './mesh-rpc.js'
+import { startReprobeSweep } from './mesh-link.js'
 import { federatedGatewayOf, startMeshFederation } from './mesh-federate.js'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { agentRosterRow } from './agent-roster.js'
@@ -34,6 +36,20 @@ import type { CarrierGatewayFace } from './carrier.js'
 
 /** Stable Cordis plugin name. */
 export const name = 'superd-hub'
+
+/** Row config schema (mesh P3 Task 5a): the periodic reprobe sweep's knob —
+ *  seconds between sweeps, default the user mandate's 5 minutes, floored at
+ *  60 by the schema AND clamped again in `startReprobeSweep` (a bare-library
+ *  caller cannot bypass the floor). Patch rows restate the whole config
+ *  object; schema defaults fill the un-configured one. */
+export const Config = z.object({
+  reprobeIntervalSec: z.number().min(60).default(300),
+})
+
+/** The row config's TypeScript face (the schema-declared knob). */
+export interface HubConfig {
+  reprobeIntervalSec?: number
+}
 
 /**
  * The plugin form (row contract): applied when the row mounts.
@@ -51,8 +67,19 @@ export const name = 'superd-hub'
  *     registration time (mesh-rpc stays a pure route module; tests inject a
  *     tmpdir home instead); the one-way seam is mesh-link's federation event
  *     bus — mesh-federate subscribes, mesh-link never imports it.
+ *   - the periodic reprobe sweep (mesh P3 Task 5a I1-a, user mandate
+ *     "状态更新走单向 API + 5 分钟周期轮询"): every `reprobeIntervalSec`
+ *     (default 300, floor 60) one sweep re-probes every ENABLED remote —
+ *     success converges federation, failure degrades (both via the existing
+ *     mesh-link hooks). CTX0-ONLY, gated by the same WorldWebServer check as
+ *     the `/hub` family: world trees compose this row too (world-mount.ts
+ *     WORLD_HUB_ROW) and must never start their own sweep against the shared
+ *     machines registry.
+ * @param ctx - host plugin context.
+ * @param config - the row config (`reprobeIntervalSec`; schema defaults
+ *   apply when the row is composed without one).
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config?: HubConfig): void {
   registerSelectorRpc(ctx, registryTargets)
   const home = resolveDshHome()
   registerMeshRpc(ctx, { home })
@@ -80,6 +107,16 @@ export function apply(ctx: Context): void {
     // and `?agent=<a6>` therefore both demux; under the astronomically rare
     // a6↔local-key collision the federation wins deterministically (documented
     // in mesh-federate's header) instead of last-write-wins in the registry.
+    // I1(a) periodic reprobe sweep — CTX0-ONLY by the same gate as the
+    // `/hub` family below (world trees see a WorldWebServer and returned
+    // early): the machines registry is ctx0-owned, and a per-world timer
+    // would multiply probes against every paired remote. The effect's
+    // disposer IS the sweep disposer — the timer dies with the row
+    // (unref'd, overlap-skipping, per-machine errors swallowed; mesh-link).
+    ctx.effect(
+      () => startReprobeSweep({ home, intervalSec: config?.reprobeIntervalSec }),
+      'superd-hub: mesh reprobe sweep',
+    )
     const dispose = registerHubRoute({
       real: real as RealWebServerFace,
       authorize: (req, res) => connection.authorizeIndex(req, res),

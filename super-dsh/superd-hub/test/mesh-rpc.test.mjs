@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleMeshMachines, registerMeshRpc, MESH_API_BASE } from '../dist/mesh-rpc.js'
@@ -29,6 +29,7 @@ function req(method, body, url = `http://x${MESH_API_BASE}`) {
 function startRemoteHub(opts = {}) {
   const state = {
     machineId: opts.machineId ?? 'k3f9',
+    version: opts.version ?? '0.1.6',
     token: opts.token ?? 'ok',
     agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false }],
     validCookies: new Set(),
@@ -53,7 +54,7 @@ function startRemoteHub(opts = {}) {
       if (!values.some((v) => state.validCookies.has(v))) { res.statusCode = 401; res.end('auth required'); return }
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ available: true, agents: state.agents, hub: { machineId: state.machineId, version: '0.1.6' } }))
+      res.end(JSON.stringify({ available: true, agents: state.agents, hub: { machineId: state.machineId, version: state.version } }))
       return
     }
     res.statusCode = 404
@@ -286,4 +287,37 @@ test('未注册方法（PUT/HEAD）→ 直连 handler 应答 405', async () => {
     const head = await handleMeshMachines(new Request(`http://x${MESH_API_BASE}`, { method: 'HEAD' }), { home: h })
     assert.equal(head.status, 405)
   } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+// ---- I2: versionWarning projection (additive) -------------------------------
+
+test('I2 投影加性：跨 minor 对端 → GET 行携带 versionWarning；同 minor/未探测 → 键不存在', async () => {
+  resetMachineStatus()
+  // ours is the hub package version: derive diff-minor and same-minor peer
+  // spellings so the assertion survives version bumps.
+  const ours = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  const [maj, min] = ours.split('.').map(Number)
+  const peerDiff = `${maj}.${min + 1}.0`
+  const hub = await startRemoteHub({ machineId: 'w2c4', token: 'i2-tok', version: peerDiff })
+  const h = home()
+  try {
+    await handleMeshMachines(req('POST', { name: 'future', tokenUrl: `${hub.origin}/?token=i2-tok` }), { home: h })
+    const res = await handleMeshMachines(req('GET'), { home: h })
+    const body = await res.json()
+    const warned = body.machines.find((m) => m.id === 'w2c4')
+    assert.equal(typeof warned.versionWarning, 'string', 'a diff-minor peer carries the warning on the wire')
+    assert.ok(warned.versionWarning.includes(peerDiff))
+    assert.ok(!JSON.stringify(body).includes('SECRET-TOKEN'), 'token still never rides the wire')
+
+    // Same-minor peer: fresh reprobe recomputes → warning absent, key and all
+    hub.state.version = `${maj}.${min}.9`
+    await handleMeshMachines(req('POST', { op: 'reprobe', id: 'w2c4' }), { home: h })
+    const after = await (await handleMeshMachines(req('GET'), { home: h })).json()
+    const clean = after.machines.find((m) => m.id === 'w2c4')
+    assert.equal('versionWarning' in clean, false, 'a same-minor peer carries NO versionWarning key (projection stays additive)')
+  } finally {
+    rmSync(h, { recursive: true, force: true })
+    await hub.close()
+    resetMachineStatus()
+  }
 })

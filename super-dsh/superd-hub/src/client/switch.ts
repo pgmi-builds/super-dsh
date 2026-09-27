@@ -45,6 +45,7 @@ import {
   createSwitchController,
   decidePreFlight,
   observeCachesRefreshed,
+  runMachineDownFeedback,
   SESSIONS_CURRENT_KEY,
   type NavigationCacheFace,
   type RestoreCaches,
@@ -54,7 +55,7 @@ import {
   type SwitchHost,
 } from '../switch-core.js'
 import { showSuperdToast } from '../toast-core.js'
-import { fetchMachines } from './mesh-api.js'
+import { fetchMachines, reprobeMachine } from './mesh-api.js'
 import { fetchRoster } from './roster.js'
 
 /** The Task-3 page-level state atom the fused page boots with. */
@@ -158,31 +159,22 @@ function showToast(message: string): void {
 }
 
 /**
- * I1(c) feedback: a degraded FEDERATED row fails fast with an actionable
- * machine-error message — never "starting…", never the readiness wait. The
+ * I1(c) feedback + I1(b) light probe (mesh P3 Task 5a): the machine-down
+ * branch delegates to the pure {@link runMachineDownFeedback} — the
  * machines face (already part of the client half — the Hub machines panel's
- * own cheap same-origin GET) enriches the toast when it answers: the
- * machine's display label and, when the hub knows it, the status word
- * (`unreachable` / `auth-expired`). Any failure or miss degrades to the
- * generic federated-not-ready wording; the toast itself never blocks.
+ * own cheap same-origin GET) enriches the toast, bounded at 3s; after
+ * toasting, ONE fire-and-forget reprobe POST per failed click refreshes the
+ * hub's status table so the NEXT click can succeed without waiting for the
+ * 5-minute sweep. Nothing here blocks the UI path.
  */
 function reportMachineDown(label: string, row: PreFlightRow & { label?: string }): void {
-  void (async () => {
-    let machineName = row.machine
-    let status: 'unreachable' | 'auth-expired' | undefined
-    try {
-      const found = (await fetchMachines()).machines.find((entry) => entry.id === row.machine)
-      if (found !== undefined) {
-        machineName = found.label
-        if (found.status === 'unreachable' || found.status === 'auth-expired') status = found.status
-      }
-    } catch { /* enrichment is optional — the generic wording is fine */ }
-    const who = row.label ?? label
-    const machine = machineName ?? 'its machine'
-    showToast(status === undefined
-      ? `Super D: ${who} is unavailable — machine ${machine} is not ready. Reprobe or re-add it in the Hub machines panel.`
-      : `Super D: ${who} is unavailable — machine ${machine} reports ${status}. Reprobe or re-add it in the Hub machines panel.`)
-  })()
+  runMachineDownFeedback(label, row, {
+    fetchMachines,
+    reprobe: reprobeMachine,
+    toast: showToast,
+    setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+    clearTimeout: (handle) => globalThis.clearTimeout(handle as number),
+  })
 }
 
 /** The bound `switchAgent`, or `undefined` until the entry binds it. */

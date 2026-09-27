@@ -36,7 +36,10 @@ const STATUSES: readonly MeshMachineStatus[] = ['pending', 'reachable', 'unreach
  * One machine row for the panel: the wire's public projection (never token,
  * never cookie) with `self` DERIVED from the response's self block — never
  * stored per-row (the server's machines array carries remotes only; the
- * flag exists so a self row surfacing in it still renders as self).
+ * flag exists so a self row surfacing in it still renders as self). Since
+ * I2 (mesh P3 5a) a reachable row may also carry `versionWarning` — the
+ * host's version-mismatch computation, coerced additively (absent stays
+ * absent; a non-string is dropped).
  */
 export interface MeshMachineView {
   readonly id: string
@@ -45,6 +48,9 @@ export interface MeshMachineView {
   readonly origin: string
   readonly status: MeshMachineStatus
   readonly lastProbeAt?: number
+  /** I2: present exactly when the hub's probe found the peer's superd
+   *  version incompatible with ours (diff major/minor, or unparsable). */
+  readonly versionWarning?: string
   readonly self: boolean
 }
 
@@ -106,11 +112,24 @@ export function coerceMachineList(raw: unknown): MeshList {
         status,
         self: self !== undefined && row.id === self.id,
       }
-      if (typeof row.lastProbeAt === 'number') machines.push({ ...base, lastProbeAt: row.lastProbeAt })
-      else machines.push(base)
+      const withProbe = typeof row.lastProbeAt === 'number' ? { ...base, lastProbeAt: row.lastProbeAt } : base
+      machines.push(typeof row.versionWarning === 'string' && row.versionWarning !== ''
+        ? { ...withProbe, versionWarning: row.versionWarning }
+        : withProbe)
     }
   }
   return self === undefined ? { machines } : { self, machines }
+}
+
+/**
+ * The version-warning chip for one machine row (I2): present EXACTLY when the
+ * coerced row carries a `versionWarning` — the Hub machines panel renders
+ * the chip iff this returns a value. Kept here beside the coercion so the
+ * presence contract stays unit-testable without jsdom (the HubPage seat is
+ * a one-line consumer following the existing chip patterns).
+ */
+export function machineVersionChip(machine: Pick<MeshMachineView, 'versionWarning'>): { text: string } | undefined {
+  return machine.versionWarning === undefined ? undefined : { text: machine.versionWarning }
 }
 
 /** Read a non-2xx body's `{error}` message; degrade to the bare status line. */

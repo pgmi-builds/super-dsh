@@ -39,6 +39,8 @@ import {
   createReadinessWaiter,
   decidePreFlight,
   observeCachesRefreshed,
+  runMachineDownFeedback,
+  MACHINE_DOWN_ENRICH_MS,
 } from '../dist/switch-core.js'
 import { FUSION_FLAG_GLOBAL, apply as applyFusion, renderFusionTransport } from '../dist/fusion-transport.js'
 
@@ -1125,4 +1127,79 @@ test('readiness waiter: failed short-circuits; bound expires; cancel wins', asyn
   await Promise.resolve(); await Promise.resolve()
   c.w.cancel()
   assert.equal(await d, 'cancelled')
+})
+
+
+// ---- I1(b): the machine-down feedback (preflight light probe) --------------
+// The machine-down branch's pure half (switch-core.runMachineDownFeedback):
+// bound enrichment (3s — the parked P2 minor), the actionable toast, then ONE
+// fire-and-forget reprobe per failed click — a stale-unreachable machine gets
+// a fresh attempt so the NEXT click can succeed without the 5-min sweep. All
+// faces are fakes; no real fetch/timer runs.
+
+/** Drive pending microtasks + the explicitly-fired fake timers to quiescence. */
+const settle = async (n = 6) => { for (let i = 0; i < n; i++) await Promise.resolve() }
+
+/** Fake-face harness: records toasts, reprobe calls, and timer use. */
+function downFaces({ machines, enrichTimeoutMs = 3_000 } = {}) {
+  const calls = { toasts: [], reprobes: [], timers: [], cleared: [] }
+  const faces = {
+    calls,
+    fetchMachines: async () => {
+      if (machines === 'hang') await new Promise(() => {}) // never resolves
+      return { machines }
+    },
+    reprobe: (id) => { calls.reprobes.push(id); return Promise.resolve() },
+    toast: (message) => { calls.toasts.push(message) },
+    setTimeout: (fn, ms) => { calls.timers.push({ fn, ms }); return calls.timers.length },
+    clearTimeout: (handle) => { calls.cleared.push(handle) },
+  }
+  faces.fireTimer = (i) => { const t = calls.timers[i]; t?.fn() }
+  return faces
+}
+
+test('machine-down feedback: toast (enriched) then EXACTLY ONE fire-and-forget reprobe per click', async () => {
+  const faces = downFaces({ machines: [{ id: 'm4x1', label: 'DEV3', status: 'unreachable' }] })
+  runMachineDownFeedback('pi', { key: 'pi', label: 'Pi', ready: false, machine: 'm4x1' }, faces)
+  await settle()
+  assert.equal(faces.calls.toasts.length, 1)
+  assert.match(faces.calls.toasts[0], /Pi is unavailable/)
+  assert.match(faces.calls.toasts[0], /DEV3/)
+  assert.match(faces.calls.toasts[0], /unreachable/, 'the enriched status word rides the toast')
+  assert.deepEqual(faces.calls.reprobes, ['m4x1'], 'one reprobe op per failed click, keyed by the machine id')
+  assert.deepEqual(faces.calls.timers.map((t) => t.ms), [MACHINE_DOWN_ENRICH_MS], 'the enrichment await is bounded (folded parked minor)')
+  assert.deepEqual(faces.calls.cleared, [1], 'the bound timer is cleared once the enrichment answers')
+})
+
+test('machine-down feedback: a second click fires a second reprobe (per-click freshness)', async () => {
+  const faces = downFaces({ machines: [] })
+  const row = { key: 'pi', ready: false, machine: 'm4x1' }
+  runMachineDownFeedback('pi', row, faces)
+  await settle()
+  runMachineDownFeedback('pi', row, faces)
+  await settle()
+  assert.equal(faces.calls.reprobes.length, 2, 'every failed click earns its own fresh attempt')
+  assert.equal(faces.calls.toasts.length, 2)
+})
+
+test('machine-down feedback: a hung machines fetch is cut at the bound — generic toast, reprobe still fires', async () => {
+  const faces = downFaces({ machines: 'hang' })
+  runMachineDownFeedback('pi', { key: 'pi', ready: false, machine: 'm4x1' }, faces)
+  await settle()
+  assert.equal(faces.calls.toasts.length, 0, 'no toast before the bound fires')
+  faces.fireTimer(0) // the 3s bound expires
+  await settle()
+  assert.equal(faces.calls.toasts.length, 1)
+  assert.match(faces.calls.toasts[0], /machine m4x1 is not ready/, 'generic wording when enrichment is unavailable')
+  assert.deepEqual(faces.calls.reprobes, ['m4x1'], 'the light probe fires even when enrichment timed out')
+})
+
+test('machine-down feedback: a rejected reprobe is swallowed (fire-and-forget, never surfaces)', async () => {
+  const faces = downFaces({ machines: [] })
+  faces.reprobe = (id) => { faces.calls.reprobes.push(id); return Promise.reject(new Error('hub gone')) }
+  runMachineDownFeedback('pi', { key: 'pi', ready: false, machine: 'm4x1' }, faces)
+  await settle()
+  await Promise.resolve().catch(() => {})
+  assert.equal(faces.calls.toasts.length, 1, 'the toast happened; the rejected probe never rejects the branch')
+  assert.equal(faces.calls.reprobes.length, 1)
 })
