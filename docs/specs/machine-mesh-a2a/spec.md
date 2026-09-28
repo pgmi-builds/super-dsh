@@ -40,7 +40,7 @@
 | D15 | UI 寄生 CTX0 不变 | 后端功能挂 CTX0 hub host 半边；无独立 hub UI 页面；机器/agent 呈现进现有 HubPage 与 switch |
 | D16 | 邮局形态（2026-09-28 user 裁决，ADR 0011） | hub-to-hub 线上只做 `<m4>-<a6>` 寻址 + 不透明流量（A2A 信封/回信/通知，将来 PTY 帧与呈现流）；session-plane 业务逻辑与 session 同居（谁的会话谁 handling——同机同版本，兼容白拿）；呈现车道豁免（UI 消费远端数据只做呈现，corids slot 自愈吸收漂移，永不反推业务）。0.1.6-g 的 federated 直打远端 session plane（跨线 session/follow 完成捕获）退役改造；版本耦合点从 O(机对×runtime 版本) 收缩到 1（hub-to-hub 信封协议） |
 | D17 | conversation title 概念剥离 | Super D 层自有 title，与上游 runtime session title 永不 write-through（异构：Hermes 可指定、OMP 可 mutable，开发权在上游，下版即可能变）；首次指定后 **immutable**（寻址恒走短 ID，title 只是记忆标签；话题变了开新会话）；未指定存占位 `[undefined]`（显示层可美化）；镜像行 verbatim 收养、双侧 immutable |
-| D18 | roster 瘦 + per-agent 状态查询 | roster（5min 周期 sweep，`reprobeIntervalSec` 默认 300）只带 machine 状态 + agent 行（a6/label/ready）——3-4 机 × 6-7 agent 时 session 进 roster 即臃肿；session 列表移 **per-agent 按需状态查询**（alive-first ≤5 窗口，orchestra 语义）：行 = `{conversationId?, sessionId(截断), status, mtime}`，`conversationId` 有则显示、无则留空（无论何因）；`sessionId` 数据面握全长、照常可 resume；title 暂不进列表（已接受）；呈现面标明 5min cadence + last-fetch，即时按 machine 显式 live fetch——全单向 API |
+| D18 | roster 瘦 + session 状态采集（5min） | roster probe 载荷只带 machine 状态 + agent 行（a6/label/ready）——session 列表不进 probe 载荷（3-4 机 × 6-7 agent 即臃肿）；**5min sweep 顺便采集**每 agent 的 DSH session list 入本地 information status 缓存（本地 = 进程内 session plane；远端 = 呈现车道直查——DSH session list 数据面全网 unified 且 title 非空（空则默认 workspace 名），调取成本低）；**per-agent 状态查询消费缓存**（alive-first ≤5、mtime 倒序，orchestra 窗口语义）：行 = `{conversationId?, sessionId(截断), title, status, mtime}`——`conversationId` 有则显示、无则留空（无论何因）；**title 解析**：registry 命中（全长 sessionId join）→ conversation title 替换原生 title 并附 `[hub A2A]` 标记，未命中 → 原生 title 原样；替换为纯呈现层 overlay（落盘 persistence 里 hub 发起与原生发起同构，D17）；sessionId 数据面握全长、照常可 resume；呈现面标明 5min cadence + last-fetch，即时按 machine 显式 live fetch——全单向 API |
 | D19 | 双向拓扑 = mutual pairing | 双向由双侧各自 add-machine 贴 token 达成（manual，机制零新增）；auto-reverse-registration（A 加 B 时反向登记给 B）仍留后续；D2 开放问题据此关闭 |
 
 ## 2. 术语
@@ -170,7 +170,7 @@ CTX0 hub
 - 机器不可达 → 该机全部 agent 行降级 `unreachable`（roster 保留，orchestra
   reachability 语义）；switch 预检 toast 报机器错误。
 - 远端 roster 变更（agent 增删）在下一次探测收敛；不做推送（open question：常驻 WS 控制通道）。
-- 呈现契约（D18）：machines/roster 面明示「每 5 分钟自动刷新」+ last-fetch 时间戳；需要即时状态按 machine 显式 live fetch（现有手动 reprobe op 露出）——单向 API，无推送。
+- 呈现契约（D18）：machines/roster 面明示「每 5 分钟自动刷新」+ last-fetch 时间戳；5min sweep 同时采集各 agent 的 DSH session list 入 information status 缓存（呈现车道，载荷不进 roster probe）；需要即时状态按 machine 显式 live fetch（现有手动 reprobe op 露出）——单向 API，无推送。
 
 ## 7. A2A 服务（P3）
 
@@ -186,14 +186,18 @@ CTX0 hub
 
 - **`agents`**（无参或 `{machine?}`）：瘦 roster——machines → agents（a6/label/
   ready/status），不含 session 列表（D18）。
-- **`agent_status`** `{agent: '<m4>-<a6>'}`（per-agent 状态查询，D18）：该 agent
-  近期/运行中 session 窗口（alive-first、≤5、mtime 倒序；orchestra 窗口语义
-  ——不在窗口 ≠ 任何状态暗示）。行 = `{conversationId?, sessionId, status,
-  mtime}`：`conversationId` 有则显示、无则留空（无论何因）；`sessionId` = DSH
-  原生 id 剥前缀截 uuid 头几位（呈现用；数据面握全长 id，照常可 resume）。
-  title 暂不进列表（异构未解决，D18 接受）。本地 agent = 进程内直查；远端
-  agent = 状态查询信封发给对端 hub，**对端从本机知识序列化**（D16：解释自己
-  的 session、交摘要信封；本机永不解析对端 session 格式）。
+- **`agent_status`** `{agent: '<m4>-<a6>'}`（per-agent 状态查询，D18）：读 5min
+  sweep 采集的 information status 缓存（可显式即时刷新）。窗口 alive-first、
+  ≤5、mtime 倒序（orchestra 语义——不在窗口 ≠ 任何状态暗示）。行 =
+  `{conversationId?, sessionId, title, status, mtime}`：`conversationId` 有则
+  显示、无则留空（无论何因）；`sessionId` = DSH 原生 id 剥前缀截 uuid 头
+  几位（呈现用；数据面握全长 id，照常可 resume）；**title** = registry 命中
+  （全长 sessionId join）→ conversation title + `[hub A2A]` 标记（替换原生
+  session title），未命中 → 原生 title 原样（DSH title 非空：空则默认
+  workspace 名）。替换是**纯呈现层 overlay**——落盘 session persistence 里
+  hub 发起与原生发起同构（D17 不 write-through）。数据源：本地 agent =
+  进程内 session plane；远端 agent = 呈现车道直查对端 session list（unified
+  数据面，零新信封——D16 呈现豁免内，与 Web UI 浏览远端会话同一车道）。
 - **`new_conversation`** `{agent: '<m4>-<a6>', title}`：new-conversation 信封投给
   目标机器的 a2a ingest（本地 = 同一协议进程内短路；远端 = wire）→ **对端本机**
   建会话 + 注入教学信封 → 回执 `{conversationId (短 ID), sessionId, agent,
@@ -350,4 +354,4 @@ per-agent 状态查询的窗口/状态语义（D18）。experimental agent-team 
 4. `stop` session 级在 foreign runtime 上的确切语义映射（各 adapter 的 close/dispose 面）——P3 落地时按 adapter 记录。
 5. alphabet 是否剔除易混淆字符（出现人工抄录需求再议）。
 6. 编排层（P6）独立 brainstorming。
-7. per-agent 状态查询的 title 呈现（D18 暂缺）：候选解 = 对端序列化时回传其 runtime 自有 title 作呈现透传（呈现车道豁免内）；write-through 仍禁止（D17）。
+7. ~~per-agent 状态查询的 title 呈现~~ → **已裁决关闭（2026-09-28 user）**：title = registry 命中 → conversation title + `[hub A2A]` 标记替换原生 session title；未命中 → 原生 title（DSH title 非空，空则默认 workspace 名）。纯呈现层 overlay，落盘 persistence 同构（D17）；数据源 = unified session list 数据面（呈现车道直查，零新信封）。
