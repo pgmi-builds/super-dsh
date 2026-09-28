@@ -136,6 +136,37 @@ function saveOutbox(home: string, file: OutboxFile): void {
   renameSync(tmp, target)
 }
 
+// ---------------- inbound exactly-once (0.1.6-j double-delivery fix)
+
+/** Bounded inbound-messageId seen-set: an envelope the sender re-POSTs (parked after a transport glitch, re-pulled by the sweep) is re-ACKed, never re-executed. */
+const SEEN_MESSAGE_IDS_MAX = 128
+
+function seenIdsPath(home: string): string {
+  return join(home, 'superd', 'a2a-seen.json')
+}
+
+function seenMessageIds(home: string): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(seenIdsPath(home), 'utf8'))
+    const ids = typeof parsed === 'object' && parsed !== null ? (parsed as { ids?: unknown }).ids : undefined
+    return new Set(Array.isArray(ids) ? ids.filter((v): v is string => typeof v === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function rememberMessageId(home: string, messageId: string): void {
+  const ids = [...seenMessageIds(home)]
+  if (!ids.includes(messageId)) ids.push(messageId)
+  while (ids.length > SEEN_MESSAGE_IDS_MAX) ids.shift()
+  mkdirSync(join(home, 'superd'), { recursive: true })
+  const target = seenIdsPath(home)
+  const tmp = `${target}.tmp`
+  writeFileSync(tmp, JSON.stringify({ ids }, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 })
+  chmodSync(tmp, 0o600)
+  renameSync(tmp, target)
+}
+
 // ---------------------------------------------------------------- helpers
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -355,7 +386,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
             message: `a2a: conversation "${row.shortId}" has no persisted initiator session — asynchronous write-backs cannot be addressed`,
           }, row.sessionId, row.shortId)
         }
-        return deliverReply(deps.delivery, {
+        deliverReply(deps.delivery, {
           machine: env.to.machine,
           agent: env.to.id,
           sessionId: row.initiatorSession,
@@ -366,6 +397,10 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           messageId: env.messageId,
           title: row.title,
         })
+        // v1 send-receipt shape (double-delivery fix): a {delivered:…} body
+        // fails the sender's receipt guard → park → sweep re-POST → the
+        // write-back would deliver twice.
+        return { outcome: 'injected', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
       }
     }
 
@@ -466,28 +501,51 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     }
   }
 
+  const dispatch = async (envelope: A2aEnvelope): Promise<A2aWireReceipt | A2aDeliveryOutcome> => {
+    switch (envelope.kind) {
+      case 'new-conversation':
+      case 'message':
+        return ingestRequest(envelope)
+      case 'stop':
+        return ingestStop(envelope)
+      case 'reply':
+      case 'notice': {
+        // inbound return envelope (peer POSTed / sweep pulled). Sender
+        // attribution, in order: the envelope's own `sender` (additive v1 —
+        // the producing hub stamps itself), else the registry row (the local
+        // row for this conversation points AT the peer), else honest
+        // 'unknown'. NEVER selfId() — the receiver is not the sender (the
+        // 0.1.6-h cross-machine bug: replies landed attributed bfwu-8ah589).
+        const row = mirrorRowOf(envelope.conversation)
+        const sender = envelope.sender ??
+          (row !== undefined ? { machine: row.machine, agent: row.agent } : { machine: 'unknown', agent: 'unknown' })
+        deliverLocal(envelope, sender)
+        // v1 send-receipt shape: the sender's postA2aEnvelope guard accepts
+        // exactly this. The 0.1.6-j double delivery was a {delivered:…} body
+        // failing that guard AFTER the receiver had already delivered.
+        return { outcome: 'injected', messageId: envelope.messageId, conversationId: envelope.conversation, sessionId: envelope.to.sessionId }
+      }
+    }
+  }
+
   return {
     async ingest(envelope) {
-      switch (envelope.kind) {
-        case 'new-conversation':
-        case 'message':
-          return ingestRequest(envelope)
-        case 'stop':
-          return ingestStop(envelope)
-        case 'reply':
-        case 'notice': {
-          // inbound return envelope (peer POSTed / sweep pulled). Sender
-          // attribution, in order: the envelope's own `sender` (additive v1 —
-          // the producing hub stamps itself), else the registry row (the local
-          // row for this conversation points AT the peer), else honest
-          // 'unknown'. NEVER selfId() — the receiver is not the sender (the
-          // 0.1.6-h cross-machine bug: replies landed attributed bfwu-8ah589).
-          const row = mirrorRowOf(envelope.conversation)
-          const sender = envelope.sender ??
-            (row !== undefined ? { machine: row.machine, agent: row.agent } : { machine: 'unknown', agent: 'unknown' })
-          return deliverLocal(envelope, sender)
-        }
+      // exactly-once over an at-least-once transport (2026-09-28 first-person
+      // acceptance finding §7.1): an envelope the sender re-POSTs is
+      // re-ACKed with its receipt and NEVER re-executed. Stop envelopes
+      // carry no messageId and stay naturally idempotent (cancelling a dead
+      // turn answers honestly).
+      const mid = (envelope as { messageId?: string }).messageId
+      if (mid !== undefined && seenMessageIds(deps.home).has(mid)) {
+        return envelope.kind === 'reply' || envelope.kind === 'notice'
+          ? { outcome: 'injected', messageId: mid, conversationId: envelope.conversation, sessionId: envelope.to.sessionId }
+          : { outcome: 'injected', messageId: mid, conversationId: (envelope as { conversationId?: string }).conversationId ?? '', sessionId: '' }
       }
+      const out = await dispatch(envelope)
+      const outcome = (out as { outcome?: unknown }).outcome
+      const accepted = typeof outcome === 'string' ? outcome === 'injected' : true
+      if (mid !== undefined && accepted) rememberMessageId(deps.home, mid)
+      return out
     },
     claimOutbox(machine: string): A2aEnvelope[] {
       const file = loadOutbox(deps.home)
