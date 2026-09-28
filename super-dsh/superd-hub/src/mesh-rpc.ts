@@ -52,7 +52,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { type MachineRow, ensureSelf, listRemotes, removeRemote } from './machines.js'
 import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type ProbeResult, type MachineStatusEntry } from './mesh-link.js'
-import { createA2aIngest, type A2aIngest, type A2aIngestDeps } from './a2a-ingest.js'
+import { type A2aIngest } from './a2a-ingest.js'
 import { A2A_ENDPOINT_PATH, A2A_OUTBOX_PATH, A2A_WIRE_VERSION, decodeA2aWireFrame } from './a2a-wire.js'
 
 /** The shared-channel Fetch route path this API owns. */
@@ -225,8 +225,7 @@ export function registerMeshRpc(ctx: Context, deps: MeshDeps): void {
 
 // ---------------------------------------------------------------- a2a (postoffice R3)
 
-/** The a2a ingest endpoint's deps — exactly the ingest assembly inputs. */
-export type A2aRpcDeps = A2aIngestDeps
+// (A2aRpcDeps retired in R4 — registerA2aRpc takes the SHARED ingest instance)
 
 /**
  * POST /api/superd/a2a — body = one v1 wire frame `{v: 1, envelope}` → the
@@ -262,14 +261,15 @@ export function handleA2aOutboxGet(request: Request, ingest: A2aIngest): Respons
 /**
  * Register the a2a endpoints (POST /api/superd/a2a + GET .../outbox) on the
  * shared `/api` connection channel — same fence as the machines route. The
- * ingest instance is built here ONCE per registration (the outbox and the
- * mirror registry are its state). No-op when `connection` is absent.
+ * ingest instance is SHARED (R4): the initiator service's self-routing leg
+ * calls the very same handler these routes call. No-op when `connection` is
+ * absent.
  */
-export function registerA2aRpc(ctx: Context, deps: A2aRpcDeps): void {
+export function registerA2aRpc(ctx: Context, ingest: A2aIngest): void {
   ctx.inject(['connection'], (connCtx) => {
     const fetchFace = (Reflect.get(connCtx, 'connection') as { fetch?: ConnectionFetchFace } | undefined)?.fetch
     if (fetchFace === undefined) return // connection not actually present (test ctx)
-    const ingest = createA2aIngest(deps)
+    // (the ingest instance is injected — one instance shared with the service)
     connCtx.effect(() => fetchFace.register({
       path: A2A_ENDPOINT_PATH,
       methods: ['POST'],

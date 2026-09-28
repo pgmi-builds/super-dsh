@@ -53,20 +53,26 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EnvelopeError, type WireError } from './envelope.js'
-import { A2aAddressError, A2A_TITLE_PLACEHOLDER, normalizeA2aTitle } from './a2a-wire.js'
+import { A2aAddressError, A2A_TITLE_PLACEHOLDER, normalizeA2aTitle, postA2aEnvelope, a2aAddressOf } from './a2a-wire.js'
+import type {
+  A2aEnvelope,
+  A2aMessageEnvelope,
+  A2aNewConversationEnvelope,
+  A2aStopEnvelope,
+  A2aStopReceipt,
+  A2aWireOrigin,
+  A2aWireReceipt,
+} from './a2a-wire.js'
+// R4: the ingest leg — TYPE-ONLY (the instance is injected; no runtime cycle).
+import type { A2aIngest } from './a2a-ingest.js'
+import type { A2aDeliveryOutcome } from './a2a-delivery.js'
+import { ensureSelf, listRemotes, mintShortId as mintMachineId } from './machines.js'
+import { cookieOf } from './mesh-link.js'
+import { WIRE, type SessionFollowRequestMirror, wireArgsOf } from './wire-endpoints.js'
 // compat re-export (postoffice R1): the class moved to the protocol layer
 // (a2a-wire.ts) so the wire helpers can classify with it; every existing
 // consumer importing it from this module keeps compiling unchanged.
 export { A2aAddressError }
-import {
-  WIRE,
-  type SessionCreateRequestMirror,
-  type SessionPromptRequestMirror,
-  type SessionCancelRequestMirror,
-  type SessionRenameRequestMirror, // still exported for wire-endpoints consumers; the A2A path never calls rename (D17/R2)
-  type SessionFollowRequestMirror,
-} from './wire-endpoints.js'
-import { wireArgsOf } from './wire-endpoints.js'
 
 // ---------------------------------------------------------------- registry
 
@@ -277,6 +283,13 @@ export const A2A_BUFFER_MAX = 32
 /** stop('session') degradation notice — the session plane has no close RPC upstream. */
 export const A2A_NO_SESSION_CLOSE_REASON = 'no session-close endpoint upstream'
 
+/**
+ * R4: the fixed opening line a message-less newConversation carries on its
+ * envelope — the wire envelope requires a message, and the peer's teaching
+ * envelope (which wraps this) IS the conversation opener the spec describes.
+ */
+export const A2A_OPENING_MESSAGE = '(conversation opened)'
+
 // ---------------------------------------------------------------- service types
 
 /** Target address: machine id (m4) + agent id (a6) — the `gatewayFor` key. */
@@ -407,13 +420,23 @@ export interface A2aGateway {
 
 export interface A2aServiceDeps {
   home: string
+  /** Still the LOCAL leg's resolver (subscribeCompletion + the ingest assembly source); the send/stop paths never resolve a REMOTE gateway since R4 — remote routing is envelope-wire only. */
   gatewayFor(addr: A2aAddress): A2aGateway
+  /**
+   * R4: the ingest handler shared with the HTTP endpoint — the self-routing
+   * leg. LAZY (resolved at send time, never construction time: the ingest's
+   * delivery face buffers through THIS service's buffer leg, so the instance
+   * can only exist after the service does).
+   */
+  ingest?(): A2aIngest | undefined
+  /** R4: fetch override for the remote wire leg (tests inject fixtures). */
+  fetchImpl?: typeof fetch
   now?(): number
 }
 
 export interface A2aService {
   /** Create a conversation on the target (session/create ONLY — D17/R2: no session/rename write-through); title is hub-owned registry state (stored normalized, immutable). Typed errors on 401/unreachable/business rejection. The vestigial `warning?` return field stays for signature stability and is never set. */
-  newConversation(addr: A2aAddress, title?: string): Promise<{ shortId: string; sessionId: string; warning?: string }>
+  newConversation(addr: A2aAddress, title?: string, initiator?: A2aInitiator): Promise<{ shortId: string; sessionId: string; warning?: string }>
   /** Create-or-resume + inject one user turn; receipt semantics (never throws — failures are 'failed' receipts). */
   send(req: A2aSendRequest, initiator: A2aInitiator): Promise<A2aReceipt>
   /** Subscribe turn completions of one conversation over session/follow; returns the dispose fn. */
@@ -463,26 +486,8 @@ export function addressErrorBody(error: A2aAddressError): { code: string; messag
   return { code: error.kind === 'unreachable' ? 'a2a/gateway-unavailable' : `a2a/${error.kind}`, message: error.message }
 }
 
-/** Resolve through the injected resolver, mapping A2aAddressError to the typed wire
- * error (D7). A resolver that still returns undefined instead of throwing is defensively
- * spelled 'unreachable' — the service never proceeds with a missing face. */
-function gatewayOrThrow(gatewayFor: A2aServiceDeps['gatewayFor'], addr: A2aAddress): A2aGateway {
-  let gateway: A2aGateway | undefined
-  try {
-    gateway = gatewayFor(addr)
-  } catch (error) {
-    if (error instanceof A2aAddressError) {
-      const body = addressErrorBody(error)
-      throw a2aError(body.code, body.message)
-    }
-    throw error
-  }
-  if (gateway === undefined) {
-    throw a2aError('a2a/gateway-unavailable', A2aAddressError.messageOf('unreachable', addr))
-  }
-  return gateway
-}
-
+/** (gatewayOrThrow retired in R4 — the send/stop paths route envelopes; the
+ * local resolver is consumed by subscribeCompletion and the ingest assembly.) */
 /** Bound for the stop() liveness read — a healthy session plane answers the first
  * follow frame in well under a second, even cross-machine; the bound only fires on
  * a wedged plane, where the cancel RPC itself would stall anyway. */
@@ -754,54 +759,136 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
     return rows.find((r) => r.shortId === conversationId || r.sessionId === conversationId)
   }
 
-  /** Insert a row (idempotent per sessionId: re-seen session keeps its shortId — and its title: D17 immutable). */
-  const insertRow = (addr: A2aAddress, sessionId: string, title: string): ConversationRow => {
-    const file = loadConversations(deps.home)
-    const rows = file.conversations
-    const prior = rows.find((r) => r.sessionId === sessionId)
-    if (prior) return prior
-    const row: ConversationRow = {
-      shortId: shortIdFor(sessionId, rows),
-      machine: addr.machine,
-      agent: addr.id,
+  /**
+   * R4: record the INITIATOR row for a conversation the envelope routing
+   * just created/receipted. One row per conversation: a row already bound to
+   * the shortId (the mirror row a SELF-hosted conversation adopted on our
+   * own ingest) covers the id — never a duplicate. Title normalized at mint
+   * (D17); the initiator's session id is persisted for peer write-backs.
+   */
+  const recordInitiatorRow = (shortId: string, to: A2aAddress, sessionId: string, title: string, initiator: A2aInitiator): void => {
+    const rows = loadConversations(deps.home).conversations
+    if (rows.some((r) => r.shortId === shortId || r.sessionId === sessionId)) return
+    rows.push({
+      shortId,
+      machine: to.machine,
+      agent: to.id,
       sessionId,
-      // D17: hub-owned title, normalized at mint ('[undefined]' when the
-      // operator specified none) and IMMUTABLE from here on — never written
-      // through to the upstream runtime session title (zero rename calls).
       title,
+      initiatorSession: initiator.sessionId,
       createdAt: now(),
       lastActivityAt: now(),
-    }
-    rows.push(row)
+    })
     persist(rows)
-    return row
   }
 
-  const touchRow = (row: ConversationRow): void => {
+  /** Bump the activity stamp; optionally backfill the initiator session on INITIATOR rows (never on mirror rows). */
+  const touchRow = (row: ConversationRow, initiatorSession?: string): void => {
     const rows = loadConversations(deps.home).conversations
     const idx = rows.findIndex((r) => r.sessionId === row.sessionId)
     if (idx === -1) return
     // D17: only the activity stamp moves — a later write path never touches title.
-    rows[idx] = { ...rows[idx], lastActivityAt: now() }
+    rows[idx] = {
+      ...rows[idx],
+      lastActivityAt: now(),
+      ...(initiatorSession === undefined || rows[idx].hostAgent !== undefined ? {} : { initiatorSession }),
+    }
     persist(rows)
   }
 
+  const selfM4 = (): string => ensureSelf(deps.home, 'local').id
+
+  /** Mint a fresh conversation id — random 6 over [a-z0-9], collision-checked against our registry (the initiator mints; the peer adopts verbatim). */
+  const mintConversationId = (): string =>
+    mintMachineId(6, loadConversations(deps.home).conversations.map((r) => r.shortId))
+
+  /** The wire `from` of one initiator identity (full-length session id, D6). */
+  const originOf = (initiator: A2aInitiator): A2aWireOrigin =>
+    ({ machine: initiator.machine, agent: initiator.agent, sessionId: initiator.sessionId })
+
+  /** What an envelope's routing answers: a send/stop receipt, or (additive) a delivery outcome. */
+  type IngestAnswer = A2aWireReceipt | A2aDeliveryOutcome
+
+  /**
+   * R4 THE ROUTER: one envelope, two legs — target machine === self → the
+   * SAME ingest handler the HTTP endpoint calls (in-process short-circuit;
+   * protocol-identical by construction); a paired remote → wire POST with
+   * its cookie riding along. Unpaired → the typed unknown-machine failure.
+   */
+  const routeEnvelope = async (envelope: A2aEnvelope): Promise<IngestAnswer> => {
+    const target = a2aAddressOf(envelope)
+    if (target.machine === selfM4()) {
+      const ingest = deps.ingest?.()
+      if (ingest === undefined) {
+        throw a2aError('a2a/no-ingest', `a2a: envelope for ${target.machine}-${target.id} addresses THIS machine but no ingest is wired (post-office assembly incomplete)`)
+      }
+      return ingest.ingest(envelope)
+    }
+    const machine = listRemotes(deps.home).find((r) => r.id === target.machine)
+    if (machine === undefined) {
+      throw new A2aAddressError('unknown-machine', target)
+    }
+    return postA2aEnvelope(machine.origin, envelope, {
+      cookie: cookieOf(machine.id, deps.home),
+      fetchImpl: deps.fetchImpl,
+    })
+  }
+
+  /** Map one wire stop receipt back onto the typed result (canonical constants; the ingest emits exactly these). */
+  const mapStopReceipt = (receipt: A2aStopReceipt): A2aStopResult => {
+    if (receipt.scope === 'turn') {
+      return receipt.stopped
+        ? { scope: 'turn', cancelled: true }
+        : { scope: 'turn', cancelled: false, note: A2A_NO_TURN_ACTIVE_NOTE }
+    }
+    return receipt.stopped
+      ? { scope: 'turn-only', cancelled: true, reason: A2A_NO_SESSION_CLOSE_REASON }
+      : { scope: 'turn-only', cancelled: false, note: A2A_NO_TURN_ACTIVE_NOTE, reason: A2A_NO_SESSION_CLOSE_REASON }
+  }
+
+
 
   const service: A2aService = {
-    async newConversation(addr, title) {
-      const gateway = gatewayOrThrow(deps.gatewayFor, addr)
-      const createRequest: SessionCreateRequestMirror = {}
-      const created = await sessionRpc<{ sessionId: string }>(gateway, WIRE.sessionCreate, createRequest)
-      if (!isRecord(created) || typeof created['sessionId'] !== 'string' || created['sessionId'] === '') {
-        throw a2aError('a2a/bad-result', 'a2a: session/create returned no sessionId')
+    async newConversation(addr, title, initiator) {
+      // R4: an envelope IS the unit — a message-less create carries the fixed
+      // opening line (the teaching envelope wraps it on the peer's session).
+      if (initiator === undefined) {
+        throw a2aError('a2a/no-initiator', 'a2a: newConversation needs the initiator identity to address the envelope (postoffice R4)')
       }
-      // D17 (postoffice R2): the title is hub-owned registry state — stored
-      // normalized at mint, NEVER written through to the upstream runtime
-      // session title (zero session/rename calls from the A2A path). The
-      // optional `warning` stays in the return type for signature stability;
-      // with the write-through gone there is nothing to warn about anymore.
-      const row = insertRow(addr, created['sessionId'], normalizeA2aTitle(title))
-      return { shortId: row.shortId, sessionId: row.sessionId }
+      const messageId = `a2a-${randomUUID()}`
+      const envelope: A2aNewConversationEnvelope = {
+        kind: 'new-conversation',
+        to: { machine: addr.machine, id: addr.id },
+        conversationId: mintConversationId(),
+        title: normalizeA2aTitle(title),
+        message: A2A_OPENING_MESSAGE,
+        from: originOf(initiator),
+        messageId,
+      }
+      let answer: IngestAnswer
+      try {
+        answer = await routeEnvelope(envelope)
+      } catch (error) {
+        if (error instanceof EnvelopeError) throw error
+        if (error instanceof A2aAddressError) {
+          const body = addressErrorBody(error)
+          throw a2aError(body.code, body.message)
+        }
+        throw a2aError('gateway/uncaught', messageOf(error))
+      }
+      if (!('outcome' in answer)) {
+        throw a2aError('a2a/bad-result', 'a2a: new-conversation envelope answered a non-receipt')
+      }
+      if (answer.outcome !== 'injected') {
+        const err = answer.error ?? { code: 'a2a/remote-failed', message: 'a2a: the peer ingest rejected the envelope without an error body' }
+        throw a2aError(err.code, err.message, err.details)
+      }
+      const shortId = answer.conversationId ?? envelope.conversationId
+      // D17: title stored normalized at mint, immutable; zero rename calls
+      // (the write-through is gone). The vestigial `warning` stays for
+      // signature stability and is never set.
+      recordInitiatorRow(shortId, addr, answer.sessionId, normalizeA2aTitle(title), initiator)
+      return { shortId, sessionId: answer.sessionId }
     },
 
     async send(req, initiator) {
@@ -823,65 +910,88 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
             message: `a2a: conversation "${req.conversationId}" is not in the registry — send without conversationId (creates one) or check the id`,
           })
         }
-        if (row.machine !== req.to.machine || row.agent !== req.to.id) {
+        // Address consistency by row kind (R4 continuation routing):
+        // mirror rows (hostAgent) are hosted HERE and addressed as
+        // {self, hostAgent}; initiator rows keep today's peer-address check.
+        const expected = row.hostAgent !== undefined
+          ? { machine: selfM4(), id: row.hostAgent }
+          : { machine: row.machine, id: row.agent }
+        if (req.to.machine !== expected.machine || req.to.id !== expected.id) {
           return fail({
             code: 'a2a/conversation-machine-mismatch',
-            message: `a2a: conversation "${row.shortId}" belongs to ${row.machine}-${row.agent}, not ${req.to.machine}-${req.to.id}`,
+            message: `a2a: conversation "${row.shortId}" belongs to ${expected.machine}-${expected.id}, not ${req.to.machine}-${req.to.id}`,
           }, row.sessionId, row.shortId)
         }
       }
 
-      let gateway: A2aGateway | undefined
-      try {
-        gateway = deps.gatewayFor(req.to)
-      } catch (error) {
-        // D7: a typed address failure is the honest receipt; anything else the
-        // resolver threw is still a failed receipt — send never throws (T2 contract).
-        const body = error instanceof A2aAddressError ? addressErrorBody(error) : receiptErrorOf(error)
-        return fail(body, row?.sessionId ?? '', row?.shortId)
-      }
-      if (gateway === undefined) {
-        // legacy resolver spelling (no throw) — unreachable, honestly reported
-        return fail({ code: 'a2a/gateway-unavailable', message: A2aAddressError.messageOf('unreachable', req.to) }, row?.sessionId ?? '', row?.shortId)
-      }
-
+      // Build the envelope: create mints the conversation id (initiator-side,
+      // random 6); continuation routes by row kind — mirror rows to OUR OWN
+      // ingest (the conversation is hosted here), initiator rows to the
+      // machine/agent the row points at.
+      const from = originOf(initiator)
+      let envelope: A2aNewConversationEnvelope | A2aMessageEnvelope
       if (row === undefined) {
-        // create path — no conversationId ≡ new conversation. D17/R2: the
-        // title lands in the registry row (normalized), never upstream.
-        try {
-          const created = await sessionRpc<{ sessionId: string }>(gateway, WIRE.sessionCreate, {} as SessionCreateRequestMirror)
-          if (!isRecord(created) || typeof created['sessionId'] !== 'string' || created['sessionId'] === '') {
-            throw a2aError('a2a/bad-result', 'a2a: session/create returned no sessionId')
-          }
-          row = insertRow(req.to, created['sessionId'], normalizeA2aTitle(req.title))
-        } catch (error) {
-          return fail(receiptErrorOf(error), row?.sessionId ?? '', row?.shortId)
+        envelope = {
+          kind: 'new-conversation',
+          to: { machine: req.to.machine, id: req.to.id },
+          conversationId: mintConversationId(),
+          title: normalizeA2aTitle(req.title),
+          message: req.message,
+          from,
+          messageId,
+          ...(req.delivery === undefined ? {} : { delivery: req.delivery }),
+        }
+      } else {
+        const to = row.hostAgent !== undefined
+          ? { machine: selfM4(), id: row.hostAgent }
+          : { machine: row.machine, id: row.agent }
+        envelope = {
+          kind: 'message',
+          to,
+          conversationId: row.shortId,
+          message: req.message,
+          from,
+          messageId,
+          ...(req.delivery === undefined ? {} : { delivery: req.delivery }),
         }
       }
 
-      const promptRequest: SessionPromptRequestMirror = {
-        requestId: messageId,
-        sessionId: row.sessionId,
-        mode: req.delivery ?? 'queue',
-        content: [{
-          type: 'text',
-          text: renderA2aEnvelope({
-            machine: initiator.machine,
-            agent: initiator.agent,
-            title: row.title,
-            shortId: row.shortId,
-            message: req.message,
-          }),
-        }],
-      }
+      let answer: IngestAnswer
       try {
-        // 'injected' on every successful submission ('queued' reserved — no busy-detection)
-        await sessionRpc(gateway, WIRE.promptSubmit, promptRequest)
+        answer = await routeEnvelope(envelope)
       } catch (error) {
-        return fail(receiptErrorOf(error), row.sessionId, row.shortId)
+        // D7 layering preserved: typed address failures (unknown-machine,
+        // unreachable transport) and wire faults land as failed receipts —
+        // send never throws.
+        const body = error instanceof A2aAddressError ? addressErrorBody(error) : receiptErrorOf(error)
+        return fail(body, row?.sessionId ?? '', row?.shortId)
       }
-      touchRow(row)
-      return { outcome: 'injected', messageId, conversationId: row.shortId, sessionId: row.sessionId }
+      if (!('outcome' in answer)) {
+        return fail({ code: 'a2a/bad-result', message: 'a2a: envelope routed but the answer was not a send receipt' }, row?.sessionId ?? '', row?.shortId ?? envelope.conversationId)
+      }
+      if (answer.outcome !== 'injected') {
+        // D1 hardening: a failed receipt that still carries the peer's session
+        // and conversation ids keeps the row addressable — retries resume.
+        if (row === undefined && answer.sessionId !== '' && answer.conversationId !== undefined && answer.conversationId !== '') {
+          recordInitiatorRow(answer.conversationId, req.to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
+        }
+        return {
+          outcome: 'failed',
+          messageId,
+          ...(answer.conversationId === undefined ? {} : { conversationId: answer.conversationId }),
+          sessionId: answer.sessionId,
+          error: answer.error ?? { code: 'a2a/remote-failed', message: 'a2a: the peer ingest rejected the envelope without an error body' },
+        }
+      }
+      const conversationId = answer.conversationId ?? envelope.conversationId
+      if (row === undefined) {
+        // SELF-hosted creates already adopted the mirror row on our ingest —
+        // recordInitiatorRow never duplicates; remote creates record ours.
+        recordInitiatorRow(conversationId, req.to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
+      } else {
+        touchRow(row, row.hostAgent === undefined ? initiator.sessionId : undefined)
+      }
+      return { outcome: 'injected', messageId, conversationId, sessionId: answer.sessionId }
     },
 
     subscribeCompletion(conv, cb, opts = {}) {
@@ -924,26 +1034,31 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (row === undefined) {
         throw a2aError('a2a/conversation-not-found', `a2a: conversation "${conv.conversationId}" is not in the registry`)
       }
-      if (row.machine !== conv.to.machine || row.agent !== conv.to.id) {
-        throw a2aError('a2a/conversation-machine-mismatch', `a2a: conversation "${row.shortId}" belongs to ${row.machine}-${row.agent}, not ${conv.to.machine}-${conv.to.id}`)
+      const expected = row.hostAgent !== undefined
+        ? { machine: selfM4(), id: row.hostAgent }
+        : { machine: row.machine, id: row.agent }
+      if (conv.to.machine !== expected.machine || conv.to.id !== expected.id) {
+        throw a2aError('a2a/conversation-machine-mismatch', `a2a: conversation "${row.shortId}" belongs to ${expected.machine}-${expected.id}, not ${conv.to.machine}-${conv.to.id}`)
       }
-      const gateway = gatewayOrThrow(deps.gatewayFor, conv.to)
-      // D5 honesty: read turn liveness BEFORE the cancel — a post-cancel
-      // snapshot cannot distinguish "idle all along" from "we just aborted
-      // it", so the pre-cancel state is the fact the result reports. The
-      // cancel itself always fires (today's wire behavior); an undeterminable
-      // read (dead stream, no snapshot, timeout) stays conservative: stopped.
-      const live = await turnLivenessOf(gateway, row.sessionId)
-      const cancelRequest: SessionCancelRequestMirror = { sessionId: row.sessionId }
-      // Both scopes cancel the active turn; 'session' cannot go further —
-      // upstream has no session-close RPC (WIRE.sessionClose === undefined).
-      await sessionRpc(gateway, WIRE.turnCancel, cancelRequest)
-      if (live === false) {
-        if (scope === 'turn') return { scope: 'turn', cancelled: false, note: A2A_NO_TURN_ACTIVE_NOTE }
-        return { scope: 'turn-only', cancelled: false, note: A2A_NO_TURN_ACTIVE_NOTE, reason: A2A_NO_SESSION_CLOSE_REASON }
+      // R4: the cancel executes where the session lives — the D5 liveness
+      // read, the cancel, and the session-scope degradation are all the
+      // INGEST side's business now (same machine as the session).
+      const envelope: A2aStopEnvelope = { kind: 'stop', to: expected, conversationId: row.shortId, scope }
+      let answer: IngestAnswer
+      try {
+        answer = await routeEnvelope(envelope)
+      } catch (error) {
+        if (error instanceof EnvelopeError) throw error
+        if (error instanceof A2aAddressError) {
+          const body = addressErrorBody(error)
+          throw a2aError(body.code, body.message)
+        }
+        throw a2aError('gateway/uncaught', messageOf(error))
       }
-      if (scope === 'turn') return { scope: 'turn', cancelled: true }
-      return { scope: 'turn-only', cancelled: true, reason: A2A_NO_SESSION_CLOSE_REASON }
+      if (!('stopped' in answer)) {
+        throw a2aError('a2a/bad-result', 'a2a: stop envelope answered a non-receipt')
+      }
+      return mapStopReceipt(answer)
     },
 
     buffer(initiatorSessionId, message) {

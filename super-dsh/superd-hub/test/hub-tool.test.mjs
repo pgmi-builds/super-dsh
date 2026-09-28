@@ -246,7 +246,7 @@ test('new_conversation without a title passes undefined', async () => {
 
 // ---------------------------------------------------------------- send
 
-test('send: receipt echo, initiator threading, completion watch wired with the send messageId', async () => {
+test('send: receipt echo, initiator threading, NO post-send watch (R4 — replies ride envelopes)', async () => {
   const { tool, service, initiators, watches } = makeTool()
   const value = await tool.execute(
     { action: 'send', agent: 'w2cd-cd33x1', conversationId: 'conv0001', message: 'status?', delivery: 'steer' },
@@ -271,14 +271,10 @@ test('send: receipt echo, initiator threading, completion watch wired with the s
     initiator: { machine: 'm1ab', agent: 'aa11bb', sessionId: 'sess-999' },
   }])
 
-  // completion → auto-delivery wiring: requestId-armed subscription + owned disposer
-  assert.equal(service.state.calls.subscriptions.length, 1)
-  const [sub] = service.state.calls.subscriptions
-  assert.deepEqual(sub.conv, { to: { machine: 'w2cd', id: 'cd33x1' }, conversationId: 'conv0001' })
-  assert.equal(sub.opts.requestId, 'a2a-m-1')
-  assert.equal(typeof sub.opts.onError, 'function')
-  assert.equal(watches.length, 1)
-  assert.equal(typeof watches[0], 'function')
+  // R4: the cross-wire completion watch is RETIRED — the tool wires NOTHING
+  // after a send; replies ride reply/notice envelopes through the ingest.
+  assert.equal(service.state.calls.subscriptions.length, 0)
+  assert.equal(watches.length, 0)
 })
 
 test('send without conversationId/title omits them; delivery defaults are not forced', async () => {
@@ -566,8 +562,9 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
     assert.equal(receipt.outcome, 'injected')
     assert.equal(receipt.sessionId, 'sess-tgt-native')
 
-    // the completion watch is owned by a row effect
-    assert.ok(ctx.state.effects.some((e) => e.label === 'superd-a2a: a2a completion watch'))
+    // R4: the completion watch is the INGEST's own (armed on the envelope's
+    // messageId; no row effect, no cross-wire follow) — it opened the follow
+    // stream over the bridged raw gateway below.
 
     // THE bridge pin: canonical 6-arg order onto the raw instance — the
     // uplink undefined = the canonical no-lane spelling (the gateway

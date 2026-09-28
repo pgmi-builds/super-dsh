@@ -38,8 +38,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { wireCompletionToDelivery } from './a2a-delivery.js'
-import type { A2aDeliveryCtx } from './a2a-delivery.js'
+import type { A2aDeliveryCtx } from './a2a-delivery.js' // (wireCompletionToDelivery retired in R4 — replies ride reply/notice envelopes through the ingest)
 import type { AgentLink } from './agent-roster.js'
 import type {
   A2aAddress,
@@ -316,7 +315,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             throw new Error('[E_MISSING_AGENT] superd-hub: new_conversation requires agent ("<m4>-<a6>")')
           }
           const addr = parseAgentAddress(args.agent)
-          const created = await deps.service.newConversation(addr, args.title)
+          const created = await deps.service.newConversation(addr, args.title, initiator)
           return {
             action,
             conversationId: created.shortId,
@@ -347,19 +346,12 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             },
             initiator,
           )
-          // D9: the receipt answers inbox acceptance; the reply arrives LATER
-          // as an auto-delivered message. Watch only what was accepted — a
-          // failed send has no turn to wait for.
-          if (receipt.outcome === 'injected' && receipt.conversationId !== undefined) {
-            const dispose = wireCompletionToDelivery(
-              deps.delivery,
-              deps.service,
-              initiator,
-              { to: addr, conversationId: receipt.conversationId },
-              { requestId: receipt.messageId },
-            )
-            deps.onWatch?.(dispose)
-          }
+          // R4: the cross-wire completion watch is RETIRED — replies come back
+          // as reply/notice envelopes through the ingest (in-process for
+          // self-hosted conversations, POSTed by the peer's hub otherwise).
+          // The receipt still answers inbox acceptance; the reply arrives later
+          // as an auto-delivered message. The vestigial deps (delivery/onWatch)
+          // stay on the interface for wiring compatibility.
           return {
             action,
             outcome: receipt.outcome,
