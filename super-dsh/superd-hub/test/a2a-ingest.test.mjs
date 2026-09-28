@@ -1,0 +1,515 @@
+// a2a-ingest (postoffice R3): the post-office's execution side — request
+// envelopes resolved against the LOCAL session plane (create-or-resume with
+// verbatim mirror-row adoption, teaching-envelope injection, local completion
+// capture), return-envelope routing (self → in-process delivery / paired →
+// wire POST / else the bounded persistent outbox), and the mesh-rpc endpoint
+// handlers (POST /api/superd/a2a + GET .../outbox).
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createA2aIngest } from '../dist/a2a-ingest.js'
+import { loadConversations, saveConversations, renderA2aEnvelope, A2aAddressError } from '../dist/a2a-service.js'
+import { WIRE } from '../dist/wire-endpoints.js'
+import { handleA2aIngestPost, handleA2aOutboxGet } from '../dist/mesh-rpc.js'
+import { ensureSelf, upsertRemote } from '../dist/machines.js'
+import { A2A_ENDPOINT_PATH } from '../dist/a2a-wire.js'
+
+// ---------------------------------------------------------------- fixtures
+
+/** Scripted fake gateway (a2a-service.test.mjs's shape): rpc/stream queues + recorded calls. */
+function fakeGateway() {
+  const calls = []
+  const rpcScript = []
+  const streamScript = []
+  const face = {
+    async dispatchRpc(endpoint, payload, signal) {
+      calls.push({ kind: 'rpc', endpoint, payload })
+      const next = rpcScript.shift() ?? { result: { ok: true, value: {} } }
+      if (next.throw) throw next.throw
+      return next.result
+    },
+    openWireStream(endpoint, payload, signal) {
+      calls.push({ kind: 'stream', endpoint, payload })
+      const next = streamScript.shift() ?? { end: true }
+      return (async function*() {
+        if (next.throw) throw next.throw
+        if (!next.end) for (const frame of next.frames ?? []) yield frame
+        if (next.die) throw next.die
+        await new Promise((_, reject) => {
+          if (signal?.aborted) { reject(new Error('aborted')); return }
+          signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        })
+      })()
+    },
+  }
+  return {
+    calls, face,
+    rpc: (entry) => rpcScript.push(entry),
+    stream: (entry) => streamScript.push(entry),
+    rpcs: (endpoint) => calls.filter((c) => c.kind === 'rpc' && c.endpoint === endpoint),
+    streams: (endpoint) => calls.filter((c) => c.kind === 'stream' && c.endpoint === endpoint),
+  }
+}
+
+/** Fake delivery ctx: a live agent per registered sessionId; deliveries recorded. */
+function fakeDelivery(liveSessions = new Set()) {
+  const delivered = []
+  const buffered = []
+  const mkAgent = (sessionId) => ({
+    status: 'idle',
+    followup: (message) => delivered.push({ sessionId, how: 'followup', message }),
+    steer: (message) => delivered.push({ sessionId, how: 'steer', message }),
+    inject: (message) => delivered.push({ sessionId, how: 'inject', message }),
+  })
+  return {
+    delivered, buffered,
+    ctx: {
+      agents: { get: (sessionId) => (liveSessions.has(sessionId) ? mkAgent(sessionId) : undefined) },
+      buffer: (initiatorSessionId, message) => buffered.push({ initiatorSessionId, message }),
+    },
+  }
+}
+
+const ev = (type, data, seq) => ({ type: 'event', event: { type, seq, time: 1, data } })
+const snap = (records) => ({ type: 'snapshot', header: { version: 1, id: 's' }, cursor: 0, records, hasMore: false, projections: {} })
+const userMsg = (rpcId, seq) => ev('user/message', { id: 'm1', role: 'user', content: [{ type: 'text', text: 'in' }], source: { kind: 'user', rpcId, clientTimeZone: 'UTC' } }, seq)
+const asstMsg = (turn, text, seq) => ev('assistant/message', { turn, step: 0, interrupted: false, message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text }] }, stream: [] }, seq)
+const turnEnd = (turn, seq, kind = 'completed') => ev('turn/end', { turn, reason: { kind } }, seq)
+
+const until = async (cond, ms = 500) => {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (cond()) return
+    await new Promise((r) => setTimeout(r, 2))
+  }
+  throw new Error('timed out')
+}
+
+/** One ingest assembly over a tmpdir home + the fake gateway as the local leg. */
+const mkIngest = (gw, opts = {}) => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const delivery = fakeDelivery(new Set([opts.liveSession ?? 'session-init-1'])).ctx ? fakeDeliveryWithHome(home, opts) : undefined
+  return { home, ...assembly(home, gw, opts) }
+}
+
+// simpler: build the assembly inline per test (home + gatewayFor + delivery)
+function assembly(home, gw, opts = {}) {
+  const deliveryFake = fakeDelivery(new Set([opts.liveSession ?? 'session-init-1']))
+  const ingest = createA2aIngest({
+    home,
+    gatewayFor: (addr) => {
+      if (addr.id === 'gone777') throw new A2aAddressError('unknown-agent', addr)
+      return gw.face
+    },
+    delivery: deliveryFake.ctx,
+    fetchImpl: opts.fetchImpl,
+  })
+  return { ingest, delivery: deliveryFake }
+}
+
+const LOCAL = { machine: '', id: 'q7m2xp' } // machine filled per-test (self m4)
+const mkEnv = (selfM4, fromMachine) => ({
+  kind: 'new-conversation',
+  to: { machine: selfM4, id: 'q7m2xp' },
+  conversationId: 'abc123',
+  title: '[undefined]',
+  message: 'hello local peer',
+  from: { machine: fromMachine, agent: 'f4g5h6', sessionId: 'session-init-1' },
+  messageId: 'a2a-msg-1',
+})
+
+test('new-conversation (local): create + inject + verbatim mirror row; teaching envelope initiator=from', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaa-1111' } } }) // create
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })                 // prompt
+    const { ingest } = assembly(home, gw)
+    const env = mkEnv(self.id, self.id) // initiator on THIS machine (in-process short-circuit shape)
+    const receipt = await ingest.ingest(env)
+    assert.deepEqual(receipt, { outcome: 'injected', messageId: 'a2a-msg-1', conversationId: 'abc123', sessionId: 'sess-aaaaaaaa-1111' })
+    // create payload byte-exact; prompt mirror byte-exact with the teaching envelope
+    assert.deepEqual(gw.rpcs(WIRE.sessionCreate).map((c) => c.payload), [{ args: { request: {} } }])
+    const prompt = gw.rpcs(WIRE.promptSubmit)[0].payload.args.request
+    assert.equal(prompt.requestId, 'a2a-msg-1')
+    assert.equal(prompt.sessionId, 'sess-aaaaaaaa-1111')
+    assert.equal(prompt.mode, 'queue')
+    assert.deepEqual(prompt.content, [{
+      type: 'text',
+      text: renderA2aEnvelope({ machine: self.id, agent: 'f4g5h6', title: '[undefined]', shortId: 'abc123', message: 'hello local peer' }),
+    }])
+    // MIRROR ROW: points at the initiator; shortId + title adopted verbatim (D17)
+    const rows = loadConversations(home).conversations
+    assert.deepEqual(rows, [{
+      shortId: 'abc123', machine: self.id, agent: 'f4g5h6',
+      sessionId: 'sess-aaaaaaaa-1111', title: '[undefined]',
+      createdAt: rows[0].createdAt, lastActivityAt: rows[0].lastActivityAt,
+    }])
+    // the completion watcher armed on the envelope's messageId
+    assert.equal(gw.streams(WIRE.streamOpen).length, 1)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('new-conversation re-delivery: same conversation → idempotent adoption + resume; collision → fail-loud', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-bbbbbbbb-2222' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const { ingest } = assembly(home, gw)
+    const env = mkEnv(self.id, self.id)
+    await ingest.ingest(env)
+    // same envelope again: the second create returns the SAME session → exact
+    // re-adoption, then the prompt resumes (scripted in order)
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-bbbbbbbb-2222' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const again = await ingest.ingest(env)
+    assert.equal(again.outcome, 'injected')
+    assert.equal(loadConversations(home).conversations.length, 1)
+    // collision: a DIFFERENT session already owns the shortId
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-99999999-9999' } } })
+    const conflict = await ingest.ingest(env)
+    assert.equal(conflict.outcome, 'failed')
+    assert.equal(conflict.error.code, 'gateway/uncaught')
+    assert.match(conflict.error.message, /conversation-id conflict/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('message: resume the mirror row (no create); unknown conversation + initiator mismatch fail honestly', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const { ingest } = assembly(home, gw)
+    await ingest.ingest(mkEnv(self.id, self.id))
+    gw.rpc({ result: { ok: true, value: { accepted: true } } }) // resume prompt
+    const resume = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'q7m2xp' },
+      conversationId: 'abc123',
+      message: 'second turn',
+      from: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
+      messageId: 'a2a-msg-2',
+    })
+    assert.equal(resume.outcome, 'injected')
+    assert.equal(resume.conversationId, 'abc123')
+    assert.equal(gw.rpcs(WIRE.sessionCreate).length, 1) // no second create
+    assert.equal(gw.rpcs(WIRE.promptSubmit).length, 2)
+    // unknown conversationId → failed receipt
+    const unknown = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'q7m2xp' },
+      conversationId: 'nope99',
+      message: 'x',
+      from: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
+      messageId: 'a2a-msg-3',
+    })
+    assert.equal(unknown.outcome, 'failed')
+    assert.equal(unknown.error.code, 'a2a/conversation-not-found')
+    // initiator mismatch → the mirror row belongs to another initiator
+    const mismatch = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'q7m2xp' },
+      conversationId: 'abc123',
+      message: 'x',
+      from: { machine: 'zzzz', agent: 'intruda', sessionId: 'session-init-1' },
+      messageId: 'a2a-msg-4',
+    })
+    assert.equal(mismatch.outcome, 'failed')
+    assert.equal(mismatch.error.code, 'a2a/conversation-machine-mismatch')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('unknown local agent → failed receipt with the typed a2a/unknown-agent code', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    const { ingest } = assembly(home, gw)
+    const receipt = await ingest.ingest({
+      kind: 'new-conversation',
+      to: { machine: self.id, id: 'gone777' },
+      conversationId: 'xyz789',
+      title: '[undefined]',
+      message: 'x',
+      from: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
+      messageId: 'a2a-msg-5',
+    })
+    assert.equal(receipt.outcome, 'failed')
+    assert.equal(receipt.error.code, 'a2a/unknown-agent')
+    assert.match(receipt.error.message, /gone777/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('completion → in-process reply (self-routed): relay text + a2a-relay source into the initiator session', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-dddddddd-4444' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 1 }, 1),
+          userMsg('a2a-msg-1', 2),
+          asstMsg(1, 'the local answer', 3),
+        ]),
+        turnEnd(1, 4),
+      ],
+    })
+    const { ingest, delivery } = assembly(home, gw)
+    await ingest.ingest(mkEnv(self.id, self.id))
+    await until(() => delivery.delivered.length > 0)
+    const hit = delivery.delivered[0]
+    assert.equal(hit.sessionId, 'session-init-1')
+    assert.equal(hit.how, 'followup')
+    assert.match(hit.message.content[0].text, new RegExp(`Agent ${self.id}-q7m2xp replied \\(conversation "\\(untitled\\)"\\):`))
+    assert.match(hit.message.content[0].text, /the local answer/)
+    assert.equal(hit.message.source.kind, 'a2a-relay')
+    assert.equal(hit.message.source.senderAgent, 'q7m2xp')
+    assert.equal(hit.message.source.conversationId, 'abc123')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('completion aborted with NO text → bounded notice, never an empty relay (D3)', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-eeeeeeee-5555' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 1 }, 1),
+          userMsg('a2a-msg-1', 2),
+        ]),
+        turnEnd(1, 3, 'aborted'),
+      ],
+    })
+    const { ingest, delivery } = assembly(home, gw)
+    await ingest.ingest(mkEnv(self.id, self.id))
+    await until(() => delivery.delivered.length > 0)
+    const hit = delivery.delivered[0]
+    assert.equal(hit.message.source.kind, 'a2a-notice')
+    assert.equal(hit.message.source.reason, 'aborted')
+    assert.ok(hit.message.source.summary.length <= 120)
+    assert.match(hit.message.content[0].text, /turn aborted, no reply/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('completion → remote initiator with a machines row: reply POSTs on the wire with the cookie riding along', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  const posts = []
+  const fetchImpl = async (url, init) => {
+    posts.push({ url: String(url), init })
+    return new Response(JSON.stringify({ delivered: 'followup' }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    upsertRemote(home, { id: 'dev3', name: 'dev3', label: 'dev3', origin: 'http://dev3:4999', cookie: 'dsh-auth-dev3=1', enabled: true, addedAt: 1 })
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-ffffffff-6666' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 1 }, 1),
+          userMsg('a2a-msg-1', 2),
+          asstMsg(1, 'wire answer', 3),
+        ]),
+        turnEnd(1, 4),
+      ],
+    })
+    const { ingest } = assembly(home, gw, { fetchImpl })
+    const receipt = await ingest.ingest(mkEnv(self.id, 'dev3'))
+    assert.equal(receipt.outcome, 'injected')
+    await until(() => posts.length > 0)
+    assert.equal(posts[0].url, `http://dev3:4999${A2A_ENDPOINT_PATH}`)
+    assert.equal(posts[0].init.method, 'POST')
+    assert.equal(posts[0].init.headers.cookie, 'dsh-auth-dev3=1')
+    const sent = JSON.parse(posts[0].init.body)
+    assert.equal(sent.v, 1)
+    assert.equal(sent.envelope.kind, 'reply')
+    assert.equal(sent.envelope.conversation, 'abc123')
+    assert.equal(sent.envelope.text, 'wire answer')
+    assert.deepEqual(sent.envelope.to, { machine: 'dev3', agent: 'f4g5h6', sessionId: 'session-init-1' })
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('completion → unpaired initiator: reply parks in the persistent outbox; claim takes & clears', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-12345678-9012' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 1 }, 1),
+          userMsg('a2a-msg-1', 2),
+          asstMsg(1, 'parked answer', 3),
+        ]),
+        turnEnd(1, 4),
+      ],
+    })
+    const { ingest } = assembly(home, gw)
+    await ingest.ingest(mkEnv(self.id, 'orphan')) // no self match, no machines row
+    await until(() => readOutbox(home).envelopes.length > 0)
+    const parked = readOutbox(home)
+    assert.equal(parked.envelopes.length, 1)
+    assert.equal(parked.envelopes[0].kind, 'reply')
+    assert.equal(parked.envelopes[0].to.machine, 'orphan')
+    // claim: take and clear
+    const claimed = ingest.claimOutbox('orphan')
+    assert.equal(claimed.length, 1)
+    assert.equal(claimed[0].text, 'parked answer')
+    assert.deepEqual(readOutbox(home).envelopes, [])
+    assert.deepEqual(ingest.claimOutbox('orphan'), []) // second claim empty
+    // another machine's mail is NOT taken by this claim
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('outbox bound: ≤32 total, oldest dropped (A2A_BUFFER_MAX discipline)', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    const { ingest } = assembly(home, gw)
+    for (let i = 0; i < 35; i++) {
+      await ingest.routeReturn({
+        kind: 'reply',
+        to: { machine: 'orphan', agent: 'a', sessionId: `session-${i}` },
+        conversation: `conv${i}`,
+        text: `t${i}`,
+        messageId: `m${i}`,
+      }, { responderAgent: 'q7m2xp' })
+    }
+    const file = readOutbox(home)
+    assert.equal(file.envelopes.length, 32)
+    assert.equal(file.envelopes[0].conversation, 'conv3') // oldest three dropped
+    assert.equal(file.envelopes[31].conversation, 'conv34')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('stop envelope: cancels the local turn; session scope degrades to turn-only with the honest reason', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    // seed the mirror row via a new-conversation ingest
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-hhhhhhhh-8888' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const { ingest } = assembly(home, gw)
+    await ingest.ingest(mkEnv(self.id, 'dev3'))
+    // stop: liveness snapshot (live turn) + cancel
+    gw.stream({ frames: [snap([ev('turn/start', { turn: 1 }, 1)])] })
+    gw.rpc({ result: { ok: true, value: { cancelled: true } } })
+    const receipt = await ingest.ingest({
+      kind: 'stop',
+      to: { machine: self.id, id: 'q7m2xp' },
+      conversationId: 'abc123',
+      scope: 'session',
+    })
+    assert.deepEqual(receipt, { stopped: true, scope: 'turn-only', reason: 'no session-close endpoint upstream' })
+    assert.equal(gw.rpcs(WIRE.turnCancel).length, 1)
+    // unknown conversation → stopped:false with the reason
+    const miss = await ingest.ingest({ kind: 'stop', to: { machine: self.id, id: 'q7m2xp' }, conversationId: 'nope', scope: 'turn' })
+    assert.equal(miss.stopped, false)
+    assert.equal(miss.scope, 'turn')
+    assert.match(miss.reason, /not in the registry/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------- endpoints
+
+test('POST /api/superd/a2a handler: valid frame → 200 receipt; bad JSON/bad version → 400 with named error', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-77777777-7777' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const { ingest } = assembly(home, gw)
+    const ok = await handleA2aIngestPost(new Request('http://x/api/superd/a2a', {
+      method: 'POST',
+      body: JSON.stringify({ v: 1, envelope: mkEnv(self.id, self.id) }),
+    }), ingest)
+    assert.equal(ok.status, 200)
+    assert.deepEqual(await ok.json(), { outcome: 'injected', messageId: 'a2a-msg-1', conversationId: 'abc123', sessionId: 'sess-77777777-7777' })
+    const badJson = await handleA2aIngestPost(new Request('http://x', { method: 'POST', body: 'nope{' }), ingest)
+    assert.equal(badJson.status, 400)
+    const badVersion = await handleA2aIngestPost(new Request('http://x', {
+      method: 'POST',
+      body: JSON.stringify({ v: 2, envelope: mkEnv(self.id, self.id) }),
+    }), ingest)
+    assert.equal(badVersion.status, 400)
+    assert.match((await badVersion.json()).error, /version/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('GET /api/superd/a2a/outbox handler: ?machine= claim → {v:1, envelopes}; missing param → 400', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  try {
+    const { ingest } = assembly(home, gw)
+    await ingest.routeReturn({
+      kind: 'reply',
+      to: { machine: 'orphan', agent: 'a', sessionId: 'session-1' },
+      conversation: 'conv1',
+      text: 't',
+      messageId: 'm1',
+    }, { responderAgent: 'q7m2xp' })
+    const res = handleA2aOutboxGet(new Request('http://x/api/superd/a2a/outbox?machine=orphan'), ingest)
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.equal(body.v, 1)
+    assert.equal(body.envelopes.length, 1)
+    assert.equal(body.envelopes[0].conversation, 'conv1')
+    // cleared
+    const again = await handleA2aOutboxGet(new Request('http://x/api/superd/a2a/outbox?machine=orphan'), ingest).json()
+    assert.deepEqual(again.envelopes, [])
+    const missing = handleA2aOutboxGet(new Request('http://x/api/superd/a2a/outbox'), ingest)
+    assert.equal(missing.status, 400)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('inbound reply envelope (peer POSTed at us): delivers into the local initiator with registry attribution', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-44444444-4444' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const { ingest, delivery } = assembly(home, gw)
+    await ingest.ingest(mkEnv(self.id, self.id))
+    const out = await ingest.ingest({
+      kind: 'reply',
+      to: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
+      conversation: 'abc123',
+      text: 'a late reply',
+      messageId: 'a2a-relay-late',
+    })
+    assert.deepEqual(out, { delivered: 'followup' })
+    assert.equal(delivery.delivered.length, 1)
+    assert.match(delivery.delivered[0].message.content[0].text, /a late reply/)
+    assert.equal(delivery.delivered[0].message.source.conversationId, 'abc123')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// helper: read the raw outbox file (test-only view)
+function readOutbox(home) {
+  try {
+    return JSON.parse(readFileSync(join(home, 'superd', 'a2a-outbox.json'), 'utf8'))
+  } catch {
+    return { envelopes: [] }
+  }
+}

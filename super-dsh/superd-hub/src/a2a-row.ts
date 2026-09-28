@@ -40,8 +40,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { createSuperdHubTool } from './hub-tool.js'
+import { createA2aService } from './a2a-service.js'
+import { resolveA2aGatewayFor, localA2aInitiator } from './a2a-host.js'
+import { registerA2aRpc } from './mesh-rpc.js'
 import type { HubRosterView } from './hub-tool.js'
-import { createA2aHost, localA2aInitiator } from './a2a-host.js'
 import type { RawTypertGatewayFace } from './a2a-host.js'
 import type { A2aAgentHandle, A2aDeliveryCtx } from './a2a-delivery.js'
 import type { A2aGateway } from './a2a-service.js'
@@ -101,11 +103,18 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     // RAW instance in, bridged at the resolver (fix round 1: one shared
     // bridge in a2a-host.ts covers the native seam AND all local world rows).
     const raw = t.get('typertGateway') as RawTypertGatewayFace | undefined
-    const service = createA2aHost({ home, nativeGateway: raw })
+    // postoffice R3: the resolver is built ONCE and shared by the initiator
+    // service and the INGEST endpoint — one local leg, two consumers.
+    const gatewayFor = resolveA2aGatewayFor({ home, nativeGateway: raw })
+    const service = createA2aService({ home, gatewayFor })
     const delivery: A2aDeliveryCtx = {
       agents: { get: (sessionId) => liveAgentHandle(ctx, sessionId) },
       buffer: (initiatorSessionId, message) => { service.buffer(initiatorSessionId, message) },
     }
+    // postoffice R3: the a2a endpoints (POST /api/superd/a2a + GET outbox)
+    // ride the shared /api fence like the machines route; registered on the
+    // same inject scope (they live and die with the typertGateway seam).
+    registerA2aRpc(t, { home, gatewayFor, delivery })
     t.tools.register(createSuperdHubTool({
       service,
       delivery,

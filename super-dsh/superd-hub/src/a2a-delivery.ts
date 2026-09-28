@@ -55,8 +55,10 @@ export interface A2aRelaySource {
 /** Why a runtime-owned notice was produced (the failure taxonomy of the a2a face). */
 /** Why a runtime-owned notice was produced (the failure taxonomy of the a2a face): a failed
  * send, a dead completion stream, a stop, or a turn that ended non-completed with no captured
- * reply text (D3 — the initiator is told the turn aborted instead of receiving an empty relay). */
-export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop' | 'aborted'
+ * reply text (D3 — the initiator is told the turn aborted instead of receiving an empty relay);
+ * 'peer' (postoffice R3) = an account minted by the PEER hub and relayed in — the wire notice
+ * envelope carries no reason field, so the attribution says where it came from, not why. */
+export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop' | 'aborted' | 'peer'
 
 /**
  * Durable attribution for the hub's own account of an A2A conversation event

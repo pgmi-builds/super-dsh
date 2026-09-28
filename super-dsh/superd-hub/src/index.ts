@@ -93,8 +93,12 @@ export {
   isDegenerateShortId,
   migrateConversations,
   type A2aService,
-  type A2aServiceDeps,
   // (A2aAddressError re-exported via the a2a-wire block below — postoffice R1)
+  subscribeSessionCompletion,
+  sessionRpc,
+  turnLivenessOf,
+  addressErrorBody,
+  type A2aSessionSource,
   type A2aGateway,
   type A2aAddress,
   type A2aInitiator,
@@ -145,6 +149,18 @@ export {
   type A2aWireReceipt,
   type A2aWireOptions,
 } from './a2a-wire.js'
+export {
+  createA2aIngest,
+  type A2aIngest,
+  type A2aIngestDeps,
+  type A2aReturnRoute,
+} from './a2a-ingest.js'
+export {
+  registerA2aRpc,
+  handleA2aIngestPost,
+  handleA2aOutboxGet,
+  type A2aRpcDeps,
+} from './mesh-rpc.js'
 export {
   deliverReply,
   deliverNotice,

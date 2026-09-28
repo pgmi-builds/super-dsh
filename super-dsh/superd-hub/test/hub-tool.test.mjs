@@ -537,6 +537,11 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
     const [{ cb }] = ctx.state.injects
     const subCtx = {
       tools: { register(def) { ctx.state.registered.push(def); return () => { } } },
+      // postoffice R3: the row now also declares the a2a endpoint's nested
+      // connection inject — record it like the outer one (its callback no-ops
+      // without a real connection service, same as registerMeshRpc in tests)
+      inject(names, cb) { ctx.state.injects.push({ names, cb }) },
+      effect(fn, label) { ctx.state.effects.push({ fn, label }); return () => { } },
       get: (name) => (name === 'typertGateway' ? raw : undefined),
     }
     cb(subCtx)

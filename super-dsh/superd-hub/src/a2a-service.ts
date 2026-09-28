@@ -444,7 +444,7 @@ function freshSignal(): AbortSignal {
 /** Map one typed address failure to its wire error body (D7): the error's own
  * message; the code keeps 'a2a/gateway-unavailable' for the unreachable branch
  * (today's code) and names the kind otherwise. */
-function addressErrorBody(error: A2aAddressError): { code: string; message: string } {
+export function addressErrorBody(error: A2aAddressError): { code: string; message: string } {
   return { code: error.kind === 'unreachable' ? 'a2a/gateway-unavailable' : `a2a/${error.kind}`, message: error.message }
 }
 
@@ -483,7 +483,7 @@ const STOP_LIVENESS_TIMEOUT_MS = 3_000
  * could not answer (stream death, stream end, no snapshot, read timeout) —
  * callers treat undefined conservatively: cancel anyway, keep today's shape.
  */
-async function turnLivenessOf(gateway: A2aGateway, sessionId: string): Promise<boolean | undefined> {
+export async function turnLivenessOf(gateway: A2aGateway, sessionId: string): Promise<boolean | undefined> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), STOP_LIVENESS_TIMEOUT_MS)
   try {
@@ -521,7 +521,7 @@ async function turnLivenessOf(gateway: A2aGateway, sessionId: string): Promise<b
  * `{ok:false,error}` rethrown as a typed EnvelopeError (error body verbatim),
  * transport throws pass through untouched (they are already gateway/* typed).
  */
-async function sessionRpc<T>(gateway: A2aGateway, endpoint: string, request: unknown): Promise<T> {
+export async function sessionRpc<T>(gateway: A2aGateway, endpoint: string, request: unknown): Promise<T> {
   const result: unknown = await gateway.dispatchRpc(endpoint, wireArgsOf(endpoint, request), freshSignal())
   if (!isRecord(result) || typeof result['ok'] !== 'boolean') {
     throw a2aError('a2a/bad-result', `a2a: ${endpoint} returned a non-envelope result`)
@@ -554,6 +554,171 @@ interface FollowState {
   fired: Set<number>
   /** Historical turn/end records (snapshot-replayed): turn → terminal `reason.kind`, read back at armed-history fire time. */
   completedHistorical: Map<number, string>
+}
+
+/** A directly-addressed session to watch — the ingest leg (postoffice R3)
+ * subscribes the LOCAL gateway without the initiator-side registry checks. */
+export interface A2aSessionSource {
+  /** The session-plane gateway owning the session (local leg on the ingest side). */
+  gateway: A2aGateway
+  /** The session to follow. */
+  sessionId: string
+  /** Conversation id reported in fired completions (the registry shortId). */
+  conversationId: string
+}
+
+/**
+ * The completion watcher behind `subscribeCompletion` (extracted verbatim in
+ * postoffice R3): one follow stream over the addressed session, turn-text
+ * reduction, requestId arming, one resubscribe, snapshot-history fire.
+ * Same contract as the service method — every fired completion is one cb,
+ * armed subscriptions auto-dispose after their turn fires.
+ */
+export function subscribeSessionCompletion(
+  source: A2aSessionSource,
+  cb: A2aCompletionCb,
+  opts: A2aSubscribeOptions = {},
+): () => void {
+  const controller = new AbortController()
+  const state: FollowState = {
+    openTurn: undefined,
+    lastText: new Map(),
+    armedSeen: false,
+    armedTurn: undefined,
+    fired: new Set(),
+    completedHistorical: new Map(),
+  }
+  let disposed = false
+  const dispose = (): void => {
+    disposed = true
+    controller.abort()
+  }
+
+  const followRequest: SessionFollowRequestMirror = {
+    address: { kind: 'session', sessionId: source.sessionId },
+    assistantStream: true,
+  }
+
+  const fire = (turn: number, reason: string): void => {
+    state.fired.add(turn)
+    cb({
+      conversationId: source.conversationId,
+      sessionId: source.sessionId,
+      turn,
+      reason,
+      text: state.lastText.get(turn)?.text ?? '',
+    })
+    if (opts.requestId !== undefined) dispose()
+  }
+
+  const applyEvent = (event: unknown, live: boolean): void => {
+    if (!isRecord(event) || typeof event['type'] !== 'string') return
+    const seq = typeof event['seq'] === 'number' ? event['seq'] : Number.MAX_SAFE_INTEGER
+    const data = isRecord(event['data']) ? event['data'] : {}
+    switch (event['type']) {
+      case 'turn/start':
+        if (typeof data['turn'] === 'number') state.openTurn = data['turn']
+        break
+      case 'user/message': {
+        const sourceRec = isRecord(data['source']) ? data['source'] : undefined
+        if (opts.requestId !== undefined && !state.armedSeen && sourceRec?.['rpcId'] === opts.requestId) {
+          state.armedSeen = true
+          state.armedTurn = state.openTurn
+        }
+        break
+      }
+      case 'assistant/message': {
+        if (data['interrupted'] === true) break // replaced attempt — the real settlement follows
+        const turn = data['turn']
+        if (typeof turn !== 'number') break
+        const message = isRecord(data['message']) ? data['message'] : undefined
+        const text = assistantTextOf(message?.['content'])
+        const prior = state.lastText.get(turn)
+        if (prior === undefined || seq >= prior.seq) state.lastText.set(turn, { text, seq })
+        break
+      }
+      case 'turn/end': {
+        const turn = data['turn']
+        if (typeof turn !== 'number') break
+        if (state.openTurn === turn) state.openTurn = undefined
+        const reason = isRecord(data['reason']) && typeof data['reason']['kind'] === 'string'
+          ? data['reason']['kind']
+          : 'unknown'
+        if (!live) {
+          state.completedHistorical.set(turn, reason)
+          break
+        }
+        const shouldFire = opts.requestId === undefined
+          ? !state.fired.has(turn)
+          : state.armedSeen && !state.fired.has(turn) && (state.armedTurn === undefined || state.armedTurn === turn)
+        if (shouldFire) fire(turn, reason)
+        break
+      }
+      default:
+        break // merge-extensible event names are not ours to interpret
+    }
+  }
+
+  /** After a snapshot: an armed request whose turn already completed in history fires from history (prompt-accepted-before-subscribe race). */
+  const maybeFireFromHistory = (): void => {
+    if (opts.requestId === undefined) return
+    if (!state.armedSeen || state.armedTurn === undefined) return
+    if (state.fired.has(state.armedTurn) || !state.completedHistorical.has(state.armedTurn)) return
+    fire(state.armedTurn, state.completedHistorical.get(state.armedTurn) ?? 'unknown')
+  }
+
+  const handleFrame = (frame: unknown): void => {
+    if (!isRecord(frame)) return
+    if (frame['type'] === 'snapshot') {
+      const records = frame['records']
+      if (Array.isArray(records)) {
+        for (const record of records) {
+          if (isRecord(record) && record['type'] === 'event') applyEvent(record['event'], false)
+        }
+      }
+      maybeFireFromHistory()
+    } else if (frame['type'] === 'event') {
+      applyEvent(frame['event'], true)
+    }
+    // 'assistant-stream' frames are live partials — final text is durable
+  }
+
+  const onDeath = (error: unknown, attempt: number): void => {
+    if (disposed || controller.signal.aborted) return
+    if (attempt === 0) {
+      open(1) // exactly one resubscribe
+      return
+    }
+    opts.onError?.({
+      code: 'a2a/stream-dead',
+      message: `a2a: completion stream for ${source.conversationId} died twice — ${messageOf(error)}`,
+    })
+  }
+
+  const open = (attempt: number): void => {
+    let iterable: AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
+    try {
+      iterable = source.gateway.openWireStream(WIRE.streamOpen, wireArgsOf(WIRE.streamOpen, followRequest), controller.signal)
+    } catch (error) {
+      onDeath(error, attempt)
+      return
+    }
+    void (async () => {
+      try {
+        const stream = await iterable
+        for await (const frame of stream) {
+          if (disposed) return
+          handleFrame(frame)
+        }
+        onDeath(new Error('stream ended'), attempt) // a live follow stream never ends while the session lives
+      } catch (error) {
+        onDeath(error, attempt)
+      }
+    })()
+  }
+
+  open(0)
+  return dispose
 }
 
 // ---------------------------------------------------------------- service
@@ -733,146 +898,10 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         return () => { }
       }
 
-      const controller = new AbortController()
-      const state: FollowState = {
-        openTurn: undefined,
-        lastText: new Map(),
-        armedSeen: false,
-        armedTurn: undefined,
-        fired: new Set(),
-        completedHistorical: new Map(),
-      }
-      let disposed = false
-      const dispose = (): void => {
-        disposed = true
-        controller.abort()
-      }
-
-      const followRequest: SessionFollowRequestMirror = {
-        address: { kind: 'session', sessionId: row.sessionId },
-        assistantStream: true,
-      }
-
-      const fire = (turn: number, reason: string): void => {
-        state.fired.add(turn)
-        cb({
-          conversationId: row.shortId,
-          sessionId: row.sessionId,
-          turn,
-          reason,
-          text: state.lastText.get(turn)?.text ?? '',
-        })
-        if (opts.requestId !== undefined) dispose()
-      }
-
-      const applyEvent = (event: unknown, live: boolean): void => {
-        if (!isRecord(event) || typeof event['type'] !== 'string') return
-        const seq = typeof event['seq'] === 'number' ? event['seq'] : Number.MAX_SAFE_INTEGER
-        const data = isRecord(event['data']) ? event['data'] : {}
-        switch (event['type']) {
-          case 'turn/start':
-            if (typeof data['turn'] === 'number') state.openTurn = data['turn']
-            break
-          case 'user/message': {
-            const source = isRecord(data['source']) ? data['source'] : undefined
-            if (opts.requestId !== undefined && !state.armedSeen && source?.['rpcId'] === opts.requestId) {
-              state.armedSeen = true
-              state.armedTurn = state.openTurn
-            }
-            break
-          }
-          case 'assistant/message': {
-            if (data['interrupted'] === true) break // replaced attempt — the real settlement follows
-            const turn = data['turn']
-            if (typeof turn !== 'number') break
-            const message = isRecord(data['message']) ? data['message'] : undefined
-            const text = assistantTextOf(message?.['content'])
-            const prior = state.lastText.get(turn)
-            if (prior === undefined || seq >= prior.seq) state.lastText.set(turn, { text, seq })
-            break
-          }
-          case 'turn/end': {
-            const turn = data['turn']
-            if (typeof turn !== 'number') break
-            if (state.openTurn === turn) state.openTurn = undefined
-            const reason = isRecord(data['reason']) && typeof data['reason']['kind'] === 'string'
-              ? data['reason']['kind']
-              : 'unknown'
-            if (!live) {
-              state.completedHistorical.set(turn, reason)
-              break
-            }
-            const shouldFire = opts.requestId === undefined
-              ? !state.fired.has(turn)
-              : state.armedSeen && !state.fired.has(turn) && (state.armedTurn === undefined || state.armedTurn === turn)
-            if (shouldFire) fire(turn, reason)
-            break
-          }
-          default:
-            break // merge-extensible event names are not ours to interpret
-        }
-      }
-
-      /** After a snapshot: an armed request whose turn already completed in history fires from history (prompt-accepted-before-subscribe race). */
-      const maybeFireFromHistory = (): void => {
-        if (opts.requestId === undefined) return
-        if (!state.armedSeen || state.armedTurn === undefined) return
-        if (state.fired.has(state.armedTurn) || !state.completedHistorical.has(state.armedTurn)) return
-        fire(state.armedTurn, state.completedHistorical.get(state.armedTurn) ?? 'unknown')
-      }
-
-      const handleFrame = (frame: unknown): void => {
-        if (!isRecord(frame)) return
-        if (frame['type'] === 'snapshot') {
-          const records = frame['records']
-          if (Array.isArray(records)) {
-            for (const record of records) {
-              if (isRecord(record) && record['type'] === 'event') applyEvent(record['event'], false)
-            }
-          }
-          maybeFireFromHistory()
-        } else if (frame['type'] === 'event') {
-          applyEvent(frame['event'], true)
-        }
-        // 'assistant-stream' frames are live partials — final text is durable
-      }
-
-      const onDeath = (error: unknown, attempt: number): void => {
-        if (disposed || controller.signal.aborted) return
-        if (attempt === 0) {
-          open(1) // exactly one resubscribe
-          return
-        }
-        opts.onError?.({
-          code: 'a2a/stream-dead',
-          message: `a2a: completion stream for ${row.shortId} died twice — ${messageOf(error)}`,
-        })
-      }
-
-      const open = (attempt: number): void => {
-        let iterable: AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
-        try {
-          iterable = gateway.openWireStream(WIRE.streamOpen, wireArgsOf(WIRE.streamOpen, followRequest), controller.signal)
-        } catch (error) {
-          onDeath(error, attempt)
-          return
-        }
-        void (async () => {
-          try {
-            const stream = await iterable
-            for await (const frame of stream) {
-              if (disposed) return
-              handleFrame(frame)
-            }
-            onDeath(new Error('stream ended'), attempt) // a live follow stream never ends while the session lives
-          } catch (error) {
-            onDeath(error, attempt)
-          }
-        })()
-      }
-
-      open(0)
-      return dispose
+      // The watcher itself is the shared session-plane primitive (postoffice
+      // R3): the ingest leg subscribes the same machinery against the LOCAL
+      // gateway without the initiator-side registry checks.
+      return subscribeSessionCompletion({ gateway, sessionId: row.sessionId, conversationId: row.shortId }, cb, opts)
     },
 
     async stop(conv, scope) {
