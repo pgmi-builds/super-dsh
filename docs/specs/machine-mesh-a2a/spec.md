@@ -42,6 +42,9 @@
 | D17 | conversation title 概念剥离 | Super D 层自有 title，与上游 runtime session title 永不 write-through（异构：Hermes 可指定、OMP 可 mutable，开发权在上游，下版即可能变）；首次指定后 **immutable**（寻址恒走短 ID，title 只是记忆标签；话题变了开新会话）；未指定存占位 `[undefined]`（显示层可美化）；镜像行 verbatim 收养、双侧 immutable |
 | D18 | roster 瘦 + session 状态采集（5min） | roster probe 载荷只带 machine 状态 + agent 行（a6/label/ready）——session 列表不进 probe 载荷（3-4 机 × 6-7 agent 即臃肿）；**5min sweep 顺便采集**每 agent 的 DSH session list 入本地 information status 缓存（本地 = 进程内 session plane；远端 = 呈现车道直查——DSH session list 数据面全网 unified 且 title 非空（空则默认 workspace 名），调取成本低）；**per-agent 状态查询消费缓存**（alive-first ≤5、mtime 倒序，orchestra 窗口语义）：行 = `{conversationId?, sessionId(截断), title, status, mtime}`——`conversationId` 有则显示、无则留空（无论何因）；**title 解析**：registry 命中（全长 sessionId join）→ conversation title 替换原生 title 并附 `[hub A2A]` 标记，未命中 → 原生 title 原样；替换为纯呈现层 overlay（落盘 persistence 里 hub 发起与原生发起同构，D17）；sessionId 数据面握全长、照常可 resume；呈现面标明 5min cadence + last-fetch，即时按 machine 显式 live fetch——全单向 API |
 | D19 | 双向拓扑 = mutual pairing | 双向由双侧各自 add-machine 贴 token 达成（manual，机制零新增）；auto-reverse-registration（A 加 B 时反向登记给 B）仍留后续；D2 开放问题据此关闭 |
+| D20 | 回复语义 v3：通道优先 + latch + 转写兜底（2026-09-29 user 裁决，两轮） | **回复 = peer 经通道的主动 send**（信封进渠道才算沟通；session log 里的 agent response 是它自己的草稿纸；new spawn 经 user prompt 切入是唯一例外——session 只能从 user turn 诞生）。**latch**：hosting hub 镜像行 per-conversation 单调开关——本会话任一次 send（哪怕中间追问）→ 判定具备通道能力，**永久停止采集**（防 moral hazard：per-turn 重置会让「忘了 send 也有人转写」瓦解 guideline，且造成 send+转写双投）。**从未 send + turn 结束** → 按 assistant-output 规则采集 last non-empty output，作为**普通 message** 投递（hub-to-hub 信封与主动回复完全一致），前缀标注来源：`… — transcribed from its turn-end output, never sent via channel`（对齐 DSH relay/settled 刻意分型的诚实性，但不分裂 wire 信封）。**通道面无 abort/complete/max-tokens/refusal 分类**——DSH settlement 词汇是 subagent/delegation 监护人语言（refusal 注释明说「父 agent 不能当成已完成」）；通道只消费两个机器事实：**turn 边界 + last output**；空输出/latch on 零 send → 单一 notice `turn ended, no reply`（无定性词）；stop 的 abort 事实由其同步回执 `{stopped:true}` 承载；答非所问/幻觉 = 内容层的事，逐字转写照投，sender 自行判断。**teaching = 单一合并文本，无变体**：运行时工具可用性不可预判（preset 可禁行、user 可中途关、其他插件可挤掉——静态知识当场变谎话）；「if you have a superd-hub tool」条件句交模型自评（它看一眼自己的工具列表即知，零成本零错误）；**纪律：面向 agent 的文本 merged conditional > pre-selected variant——模型就是解释器，不在不可知的运行时状态上预计算 if-else**；teaching 永远 inline 于信封、有界（≤4 句），绝不独立 user prompt（OMP 二十次工具调用找 A2A 工具的事故） |
+| D21 | opening 合一 turn | `new_conversation` 增 optional `message`——opening 与正文合成**一个**注入 turn；裸 `(conversation opened)` 占位信封退役（它独占一个 turn，peer 对着无任务的开场白困惑 22 步、其产出又被当回复转投——F6/F9 同根）；无 message 的 new_conversation 仍合法（纯打招呼/占位） |
+| D22 | spawn receipt β（懒启动 foreign runtime 的 new spawn 边界） | 同步窗 **10s**（常例覆盖：观测 create 均秒级）内拿到 session 即同步全回执；超时 → `{outcome:'pending', messageId, conversationId, note:'spawning, ≤3min'}`——conversationId/messageId 皆发起方铸造、pending 态即刻可用（可 stop/可引用，心智连续）；落盘判定 = DSH 同款（session 文件持久化才算 spawned，lazy sidecar 的首条延迟被吸收）；**3min ceiling**：到点未成 → notice `spawn-failed` + 镜像行标死（后续 send 诚实报错，不注入空气），半启动进程走 stop 机制（上游无 session-close，不造一个）；成功通知经通道投递（notice 进会话）；`'pending'` 在 receipt taxonomy 中 **reserve**（0.1.7-a 落地） |
 
 ## 2. 术语
 
@@ -200,17 +203,19 @@ CTX0 hub
   hub 发起与原生发起同构（D17 不 write-through）。数据源：本地 agent =
   进程内 session plane；远端 agent = 呈现车道直查对端 session list（unified
   数据面，零新信封——D16 呈现豁免内，与 Web UI 浏览远端会话同一车道）。
-- **`new_conversation`** `{agent: '<m4>-<a6>', title}`：new-conversation 信封投给
+- **`new_conversation`** `{agent: '<m4>-<a6>', title?, message?}`：new-conversation 信封投给
   目标机器的 a2a ingest（本地 = 同一协议进程内短路；远端 = wire）→ **对端本机**
-  建会话 + 注入教学信封 → 回执 `{conversationId (短 ID), sessionId, agent,
-  machine}`。title 只写双方 registry 行（D17：immutable、`[undefined]` 占位，
-  不 write-through 上游 session title）。
+  建会话 + 注入教学信封（D21：带 `message` 则 opening 与正文合成**一个**注入 turn；
+  不带则退化为纯开场，`A2A_OPENING_MESSAGE` 占位退役）→ 回执
+  `{conversationId (短 ID), sessionId, agent, machine}`；懒启动对端超同步窗时
+  回 `{outcome:'pending', …}`（D22）。title 只写双方 registry 行（D17：immutable、
+  `[undefined]` 占位，不 write-through 上游 session title）。
 - **`send`** `{agent, conversationId?, title?, message, delivery?: 'queue'|'steer'}`：
   同一 ingest 通道投 message 信封 → 对端 resolve conversation（命中 → resume +
   注入；无 conversationId → 按新会话处理）→ inbox-acceptance 即返 receipt
-  `{outcome: 'injected'|'queued'|'failed', messageId, conversationId, sessionId}`。
-  发起方零 session-plane 调用（D16）。教学信封（E3 措辞）：正常作答即自动回投；
-  对端也有 superd-hub 工具时可用 conversationId 续聊（镜像行兑得现）。
+  `{outcome: 'injected'|'queued'|'pending'(reserved, D22)|'failed', messageId,
+  conversationId, sessionId}`。发起方零 session-plane 调用（D16）。教学信封
+  v3 单一合并文本（D20，措辞见 §7.3）——inline、有界、条件句交模型自评。
 - **`read`** `{conversationId?}`：未读清扫兜底（auto-delivery 为主通道，
   工具描述明示 NEVER poll）。
 - **`stop`** `{agent, conversationId, scope: 'turn'|'session'}`：turn 级 = cancel
@@ -224,16 +229,47 @@ CTX0 hub
   列表里，用户可旁观）。路由规则不变、执行位置在对端：目标 session idle/busy
   → `followup`（非打断；peer 语义，steer 留给显式 delivery）；teardown →
   `inject`（落盘不唤醒）。
-- **向发起方回投（D16 改形：对端完成捕获）**：对端 hub 订阅**它本机** session
-  的完成事件（同机同版本，无跨线解析），抽取最终 assistant 文本 → **回信信封**
-  发回发起方 hub → 发起方构造 user-role message，source kind 自有声明：
-  - `a2a-relay` / form `relay`：对端 agent 的回复正文（前缀 "Agent <addr> replied:"）。
-  - `a2a-notice` / form `notice`：投递状态类事件（失败通知、stop 确认等，
-    summary ≤120 字符，UI 折叠行）。
-  发起方路由（DSH subagent `notifySettlement` 同构）：发起 session idle →
-  `followup`（新 turn）；busy → `followup`；teardown → `inject`（落盘不唤醒）。
-  持久性白拿：inbox 事件 + session log。回信投递失败进**对端**有界待发缓冲，
-  随下次接触重投（对称于发起方 unread buffer）。
+- **向发起方回投（D20 改形：通道优先 + latch + 转写兜底）**——peer 的回复有两条路，
+  到达后对 sender 完全同形（user-role message，source kind `a2a-relay`）：
+  - **主动 send（正路）**：peer agent 调它本机的 superd-hub `send`（教学信封给的
+    initiator 地址 + shortId）→ 命中发起方机器上的 initiator 行 → **write-back 直投**
+    进发起 session（绝不注入——session 不归对端驱动）；此路一走，镜像行 latch 置位。
+  - **转写兜底（latch 从未置位时）**：hosting hub 订阅**它本机** session 的完成事件
+    （同机同版本，无跨线解析），按 assistant-output 规则取 last non-empty output
+    → 回信信封发回 → 前缀如实标注：`Agent <addr> — transcribed from its turn-end
+    output, never sent via channel (conversation "<title>"):`（对照 DSH 刻意分型
+    relay/settled 的诚实性，但不分裂 wire 信封——sender 拿到的都是普通 message）。
+  - **latch（per-conversation 单调，挂镜像行）**：本会话任一次主动 send → 永久停止
+    转写。防 moral hazard（「忘了 send 也有人转写」会瓦解 guideline）与双投
+    （send 中间追问 + turn 尾结果写在 response → per-turn 重置会两条都送）。
+  - **notice（单一形状）**：`conversation "<shortId>": turn ended, no reply` ——
+    空输出、或 latch on 且本 turn 零 send。**无 abort/complete 定性词**（D20）；
+    stop 的 abort 事实走 stop 同步回执。基建事实（send-failed/stream-dead）
+    照报——那是邮局的话，不是对孩子的判词。
+  - **不变式：每个 turn 结束恰产生一件 artifact**（transcript message 或 notice），
+    绝不零件、绝不两件。
+  - 发起方路由（DSH subagent `notifySettlement` 同构）：idle/busy → `followup`；
+    teardown → `inject`（落盘不唤醒）。持久性白拿：inbox 事件 + session log。
+    回信投递失败进**对端**有界待发缓冲，随下次接触重投（对称于发起方 unread buffer）。
+- **教学信封 v3（D20 权威措辞，单一合并文本，无变体）**：
+
+```
+A2A message from {machine}-{agent} (conversation "{title}"):
+
+{message}
+
+The sender sees only what arrives through this conversation. To reply, send a
+message back: with a superd-hub tool, {action:"send", agent:"{machine}-{agent}",
+conversationId:"{shortId}", message:"…"}. You can send at any point, more than
+once — sending does not end your turn. If you never send, your last output at
+this turn's end is delivered to the sender as your reply, marked as transcribed.
+```
+
+  四句各司其职：sender 只见渠道内容（防「它都看到了」错觉）/ 怎么回、随时可回、
+  回不结束 turn（DSH `withContinuableReturnGuidance` 同款关键句）/ 不回的后果
+  = 转写代投带标注（informed consent，同时就是对无工具 peer 的 subagent 契约句）。
+  `{machine}-{agent}` 填 initiator 地址（write-back 直接可用）；单遍渲染防注入
+  机制不变；**绝不独立 user prompt**（OMP 事故）。
 - **registry 双侧**：发起方持行（发起 session 上下文 + shortId）；对端持镜像行
   （peer 地址 + 本机 session）。shortId 由发起方铸造、信封携带、对端原样收养
   ——信封的 conversationId 续聊条款处处兑得现。
@@ -251,7 +287,23 @@ DSH sub-agent 的 receipt（inbox-acceptance 即返）+ steer/followup/inject �
 + `agent-message`/`subagent-settled` 的 kind/form 二轴 = 本设计的回投骨架；
 OMP hub 的 outcome 枚举 / no-double-delivery / auto-delivery+wait 哲学 /
 incoming 信封教学 = receipt 与对端体验语义；orchestra agent-listing =
-per-agent 状态查询的窗口/状态语义（D18）。experimental agent-team 的 durable mailbox 仅作远期参照。
+per-agent 状态查询的窗口/状态语义（D18）。agent-team 的 durable mailbox 已从「远期
+参照」升格为**已借鉴**：0.1.6-k 的目标侧 messageId 去重即其「目标收下才是 ack」
+边界的 hub-to-hub 版。完整源码锚定对照见 [precedents.md](./precedents.md)。
+
+### 7.5 保证边界（诚实声明，agent-team 同款纪律）
+
+- **exactly-once = per-messageId、有界**：入站信封按 messageId 幂等（重发重 ACK
+  不重执行），seen-set 持久但 **≤128 LRU**——严格说是 *effectively-once*（重复
+  信封需排在 128 个新 messageId 之后才会漏）。跨进程端到端 exactly-once**不承诺**
+  （agent-team 原文同款："in-process retry + target Session 去重，不是跨进程
+  exactly-once"）。
+- **投递不丢但有界**：待发缓冲 ≤`A2A_BUFFER_MAX`(32)，溢出即最旧丢弃；unread
+  buffer 同界。通知 ≤120 字符截断。
+- **`read` = down 窗口的唯一 drain（consume）**，不是 peek——peek/consume 分离在
+  DSH/OMP 服务于 wait+peek 两动作，我们只有 drain 一个动作；待验 seam：同一条
+  buffered 消息不得存在 read + splice 双路径（E5，0.1.7-a 钉死）。
+- **每 turn 恰一件 artifact**（§7.3 不变式）——回归测试锚点。
 
 ## 8. Remote Execution（P4）
 
