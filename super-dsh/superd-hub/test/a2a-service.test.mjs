@@ -90,19 +90,19 @@ const settle = (ms = 15) => new Promise((r) => setTimeout(r, ms))
 
 // ---------------------------------------------------------------- newConversation
 
-test('newConversation: create+rename payloads byte-exact per mirrors; row persisted 0600; shortId = first 6 of the id (prefix-free base)', async () => {
+test('newConversation: create payload byte-exact per mirrors; title stored verbatim, ZERO rename calls; row persisted 0600; shortId = first 6 of the id (prefix-free base)', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaa-1111' } } })
-  gw.rpc({ result: { ok: true, value: { title: 'Bug triage', seq: 3 } } })
   const { home, svc } = mkService(gw)
   try {
     const out = await svc.newConversation(ADDR, 'Bug triage')
     assert.equal(out.shortId, 'sess-a')
     assert.equal(out.sessionId, 'sess-aaaaaaaa-1111')
+    assert.equal(out.warning, undefined)
     assert.deepEqual(gw.rpcs(WIRE.sessionCreate).map((c) => c.payload), [{ args: { request: {} } }])
-    assert.deepEqual(gw.rpcs(WIRE.sessionTitle).map((c) => c.payload), [{
-      args: { request: { sessionId: 'sess-aaaaaaaa-1111', title: 'Bug triage' } },
-    }])
+    // D17 (postoffice R2): the title is hub-owned registry state — the A2A
+    // path NEVER writes through to the upstream runtime session title.
+    assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
     const rows = loadConversations(home).conversations
     assert.equal(rows.length, 1)
     assert.deepEqual(rows[0], {
@@ -114,65 +114,68 @@ test('newConversation: create+rename payloads byte-exact per mirrors; row persis
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('newConversation: no title → no rename call; gateway missing → typed error; rejected title → structured warning (D1 hardening)', async () => {
+test('newConversation: no title → [undefined] placeholder stored; gateway missing → typed error; a title NEVER renames upstream (D17)', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-bbbbbbbb-2222' } } })
   const { home, svc } = mkService(gw)
   try {
     const out = await svc.newConversation(ADDR)
     assert.equal(out.shortId, 'sess-b')
+    assert.equal(out.warning, undefined)
+    // D17: unspecified → the '[undefined]' placeholder, stored at mint
+    assert.equal(loadConversations(home).conversations[0].title, '[undefined]')
     assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
     // gateway unavailable → typed error
     await assert.rejects(
       () => svc.newConversation({ machine: 'nowhere', id: 'zzzzzz' }),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/gateway-unavailable',
     )
-    // business {ok:false,error} on the rename → NOT a throw anymore: the
-    // conversation exists upstream and the row is addressable, so the caller
-    // gets the ids back with a warning (D1: never orphan, never bare Error:)
+    // a specified title lands in the registry verbatim — still zero rename
+    // calls (the old write-through + warning path is deleted, D17/R2)
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } }) // create
-    gw.rpc({ result: { ok: false, error: { code: 'session/title-invalid', message: 'bad title' } } }) // rename rejected
-    const warned = await svc.newConversation(ADDR, 'x')
-    assert.equal(warned.shortId, 'sess-c')
-    assert.equal(warned.sessionId, 'sess-cccccccc-3333')
-    assert.equal(warned.warning, 'title not set: bad title')
+    const titled = await svc.newConversation(ADDR, 'x')
+    assert.equal(titled.shortId, 'sess-c')
+    assert.equal(titled.sessionId, 'sess-cccccccc-3333')
+    assert.equal(titled.warning, undefined)
     const rows = loadConversations(home).conversations
-    assert.equal(rows.find((r) => r.sessionId === 'sess-cccccccc-3333').title, undefined, 'rejected title not persisted')
+    assert.equal(rows.find((r) => r.sessionId === 'sess-cccccccc-3333').title, 'x')
+    assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('newConversation: world-context liveness failure shape → structured result, row addressable (D1 wire shape)', async () => {
+test('newConversation: title is registry-only — the whole A2A path makes zero session/rename calls (D17 hard line)', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-eeeeeeee-5555' } } })
-  gw.rpc({ result: { ok: false, error: { code: 'gateway/internal', message: 'failed to rename session "sess-eeeeeeee-5555": Error: session "sess-eeeeeeee-5555" is not live in this store' } } })
   const { home, svc } = mkService(gw)
   try {
     const out = await svc.newConversation(ADDR, 'Rename probe A')
     assert.equal(out.shortId, 'sess-e')
     assert.equal(out.sessionId, 'sess-eeeeeeee-5555')
-    assert.match(out.warning, /^title not set: failed to rename session/)
-    assert.match(out.warning, /is not live in this store/)
+    assert.equal(out.warning, undefined)
     const rows = loadConversations(home).conversations
     assert.equal(rows.length, 1)
     assert.equal(rows[0].sessionId, 'sess-eeeeeeee-5555')
-    assert.equal(rows[0].title, undefined)
+    assert.equal(rows[0].title, 'Rename probe A')
+    // the rename write-through is GONE — not retried, not warned about, never dialed
+    assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('send create-path: rejected title → failed receipt carrying the orphan sessionId in details (D1 hardening)', async () => {
+test('send create-path: title lands in the registry (no rename); prompt still goes out; injected receipt', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-ffffffff-6666' } } }) // create
-  gw.rpc({ result: { ok: false, error: { code: 'gateway/internal', message: 'failed to rename session "sess-ffffffff-6666": Error: session "sess-ffffffff-6666" is not live in this store' } } })
+  gw.rpc({ result: { ok: true, value: { accepted: true } } })                   // prompt
   const { home, svc } = mkService(gw)
   try {
     const receipt = await svc.send({ to: ADDR, title: 'Nope', message: 'never sent' }, INITIATOR)
-    assert.equal(receipt.outcome, 'failed')
+    assert.equal(receipt.outcome, 'injected')
     assert.equal(receipt.sessionId, 'sess-ffffffff-6666')
     assert.equal(receipt.conversationId, 'sess-f')
-    assert.equal(receipt.error.code, 'gateway/internal')
-    assert.deepEqual(receipt.error.details, { orphanSessionId: 'sess-ffffffff-6666', conversationId: 'sess-f' })
+    assert.equal(receipt.error, undefined)
+    assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
+    assert.equal(gw.rpcs(WIRE.promptSubmit).length, 1)
     const rows = loadConversations(home).conversations
-    assert.equal(rows.find((r) => r.sessionId === 'sess-ffffffff-6666').title, undefined)
+    assert.equal(rows.find((r) => r.sessionId === 'sess-ffffffff-6666').title, 'Nope')
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -181,7 +184,7 @@ test('send create-path: rejected title → failed receipt carrying the orphan se
 test('send without conversationId: create path — create(+rename) then prompt; injected receipt; row persisted', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-dddddddd-4444' } } }) // create
-  gw.rpc({ result: { ok: true, value: { title: 'Sync review', seq: 2 } } })    // rename
+  // D17/R2: no rename call anymore — create goes straight to prompt
   gw.rpc({ result: { ok: true, value: { accepted: true } } })                  // prompt
   const { home, svc } = mkService(gw)
   try {
@@ -270,6 +273,31 @@ test('teaching template: ONE exported constant; renderer fills initiator identit
     'A2A message from m1ab-a2b3c4 (conversation "T"):\n\nhi\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId sess-ddd for later or asynchronous replies.',
   )
   assert.ok(renderA2aEnvelope({ machine: 'm', agent: 'a', shortId: 's', message: 'x' }).includes('"(untitled)"'))
+  // D17: the '[undefined]' registry placeholder renders as the friendly untitled display
+  assert.ok(renderA2aEnvelope({ machine: 'm', agent: 'a', title: '[undefined]', shortId: 's', message: 'x' }).includes('"(untitled)"'))
+})
+
+test('title immutability (D17): a later send never rewrites the stored title, whatever title it carries', async () => {
+  const gw = fakeGateway()
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-titl222-9001' } } }) // create (titled)
+  gw.rpc({ result: { ok: true, value: { accepted: true } } })                   // prompt
+  gw.rpc({ result: { ok: true, value: { accepted: true } } })                   // prompt (resume)
+  const { home, svc } = mkService(gw)
+  try {
+    const first = await svc.send({ to: ADDR, title: 'Original', message: 'one' }, INITIATOR)
+    assert.equal(first.outcome, 'injected')
+    // resume with a DIFFERENT title: the create-time title is immutable — the
+    // send's title field is simply not a write path for existing rows
+    const second = await svc.send({ to: ADDR, conversationId: first.conversationId, title: 'Intruder', message: 'two' }, INITIATOR)
+    assert.equal(second.outcome, 'injected')
+    const rows = loadConversations(home).conversations
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].title, 'Original')
+    assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
+    // and the teaching envelope for the resume still carries the stored title
+    const prompt = gw.rpcs(WIRE.promptSubmit)[1].payload.args.request
+    assert.ok(prompt.content[0].text.includes('conversation "Original"'))
+  } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
 // ---------------------------------------------------------------- subscribeCompletion

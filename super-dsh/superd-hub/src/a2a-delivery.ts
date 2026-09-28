@@ -29,7 +29,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { A2A_NOTICE_SUMMARY_MAX } from './a2a-wire.js'
+import { A2A_NOTICE_SUMMARY_MAX, A2A_TITLE_PLACEHOLDER } from './a2a-wire.js'
 // compat re-export (postoffice R1): the bound moved to the protocol layer
 // (a2a-wire.ts) so the envelope guard enforces the same number this module
 // bounds in-process summaries with; existing importers keep compiling.
@@ -205,7 +205,7 @@ export interface A2aNoticeMeta {
  * @returns `Agent <machine>-<agent> replied (conversation "<title>"):\n\n<text>`.
  */
 export function renderA2aRelayText(meta: A2aReplyMeta, content: string): string {
-  const title = meta.title === undefined || meta.title === '' ? A2A_UNTITLED : meta.title
+  const title = meta.title === undefined || meta.title === '' || meta.title === A2A_TITLE_PLACEHOLDER ? A2A_UNTITLED : meta.title
   return `Agent ${meta.senderMachine}-${meta.senderAgent} replied (conversation "${title}"):\n\n${content}`
 }
 

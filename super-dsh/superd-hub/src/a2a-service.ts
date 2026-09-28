@@ -53,7 +53,7 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EnvelopeError, type WireError } from './envelope.js'
-import { A2aAddressError } from './a2a-wire.js'
+import { A2aAddressError, A2A_TITLE_PLACEHOLDER, normalizeA2aTitle } from './a2a-wire.js'
 // compat re-export (postoffice R1): the class moved to the protocol layer
 // (a2a-wire.ts) so the wire helpers can classify with it; every existing
 // consumer importing it from this module keeps compiling unchanged.
@@ -63,7 +63,7 @@ import {
   type SessionCreateRequestMirror,
   type SessionPromptRequestMirror,
   type SessionCancelRequestMirror,
-  type SessionRenameRequestMirror,
+  type SessionRenameRequestMirror, // still exported for wire-endpoints consumers; the A2A path never calls rename (D17/R2)
   type SessionFollowRequestMirror,
 } from './wire-endpoints.js'
 import { wireArgsOf } from './wire-endpoints.js'
@@ -244,7 +244,7 @@ export function renderA2aEnvelope(fields: {
   shortId: string
   message: string
 }): string {
-  const title = fields.title === undefined || fields.title === '' ? A2A_UNTITLED : fields.title
+  const title = fields.title === undefined || fields.title === '' || fields.title === A2A_TITLE_PLACEHOLDER ? A2A_UNTITLED : fields.title
   return A2A_MESSAGE_TEMPLATE.replace(/\{(machine|agent|title|shortId|message)\}/g, (_match, key: string): string => {
     switch (key) {
       case 'machine': return fields.machine
@@ -397,7 +397,7 @@ export interface A2aServiceDeps {
 }
 
 export interface A2aService {
-  /** Create a conversation on the target (session/create [+ session/rename]); typed errors on 401/unreachable/business rejection — EXCEPT a rejected title, which returns the created conversation with a `warning` (D1 hardening: never orphan an addressable row). */
+  /** Create a conversation on the target (session/create ONLY — D17/R2: no session/rename write-through); title is hub-owned registry state (stored normalized, immutable). Typed errors on 401/unreachable/business rejection. The vestigial `warning?` return field stays for signature stability and is never set. */
   newConversation(addr: A2aAddress, title?: string): Promise<{ shortId: string; sessionId: string; warning?: string }>
   /** Create-or-resume + inject one user turn; receipt semantics (never throws — failures are 'failed' receipts). */
   send(req: A2aSendRequest, initiator: A2aInitiator): Promise<A2aReceipt>
@@ -574,8 +574,8 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
     return rows.find((r) => r.shortId === conversationId || r.sessionId === conversationId)
   }
 
-  /** Insert a row (idempotent per sessionId: re-seen session keeps its shortId). */
-  const insertRow = (addr: A2aAddress, sessionId: string): ConversationRow => {
+  /** Insert a row (idempotent per sessionId: re-seen session keeps its shortId — and its title: D17 immutable). */
+  const insertRow = (addr: A2aAddress, sessionId: string, title: string): ConversationRow => {
     const file = loadConversations(deps.home)
     const rows = file.conversations
     const prior = rows.find((r) => r.sessionId === sessionId)
@@ -585,8 +585,10 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       machine: addr.machine,
       agent: addr.id,
       sessionId,
-      // NOTE: the title is deliberately NOT persisted here — it lands via
-      // touchRow only after session/rename succeeds upstream.
+      // D17: hub-owned title, normalized at mint ('[undefined]' when the
+      // operator specified none) and IMMUTABLE from here on — never written
+      // through to the upstream runtime session title (zero rename calls).
+      title,
       createdAt: now(),
       lastActivityAt: now(),
     }
@@ -595,13 +597,15 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
     return row
   }
 
-  const touchRow = (row: ConversationRow, title?: string): void => {
+  const touchRow = (row: ConversationRow): void => {
     const rows = loadConversations(deps.home).conversations
     const idx = rows.findIndex((r) => r.sessionId === row.sessionId)
     if (idx === -1) return
-    rows[idx] = { ...rows[idx], lastActivityAt: now(), ...(title === undefined ? {} : { title }) }
+    // D17: only the activity stamp moves — a later write path never touches title.
+    rows[idx] = { ...rows[idx], lastActivityAt: now() }
     persist(rows)
   }
+
 
   const service: A2aService = {
     async newConversation(addr, title) {
@@ -611,21 +615,12 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (!isRecord(created) || typeof created['sessionId'] !== 'string' || created['sessionId'] === '') {
         throw a2aError('a2a/bad-result', 'a2a: session/create returned no sessionId')
       }
-      const row = insertRow(addr, created['sessionId'])
-      if (title !== undefined && row.title !== title) {
-        const renameRequest: SessionRenameRequestMirror = { sessionId: row.sessionId, title }
-        // Row is already persisted: a rejected title leaves the conversation
-        // addressable (untitled) rather than orphaned upstream. D1 hardening:
-        // return the structured result with a warning instead of throwing —
-        // the caller MUST learn the conversation's ids either way.
-        try {
-          await sessionRpc(gateway, WIRE.sessionTitle, renameRequest)
-        } catch (error) {
-          return { shortId: row.shortId, sessionId: row.sessionId, warning: `title not set: ${messageOf(error)}` }
-        }
-        touchRow(row, title)
-        row.title = title
-      }
+      // D17 (postoffice R2): the title is hub-owned registry state — stored
+      // normalized at mint, NEVER written through to the upstream runtime
+      // session title (zero session/rename calls from the A2A path). The
+      // optional `warning` stays in the return type for signature stability;
+      // with the write-through gone there is nothing to warn about anymore.
+      const row = insertRow(addr, created['sessionId'], normalizeA2aTitle(title))
       return { shortId: row.shortId, sessionId: row.sessionId }
     },
 
@@ -671,31 +666,14 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       }
 
       if (row === undefined) {
-        // create path — no conversationId ≡ new conversation (title optional)
+        // create path — no conversationId ≡ new conversation. D17/R2: the
+        // title lands in the registry row (normalized), never upstream.
         try {
           const created = await sessionRpc<{ sessionId: string }>(gateway, WIRE.sessionCreate, {} as SessionCreateRequestMirror)
           if (!isRecord(created) || typeof created['sessionId'] !== 'string' || created['sessionId'] === '') {
             throw a2aError('a2a/bad-result', 'a2a: session/create returned no sessionId')
           }
-          row = insertRow(req.to, created['sessionId'])
-          if (req.title !== undefined && row.title !== req.title) {
-            const renameRequest: SessionRenameRequestMirror = { sessionId: row.sessionId, title: req.title }
-            try {
-              await sessionRpc(gateway, WIRE.sessionTitle, renameRequest)
-            } catch (error) {
-              // D1 hardening: the failure happened during create (the prompt
-              // has NOT gone out) — the receipt fails as today, but the orphan
-              // session is addressable and its id rides in error details.
-              const base = receiptErrorOf(error)
-              throw a2aError(base.code, base.message, {
-                ...(isRecord(base.details) ? base.details : {}),
-                orphanSessionId: row.sessionId,
-                conversationId: row.shortId,
-              })
-            }
-            touchRow(row, req.title)
-            row.title = req.title
-          }
+          row = insertRow(req.to, created['sessionId'], normalizeA2aTitle(req.title))
         } catch (error) {
           return fail(receiptErrorOf(error), row?.sessionId ?? '', row?.shortId)
         }

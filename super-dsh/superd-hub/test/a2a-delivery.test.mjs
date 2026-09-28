@@ -145,6 +145,11 @@ test('renderA2aRelayText: untitled conversations render the (untitled) placehold
     renderA2aRelayText({ ...RELAY_META, title: undefined }, 'x'),
     'Agent k3f9-q7m2xp replied (conversation "(untitled)"):\n\nx',
   )
+  // D17: the '[undefined]' registry placeholder gets the same friendly display
+  assert.equal(
+    renderA2aRelayText({ ...RELAY_META, title: '[undefined]' }, 'x'),
+    'Agent k3f9-q7m2xp replied (conversation "(untitled)"):\n\nx',
+  )
 })
 
 // ---------------------------------------------------------------- notices
