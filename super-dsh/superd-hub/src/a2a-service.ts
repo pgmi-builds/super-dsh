@@ -144,33 +144,93 @@ export function saveConversations(home: string, file: ConversationsFile): void {
   renameSync(tmp, target)
 }
 
-/** shortId mint (D2 fix): DSH session ids are `session-<uuid>`, so slicing the raw id only ever captures the constant prefix (the live registry degenerated to "session-", "session-3", …). Strip the optional leading `session-`, mint the first 6 chars of the uuid part, and collision-lengthen 6→8→10… (step 2, spec §11). Ids without the prefix (older/foreign spellings) mint from the whole id the same way. A re-seen sessionId keeps its row's shortId (stable across restarts); LEGACY rows keep their stored shortIds verbatim — they stay valid aliases and stay reserved as taken, never rewritten. */
-export function shortIdFor(sessionId: string, rows: readonly ConversationRow[]): string {
-  const existing = rows.find((r) => r.sessionId === sessionId)
-  if (existing) return existing.shortId
+/** Mint core: strip the optional leading `session-`, take the first 6 chars of the
+ * base, collision-lengthen 6→8→10… (step 2). Shared by the fresh-mint path and the
+ * one-time registry migration so both produce identical ids. */
+function mintShortIdOf(sessionId: string, taken: ReadonlySet<string>): string {
   const stripped = sessionId.startsWith('session-') ? sessionId.slice('session-'.length) : sessionId
   const base = stripped === '' ? sessionId : stripped
   for (let len = 6; len < base.length; len += 2) {
     const candidate = base.slice(0, len)
-    if (!rows.some((r) => r.shortId === candidate)) return candidate
+    if (!taken.has(candidate)) return candidate
   }
-  if (!rows.some((r) => r.shortId === base)) return base
+  if (!taken.has(base)) return base
   throw new Error(`a2a: short-id space exhausted for session ${sessionId}`)
+}
+
+/**
+ * shortId mint (D2 fix): DSH session ids are `session-<uuid>`, so slicing the
+ * raw id only ever captures the constant prefix (the live registry degenerated
+ * to "session-", "session-3", …). Strip the prefix, mint the first 6 chars of
+ * the uuid part, collision-lengthen 6→8→10… (step 2, spec §11). Ids without the
+ * prefix (older/foreign spellings) mint from the whole id the same way. A
+ * re-seen sessionId keeps its row's shortId (stable across restarts); stored
+ * shortIds are reserved as taken — DEGENERATE ones are re-minted once by
+ * {@link migrateConversations}, all others stay verbatim forever.
+ */
+export function shortIdFor(sessionId: string, rows: readonly ConversationRow[]): string {
+  const existing = rows.find((r) => r.sessionId === sessionId)
+  if (existing) return existing.shortId
+  return mintShortIdOf(sessionId, new Set(rows.map((r) => r.shortId)))
+}
+
+/**
+ * Degenerate-pattern predicate (D2 migration): a stored shortId that still
+ * carries the `session-` prefix AND whose remainder is shorter than the new
+ * mint length — exactly the ids the old prefix-slicing bug produced. Such ids
+ * carry (almost) no information and teach peers to echo garbage.
+ */
+export function isDegenerateShortId(shortId: string): boolean {
+  return shortId.startsWith('session-') && shortId.length < 'session-'.length + 6
+}
+
+/**
+ * One-time registry migration (D2 amended, review 2026-09-28): rows matching
+ * the degenerate pattern are re-minted with the current algorithm and written
+ * back; non-degenerate rows are never touched. Peers still holding an old
+ * degenerate id in their context is accepted collateral — the registry holds
+ * test data today, which is the cheapest migration window there will ever be.
+ * @returns the re-minted rows (empty when nothing needed migrating).
+ */
+export function migrateConversations(home: string): ConversationRow[] {
+  const rows = loadConversations(home).conversations
+  if (!rows.some((r) => isDegenerateShortId(r.shortId))) return []
+  const taken = new Set(rows.filter((r) => !isDegenerateShortId(r.shortId)).map((r) => r.shortId))
+  const minted = new Map<string, string>()
+  for (const row of rows) {
+    if (!isDegenerateShortId(row.shortId)) continue
+    const shortId = mintShortIdOf(row.sessionId, taken)
+    taken.add(shortId)
+    minted.set(row.sessionId, shortId)
+  }
+  const next = rows.map((r) => (minted.has(r.sessionId) ? { ...r, shortId: minted.get(r.sessionId) as string } : r))
+  saveConversations(home, { conversations: next })
+  return next.filter((r) => minted.has(r.sessionId))
 }
 // ---------------------------------------------------------------- envelopes
 
 /**
- * THE reply-teaching envelope — one template constant, quoted verbatim by the
- * Task 4 tool description. Filled with the INITIATOR's identity (machine-agent
- * address), the conversation title and the shortId the peer replies with.
+ * THE reply-teaching envelope — one template constant. Filled with the
+ * INITIATOR's identity (machine-agent address), the conversation title, the
+ * body, and the shortId a superd-hub tool would address. E3 rewording
+ * (2026-09-28): the peer is taught to reply NORMALLY — world trees do not
+ * compose the a2a row yet (P5 pending) and the hub's completion watch relays
+ * the peer's turn output regardless; the tool clause is secondary, for later
+ * or asynchronous replies when the peer ALSO has a superd-hub tool.
  */
 export const A2A_MESSAGE_TEMPLATE =
-  'A2A message from {machine}-{agent} (conversation "{title}", reply via SuperD Hub send with conversationId {shortId}):\n\n{message}'
+  'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId {shortId} for later or asynchronous replies.'
 
 /** Title shown when the conversation has none. */
 export const A2A_UNTITLED = '(untitled)'
 
-/** Render the teaching envelope for one send. */
+/**
+ * Render the teaching envelope for one send — a SINGLE pass over the template
+ * (injection fix, 2026-09-28): each placeholder is expanded exactly once from
+ * the fields, and user-supplied values (title, message) are never re-scanned,
+ * so a title containing the literal `{shortId}` or `{message}` lands verbatim
+ * instead of being expanded by a later replaceAll round.
+ */
 export function renderA2aEnvelope(fields: {
   machine: string
   agent: string
@@ -179,12 +239,15 @@ export function renderA2aEnvelope(fields: {
   message: string
 }): string {
   const title = fields.title === undefined || fields.title === '' ? A2A_UNTITLED : fields.title
-  return A2A_MESSAGE_TEMPLATE
-    .replaceAll('{machine}', fields.machine)
-    .replaceAll('{agent}', fields.agent)
-    .replaceAll('{title}', title)
-    .replaceAll('{shortId}', fields.shortId)
-    .replaceAll('{message}', fields.message)
+  return A2A_MESSAGE_TEMPLATE.replace(/\{(machine|agent|title|shortId|message)\}/g, (_match, key: string): string => {
+    switch (key) {
+      case 'machine': return fields.machine
+      case 'agent': return fields.agent
+      case 'title': return title
+      case 'shortId': return fields.shortId
+      default: return fields.message
+    }
+  })
 }
 
 /** Bounded unread buffer size per initiator session. */
@@ -316,27 +379,49 @@ export interface A2aGateway {
 }
 
 /**
- * D7: the three distinct ways a gateway can fail to resolve. The error the
- * model sees must name the ACTUAL problem — a typo'd a6 on a known machine is
- * not a pairing issue, and an unpaired machine is not an agent problem.
- * `unreachable` keeps today's message (roster knows the agent; its plane is
- * down or the machine does not answer).
+ * Typed address-resolution failure (D7): THROWN by `gatewayFor` resolvers so
+ * the WHY survives the resolver boundary — future consumers (P4 exec, P5
+ * injection) branch on `kind` instead of parsing message strings. The three
+ * kinds name the actual problem: a typo'd a6 on a known machine is not a
+ * pairing issue, and an unpaired machine is not an agent problem.
  */
-export type A2aGatewayMiss =
-  | { miss: 'unknown-agent' }
-  | { miss: 'unknown-machine' }
-  | { miss: 'unreachable' }
+export class A2aAddressError extends Error {
+  /** Which failure this is. */
+  readonly kind: 'unknown-agent' | 'unknown-machine' | 'unreachable'
+  /** The address that failed to resolve. */
+  readonly address: A2aAddress
+  /** The machine the blame lands on (m4; equals `address.machine`). */
+  readonly machine: string
+
+  constructor(kind: 'unknown-agent' | 'unknown-machine' | 'unreachable', address: A2aAddress) {
+    super(A2aAddressError.messageOf(kind, address))
+    this.name = 'A2aAddressError'
+    this.kind = kind
+    this.address = address
+    this.machine = address.machine
+  }
+
+  /** The honest branch text — one place, shared by every consumer of the error. */
+  static messageOf(kind: 'unknown-agent' | 'unknown-machine' | 'unreachable', address: A2aAddress): string {
+    if (kind === 'unknown-agent') {
+      return `a2a: unknown-agent ${address.machine}-${address.id} (no such agent on machine ${address.machine})`
+    }
+    if (kind === 'unknown-machine') {
+      return `a2a: unknown-machine ${address.machine} (not paired)`
+    }
+    return `a2a: no gateway for ${address.machine}-${address.id} — machine unreachable or not paired`
+  }
+}
 
 export interface A2aServiceDeps {
   home: string
-  gatewayFor(addr: A2aAddress): A2aGateway | A2aGatewayMiss | undefined
+  gatewayFor(addr: A2aAddress): A2aGateway
   now?(): number
 }
 
 export interface A2aService {
   /** Create a conversation on the target (session/create [+ session/rename]); typed errors on 401/unreachable/business rejection — EXCEPT a rejected title, which returns the created conversation with a `warning` (D1 hardening: never orphan an addressable row). */
   newConversation(addr: A2aAddress, title?: string): Promise<{ shortId: string; sessionId: string; warning?: string }>
-  newConversation(addr: A2aAddress, title?: string): Promise<{ shortId: string; sessionId: string }>
   /** Create-or-resume + inject one user turn; receipt semantics (never throws — failures are 'failed' receipts). */
   send(req: A2aSendRequest, initiator: A2aInitiator): Promise<A2aReceipt>
   /** Subscribe turn completions of one conversation over session/follow; returns the dispose fn. */
@@ -379,35 +464,31 @@ function freshSignal(): AbortSignal {
   return new AbortController().signal
 }
 
-/** Type guard: a resolution is a miss object (D7) rather than a live gateway. */
-function isGatewayMiss(resolution: A2aGateway | A2aGatewayMiss | undefined): resolution is A2aGatewayMiss {
-  return resolution !== undefined && typeof resolution === 'object' && 'miss' in resolution
+/** Map one typed address failure to its wire error body (D7): the error's own
+ * message; the code keeps 'a2a/gateway-unavailable' for the unreachable branch
+ * (today's code) and names the kind otherwise. */
+function addressErrorBody(error: A2aAddressError): { code: string; message: string } {
+  return { code: error.kind === 'unreachable' ? 'a2a/gateway-unavailable' : `a2a/${error.kind}`, message: error.message }
 }
 
-/** The wire error body for one gateway miss — three honest branches (D7):
- * unknown agent on a known machine / entirely unknown machine / known-but-unreachable (today's message). */
-function gatewayMissBody(addr: A2aAddress, miss: A2aGatewayMiss): { code: string; message: string } {
-  if (miss.miss === 'unknown-agent') {
-    return { code: 'a2a/unknown-agent', message: `a2a: unknown-agent ${addr.machine}-${addr.id} (no such agent on machine ${addr.machine})` }
-  }
-  if (miss.miss === 'unknown-machine') {
-    return { code: 'a2a/unknown-machine', message: `a2a: unknown-machine ${addr.machine} (not paired)` }
-  }
-  return { code: 'a2a/gateway-unavailable', message: `a2a: no gateway for ${addr.machine}-${addr.id} — machine unreachable or not paired` }
-}
-
-/** The typed-error form of {@link gatewayMissBody} (throw sites: newConversation / stop). */
-function gatewayMissError(addr: A2aAddress, miss: A2aGatewayMiss): EnvelopeError {
-  const { code, message } = gatewayMissBody(addr, miss)
-  return a2aError(code, message)
-}
-
-/** Resolve or fail: `undefined` from a legacy resolver is spelled 'unreachable' (D7 keeps it honest). */
+/** Resolve through the injected resolver, mapping A2aAddressError to the typed wire
+ * error (D7). A resolver that still returns undefined instead of throwing is defensively
+ * spelled 'unreachable' — the service never proceeds with a missing face. */
 function gatewayOrThrow(gatewayFor: A2aServiceDeps['gatewayFor'], addr: A2aAddress): A2aGateway {
-  const resolution = gatewayFor(addr)
-  if (isGatewayMiss(resolution)) throw gatewayMissError(addr, resolution)
-  if (resolution === undefined) throw gatewayMissError(addr, { miss: 'unreachable' })
-  return resolution
+  let gateway: A2aGateway | undefined
+  try {
+    gateway = gatewayFor(addr)
+  } catch (error) {
+    if (error instanceof A2aAddressError) {
+      const body = addressErrorBody(error)
+      throw a2aError(body.code, body.message)
+    }
+    throw error
+  }
+  if (gateway === undefined) {
+    throw a2aError('a2a/gateway-unavailable', A2aAddressError.messageOf('unreachable', addr))
+  }
+  return gateway
 }
 
 /** Bound for the stop() liveness read — a healthy session plane answers the first
@@ -502,6 +583,9 @@ interface FollowState {
 
 export function createA2aService(deps: A2aServiceDeps): A2aService {
   const now = deps.now ?? Date.now
+  // D2 migration: re-mint degenerate shortIds at assembly — writes only when a
+  // degenerate row exists; after the first pass the registry stays clean.
+  migrateConversations(deps.home)
   const bufferByInitiator = new Map<string, A2aBufferedMessage[]>()
 
   const persist = (conversations: ConversationRow[]): void => {
@@ -595,13 +679,19 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         }
       }
 
-      const resolution = deps.gatewayFor(req.to)
-      if (resolution === undefined || isGatewayMiss(resolution)) {
-        // D7: the receipt carries the honest branch — unknown agent / unknown
-        // machine / today's unreachable message (undefined = legacy spelling).
-        return fail(gatewayMissBody(req.to, isGatewayMiss(resolution) ? resolution : { miss: 'unreachable' }), row?.sessionId ?? '', row?.shortId)
+      let gateway: A2aGateway | undefined
+      try {
+        gateway = deps.gatewayFor(req.to)
+      } catch (error) {
+        // D7: a typed address failure is the honest receipt; anything else the
+        // resolver threw is still a failed receipt — send never throws (T2 contract).
+        const body = error instanceof A2aAddressError ? addressErrorBody(error) : receiptErrorOf(error)
+        return fail(body, row?.sessionId ?? '', row?.shortId)
       }
-      const gateway = resolution
+      if (gateway === undefined) {
+        // legacy resolver spelling (no throw) — unreachable, honestly reported
+        return fail({ code: 'a2a/gateway-unavailable', message: A2aAddressError.messageOf('unreachable', req.to) }, row?.sessionId ?? '', row?.shortId)
+      }
 
       if (row === undefined) {
         // create path — no conversationId ≡ new conversation (title optional)
@@ -675,14 +765,18 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         })
         return () => { }
       }
-      const resolution = deps.gatewayFor(conv.to)
-      if (resolution === undefined || isGatewayMiss(resolution)) {
-        const miss = isGatewayMiss(resolution) ? resolution : { miss: 'unreachable' as const }
-        const body = gatewayMissBody(conv.to, miss)
-        opts.onError?.({ code: body.code, message: body.message })
+      let gateway: A2aGateway | undefined
+      try {
+        gateway = deps.gatewayFor(conv.to)
+      } catch (error) {
+        const body = error instanceof A2aAddressError ? addressErrorBody(error) : receiptErrorOf(error)
+        opts.onError?.(body)
         return () => { }
       }
-      const gateway = resolution
+      if (gateway === undefined) {
+        opts.onError?.({ code: 'a2a/gateway-unavailable', message: A2aAddressError.messageOf('unreachable', conv.to) })
+        return () => { }
+      }
 
       const controller = new AbortController()
       const state: FollowState = {

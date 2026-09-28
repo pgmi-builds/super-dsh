@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createA2aService, A2A_MESSAGE_TEMPLATE, renderA2aEnvelope, A2A_BUFFER_MAX, loadConversations, saveConversations, shortIdFor } from '../dist/a2a-service.js'
+import { createA2aService, A2A_MESSAGE_TEMPLATE, renderA2aEnvelope, A2A_BUFFER_MAX, loadConversations, saveConversations, shortIdFor, isDegenerateShortId, A2aAddressError } from '../dist/a2a-service.js'
 import { WIRE } from '../dist/wire-endpoints.js'
 import { EnvelopeError } from '../dist/envelope.js'
 
@@ -64,7 +64,7 @@ const mkService = (gw, opts = {}) => {
 const ADDR = { machine: 'k3f9', id: 'q7m2xp' }
 const INITIATOR = { machine: 'm1ab', agent: 'a2b3c4', sessionId: 'sess-init-1' }
 const teaching = (i, title, shortId, message) =>
-  `A2A message from ${i.machine}-${i.agent} (conversation "${title}", reply via SuperD Hub send with conversationId ${shortId}):\n\n${message}`
+  `A2A message from ${i.machine}-${i.agent} (conversation "${title}"):\n\n${message}\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId ${shortId} for later or asynchronous replies.`
 
 const seedConversation = (gw, sessionId = 'sess-gggggggg-7777') => {
   gw.rpc({ result: { ok: true, value: { sessionId } } })
@@ -263,11 +263,11 @@ test('send failure taxonomy: gateway throw → failed verbatim; business {ok:fal
 test('teaching template: ONE exported constant; renderer fills initiator identity; untitled fallback', () => {
   assert.equal(
     A2A_MESSAGE_TEMPLATE,
-    'A2A message from {machine}-{agent} (conversation "{title}", reply via SuperD Hub send with conversationId {shortId}):\n\n{message}',
+    'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId {shortId} for later or asynchronous replies.',
   )
   assert.equal(
     renderA2aEnvelope({ machine: 'm1ab', agent: 'a2b3c4', title: 'T', shortId: 'sess-ddd', message: 'hi' }),
-    'A2A message from m1ab-a2b3c4 (conversation "T", reply via SuperD Hub send with conversationId sess-ddd):\n\nhi',
+    'A2A message from m1ab-a2b3c4 (conversation "T"):\n\nhi\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId sess-ddd for later or asynchronous replies.',
   )
   assert.ok(renderA2aEnvelope({ machine: 'm', agent: 'a', shortId: 's', message: 'x' }).includes('"(untitled)"'))
 })
@@ -619,30 +619,92 @@ test('stop honesty (D5): undeterminable liveness (stream death) stays conservati
 test('gateway misses (D7): unknown-agent / unknown-machine branches as typed errors and failed receipts', async () => {
   const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
   const missFor = new Map()
-  const svc = createA2aService({ home, gatewayFor: (addr) => missFor.get(addr.id), now: () => 1 })
+  const svc = createA2aService({
+    home,
+    // amendment: resolvers THROW A2aAddressError — the WHY crosses the boundary
+    gatewayFor: (addr) => {
+      const kind = missFor.get(addr.id)
+      if (kind !== undefined) throw new A2aAddressError(kind, addr)
+      return {}
+    },
+    now: () => 1,
+  })
   try {
-    missFor.set('zzzzzz', { miss: 'unknown-agent' })
+    missFor.set('zzzzzz', 'unknown-agent')
     await assert.rejects(
       () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-agent'
         && e.wire.message === 'a2a: unknown-agent k3f9-zzzzzz (no such agent on machine k3f9)',
     )
-    missFor.set('zzzzzz', { miss: 'unknown-machine' })
+    missFor.set('zzzzzz', 'unknown-machine')
     await assert.rejects(
       () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-machine'
         && e.wire.message === 'a2a: unknown-machine k3f9 (not paired)',
     )
-    missFor.set('zzzzzz', { miss: 'unknown-agent' })
+    missFor.set('zzzzzz', 'unknown-agent')
     const r = await svc.send({ to: { machine: 'k3f9', id: 'zzzzzz' }, message: 'x' }, INITIATOR)
     assert.equal(r.outcome, 'failed')
     assert.deepEqual(r.error, { code: 'a2a/unknown-agent', message: 'a2a: unknown-agent k3f9-zzzzzz (no such agent on machine k3f9)' })
     // unreachable keeps today's code and message
-    missFor.set('zzzzzz', { miss: 'unreachable' })
+    missFor.set('zzzzzz', 'unreachable')
     await assert.rejects(
       () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/gateway-unavailable'
         && e.wire.message === 'a2a: no gateway for k3f9-zzzzzz — machine unreachable or not paired',
     )
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------- amendment round (2026-09-28 review)
+
+test('renderA2aEnvelope (injection fix): title containing {shortId}/{message} literals lands verbatim, single-pass', () => {
+  const out = renderA2aEnvelope({ machine: 'm1ab', agent: 'a2b3c4', title: 'evil {shortId} {message} {machine} title', shortId: '4ce3e1', message: 'body text' })
+  // the title's placeholder-looking literals are NOT expanded
+  assert.ok(out.includes('evil {shortId} {message} {machine} title'))
+  // each real placeholder expanded exactly once — no double expansion via user values
+  assert.equal(out.match(/4ce3e1/g)?.length, 1)
+  assert.equal(out.match(/body text/g)?.length, 1)
+  assert.equal(out.match(/m1ab/g)?.length, 1)
+})
+
+test('registry migration (D2 amended): degenerate shortIds re-minted and written back; non-degenerate untouched', () => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  try {
+    saveConversations(home, { conversations: [
+      { shortId: 'session-', machine: 'k3f9', agent: 'q7m2xp', sessionId: 'session-33333333-0000', createdAt: 1, lastActivityAt: 1 },
+      { shortId: 'session-4', machine: 'k3f9', agent: 'q7m2xp', sessionId: 'session-4ce3e180-bbbb', createdAt: 1, lastActivityAt: 1 },
+      { shortId: '4ce3e1', machine: 'k3f9', agent: 'q7m2xp', sessionId: 'session-4ce3e180-aaaa', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    assert.ok(isDegenerateShortId('session-') && isDegenerateShortId('session-4c2'))
+    assert.ok(!isDegenerateShortId('4ce3e1') && !isDegenerateShortId('session-4ce3e180'))
+    // service assembly runs the migration once
+    createA2aService({ home, gatewayFor: () => undefined })
+    const bySession = new Map(loadConversations(home).conversations.map((r) => [r.sessionId, r.shortId]))
+    assert.equal(bySession.get('session-33333333-0000'), '333333', 're-minted from the uuid')
+    assert.equal(bySession.get('session-4ce3e180-bbbb'), '4ce3e180', 're-minted, lengthening past the legacy 6')
+    assert.equal(bySession.get('session-4ce3e180-aaaa'), '4ce3e1', 'non-degenerate legacy row untouched')
+    // machine/agent/createdAt survive verbatim — only shortId changes
+    const row = loadConversations(home).conversations.find((r) => r.sessionId === 'session-33333333-0000')
+    assert.deepEqual([row.machine, row.agent, row.createdAt], ['k3f9', 'q7m2xp', 1])
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('registry migration (D2 amended): a migrated shortId addresses its row through the service', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const svc = createA2aService({ home, gatewayFor: (addr) => (addr.machine === 'k3f9' ? gw.face : undefined), now: () => 5 })
+  try {
+    saveConversations(home, { conversations: [
+      { shortId: 'session-3', machine: 'k3f9', agent: 'q7m2xp', sessionId: 'session-33333333-0000', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    // fresh service over the same home picks up the migration
+    const svc2 = createA2aService({ home, gatewayFor: () => gw.face, now: () => 5 })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } }) // prompt
+    const receipt = await svc2.send({ to: { machine: 'k3f9', id: 'q7m2xp' }, conversationId: '333333', message: 'x' }, INITIATOR)
+    assert.equal(receipt.outcome, 'injected')
+    assert.equal(receipt.sessionId, 'session-33333333-0000')
+    assert.equal(receipt.conversationId, '333333')
+    void svc
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

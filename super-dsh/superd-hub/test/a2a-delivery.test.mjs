@@ -21,6 +21,7 @@ import {
 } from '../dist/a2a-delivery.js'
 import { createA2aService, saveConversations } from '../dist/a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from '../dist/a2a-host.js'
+import { A2aAddressError } from '../dist/a2a-service.js'
 import { ensureAgentId, agentIdMap } from '../dist/agent-ids.js'
 import { ensureSelf, upsertRemote } from '../dist/machines.js'
 import { registerForeignTarget, unregisterForeignTarget } from '../dist/targets.js'
@@ -375,7 +376,8 @@ test('resolveA2aGatewayFor: federated wire adapters pass through UNWRAPPED; loca
     assert.equal(nativeRaw.calls.openWireStream[0].signal, signal)
     assert.ok(nativeRaw.calls.openWireStream[0].control instanceof AbortController)
 
-    assert.deepEqual(gatewayFor({ machine: selfM4, id: 'unknown' }), { miss: 'unknown-agent' }) // unknown a6 on a KNOWN machine (D7)
+    // unknown a6 on a KNOWN machine → the typed throw (D7 amendment)
+    assert.throws(() => gatewayFor({ machine: selfM4, id: 'unknown' }), (e) => e instanceof A2aAddressError && e.kind === 'unknown-agent')
   } finally {
     cleanupRegistries()
     rmSync(home, { recursive: true, force: true })
@@ -488,18 +490,28 @@ test('resolveA2aGatewayFor (D7): unknown machine / unknown agent on a paired mac
     upsertRemote(home, { id: 'p1nk', name: 'peer', label: 'peer', origin: 'http://127.0.0.1:9', enabled: true, addedAt: 1 })
     const selfM4 = ensureSelf(home, 'local').id
     const gatewayFor = resolveA2aGatewayFor({ home })
-    // machine entirely unknown → unknown-machine (not paired)
-    assert.deepEqual(gatewayFor({ machine: 'q7xk', id: 'aaaaaa' }), { miss: 'unknown-machine' })
+    const missOf = (addr) => {
+      try { gatewayFor(addr) } catch (e) { if (e instanceof A2aAddressError) return e }
+      return undefined
+    }
+    // machine entirely unknown → unknown-machine (not paired); the error carries the address
+    const unknownMachine = missOf({ machine: 'q7xk', id: 'aaaaaa' })
+    assert.ok(unknownMachine instanceof A2aAddressError && unknownMachine.kind === 'unknown-machine')
+    assert.equal(unknownMachine.machine, 'q7xk')
+    assert.deepEqual(unknownMachine.address, { machine: 'q7xk', id: 'aaaaaa' })
+    assert.match(unknownMachine.message, /unknown-machine q7xk \(not paired\)/)
     // paired machine + an a6 no store has ever seen → unknown-agent naming the machine
-    assert.deepEqual(gatewayFor({ machine: 'p1nk', id: 'zzzzzz' }), { miss: 'unknown-agent' })
+    const pairedUnknown = missOf({ machine: 'p1nk', id: 'zzzzzz' })
+    assert.ok(pairedUnknown instanceof A2aAddressError && pairedUnknown.kind === 'unknown-agent')
+    assert.match(pairedUnknown.message, /no such agent on machine p1nk/)
     // self machine + unknown a6 → unknown-agent
-    assert.deepEqual(gatewayFor({ machine: selfM4, id: 'zzzzzz' }), { miss: 'unknown-agent' })
+    assert.ok(missOf({ machine: selfM4, id: 'zzzzzz' })?.kind === 'unknown-agent')
     // roster-known LOCAL a6 whose world target is absent → unreachable (plane down, not an addressing error)
     const orphanA6 = ensureAgentId(home, 'orphan')
-    assert.deepEqual(gatewayFor({ machine: selfM4, id: orphanA6 }), { miss: 'unreachable' })
+    assert.ok(missOf({ machine: selfM4, id: orphanA6 })?.kind === 'unreachable')
     // the native seam without an injected face → unreachable
     const nativeA6 = ensureAgentId(home, 'native')
-    assert.deepEqual(gatewayFor({ machine: selfM4, id: nativeA6 }), { miss: 'unreachable' })
+    assert.ok(missOf({ machine: selfM4, id: nativeA6 })?.kind === 'unreachable')
   } finally {
     cleanupRegistries()
     rmSync(home, { recursive: true, force: true })

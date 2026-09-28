@@ -32,7 +32,8 @@ import { agentLinks } from './agent-roster.js'
 import { federatedGatewayOf } from './mesh-federate.js'
 import { getTarget } from './targets.js'
 import { createA2aService } from './a2a-service.js'
-import type { A2aAddress, A2aGateway, A2aGatewayMiss, A2aInitiator, A2aService } from './a2a-service.js'
+import { A2aAddressError } from './a2a-service.js'
+import type { A2aAddress, A2aGateway, A2aInitiator, A2aService } from './a2a-service.js'
 /** Host wiring inputs: the hub home plus the local native session-plane face. */
 export interface A2aHostOptions {
   /** Hub home (a6 id store + machines registry live under `<home>/superd/`). */
@@ -109,14 +110,15 @@ export function bridgeTypertGateway(real: RawTypertGatewayFace): A2aGateway {
  * through UNTOWRAPPED (see the bridge's JSDoc for why wrapping them loses
  * the abort signal).
  *
- * A MISS is classified, not collapsed (D7): a roster-known a6 whose plane is
- * down → 'unreachable'; an a6 no store has ever seen → 'unknown-agent' when
- * the addressed machine is self or paired, else 'unknown-machine' — so the
- * model gets the actual problem instead of chasing pairing for a typo'd id.
+ * A MISS THROWS the typed {@link A2aAddressError} (D7): a roster-known a6 whose
+ * plane is down → 'unreachable'; an a6 no store has ever seen → 'unknown-agent'
+ * when the addressed machine is self or paired, else 'unknown-machine' — the
+ * WHY survives the resolver boundary for future consumers (P4 exec, P5
+ * injection) to branch on.
  * @param options - hub home + optional raw in-process native gateway.
- * @returns the resolver (a gateway, or a typed miss).
+ * @returns the resolver (a gateway, or it throws A2aAddressError).
  */
-export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress) => A2aGateway | A2aGatewayMiss {
+export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress) => A2aGateway {
   return (addr) => {
     const federated = federatedGatewayOf(addr.id)
     if (federated !== undefined) return federated
@@ -125,7 +127,8 @@ export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress
     const key = localKeyOfA6(options.home, addr.id)
     if (key !== undefined) {
       if (key === 'native') {
-        return options.nativeGateway === undefined ? { miss: 'unreachable' } : bridgeTypertGateway(options.nativeGateway)
+        if (options.nativeGateway === undefined) throw new A2aAddressError('unreachable', addr)
+        return bridgeTypertGateway(options.nativeGateway)
       }
       // The registry's declared GatewayFace (targets.ts) types the stream
       // face as the 3-arg subset, but a LOCAL row's runtime object is the RAW
@@ -133,16 +136,17 @@ export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress
       // to RawTypertGatewayFace so the bridge above binds the canonical 6-arg
       // positional order instead of the declared subset.
       const local = getTarget(key)?.gateway
-      return local === undefined ? { miss: 'unreachable' } : bridgeTypertGateway(local as unknown as RawTypertGatewayFace)
+      if (local === undefined) throw new A2aAddressError('unreachable', addr)
+      return bridgeTypertGateway(local as unknown as RawTypertGatewayFace)
     }
     // The a6 resolves nowhere — classify the miss (D7): a roster row exists →
     // its plane is down; else the machine decides agent-vs-machine blame.
-    if (agentLinks(options.home).some((l) => l.id === addr.id)) return { miss: 'unreachable' }
+    if (agentLinks(options.home).some((l) => l.id === addr.id)) throw new A2aAddressError('unreachable', addr)
     const self = ensureSelf(options.home, 'local')
     if (addr.machine === self.id || listRemotes(options.home).some((r) => r.id === addr.machine)) {
-      return { miss: 'unknown-agent' }
+      throw new A2aAddressError('unknown-agent', addr)
     }
-    return { miss: 'unknown-machine' }
+    throw new A2aAddressError('unknown-machine', addr)
   }
 }
 
