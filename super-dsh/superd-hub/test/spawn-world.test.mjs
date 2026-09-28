@@ -64,6 +64,33 @@ host.provide('profileContext', {
 mkdirSync(join(HOME, 'profiles', 'ctx0-min'), { recursive: true })
 writeFileSync(join(HOME, 'profiles', 'ctx0-min', 'cordis.yml'), '[]\n')
 
+test('spawnWorld: farm-less profile publishes the host table with no ENOENT noise (postoffice R0)', async () => {
+  // The profile synthesized above has NO node_modules/@pgmi-builds farm — the
+  // host-table scan must skip a missing scope instead of logging a fail-soft
+  // fallback (the worlds are healthy; only the scan guard was cosmetic-broken).
+  const chunks = []
+  const origWrite = process.stderr.write.bind(process.stderr)
+  process.stderr.write = (chunk, enc, cb) => {
+    chunks.push(String(chunk))
+    return origWrite(chunk, enc, cb)
+  }
+  let ctxW
+  try {
+    ctxW = await spawnWorld({
+      appName: 'superd-scan-guard-world',
+      profileName: PROFILE,
+      installAnchor: ANCHOR,
+      home: HOME,
+      host,
+    })
+  } finally {
+    process.stderr.write = origWrite
+  }
+  await ctxW.fiber.dispose()
+  const noise = chunks.filter((c) => c.includes('host table publishing failed'))
+  assert.deepEqual(noise, [], `unexpected publish-failure noise:\n${noise.join('\n')}`)
+})
+
 test('spawnWorld: dsh-base sibling root, full service face, no web surface', async () => {
   const ctx0 = await boot('superd-test-ctx0', join(HOME, 'profiles', 'ctx0-min', 'cordis.yml'), [])
   const ctxW = await spawnWorld({

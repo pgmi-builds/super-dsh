@@ -123,7 +123,9 @@ async function publishWorldInHostResolutionTurn(
   const declarer = join(worldProfileDir, 'package.json')
   const worldScope = join(worldProfileDir, 'node_modules', '@pgmi-builds')
   const baseNames = new Set(base.entries.map((entry) => entry.name))
-  for (const name of readdirSync(worldScope, { withFileTypes: true })) {
+  // R0 scan guard: a dsh-base world has NO farm — a missing scope is not a
+  // publish failure, just nothing to add (existsSync before readdirSync).
+  for (const name of existsSync(worldScope) ? readdirSync(worldScope, { withFileTypes: true }) : []) {
     if (!name.isDirectory() && !name.isSymbolicLink()) continue
     const pkgName = `@pgmi-builds/${name.name}`
     // A profile-declared package already covers the name (a consumer who
