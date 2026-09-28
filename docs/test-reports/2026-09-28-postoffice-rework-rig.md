@@ -61,3 +61,21 @@
 - stop cross-machine live-run not repeated this round (unit-covered; D5
   semantics untouched by the pivot).
 - client-bundle-drift flake (~1/4 under load, pre-existing) — isolated runs green.
+
+## Addendum — roster self-description discipline (0.1.6-j, `dc8ba5e`)
+
+User browser acceptance caught the PC roster showing 14 "remote" agents after
+mutual pairing: dev3's additive response advertised its federated copy of PC's
+agents, and PC's probe adopted all of them (phantom rows, chimera labels like
+"OMP PC DEV3"). Ruling: hub-to-hub is P2P — each hub reports ONLY its own
+agents; the requester fans out one probe per paired machine and merges locally.
+
+Fix both ends: probes carry `?mesh=1` → the additive response serves
+self-hosted rows only (plain browser GET keeps the full roster for the local
+UI); `probeMachine` adopts only `machine === 'local'` rows (belt-and-braces
+for older peers). Phantoms converged away on the next reprobe.
+
+Live verification (both machines on 0.1.6-j): PC `?mesh=1` → 7 rows all
+`local`; PC→dev3 probe → bfwu 0.1.6-j **7 agents**; **PC full roster
+{local: 7, bfwu: 7}** — duplicates gone; dev3 `?mesh=1` → 7 local; dev3→PC
+probe → 79he 0.1.6-j 7 agents. Suite 433/0/0.

@@ -164,6 +164,8 @@ CTX0 hub
 
 旧客户端忽略新字段；新字段是 mesh 的全部"发现协议"。
 
+**自描述纪律（2026-09-28 user 裁决，0.1.6-j）**：探测请求带 `?mesh=1` 时，应答的 `agents` **只含本机自托管行**（`machine === 'local'`）——hub 永不向 peer 转述其他 remote 的 roster（hub-to-hub = P2P；一台机器连 N 个 remote 就各自调 N 次 API，融合只在请求方；remote 之间有无拓扑关系是它们自己的事）。浏览器普通 GET 不带 flag，仍得全量 roster（本机 UI 分组消费）。probe 采纳侧同步过滤 `machine === 'local'`（对旧版 peer 的 belt-and-braces）。
+
 ### 6.3 健康与降级
 
 - 探测时机：add-machine 时、手动 reprobe、switch 预检可触发轻探、周期兜底（默认 5min，可配）。
