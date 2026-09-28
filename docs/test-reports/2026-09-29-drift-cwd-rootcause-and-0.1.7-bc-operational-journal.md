@@ -88,10 +88,11 @@ a2a.send.channel … latch=true → a2a.ingest.fail code=a2a/no-initiator-sessio
 ## 四、测试证据
 - hub 套件：**445/445**（442 基线 + 2 journal 测试 + 1 method-gate 测试），tsc 0。
 - 裸 pack 线（`super-dsh/` cwd，历史必挂/必 flake 的 lane）：多轮 **923/923**。
-- 残余观察：一次 922/923（单败，未捕获测试名，后续 10+ 轮未再现）；一次 921/923（两败，同样未捕获名）。已把仅存的两个亚秒级 poll 预算放宽（`ebffe24`）并留 8 跑后台监听。若再现，将以捕获的测试名开新案。
+- 残余观察的**结案**：8 跑监听在 run2 抓到真身——`not ok 72 client-bundle-drift`，但失败是 runner 侧 `Unable to deserialize cloned data due to invalid or unsupported version`（test_runner IPC 反序列化），**非 bundle drift**。根因：drift 守卫的子进程在 node:test 的结果通道（stdout）上跑打包器，tsdown info 日志在满并发下造成帧错位、整个文件被判死——即 0.1.6 时代 "IPC flake at full concurrency" 传说的机制（`e022be9`：两发射器 `logLevel:'warn'` 静音，产物字节不变，之后 6 连 923/923）。另把仅存的两个亚秒级 poll 预算放宽（`ebffe24`）。
+- 活体补充：`a2a.completion.quiet conversation=jrnlt2 reason=channel-send-in-window` 在 rig 落行——v3 压制语义（窗口内通道发送 → 不追加 artifact）的活证据。
 - 4999 rig + dev3 双侧 0.1.7-c 实装，world failed = 0。
 
 ## 五、遗留与下一步
 - journal 只覆盖 a2a 面（mesh-link probe/pair、spawn、fusion-transport 未埋点）——下一轮候选。
-- `completion.quiet/transcript` 两词汇已单测覆盖、活体 armed 已见；真实 turn 收尾的双侧完整链可下次跨机对话顺带取证。
+- `completion.transcript/notice` 两词汇已单测覆盖、活体 armed/quiet 已见；真实 turn 收尾的双侧完整链可下次跨机对话顺带取证。
 - P4（remote exec + D22 spawn 状态机）仍未启动。
