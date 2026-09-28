@@ -284,12 +284,12 @@ const DESCRIPTION =
   'SuperD Hub — agent-to-agent messaging across the Super D machine mesh. Call shapes:\n' +
   '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
   '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime}]}.\n' +
-  '  {action:"new_conversation", agent, title?} → open a conversation → {conversationId, sessionId, agent, machine}.\n' +
+  '  {action:"new_conversation", agent, title?, message?} → open a conversation (message, when given, IS the first turn — opening and content land as ONE injected turn) → {conversationId, sessionId, agent, machine}.\n' +
   '  {action:"send", agent, conversationId?, title?, message, delivery?} → inject one user turn (omit conversationId to open a new conversation). Receipt {outcome, messageId, conversationId, sessionId, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn (answers stopped:false with a note when no turn was active).\n' +
   '  {action:"exec"} → not yet implemented (P4).\n' +
-  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: after send the hub watches the peer\'s turn and the reply arrives in this conversation automatically as a new message (read only sweeps what was buffered while this session was down). stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
+  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead); a turn that ends with no reply yields one notice. read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
 
 /**
  * Build the one SuperD Hub tool.
@@ -320,7 +320,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       },
       message: {
         type: 'string',
-        description: 'Message body injected as one user turn (the A2A reply-address envelope is added automatically).',
+        description: 'Message body injected as one user turn (the A2A reply-address envelope is added automatically). For new_conversation: optional — when given, opening + content land as ONE turn.'
       },
       delivery: {
         type: 'string',
@@ -374,7 +374,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             throw new Error('[E_MISSING_AGENT] superd-hub: new_conversation requires agent ("<m4>-<a6>")')
           }
           const addr = parseAgentAddress(args.agent)
-          const created = await deps.service.newConversation(addr, args.title, initiator)
+          const created = await deps.service.newConversation(addr, args.title, args.message, initiator)
           return {
             action,
             conversationId: created.shortId,

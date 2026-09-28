@@ -579,7 +579,7 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
     assert.equal(msg.from, `${selfId}-${native.id}`)
     assert.equal(msg.conversationId, receipt.conversationId)
     assert.ok(msg.text.includes('peer final answer'))
-    assert.ok(msg.text.includes('replied'))
+    assert.ok(msg.text.includes('last output at turn end'))
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

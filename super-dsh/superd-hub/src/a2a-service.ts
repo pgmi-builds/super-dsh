@@ -103,6 +103,16 @@ export interface ConversationRow {
    * asynchronous delivery address. Absent = pre-R4 rows / not yet sent.
    */
   initiatorSession?: string
+  /**
+   * D20 (2026-09-29): present ONLY on MIRROR rows = the hosted peer has sent
+   * through the channel at least once in this conversation. Monotonic per
+   * conversation — once set, the completion watch NEVER transcribes again
+   * (the channel reply IS the reply; unsent turn-end output is the peer's
+   * own business). Additive optional; no migration.
+   */
+  channelUsed?: true
+  /** D20: epoch ms of the peer's LAST channel send on this row — the watermark the completion watch compares against its arm time to detect "sent during this turn's window" (suppresses the artifact when the send already was it). */
+  lastSentAt?: number
   /** Epoch ms when the row was created. */
   createdAt: number
   /** Epoch ms of the last successful send. */
@@ -128,6 +138,8 @@ function isConversationRow(v: unknown): v is ConversationRow {
     (r.title === undefined || typeof r.title === 'string') &&
     (r.hostAgent === undefined || typeof r.hostAgent === 'string') &&
     (r.initiatorSession === undefined || typeof r.initiatorSession === 'string') &&
+    (r.channelUsed === undefined || r.channelUsed === true) &&
+    (r.lastSentAt === undefined || typeof r.lastSentAt === 'number') &&
     typeof r.createdAt === 'number' && typeof r.lastActivityAt === 'number'
   )
 }
@@ -237,16 +249,22 @@ export function migrateConversations(home: string): ConversationRow[] {
 // ---------------------------------------------------------------- envelopes
 
 /**
- * THE reply-teaching envelope — one template constant. Filled with the
- * INITIATOR's identity (machine-agent address), the conversation title, the
- * body, and the shortId a superd-hub tool would address. E3 rewording
- * (2026-09-28): the peer is taught to reply NORMALLY — world trees do not
- * compose the a2a row yet (P5 pending) and the hub's completion watch relays
- * the peer's turn output regardless; the tool clause is secondary, for later
- * or asynchronous replies when the peer ALSO has a superd-hub tool.
+ * THE teaching envelope — one template constant (D20 v3, 2026-09-29: the
+ * SINGLE merged text, no variants). Filled with the INITIATOR's identity
+ * (machine-agent address = the write-back target), the conversation title,
+ * the body, and the shortId a superd-hub tool addresses. Tail = the user's
+ * 2026-09-29 redline, four short paragraphs, each carrying one load:
+ * provenance + channel-only principle / heterogeneity disclosure (tool
+ * availability genuinely differs per runtime — this is what stops a
+ * tool-less model from hunting for one) / how+when to send (sending does
+ * not end the turn) / the fallback, phrased from the RECEIVER's operational
+ * truth ("we do not receive" — intentionally or prevented). The "if
+ * available" conditional is evaluated by the MODEL against its own tool
+ * list; never pre-select variants on unknowable runtime state. Never a
+ * separate user prompt (the OMP 20-tool-call incident).
  */
 export const A2A_MESSAGE_TEMPLATE =
-  'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId {shortId} for later or asynchronous replies.'
+  'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"{machine}-{agent}", conversationId:"{shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.'
 
 /** Title shown when the conversation has none. */
 export const A2A_UNTITLED = '(untitled)'
@@ -317,7 +335,7 @@ export type A2aDelivery = 'queue' | 'steer'
  * T2: busy-detection is deliberately not built, so every successful prompt
  * submission receipts 'injected'.
  */
-export type A2aReceiptOutcome = 'injected' | 'queued' | 'failed'
+export type A2aReceiptOutcome = 'injected' | 'queued' | 'pending' | 'failed'
 
 /** One failed-send error body, verbatim from the gateway (wire error shape). */
 export interface A2aReceiptError {
@@ -436,7 +454,7 @@ export interface A2aServiceDeps {
 
 export interface A2aService {
   /** Create a conversation on the target (session/create ONLY — D17/R2: no session/rename write-through); title is hub-owned registry state (stored normalized, immutable). Typed errors on 401/unreachable/business rejection. The vestigial `warning?` return field stays for signature stability and is never set. */
-  newConversation(addr: A2aAddress, title?: string, initiator?: A2aInitiator): Promise<{ shortId: string; sessionId: string; warning?: string }>
+  newConversation(addr: A2aAddress, title?: string, message?: string, initiator?: A2aInitiator): Promise<{ shortId: string; sessionId: string; warning?: string }>
   /** Create-or-resume + inject one user turn; receipt semantics (never throws — failures are 'failed' receipts). */
   send(req: A2aSendRequest, initiator: A2aInitiator): Promise<A2aReceipt>
   /** Subscribe turn completions of one conversation over session/follow; returns the dispose fn. */
@@ -768,7 +786,17 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
    */
   const recordInitiatorRow = (shortId: string, to: A2aAddress, sessionId: string, title: string, initiator: A2aInitiator): void => {
     const rows = loadConversations(deps.home).conversations
-    if (rows.some((r) => r.shortId === shortId || r.sessionId === sessionId)) return
+    // D20 self-route: the single MIRROR row (hostAgent set, initiator local)
+    // IS the initiator row too — backfill the write-back address instead of
+    // returning (a cross-machine mirror row never reaches here: its
+    // conversation was initiated on the peer's hub, not ours).
+    const existing = rows.find((r) => r.shortId === shortId || r.sessionId === sessionId)
+    if (existing !== undefined) {
+      if (existing.hostAgent !== undefined && existing.machine === selfM4() && existing.initiatorSession === undefined) {
+        persist(rows.map((r) => (r.sessionId === existing.sessionId ? { ...r, initiatorSession: initiator.sessionId } : r)))
+      }
+      return
+    }
     rows.push({
       shortId,
       machine: to.machine,
@@ -782,21 +810,32 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
     persist(rows)
   }
 
-  /** Bump the activity stamp; optionally backfill the initiator session on INITIATOR rows (never on mirror rows). */
+  /** Bump the activity stamp; optionally backfill the initiator session on INITIATOR rows and self-route MIRROR rows (never on cross-machine mirror rows). */
   const touchRow = (row: ConversationRow, initiatorSession?: string): void => {
     const rows = loadConversations(deps.home).conversations
     const idx = rows.findIndex((r) => r.sessionId === row.sessionId)
     if (idx === -1) return
     // D17: only the activity stamp moves — a later write path never touches title.
+    const backfill = initiatorSession !== undefined &&
+      (rows[idx].hostAgent === undefined || rows[idx].machine === selfM4())
     rows[idx] = {
       ...rows[idx],
       lastActivityAt: now(),
-      ...(initiatorSession === undefined || rows[idx].hostAgent !== undefined ? {} : { initiatorSession }),
+      ...(backfill ? { initiatorSession } : {}),
     }
     persist(rows)
   }
 
   const selfM4 = (): string => ensureSelf(deps.home, 'local').id
+
+  /** D20: mark the hosted peer as channel-capable for this conversation — monotonic latch + send watermark. */
+  const markChannelUsed = (row: ConversationRow): void => {
+    const rows = loadConversations(deps.home).conversations
+    const idx = rows.findIndex((r) => r.sessionId === row.sessionId)
+    if (idx === -1) return
+    rows[idx] = { ...rows[idx], channelUsed: true, lastSentAt: now() }
+    persist(rows)
+  }
 
   /** Mint a fresh conversation id — random 6 over [a-z0-9], collision-checked against our registry (the initiator mints; the peer adopts verbatim). */
   const mintConversationId = (): string =>
@@ -849,9 +888,11 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
 
 
   const service: A2aService = {
-    async newConversation(addr, title, initiator) {
+    async newConversation(addr, title, message, initiator) {
       // R4: an envelope IS the unit — a message-less create carries the fixed
       // opening line (the teaching envelope wraps it on the peer's session).
+      // D21: a message-bearing create folds opening + content into ONE turn
+      // (the bare-opening turn that peers burned steps investigating is gone).
       if (initiator === undefined) {
         throw a2aError('a2a/no-initiator', 'a2a: newConversation needs the initiator identity to address the envelope (postoffice R4)')
       }
@@ -861,7 +902,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         to: { machine: addr.machine, id: addr.id },
         conversationId: mintConversationId(),
         title: normalizeA2aTitle(title),
-        message: A2A_OPENING_MESSAGE,
+        message: message === undefined || message === '' ? A2A_OPENING_MESSAGE : message,
         from: originOf(initiator),
         messageId,
       }
@@ -913,14 +954,27 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         // Address consistency by row kind (R4 continuation routing):
         // mirror rows (hostAgent) are hosted HERE and addressed as
         // {self, hostAgent}; initiator rows keep today's peer-address check.
+        // D20 WRITE-BACK exception: on a mirror row, addressing the row's
+        // {machine, agent} (the INITIATOR) is the hosted peer using its
+        // channel — the teaching envelope's reply clause. It routes to the
+        // initiator's hub (write-back delivery there), and it SETS THE LATCH:
+        // from this send on, the completion watch never transcribes again.
         const expected = row.hostAgent !== undefined
           ? { machine: selfM4(), id: row.hostAgent }
           : { machine: row.machine, id: row.agent }
-        if (req.to.machine !== expected.machine || req.to.id !== expected.id) {
+        const writeBack = row.hostAgent !== undefined &&
+          req.to.machine === row.machine && req.to.id === row.agent
+        if (!writeBack && (req.to.machine !== expected.machine || req.to.id !== expected.id)) {
           return fail({
             code: 'a2a/conversation-machine-mismatch',
             message: `a2a: conversation "${row.shortId}" belongs to ${expected.machine}-${expected.id}, not ${req.to.machine}-${req.to.id}`,
           }, row.sessionId, row.shortId)
+        }
+        if (writeBack) {
+          // The latch is the runtime TRUTH about the peer (it chose the
+          // channel), set before routing so the completion watch can never
+          // race it; a routing failure parks/retries without un-latching.
+          markChannelUsed(row)
         }
       }
 
@@ -942,15 +996,26 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
           ...(req.delivery === undefined ? {} : { delivery: req.delivery }),
         }
       } else {
-        const to = row.hostAgent !== undefined
-          ? { machine: selfM4(), id: row.hostAgent }
-          : { machine: row.machine, id: row.agent }
+        const writeBack = row.hostAgent !== undefined &&
+          req.to.machine === row.machine && req.to.id === row.agent
+        // D20: a write-back's `from` is the HOSTED PEER itself (its own
+        // session on this row) — the initiator-side ingest attributes the
+        // reply from this origin, and the self-route ingest recognizes the
+        // shape (from.agent === row.hostAgent) to deliver, never inject.
+        const peerOrigin: A2aWireOrigin | undefined = writeBack && row.hostAgent !== undefined
+          ? { machine: selfM4(), agent: row.hostAgent, sessionId: row.sessionId }
+          : undefined
+        const to = peerOrigin !== undefined
+          ? { machine: row.machine, id: row.agent }
+          : row.hostAgent !== undefined
+            ? { machine: selfM4(), id: row.hostAgent }
+            : { machine: row.machine, id: row.agent }
         envelope = {
           kind: 'message',
           to,
           conversationId: row.shortId,
           message: req.message,
-          from,
+          from: peerOrigin ?? from,
           messageId,
           ...(req.delivery === undefined ? {} : { delivery: req.delivery }),
         }

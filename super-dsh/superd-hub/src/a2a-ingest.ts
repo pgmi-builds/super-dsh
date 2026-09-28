@@ -252,6 +252,10 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         conversationId: envelope.conversation,
         messageId: envelope.messageId,
         title: row?.title,
+        // D20: the provenance flag rides the wire additively — the delivering
+        // side renders the "transcribed, never sent via channel" prefix from
+        // it; absent = the peer chose to send this through the channel.
+        transcribed: envelope.transcribed === true,
       })
     }
     return deliverNotice(deps.delivery, initiator, envelope.summary, {
@@ -292,9 +296,13 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     return 'outbox'
   }
 
-  /** The completion watcher behind every successful inject (D16/D3). */
+  /** The completion watcher behind every successful inject (D16 → D20 v3). */
   const watchCompletion = (gateway: A2aGateway, row: ConversationRow, env: A2aNewConversationEnvelope | A2aMessageEnvelope): void => {
     const to: A2aWireOrigin = { machine: env.from.machine, agent: env.from.agent, sessionId: env.from.sessionId }
+    // D20: arm-time watermark — a channel send with lastSentAt ABOVE this
+    // happened inside this armed turn's window, i.e. the peer's send WAS
+    // this turn's artifact and the watch must not add a second one.
+    const armedSentAt = row.lastSentAt ?? 0
     const noticeOf = (summary: string): A2aNoticeEnvelope => ({
       kind: 'notice',
       to,
@@ -306,19 +314,30 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     subscribeSessionCompletion(
       { gateway, sessionId: row.sessionId, conversationId: row.shortId },
       (completion: A2aCompletion) => {
-        // D3: a terminal turn with NO reply text must not relay — an aborted
-        // turn WITH captured text still relays (the words exist).
-        const envelope: A2aReplyEnvelope | A2aNoticeEnvelope = completion.reason !== 'completed' && completion.text === ''
-          ? noticeOf(`conversation "${row.shortId}": turn aborted, no reply`)
-          : {
+        // D20 v3 — the channel consumes exactly two machine facts (turn
+        // boundary + last output) and NOTHING from the settlement
+        // taxonomy: no abort/complete adjectives, no reason branches. A
+        // turn end yields at most ONE artifact:
+        //   send inside the window → the send(s) were it (watch stays quiet)
+        //   latch set (channel used in an earlier turn) → plain notice
+        //   latch clear + non-empty last output → TRANSCRIBED reply
+        //   latch clear + empty output → plain notice
+        // Hallucinated/irrelevant content is content-layer business —
+        // transcribe verbatim and let the sender judge.
+        const fresh = mirrorRowOf(row.shortId)
+        if ((fresh?.lastSentAt ?? 0) > armedSentAt) return
+        const envelope: A2aReplyEnvelope | A2aNoticeEnvelope = fresh?.channelUsed === undefined && completion.text !== ''
+          ? {
             kind: 'reply',
             to,
             conversation: row.shortId,
             text: completion.text,
             messageId: `a2a-relay-${randomUUID()}`,
             sender: { machine: selfId(), agent: env.to.id },
+            transcribed: true,
           }
-        void routeReturn(envelope, { responderAgent: env.to.id, noticeReason: completion.reason !== 'completed' && completion.text === '' ? 'aborted' : undefined }).catch(() => parkInOutbox(envelope))
+          : noticeOf(`conversation "${row.shortId}": turn ended, no reply`)
+        void routeReturn(envelope, { responderAgent: env.to.id }).catch(() => parkInOutbox(envelope))
       },
       {
         requestId: env.messageId,
@@ -355,6 +374,40 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           code: 'a2a/conversation-not-found',
           message: `a2a: conversation "${env.conversationId}" is not in the registry — the initiator's conversationId does not resolve here`,
         })
+      }
+      //
+      // D20 SELF-ROUTE WRITE-BACK: the single MIRROR row of a local↔local
+      // conversation, and the sender is the hosted peer itself (from.agent ===
+      // row.hostAgent, from.machine === self) — deliver into the initiator's
+      // session with peer attribution, NEVER inject (the row's session is the
+      // SENDER's own; injecting would loop the message back to its author).
+      //
+      if (row.hostAgent !== undefined && env.from.machine === selfId() && env.from.agent === row.hostAgent) {
+        if (env.to.machine !== selfId()) {
+          return fail({
+            code: 'a2a/conversation-machine-mismatch',
+            message: `a2a: conversation "${row.shortId}" write-back must target this machine, not ${env.to.machine}`,
+          }, row.sessionId, row.shortId)
+        }
+        if (row.initiatorSession === undefined || row.initiatorSession === '') {
+          return fail({
+            code: 'a2a/no-initiator-session',
+            message: `a2a: conversation "${row.shortId}" has no persisted initiator session — asynchronous write-backs cannot be addressed`,
+          }, row.sessionId, row.shortId)
+        }
+        deliverReply(deps.delivery, {
+          machine: env.to.machine,
+          agent: env.to.id,
+          sessionId: row.initiatorSession,
+        }, env.message, {
+          senderMachine: env.from.machine,
+          senderAgent: env.from.agent,
+          conversationId: row.shortId,
+          messageId: env.messageId,
+          title: row.title,
+        })
+        // v1 send-receipt shape (exactly-once wrapper contract)
+        return { outcome: 'injected', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
       }
       if (row.machine !== env.from.machine || row.agent !== env.from.agent) {
         return fail({

@@ -94,7 +94,7 @@ const mkRemote = (home, opts = {}) => {
 const ADDR = { machine: 'k3f9', id: 'q7m2xp' }
 const INITIATOR = { machine: 'm1ab', agent: 'a2b3c4', sessionId: 'sess-init-1' }
 const teaching = (i, title, shortId, message) =>
-  `A2A message from ${i.machine}-${i.agent} (conversation "${title}"):\n\n${message}\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId ${shortId} for later or asynchronous replies.`
+  `A2A message from ${i.machine}-${i.agent} (conversation "${title}"):\n\n${message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"${i.machine}-${i.agent}", conversationId:"${shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn's end is delivered to the sender as your reply.`
 
 const seedConversation = (gw, sessionId = 'sess-gggggggg-7777') => {
   gw.rpc({ result: { ok: true, value: { sessionId } } })
@@ -134,7 +134,7 @@ test('newConversation (local): envelope via the shared ingest; create payload by
   gw.rpc({ result: { ok: true, value: { accepted: true } } })                       // prompt (the opening line)
   const { home, svc, selfM4 } = mkService(gw)
   try {
-    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Bug triage', localInitiator(selfM4))
+    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Bug triage', undefined, localInitiator(selfM4))
     assert.match(out.shortId, /^[a-z0-9]{6}$/, 'initiator-minted random 6')
     assert.equal(out.sessionId, 'sess-aaaaaaaa-1111')
     assert.equal(out.warning, undefined)
@@ -152,6 +152,9 @@ test('newConversation (local): envelope via the shared ingest; create payload by
     assert.deepEqual(rows[0], {
       shortId: out.shortId, machine: selfM4, agent: INITIATOR.agent,
       sessionId: 'sess-aaaaaaaa-1111', title: 'Bug triage', hostAgent: 'q7m2xp',
+      // D20: self-route mirror rows backfill the initiator session (the
+      // hosted peer's write-back delivery address)
+      initiatorSession: INITIATOR.sessionId,
       createdAt: rows[0].createdAt, lastActivityAt: rows[0].lastActivityAt,
     })
     assert.equal(statSync(join(home, 'superd', 'a2a-conversations.json')).mode & 0o777, 0o600)
@@ -164,7 +167,7 @@ test('newConversation: no title → [undefined] placeholder; unpaired machine �
   gw.rpc({ result: { ok: true, value: { accepted: true } } })                    // prompt
   const { home, svc, selfM4 } = mkService(gw)
   try {
-    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, undefined, localInitiator(selfM4))
+    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, undefined, undefined, localInitiator(selfM4))
     assert.match(out.shortId, /^[a-z0-9]{6}$/)
     assert.equal(out.warning, undefined)
     // D17: unspecified → the '[undefined]' placeholder, stored at mint
@@ -172,14 +175,14 @@ test('newConversation: no title → [undefined] placeholder; unpaired machine �
     assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
     // R4: an UNPAIRED machine is the router's typed failure (unknown-machine)
     await assert.rejects(
-      () => svc.newConversation({ machine: 'nowhere', id: 'zzzzzz' }, undefined, localInitiator(selfM4)),
+      () => svc.newConversation({ machine: 'nowhere', id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-machine',
     )
     // a specified title lands in the registry verbatim — still zero rename
     // calls (the old write-through + warning path is deleted, D17/R2)
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } }) // create
     gw.rpc({ result: { ok: true, value: { accepted: true } } })                  // prompt
-    const titled = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'x', localInitiator(selfM4))
+    const titled = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'x', undefined, localInitiator(selfM4))
     assert.match(titled.shortId, /^[a-z0-9]{6}$/)
     assert.equal(titled.sessionId, 'sess-cccccccc-3333')
     assert.equal(titled.warning, undefined)
@@ -197,7 +200,7 @@ test('newConversation: title is registry-only — the whole A2A path makes zero 
   const { home, svc, selfM4 } = mkService(gw)
   const local = { machine: selfM4, id: 'q7m2xp' }
   try {
-    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Rename probe A', localInitiator(selfM4))
+    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Rename probe A', undefined, localInitiator(selfM4))
     assert.match(out.shortId, /^[a-z0-9]{6}$/)
     assert.equal(out.sessionId, 'sess-eeeeeeee-5555')
     assert.equal(out.warning, undefined)
@@ -319,11 +322,11 @@ test('send failure taxonomy: gateway throw → failed verbatim; business {ok:fal
 test('teaching template: ONE exported constant; renderer fills initiator identity; untitled fallback', () => {
   assert.equal(
     A2A_MESSAGE_TEMPLATE,
-    'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId {shortId} for later or asynchronous replies.',
+    'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"{machine}-{agent}", conversationId:"{shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.',
   )
   assert.equal(
     renderA2aEnvelope({ machine: 'm1ab', agent: 'a2b3c4', title: 'T', shortId: 'sess-ddd', message: 'hi' }),
-    'A2A message from m1ab-a2b3c4 (conversation "T"):\n\nhi\n\nReply normally in this conversation — your reply is relayed to the sender automatically. If you also have a superd-hub tool, you may use it with conversationId sess-ddd for later or asynchronous replies.',
+    'A2A message from m1ab-a2b3c4 (conversation "T"):\n\nhi\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"m1ab-a2b3c4", conversationId:"sess-ddd", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.',
   )
   assert.ok(renderA2aEnvelope({ machine: 'm', agent: 'a', shortId: 's', message: 'x' }).includes('"(untitled)"'))
   // D17: the '[undefined]' registry placeholder renders as the friendly untitled display
@@ -600,11 +603,11 @@ test('registry: mint never collides with the taken-set; corrupt file reads empty
   try {
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaa-0001' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const a = await svc.newConversation(local, undefined, localInitiator(selfM4))
+    const a = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
     assert.match(a.shortId, /^[a-z0-9]{6}$/)
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaab002' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const b = await svc.newConversation(local, undefined, localInitiator(selfM4))
+    const b = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
     // R4: the initiator mints RANDOM ids — the registry is the taken-set, so
     // fresh mints never collide (the session-derived lengthening moved to
     // shortIdFor's unit surface; the wire mint is random by design)
@@ -617,7 +620,7 @@ test('registry: mint never collides with the taken-set; corrupt file reads empty
     // and the service keeps working (fresh write replaces the corruption)
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-zzzzzzzz-0003' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const c = await svc.newConversation(local, undefined, localInitiator(selfM4))
+    const c = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
     assert.equal(loadConversations(home).conversations.length, 1)
     assert.match(c.shortId, /^[a-z0-9]{6}$/)
   } finally { rmSync(home, { recursive: true, force: true }) }
@@ -669,7 +672,7 @@ test('registry (D2): legacy rows untouched and load verbatim; fresh mints keep c
     // R4: new conversations mint RANDOM ids; legacy rows are never reminted
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-fresh001-0001' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const fresh = await svc.newConversation(local, undefined, localInitiator(selfM4))
+    const fresh = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
     assert.match(fresh.shortId, /^[a-z0-9]{6}$/)
     assert.notEqual(fresh.shortId, '4ce3e1')
     assert.notEqual(fresh.shortId, 'zzz999')
@@ -745,14 +748,14 @@ test('gateway misses (D7): unknown-agent / unknown-machine / unreachable — typ
     // unknown-agent: the INGEST's resolver throws; the failed receipt carries it back
     missFor.set('zzzzzz', 'unknown-agent')
     await assert.rejects(
-      () => svc.newConversation({ machine: selfM4, id: 'zzzzzz' }, undefined, localInitiator(selfM4)),
+      () => svc.newConversation({ machine: selfM4, id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-agent'
         && e.wire.message === `a2a: unknown-agent ${selfM4}-zzzzzz (no such agent on machine ${selfM4})`,
     )
     // unknown-machine: the ROUTER owns it now — an unpaired remote machine
     missFor.set('zzzzzz', 'unknown-machine')
     await assert.rejects(
-      () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }, undefined, localInitiator(selfM4)),
+      () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-machine'
         && e.wire.message === 'a2a: unknown-machine k3f9 (not paired)',
     )
@@ -764,7 +767,7 @@ test('gateway misses (D7): unknown-agent / unknown-machine / unreachable — typ
     // unreachable keeps today's code and message
     missFor.set('zzzzzz', 'unreachable')
     await assert.rejects(
-      () => svc.newConversation({ machine: selfM4, id: 'zzzzzz' }, undefined, localInitiator(selfM4)),
+      () => svc.newConversation({ machine: selfM4, id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/gateway-unavailable'
         && e.wire.message === `a2a: no gateway for ${selfM4}-zzzzzz — machine unreachable or not paired`,
     )
@@ -780,7 +783,7 @@ test('renderA2aEnvelope (injection fix): title containing {shortId}/{message} li
   // each real placeholder expanded exactly once — no double expansion via user values
   assert.equal(out.match(/4ce3e1/g)?.length, 1)
   assert.equal(out.match(/body text/g)?.length, 1)
-  assert.equal(out.match(/m1ab/g)?.length, 1)
+  assert.equal(out.match(/m1ab/g)?.length, 2) // header + the tool clause (D20 v3 template carries the address twice)
 })
 
 test('registry migration (D2 amended): degenerate shortIds re-minted and written back; non-degenerate untouched', () => {
@@ -989,5 +992,77 @@ test('R4 continuation routing: mirror rows (hostAgent) → OWN ingest; initiator
     const wrong = await svc.send({ to: { machine: 'k3f9', id: 'q7m2xp' }, conversationId: 'mir001', message: 'x' }, localInitiator(selfM4))
     assert.equal(wrong.outcome, 'failed')
     assert.equal(wrong.error.code, 'a2a/conversation-machine-mismatch')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ------------------------------------------------------- D20/D21 reply semantics v3
+
+test('D20 write-back send leg: mirror row + addressing the initiator → envelope to the peer hub + latch set', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'x', conversationId: 'wb001', sessionId: 'sess-init-at-k3f9' } })
+  saveConversations(home, { conversations: [{
+    shortId: 'wb001', machine: 'k3f9', agent: 'a2b3c4', sessionId: 'sess-host-1', title: 'wb',
+    hostAgent: 'q7m2xp', createdAt: 1, lastActivityAt: 1,
+  }] })
+  const svc = createA2aService({ home, gatewayFor: () => gw.face, fetchImpl: remote.fetchImpl, now: () => 7 })
+  const r = await svc.send(
+    { to: { machine: 'k3f9', id: 'a2b3c4' }, conversationId: 'wb001', message: 'result through the channel' },
+    { machine: selfM4, agent: 'q7m2xp', sessionId: 'sess-host-1' },
+  )
+  assert.equal(r.outcome, 'injected')
+  assert.equal(r.conversationId, 'wb001')
+  // the envelope POSTed to the INITIATOR's hub: to = the initiator, from = the hosted peer itself
+  assert.equal(remote.posts.length, 1)
+  const frame = JSON.parse(remote.posts[0].init.body)
+  assert.equal(frame.v, 1)
+  assert.equal(frame.envelope.kind, 'message')
+  assert.deepEqual(frame.envelope.to, { machine: 'k3f9', id: 'a2b3c4' })
+  assert.deepEqual(frame.envelope.from, { machine: selfM4, agent: 'q7m2xp', sessionId: 'sess-host-1' })
+  assert.equal(frame.envelope.message, 'result through the channel')
+  // the latch: monotonic channelUsed + the send watermark
+  const row = loadConversations(home).conversations.find((x) => x.shortId === 'wb001')
+  assert.equal(row.channelUsed, true)
+  assert.equal(row.lastSentAt, 7)
+  // and the write-back NEVER touched the local session plane
+  assert.equal(gw.calls.length, 0)
+})
+
+test('D20 write-back guard: a mirror-row send addressing the HOSTED agent still routes to our own ingest (continuation, no latch)', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  const local = { machine: selfM4, id: 'q7m2xp' }
+  // a local↔local conversation: ONE mirror row (hostAgent set, initiator local)
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-hh-1111' } } })
+  gw.rpc({ result: { ok: true, value: { accepted: true } } })
+  let ingestRef
+  const svc = createA2aService({ home, gatewayFor: () => gw.face, ingest: () => ingestRef, now: () => 5 })
+  ingestRef = createA2aIngest({ home, gatewayFor: () => gw.face, delivery: { agents: { get: () => undefined }, buffer: () => {} }, now: () => 5 })
+  try {
+    const created = await svc.newConversation(local, 'T', undefined, localInitiator(selfM4))
+    // a third party continuing the conversation addresses the HOSTED agent — allowed, no latch
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const r = await svc.send({ to: local, conversationId: created.shortId, message: 'continue' }, localInitiator(selfM4))
+    assert.equal(r.outcome, 'injected')
+    const row = loadConversations(home).conversations.find((x) => x.shortId === created.shortId)
+    assert.equal(row.channelUsed, undefined, 'an initiator-side continuation is NOT a channel reply — no latch')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('D21: newConversation with message → opening + content land as ONE injected turn', async () => {
+  const gw = fakeGateway()
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-m1-1111' } } }) // create
+  gw.rpc({ result: { ok: true, value: { accepted: true } } })           // prompt
+  const { home, svc, selfM4 } = mkService(gw)
+  try {
+    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Task', 'the actual task in the opening turn', localInitiator(selfM4))
+    const prompts = gw.rpcs(WIRE.promptSubmit)
+    assert.equal(prompts.length, 1, 'ONE turn — not a bare opening followed by the content')
+    assert.deepEqual(prompts[0].payload.args.request.content, [{
+      type: 'text',
+      text: teaching(localInitiator(selfM4), 'Task', out.shortId, 'the actual task in the opening turn'),
+    }])
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

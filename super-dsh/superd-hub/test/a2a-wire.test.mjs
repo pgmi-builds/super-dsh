@@ -330,3 +330,19 @@ test('return envelopes: optional sender accepted when well-formed, rejected when
   assert.equal(isA2aEnvelope({ ...REPLY, sender: { machine: '', agent: 'cd33x1' } }), false)
   assert.equal(isA2aEnvelope({ ...REPLY, sender: 'dev3' }), false)
 })
+
+// D20: the additive transcribed flag — true is valid, anything else is not
+test('reply envelope guard: transcribed true passes, junk values fail (additive v1)', () => {
+  const base = {
+    kind: 'reply',
+    to: { machine: 'm1ab', agent: 'a2b3c4', sessionId: 'sess-1' },
+    conversation: 'abc123',
+    text: 'the turn-end words',
+    messageId: 'a2a-relay-1',
+  }
+  assert.ok(isA2aEnvelope(base))
+  assert.ok(isA2aEnvelope({ ...base, transcribed: true }))
+  assert.ok(!isA2aEnvelope({ ...base, transcribed: false }))
+  assert.ok(!isA2aEnvelope({ ...base, transcribed: 'yes' }))
+  assert.ok(!isA2aEnvelope({ ...base, transcription: true }), 'unknown additive keys stay rejected (exact key sets)')
+})

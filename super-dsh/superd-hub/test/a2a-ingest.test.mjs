@@ -272,7 +272,7 @@ test('completion → in-process reply (self-routed): relay text + a2a-relay sour
     const hit = delivery.delivered[0]
     assert.equal(hit.sessionId, 'session-init-1')
     assert.equal(hit.how, 'followup')
-    assert.match(hit.message.content[0].text, new RegExp(`Agent ${self.id}-q7m2xp replied \\(conversation "\\(untitled\\)"\\):`))
+    assert.match(hit.message.content[0].text, new RegExp(`Agent ${self.id}-q7m2xp — last output at turn end \\(conversation "\\(untitled\\)"\\):`))
     assert.match(hit.message.content[0].text, /the local answer/)
     assert.equal(hit.message.source.kind, 'a2a-relay')
     assert.equal(hit.message.source.senderAgent, 'q7m2xp')
@@ -301,9 +301,9 @@ test('completion aborted with NO text → bounded notice, never an empty relay (
     await until(() => delivery.delivered.length > 0)
     const hit = delivery.delivered[0]
     assert.equal(hit.message.source.kind, 'a2a-notice')
-    assert.equal(hit.message.source.reason, 'aborted')
+    assert.equal(hit.message.source.reason, 'peer') // D20: no abort taxonomy — the sendless-turn notice is reason-neutral
     assert.ok(hit.message.source.summary.length <= 120)
-    assert.match(hit.message.content[0].text, /turn aborted, no reply/)
+    assert.match(hit.message.content[0].text, /turn ended, no reply/)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -651,3 +651,136 @@ function readOutbox(home) {
     return { envelopes: [] }
   }
 }
+
+// ------------------------------------------------------- D20 reply semantics v3
+
+test('D20: latch set (channel used in an earlier turn) → turn end yields the plain notice, never a transcript', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    saveConversations(home, { conversations: [{
+      shortId: 'abc123', machine: self.id, agent: 'f4g5h6', sessionId: 'sess-latch-1', title: '[undefined]',
+      hostAgent: 'q7m2xp', channelUsed: true, lastSentAt: 100, createdAt: 1, lastActivityAt: 1,
+    }] })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 2 }, 1),
+          userMsg('a2a-msg-9', 2),
+          asstMsg(2, 'words it wrote but never sent through the channel', 3),
+        ]),
+        turnEnd(2, 4),
+      ],
+    })
+    const { ingest, delivery } = assembly(home, gw)
+    await ingest.ingest({ ...mkEnv(self.id, self.id), kind: 'message', messageId: 'a2a-msg-9' })
+    await until(() => delivery.delivered.length > 0)
+    const hit = delivery.delivered[0]
+    assert.equal(hit.message.source.kind, 'a2a-notice')
+    assert.match(hit.message.content[0].text, /turn ended, no reply/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('D20: a channel send inside the armed window suppresses the artifact (the send WAS the reply)', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  let release
+  const gate = new Promise((r) => { release = r })
+  const gw = {
+    face: {
+      async dispatchRpc(endpoint, payload) {
+        if (endpoint === WIRE.sessionCreate) return { ok: true, value: { sessionId: 'sess-gated-1' } }
+        return { ok: true, value: { accepted: true } }
+      },
+      openWireStream() {
+        return (async function* () {
+          yield snap([
+            ev('turn/start', { turn: 1 }, 1),
+            userMsg('a2a-msg-1', 2),
+            asstMsg(1, 'late words', 3),
+          ])
+          await gate // hold the turn open: mid-turn the hosted peer sends via the channel
+          yield turnEnd(1, 4)
+        })()
+      },
+    },
+  }
+  const { ingest, delivery } = assembly(home, gw)
+  try {
+    await ingest.ingest(mkEnv(self.id, self.id))
+    // mid-turn: the peer's channel send moves the latch + the watermark
+    saveConversations(home, {
+      conversations: loadConversations(home).conversations.map((r) => ({ ...r, channelUsed: true, lastSentAt: 999 })),
+    })
+    release()
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(delivery.delivered.length, 0, 'the send was this turn\'s artifact — the watch must add nothing')
+  } finally { release?.(); rmSync(home, { recursive: true, force: true }) }
+})
+
+test('D20: transcript reply envelope carries transcribed:true on the wire (remote initiator)', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  upsertRemote(home, { id: 'dev3', name: 'dev3', label: 'dev3', origin: 'http://dev3:4999', cookie: 'dsh-auth-dev3=1', enabled: true, addedAt: 1 })
+  const posts = []
+  const fetchImpl = async (url, init) => {
+    posts.push({ url: String(url), init })
+    return new Response(JSON.stringify({ outcome: 'delivered' }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    saveConversations(home, { conversations: [{
+      shortId: 'abc123', machine: 'dev3', agent: 'f4g5h6', sessionId: 'sess-wire-1', title: '[undefined]',
+      hostAgent: 'q7m2xp', createdAt: 1, lastActivityAt: 1,
+    }] })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 1 }, 1),
+          userMsg('a2a-msg-5', 2),
+          asstMsg(1, 'the turn-end words', 3),
+        ]),
+        turnEnd(1, 4),
+      ],
+    })
+    const { ingest } = assembly(home, gw, { fetchImpl })
+    await ingest.ingest({ ...mkEnv(self.id, 'dev3'), kind: 'message', messageId: 'a2a-msg-5' })
+    await until(() => posts.length > 0)
+    const frame = JSON.parse(posts[0].init.body)
+    assert.equal(frame.v, 1)
+    assert.equal(frame.envelope.kind, 'reply')
+    assert.equal(frame.envelope.transcribed, true)
+    assert.equal(frame.envelope.text, 'the turn-end words')
+    assert.deepEqual(frame.envelope.sender, { machine: self.id, agent: 'q7m2xp' })
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('D20: self-route write-back — the hosted peer sends (from=hostAgent) → delivered into initiatorSession, NEVER injected', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    saveConversations(home, { conversations: [{
+      shortId: 'wb005', machine: self.id, agent: 'nativ1', sessionId: 'sess-host-9', title: 'self-route wb',
+      hostAgent: 'q7m2xp', initiatorSession: 'session-init-9', createdAt: 1, lastActivityAt: 1,
+    }] })
+    const { ingest, delivery } = assembly(home, gw, { liveSession: 'session-init-9' })
+    const out = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'nativ1' },
+      conversationId: 'wb005',
+      message: 'the result through the channel',
+      from: { machine: self.id, agent: 'q7m2xp', sessionId: 'sess-host-9' },
+      messageId: 'a2a-wb-1',
+    })
+    assert.deepEqual(out, { outcome: 'injected', messageId: 'a2a-wb-1', conversationId: 'wb005', sessionId: 'session-init-9' })
+    assert.equal(gw.rpcs(WIRE.promptSubmit).length, 0, 'write-back NEVER injects into the peer\'s own session')
+    assert.equal(gw.streams(WIRE.streamOpen).length, 0)
+    const hit = delivery.delivered[0]
+    assert.equal(hit.sessionId, 'session-init-9')
+    assert.equal(hit.message.source.kind, 'a2a-relay')
+    assert.match(hit.message.content[0].text, /replied \(conversation "self-route wb"\):/)
+    assert.match(hit.message.content[0].text, /the result through the channel/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})

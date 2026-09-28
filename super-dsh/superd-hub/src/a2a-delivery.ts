@@ -188,8 +188,9 @@ export interface A2aReplyMeta {
   messageId: string
   /** Conversation title for the relay prefix (untitled placeholder when absent). */
   title?: string
+  /** D20: true = the runtime's transcription of the peer's turn-end last output (the peer never sent it through the channel) — renders the provenance prefix instead of "replied". */
+  transcribed?: boolean
 }
-
 /** Producer attribution for one runtime notice. */
 export interface A2aNoticeMeta {
   senderMachine: string
@@ -208,7 +209,14 @@ export interface A2aNoticeMeta {
  */
 export function renderA2aRelayText(meta: A2aReplyMeta, content: string): string {
   const title = meta.title === undefined || meta.title === '' || meta.title === A2A_TITLE_PLACEHOLDER ? A2A_UNTITLED : meta.title
-  return `Agent ${meta.senderMachine}-${meta.senderAgent} replied (conversation "${title}"):\n\n${content}`
+  // D20 provenance split (upstream relay/settled honesty, one prefix): a
+  // channel reply the peer chose to send vs the runtime delivering the
+  // turn-end last output — the recipient must never mistake one for the
+  // other. Wording per user redline 2026-09-29: no "transcribed" jargon,
+  // the observable fact only.
+  return meta.transcribed === true
+    ? `Agent ${meta.senderMachine}-${meta.senderAgent} — last output at turn end (conversation "${title}"):\n\n${content}`
+    : `Agent ${meta.senderMachine}-${meta.senderAgent} replied (conversation "${title}"):\n\n${content}`
 }
 
 /**

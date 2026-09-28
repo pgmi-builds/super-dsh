@@ -42,7 +42,7 @@
 | D17 | conversation title 概念剥离 | Super D 层自有 title，与上游 runtime session title 永不 write-through（异构：Hermes 可指定、OMP 可 mutable，开发权在上游，下版即可能变）；首次指定后 **immutable**（寻址恒走短 ID，title 只是记忆标签；话题变了开新会话）；未指定存占位 `[undefined]`（显示层可美化）；镜像行 verbatim 收养、双侧 immutable |
 | D18 | roster 瘦 + session 状态采集（5min） | roster probe 载荷只带 machine 状态 + agent 行（a6/label/ready）——session 列表不进 probe 载荷（3-4 机 × 6-7 agent 即臃肿）；**5min sweep 顺便采集**每 agent 的 DSH session list 入本地 information status 缓存（本地 = 进程内 session plane；远端 = 呈现车道直查——DSH session list 数据面全网 unified 且 title 非空（空则默认 workspace 名），调取成本低）；**per-agent 状态查询消费缓存**（alive-first ≤5、mtime 倒序，orchestra 窗口语义）：行 = `{conversationId?, sessionId(截断), title, status, mtime}`——`conversationId` 有则显示、无则留空（无论何因）；**title 解析**：registry 命中（全长 sessionId join）→ conversation title 替换原生 title 并附 `[hub A2A]` 标记，未命中 → 原生 title 原样；替换为纯呈现层 overlay（落盘 persistence 里 hub 发起与原生发起同构，D17）；sessionId 数据面握全长、照常可 resume；呈现面标明 5min cadence + last-fetch，即时按 machine 显式 live fetch——全单向 API |
 | D19 | 双向拓扑 = mutual pairing | 双向由双侧各自 add-machine 贴 token 达成（manual，机制零新增）；auto-reverse-registration（A 加 B 时反向登记给 B）仍留后续；D2 开放问题据此关闭 |
-| D20 | 回复语义 v3：通道优先 + latch + 转写兜底（2026-09-29 user 裁决，两轮） | **回复 = peer 经通道的主动 send**（信封进渠道才算沟通；session log 里的 agent response 是它自己的草稿纸；new spawn 经 user prompt 切入是唯一例外——session 只能从 user turn 诞生）。**latch**：hosting hub 镜像行 per-conversation 单调开关——本会话任一次 send（哪怕中间追问）→ 判定具备通道能力，**永久停止采集**（防 moral hazard：per-turn 重置会让「忘了 send 也有人转写」瓦解 guideline，且造成 send+转写双投）。**从未 send + turn 结束** → 按 assistant-output 规则采集 last non-empty output，作为**普通 message** 投递（hub-to-hub 信封与主动回复完全一致），前缀标注来源：`… — transcribed from its turn-end output, never sent via channel`（对齐 DSH relay/settled 刻意分型的诚实性，但不分裂 wire 信封）。**通道面无 abort/complete/max-tokens/refusal 分类**——DSH settlement 词汇是 subagent/delegation 监护人语言（refusal 注释明说「父 agent 不能当成已完成」）；通道只消费两个机器事实：**turn 边界 + last output**；空输出/latch on 零 send → 单一 notice `turn ended, no reply`（无定性词）；stop 的 abort 事实由其同步回执 `{stopped:true}` 承载；答非所问/幻觉 = 内容层的事，逐字转写照投，sender 自行判断。**teaching = 单一合并文本，无变体**：运行时工具可用性不可预判（preset 可禁行、user 可中途关、其他插件可挤掉——静态知识当场变谎话）；「if you have a superd-hub tool」条件句交模型自评（它看一眼自己的工具列表即知，零成本零错误）；**纪律：面向 agent 的文本 merged conditional > pre-selected variant——模型就是解释器，不在不可知的运行时状态上预计算 if-else**；teaching 永远 inline 于信封、有界（≤4 句），绝不独立 user prompt（OMP 二十次工具调用找 A2A 工具的事故） |
+| D20 | 回复语义 v3：通道优先 + latch + 转写兜底（2026-09-29 user 裁决，两轮 + 措辞 redline） | **回复 = peer 经通道的主动 send**（信封进渠道才算沟通；session log 里的 agent response 是它自己的草稿纸；new spawn 经 user prompt 切入是唯一例外——session 只能从 user turn 诞生）。**latch**：hosting hub 镜像行 per-conversation 单调开关——本会话任一次 send（哪怕中间追问）→ 判定具备通道能力，**永久停止采集**（防 moral hazard：per-turn 重置会让「忘了 send 也有人转写」瓦解 guideline，且造成 send+转写双投）。**从未 send + turn 结束** → 按 assistant-output 规则采集 last non-empty output，作为**普通 message** 投递（hub-to-hub 信封与主动回复完全一致），前缀标注来源：`… — last output at turn end`（2026-09-29 user redline：模型面向文本不用 "transcribed" 术语——可观察事实即可，jargon 是实现细节；对齐 DSH relay/settled 刻意分型的诚实性，但不分裂 wire 信封）。**通道面无 abort/complete/max-tokens/refusal 分类**——DSH settlement 词汇是 subagent/delegation 监护人语言（refusal 注释明说「父 agent 不能当成已完成」）；通道只消费两个机器事实：**turn 边界 + last output**；空输出/latch on 零 send → 单一 notice `turn ended, no reply`（无定性词）；stop 的 abort 事实由其同步回执 `{stopped:true}` 承载；答非所问/幻觉 = 内容层的事，逐字转写照投，sender 自行判断。**teaching = 单一合并文本，无变体**：运行时工具可用性不可预判（preset 可禁行、user 可中途关、其他插件可挤掉——静态知识当场变谎话）；「if available」条件句交模型自评（它看一眼自己的工具列表即知，零成本零错误）；**纪律：面向 agent 的文本 merged conditional > pre-selected variant——模型就是解释器，不在不可知的运行时状态上预计算 if-else**；teaching 永远 inline 于信封、有界，绝不独立 user prompt（OMP 二十次工具调用找 A2A 工具的事故）；尾部含出身自述（superd-hub 环境）与异质性披露（工具可用性因 runtime 而异） | 
 | D21 | opening 合一 turn | `new_conversation` 增 optional `message`——opening 与正文合成**一个**注入 turn；裸 `(conversation opened)` 占位信封退役（它独占一个 turn，peer 对着无任务的开场白困惑 22 步、其产出又被当回复转投——F6/F9 同根）；无 message 的 new_conversation 仍合法（纯打招呼/占位） |
 | D22 | spawn receipt β（懒启动 foreign runtime 的 new spawn 边界） | 同步窗 **10s**（常例覆盖：观测 create 均秒级）内拿到 session 即同步全回执；超时 → `{outcome:'pending', messageId, conversationId, note:'spawning, ≤3min'}`——conversationId/messageId 皆发起方铸造、pending 态即刻可用（可 stop/可引用，心智连续）；落盘判定 = DSH 同款（session 文件持久化才算 spawned，lazy sidecar 的首条延迟被吸收）；**3min ceiling**：到点未成 → notice `spawn-failed` + 镜像行标死（后续 send 诚实报错，不注入空气），半启动进程走 stop 机制（上游无 session-close，不造一个）；成功通知经通道投递（notice 进会话）；`'pending'` 在 receipt taxonomy 中 **reserve**（0.1.7-a 落地） |
 
@@ -236,9 +236,10 @@ CTX0 hub
     进发起 session（绝不注入——session 不归对端驱动）；此路一走，镜像行 latch 置位。
   - **转写兜底（latch 从未置位时）**：hosting hub 订阅**它本机** session 的完成事件
     （同机同版本，无跨线解析），按 assistant-output 规则取 last non-empty output
-    → 回信信封发回 → 前缀如实标注：`Agent <addr> — transcribed from its turn-end
-    output, never sent via channel (conversation "<title>"):`（对照 DSH 刻意分型
-    relay/settled 的诚实性，但不分裂 wire 信封——sender 拿到的都是普通 message）。
+    → 回信信封发回 → 前缀如实标注：`Agent <addr> — last output at turn end
+    (conversation "<title>"):`（对照 DSH 刻意分型 relay/settled 的诚实性，但不分裂
+    wire 信封——sender 拿到的都是普通 message；措辞 2026-09-29 user redline：
+    不用 "transcribed" 术语，可观察事实即可，jargon 是实现细节不是消费面）。
   - **latch（per-conversation 单调，挂镜像行）**：本会话任一次主动 send → 永久停止
     转写。防 moral hazard（「忘了 send 也有人转写」会瓦解 guideline）与双投
     （send 中间追问 + turn 尾结果写在 response → per-turn 重置会两条都送）。
@@ -258,16 +259,29 @@ A2A message from {machine}-{agent} (conversation "{title}"):
 
 {message}
 
-The sender sees only what arrives through this conversation. To reply, send a
-message back: with a superd-hub tool, {action:"send", agent:"{machine}-{agent}",
-conversationId:"{shortId}", message:"…"}. You can send at any point, more than
-once — sending does not end your turn. If you never send, your last output at
-this turn's end is delivered to the sender as your reply, marked as transcribed.
+This conversation is initiated through superd-hub by the sender. The sender
+sees only what arrives through this conversation.
+
+As superd-hub hosts various kinds of agent runtimes, integration into each
+runtime and superd-hub tool availability in each runtime session might differ.
+
+To reply, send a message back: with a superd-hub tool, if available,
+{action:"send", agent:"{machine}-{agent}", conversationId:"{shortId}",
+message:"…"}. You can send at any point, more than once — sending does not
+end your turn.
+
+If we do not receive a superd-hub message from you (intentionally or whatever
+situation prevents so), your last output at this turn's end is delivered to
+the sender as your reply.
 ```
 
-  四句各司其职：sender 只见渠道内容（防「它都看到了」错觉）/ 怎么回、随时可回、
-  回不结束 turn（DSH `withContinuableReturnGuidance` 同款关键句）/ 不回的后果
-  = 转写代投带标注（informed consent，同时就是对无工具 peer 的 subagent 契约句）。
+  尾部四段各司其职（2026-09-29 user redline 定稿，替换我方四句草案）：出身自述
+  + 渠道即合同（防「它都看到了」错觉）/ **异质性披露**——明说工具可用性因 runtime
+  而异（无工具的模型读到这句就不会去满世界找工具，OMP 事故的文本级免疫）/
+  怎么回、随时可回、回不结束 turn（DSH `withContinuableReturnGuidance` 同款
+  关键句）/ 兜底——从**接收方的运行时事实**措辞（「我们没有收到」，覆盖故意不发
+  与不能发两种情形），转写代投带标注（informed consent，同时就是对无工具 peer
+  的 subagent 契约句）。
   `{machine}-{agent}` 填 initiator 地址（write-back 直接可用）；单遍渲染防注入
   机制不变；**绝不独立 user prompt**（OMP 事故）。
 - **registry 双侧**：发起方持行（发起 session 上下文 + shortId）；对端持镜像行

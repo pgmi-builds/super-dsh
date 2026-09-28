@@ -127,14 +127,8 @@ export interface A2aReplyEnvelope {
   messageId: string
   /** Who replied — the hosting machine + host agent (additive v1). */
   sender?: A2aReturnSender
-}
-export interface A2aReplyEnvelope {
-  kind: 'reply'
-  to: A2aWireOrigin
-  /** Conversation shortId (requests say `conversationId`; returns say `conversation` — contract asymmetry, kept verbatim). */
-  conversation: string
-  text: string
-  messageId: string
+  /** D20 (additive v1): present iff the text is the runtime's TRANSCRIPTION of the peer's turn-end last output — the peer never sent it through the channel (latch never set). The delivering side renders the provenance prefix from this flag; absent = a channel reply the peer chose to send. */
+  transcribed?: true
 }
 
 export interface A2aNoticeEnvelope {
@@ -165,7 +159,7 @@ export interface A2aWireFrame {
 
 /** Receipt for new-conversation / message envelopes (inbox-acceptance). */
 export interface A2aSendReceipt {
-  outcome: 'injected' | 'queued' | 'failed'
+  outcome: 'injected' | 'queued' | 'pending' | 'failed'
   messageId: string
   conversationId?: string
   /** Target session ('' when the failure predates session resolution). */
@@ -284,9 +278,10 @@ export function isA2aEnvelope(v: unknown): v is A2aEnvelope {
       return hasExactKeys(v, ['kind', 'to', 'conversationId', 'scope']) &&
         isTarget(v['to']) && nonEmptyString(v['conversationId']) && (v['scope'] === 'turn' || v['scope'] === 'session')
     case 'reply':
-      return hasExactKeys(v, ['kind', 'to', 'conversation', 'text', 'messageId'], ['sender']) &&
+      return hasExactKeys(v, ['kind', 'to', 'conversation', 'text', 'messageId'], ['sender', 'transcribed']) &&
         isOrigin(v['to']) && nonEmptyString(v['conversation']) && nonEmptyString(v['text']) && nonEmptyString(v['messageId']) &&
-        (isReturnSender(v['sender']) || v['sender'] === undefined)
+        (isReturnSender(v['sender']) || v['sender'] === undefined) &&
+        (v['transcribed'] === undefined || v['transcribed'] === true)
     case 'notice':
       return hasExactKeys(v, ['kind', 'to', 'conversation', 'summary', 'messageId'], ['sender']) &&
         isOrigin(v['to']) && nonEmptyString(v['conversation']) && nonEmptyString(v['summary']) &&

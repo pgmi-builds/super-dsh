@@ -25,7 +25,8 @@
 
 **采纳方式（D20）**：分型的诚实性采纳，wire 分裂不采纳——我们的信封统一为
 `reply`，分型发生在 **hub 铸造的前缀**上（主动回复 `Agent <addr> replied:` vs
-转写代投 `… — transcribed from its turn-end output, never sent via channel`）。
+转写代投 `… — last output at turn end`——2026-09-29 user redline：模型面向措辞
+不用 "transcribed" 术语）。
 sender 拿到的都是普通 message，来源一眼可辨。
 
 ### 1.2 settlement 的判定与投递纪律 — `continuation-activation.ts:864/:871`

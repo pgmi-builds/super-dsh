@@ -522,3 +522,17 @@ test('resolveA2aGatewayFor (D7): unknown machine / unknown agent on a paired mac
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+// D20: the provenance prefix — "last output at turn end" for the runtime-delivered
+// fallback, "replied" for the channel reply the peer chose to send
+test('renderA2aRelayText: transcribed renders the observable-fact prefix (no jargon)', () => {
+  const meta = { senderMachine: 'k3f9', senderAgent: 'q7m2xp', conversationId: 'abc123', messageId: 'm1', title: 'mesh review' }
+  assert.equal(
+    renderA2aRelayText({ ...meta, transcribed: true }, 'x'),
+    'Agent k3f9-q7m2xp — last output at turn end (conversation "mesh review"):\n\nx',
+  )
+  assert.equal(
+    renderA2aRelayText(meta, 'x'),
+    'Agent k3f9-q7m2xp replied (conversation "mesh review"):\n\nx',
+  )
+})
