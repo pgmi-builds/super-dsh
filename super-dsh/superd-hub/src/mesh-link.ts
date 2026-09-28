@@ -416,17 +416,56 @@ export const REPROBE_SWEEP_MIN_SEC = 60
 /** Structural interval-timer handle: Node's Timeout (with `unref`), faked in tests. */
 interface SweepTimerHandle { unref?(): void }
 
+/**
+ * R5 SWEEP COLLECTORS — the dual-responsibility legs (outbox pull +
+ * session-list collection) ride THIS sweep; there is no second timer and no
+ * new probing path. Two injection routes, deps-win: (a) `collectors` on the
+ * deps (tests, hermetic); (b) the process-level registry below (the a2a row
+ * registers its assembly's legs — the sweep site in gateway.ts stays
+ * unchanged). Every collector rejection is swallowed HERE: a leg failure
+ * degrades (log, keep sweeping) and never breaks probe accounting.
+ */
+export interface SweepCollectors {
+  /** Once per sweep, before the remote loop: collect the LOCAL machine's agents. */
+  onLocalCollect?(): Promise<void> | void
+  /** After each SUCCESSFUL reprobe: pull the outbox + collect that machine's session lists. */
+  onRemoteProbed?(info: { remote: MachineRow; probe: ProbeResult }): Promise<void> | void
+}
+
+let registeredCollectors: SweepCollectors = {}
+
+/** Register/unregister the process-level collectors (the a2a row's assembly; set-once semantics, ctx0 only). */
+export function setSweepCollectors(collectors: SweepCollectors | undefined): void {
+  registeredCollectors = collectors ?? {}
+}
+
 /** One full sweep — the timer's entire payload. Reads the registry FRESH at
- *  start (rows paired/removed since the last tick are honored), probes every
- *  ENABLED remote through the real {@link reprobeMachine} (success converges
- *  federation via the existing event hook; failure degrades — no second
- *  probing path), and swallows every per-machine rejection so one dead peer
- *  (or a row deleted mid-sweep → unknown-id throw) never rejects the sweep. */
-export async function runReprobeSweep(deps: { home: string; fetchImpl?: typeof fetch }): Promise<void> {
+ * start (rows paired/removed since the last tick are honored), probes every
+ * ENABLED remote through the real {@link reprobeMachine} (success converges
+ * federation via the existing event hook; failure degrades — no second
+ * probing path), and swallows every per-machine rejection so one dead peer
+ * (or a row deleted mid-sweep → unknown-id throw) never rejects the sweep.
+ * Since R5 the collectors run inside the same swallow discipline. */
+export async function runReprobeSweep(deps: { home: string; fetchImpl?: typeof fetch; collectors?: SweepCollectors }): Promise<void> {
+  const collectors = deps.collectors ?? registeredCollectors
+  if (collectors.onLocalCollect !== undefined) {
+    try {
+      await collectors.onLocalCollect()
+    } catch {
+      // the local leg degrades — remotes still get their probe
+    }
+  }
   for (const row of listRemotes(deps.home)) {
     if (!row.enabled) continue
     try {
-      await reprobeMachine(deps.home, row.id, { fetchImpl: deps.fetchImpl })
+      const probe = await reprobeMachine(deps.home, row.id, { fetchImpl: deps.fetchImpl })
+      if (probe.ok && collectors.onRemoteProbed !== undefined) {
+        try {
+          await collectors.onRemoteProbed({ remote: row, probe })
+        } catch {
+          // a leg failure never breaks probe accounting or the sweep loop
+        }
+      }
     } catch {
       // Per-machine errors end here — the sweep itself always settles clean.
     }
@@ -441,6 +480,8 @@ export interface ReprobeSweepDeps {
    *  superd-hub row's `reprobeIntervalSec`, gateway.ts Config). */
   intervalSec?: number
   fetchImpl?: typeof fetch
+  /** R5: the dual-responsibility legs; defaults to the process-level registry (see setSweepCollectors). */
+  collectors?: SweepCollectors
   setIntervalFn?: (fn: () => void, ms: number) => SweepTimerHandle
   clearIntervalFn?: (handle: SweepTimerHandle) => void
 }

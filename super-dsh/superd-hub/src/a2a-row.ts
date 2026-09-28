@@ -41,6 +41,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { createSuperdHubTool } from './hub-tool.js'
 import { createA2aIngest, type A2aIngest } from './a2a-ingest.js'
+import { statusSweepLegs } from './agent-status.js'
+import { setSweepCollectors } from './mesh-link.js'
 import { createA2aService } from './a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from './a2a-host.js'
 import { registerA2aRpc } from './mesh-rpc.js'
@@ -117,6 +119,10 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
       buffer: (initiatorSessionId, message) => { service.buffer(initiatorSessionId, message) },
     }
     ingestRef = createA2aIngest({ home, gatewayFor, delivery })
+    // postoffice R5: the sweep's dual-responsibility legs (outbox pull +
+    // session-list collection) over THIS assembly — registered process-level;
+    // gateway.ts's existing sweep timer picks them up (no second timer).
+    setSweepCollectors(statusSweepLegs({ home, gatewayFor, ingest: ingestRef }))
     // the a2a endpoints (POST /api/superd/a2a + GET outbox) ride the shared
     // /api fence like the machines route; registered on the same inject scope
     // (they live and die with the typertGateway seam).

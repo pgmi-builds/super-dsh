@@ -157,6 +157,23 @@ export {
   type A2aReturnRoute,
 } from './a2a-ingest.js'
 export {
+  loadAgentStatus,
+  recordMachineCollection,
+  recordMachineFailure,
+  collectRemoteMachine,
+  collectLocalMachine,
+  pullOutboxFor,
+  statusSweepLegs,
+  federatedFaceOf,
+  AGENT_STATUS_ROWS_MAX,
+  type AgentStatusRow,
+  type AgentStatusAgent,
+  type AgentStatusMachine,
+  type AgentStatusFile,
+  type RemoteFaceOf,
+  type StatusSweepLegs,
+} from './agent-status.js'
+export {
   registerA2aRpc,
   handleA2aIngestPost,
   handleA2aOutboxGet,
