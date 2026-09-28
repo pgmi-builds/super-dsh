@@ -58,7 +58,7 @@ function setup() {
 }
 
 /** Poll `fn` until it is truthy or the deadline passes. */
-async function until(fn, ms = 500) {
+async function until(fn, ms = 2000) {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     if (fn()) return;

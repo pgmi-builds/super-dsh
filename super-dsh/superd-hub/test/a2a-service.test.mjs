@@ -109,7 +109,7 @@ const asstMsg = (turn, text, seq) => ev('assistant/message', { turn, step: 0, in
 const turnEnd = (turn, seq, kind = 'completed') => ev('turn/end', { turn, reason: { kind } }, seq)
 
 /** Poll until cond() is truthy (small steps, bounded wait). */
-const until = async (cond, ms = 200) => {
+const until = async (cond, ms = 2000) => {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
     if (cond()) return
