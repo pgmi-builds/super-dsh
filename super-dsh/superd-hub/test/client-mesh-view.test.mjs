@@ -180,3 +180,35 @@ test('chip presence: machineVersionChip exists exactly when the row carries a wa
   assert.deepEqual(mesh.machineVersionChip(warned.machines[0]), { text: 'version unknown ("x.y")' }, 'a warned row renders a chip carrying the warning text')
   assert.equal(mesh.machineVersionChip(clean.machines[0]), undefined, 'a clean row renders NO chip')
 })
+
+// ---- R7: the D18 cadence copy + lastFetchLabel (pure shaping) ---------------
+
+test('AUTO_REFRESH_NOTE is the standing 5-minute cadence copy', () => {
+  assert.equal(mesh.AUTO_REFRESH_NOTE, 'auto-refreshes every 5 min')
+})
+
+test('lastFetchLabel: absent/non-finite → undefined; the UI omits the line (presence contract)', () => {
+  assert.equal(mesh.lastFetchLabel(undefined, 1_000), undefined)
+  assert.equal(mesh.lastFetchLabel(Number.NaN, 1_000), undefined)
+  assert.equal(mesh.lastFetchLabel(Number.POSITIVE_INFINITY, 1_000), undefined)
+})
+
+test('lastFetchLabel: bucket boundaries — just now / m / h / d', () => {
+  const now = 1_000_000_000_000
+  // under a minute (incl. clock skew clamped to zero) → just now
+  assert.equal(mesh.lastFetchLabel(now, now), 'Updated just now')
+  assert.equal(mesh.lastFetchLabel(now - 59_000, now), 'Updated just now')
+  assert.equal(mesh.lastFetchLabel(now + 5000, now), 'Updated just now', 'clock skew clamps, never negative ages')
+  // minutes: floor, 59m59s still minutes
+  assert.equal(mesh.lastFetchLabel(now - 60_000, now), 'Updated 1m ago')
+  assert.equal(mesh.lastFetchLabel(now - 119_999, now), 'Updated 1m ago', 'floored, not rounded')
+  assert.equal(mesh.lastFetchLabel(now - 120_000, now), 'Updated 2m ago')
+  assert.equal(mesh.lastFetchLabel(now - 3_599_999, now), 'Updated 59m ago')
+  // hours
+  assert.equal(mesh.lastFetchLabel(now - 3_600_000, now), 'Updated 1h ago')
+  assert.equal(mesh.lastFetchLabel(now - 2 * 3_600_000, now), 'Updated 2h ago')
+  assert.equal(mesh.lastFetchLabel(now - 86_399_999, now), 'Updated 23h ago')
+  // days
+  assert.equal(mesh.lastFetchLabel(now - 86_400_000, now), 'Updated 1d ago')
+  assert.equal(mesh.lastFetchLabel(now - 3 * 86_400_000, now), 'Updated 3d ago')
+})

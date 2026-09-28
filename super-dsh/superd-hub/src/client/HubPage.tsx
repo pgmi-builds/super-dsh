@@ -13,6 +13,7 @@ import {
   type MeshMachineStatus,
   type MeshMachineView,
 } from './mesh-api.js'
+import { AUTO_REFRESH_NOTE, lastFetchLabel } from './mesh-api.js'
 import { groupByMachine, machineLabelsFrom } from './mesh-groups.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
@@ -146,6 +147,13 @@ function statusDotColor(status: MeshMachineStatus): string {
   if (status === 'auth-expired') return 'var(--dsw-alias-state-error-primary)'
   if (status === 'unreachable') return 'var(--dsw-alias-state-warn-primary)'
   return 'var(--dsw-alias-label-caption)'
+}
+
+/** The last-fetch caption's style (R7): quiet tertiary text beside the status chip. */
+const ageStyle: React.CSSProperties = {
+  fontSize: 11.5,
+  color: 'var(--dsw-alias-label-tertiary)',
+  whiteSpace: 'nowrap',
 }
 
 /** The status chip (style + text) for one remote row. */
@@ -535,7 +543,7 @@ export function HubPage(): React.JSX.Element {
             )}
           />
           <p style={{ margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' }}>
-            Add another DSH from remote machines, provide the token URL.
+            Add another DSH from remote machines, provide the token URL. Status {AUTO_REFRESH_NOTE}.
           </p>
           {meshError !== null && (
             <p style={{ margin: 0, fontSize: 12.5, lineHeight: '20px', color: 'var(--dsw-alias-state-error-primary)' }}>
@@ -574,6 +582,12 @@ export function HubPage(): React.JSX.Element {
                   <span style={originStyle}>{machine.origin}</span>
                   <span style={chipMonoId}>{machine.id}</span>
                   <span style={status.style}>{status.text}</span>
+                  {/* R7: the D18 cadence fact — the last probe's age from the
+                      row's lastProbeAt; omitted while never probed (the
+                      presence contract of lastFetchLabel). */}
+                  {lastFetchLabel(machine.lastProbeAt, Date.now()) !== undefined && (
+                    <span style={ageStyle}>{lastFetchLabel(machine.lastProbeAt, Date.now())}</span>
+                  )}
                   {/* I2 version-mismatch chip: present exactly when the hub's
                       probe found the peer's superd version incompatible —
                       amber like `unreachable`, full warning text as the chip
@@ -583,11 +597,11 @@ export function HubPage(): React.JSX.Element {
                   )}
                   <button
                     type="button"
-                    aria-label={`Reprobe ${machine.name}`}
+                    aria-label={`Refresh ${machine.name}`}
                     onClick={() => { reprobeRemote(machine.id) }}
                     style={textActionStyle}
                   >
-                    reprobe
+                    refresh
                   </button>
                   <button
                     type="button"

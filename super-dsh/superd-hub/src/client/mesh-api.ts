@@ -206,6 +206,33 @@ export async function reprobeMachine(id: string): Promise<void> {
 }
 
 /**
+ * The standing cadence note (D18): machine status refresh rides the hub's
+ * 5-minute sweep — the panel renders this verbatim beside its live-fetch
+ * control. English copy to match the DSH UI.
+ */
+export const AUTO_REFRESH_NOTE = 'auto-refreshes every 5 min'
+
+/**
+ * The per-machine last-fetch line, shaped from the row's `lastProbeAt`
+ * (the hub's status table stamp — mesh-rpc joins it on every GET).
+ * Pure by design (the UI passes its own `now`): headless-testable without
+ * jsdom, same presence contract as {@link machineVersionChip} — absent or
+ * non-finite stamp means "never probed" and the panel omits the line.
+ *
+ * @param lastProbeAt - epoch ms of the machine's last recorded probe.
+ * @param now - epoch ms the panel renders at.
+ * @returns "Updated 2m ago" / "Updated just now" / … , or undefined.
+ */
+export function lastFetchLabel(lastProbeAt: number | undefined, now: number): string | undefined {
+  if (typeof lastProbeAt !== 'number' || !Number.isFinite(lastProbeAt)) return undefined
+  const seconds = Math.max(0, Math.floor((now - lastProbeAt) / 1000))
+  if (seconds < 60) return 'Updated just now'
+  if (seconds < 3600) return `Updated ${Math.floor(seconds / 60)}m ago`
+  if (seconds < 86_400) return `Updated ${Math.floor(seconds / 3600)}h ago`
+  return `Updated ${Math.floor(seconds / 86_400)}d ago`
+}
+
+/**
  * Client-side pre-check before a pairing submit: a parseable absolute
  * http(s) URL carrying a non-empty `token` query param. The server re-parses
  * authoritatively (mesh-link's parseTokenUrl); this only keeps obviously

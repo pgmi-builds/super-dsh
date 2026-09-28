@@ -513,6 +513,31 @@ async function reprobeMachine(id) {
 	if (!response.ok) throw new Error(await errorText(response));
 }
 /**
+* The standing cadence note (D18): machine status refresh rides the hub's
+* 5-minute sweep — the panel renders this verbatim beside its live-fetch
+* control. English copy to match the DSH UI.
+*/
+const AUTO_REFRESH_NOTE = "auto-refreshes every 5 min";
+/**
+* The per-machine last-fetch line, shaped from the row's `lastProbeAt`
+* (the hub's status table stamp — mesh-rpc joins it on every GET).
+* Pure by design (the UI passes its own `now`): headless-testable without
+* jsdom, same presence contract as {@link machineVersionChip} — absent or
+* non-finite stamp means "never probed" and the panel omits the line.
+*
+* @param lastProbeAt - epoch ms of the machine's last recorded probe.
+* @param now - epoch ms the panel renders at.
+* @returns "Updated 2m ago" / "Updated just now" / … , or undefined.
+*/
+function lastFetchLabel(lastProbeAt, now) {
+	if (typeof lastProbeAt !== "number" || !Number.isFinite(lastProbeAt)) return void 0;
+	const seconds = Math.max(0, Math.floor((now - lastProbeAt) / 1e3));
+	if (seconds < 60) return "Updated just now";
+	if (seconds < 3600) return `Updated ${Math.floor(seconds / 60)}m ago`;
+	if (seconds < 86400) return `Updated ${Math.floor(seconds / 3600)}h ago`;
+	return `Updated ${Math.floor(seconds / 86400)}d ago`;
+}
+/**
 * Client-side pre-check before a pairing submit: a parseable absolute
 * http(s) URL carrying a non-empty `token` query param. The server re-parses
 * authoritatively (mesh-link's parseTokenUrl); this only keeps obviously
@@ -1686,6 +1711,12 @@ function statusDotColor(status) {
 	if (status === "unreachable") return "var(--dsw-alias-state-warn-primary)";
 	return "var(--dsw-alias-label-caption)";
 }
+/** The last-fetch caption's style (R7): quiet tertiary text beside the status chip. */
+const ageStyle = {
+	fontSize: 11.5,
+	color: "var(--dsw-alias-label-tertiary)",
+	whiteSpace: "nowrap"
+};
 /** The status chip (style + text) for one remote row. */
 function statusChip(machine) {
 	if (machine.status === "reachable") return {
@@ -2147,14 +2178,18 @@ function HubPage() {
 								}), "Add machine"]
 							})
 						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
 							style: {
 								margin: 0,
 								fontSize: 13,
 								lineHeight: "20px",
 								color: "var(--dsw-alias-label-tertiary)"
 							},
-							children: "Add another DSH from remote machines, provide the token URL."
+							children: [
+								"Add another DSH from remote machines, provide the token URL. Status ",
+								AUTO_REFRESH_NOTE,
+								"."
+							]
 						}),
 						meshError !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 							style: {
@@ -2247,6 +2282,10 @@ function HubPage() {
 											style: status.style,
 											children: status.text
 										}),
+										lastFetchLabel(machine.lastProbeAt, Date.now()) !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: ageStyle,
+											children: lastFetchLabel(machine.lastProbeAt, Date.now())
+										}),
 										machineVersionChip(machine) !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 											style: chipWarn,
 											title: `machine ${machine.id}`,
@@ -2254,12 +2293,12 @@ function HubPage() {
 										}),
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 											type: "button",
-											"aria-label": `Reprobe ${machine.name}`,
+											"aria-label": `Refresh ${machine.name}`,
 											onClick: () => {
 												reprobeRemote(machine.id);
 											},
 											style: textActionStyle,
-											children: "reprobe"
+											children: "refresh"
 										}),
 										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 											type: "button",
