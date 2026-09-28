@@ -53,6 +53,11 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EnvelopeError, type WireError } from './envelope.js'
+import { A2aAddressError } from './a2a-wire.js'
+// compat re-export (postoffice R1): the class moved to the protocol layer
+// (a2a-wire.ts) so the wire helpers can classify with it; every existing
+// consumer importing it from this module keeps compiling unchanged.
+export { A2aAddressError }
 import {
   WIRE,
   type SessionCreateRequestMirror,
@@ -64,6 +69,7 @@ import {
 import { wireArgsOf } from './wire-endpoints.js'
 
 // ---------------------------------------------------------------- registry
+
 
 /** One tracked conversation = one target-side DSH session (spec §2). */
 export interface ConversationRow {
@@ -379,39 +385,10 @@ export interface A2aGateway {
 }
 
 /**
- * Typed address-resolution failure (D7): THROWN by `gatewayFor` resolvers so
- * the WHY survives the resolver boundary — future consumers (P4 exec, P5
- * injection) branch on `kind` instead of parsing message strings. The three
- * kinds name the actual problem: a typo'd a6 on a known machine is not a
- * pairing issue, and an unpaired machine is not an agent problem.
+ * Typed address-resolution failure (D7) — the class lives in a2a-wire.ts
+ * since postoffice R1 (the wire helpers classify transport failures with
+ * it); re-exported above for this module's existing consumers.
  */
-export class A2aAddressError extends Error {
-  /** Which failure this is. */
-  readonly kind: 'unknown-agent' | 'unknown-machine' | 'unreachable'
-  /** The address that failed to resolve. */
-  readonly address: A2aAddress
-  /** The machine the blame lands on (m4; equals `address.machine`). */
-  readonly machine: string
-
-  constructor(kind: 'unknown-agent' | 'unknown-machine' | 'unreachable', address: A2aAddress) {
-    super(A2aAddressError.messageOf(kind, address))
-    this.name = 'A2aAddressError'
-    this.kind = kind
-    this.address = address
-    this.machine = address.machine
-  }
-
-  /** The honest branch text — one place, shared by every consumer of the error. */
-  static messageOf(kind: 'unknown-agent' | 'unknown-machine' | 'unreachable', address: A2aAddress): string {
-    if (kind === 'unknown-agent') {
-      return `a2a: unknown-agent ${address.machine}-${address.id} (no such agent on machine ${address.machine})`
-    }
-    if (kind === 'unknown-machine') {
-      return `a2a: unknown-machine ${address.machine} (not paired)`
-    }
-    return `a2a: no gateway for ${address.machine}-${address.id} — machine unreachable or not paired`
-  }
-}
 
 export interface A2aServiceDeps {
   home: string

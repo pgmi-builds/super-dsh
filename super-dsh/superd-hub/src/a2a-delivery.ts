@@ -29,6 +29,11 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { A2A_NOTICE_SUMMARY_MAX } from './a2a-wire.js'
+// compat re-export (postoffice R1): the bound moved to the protocol layer
+// (a2a-wire.ts) so the envelope guard enforces the same number this module
+// bounds in-process summaries with; existing importers keep compiling.
+export { A2A_NOTICE_SUMMARY_MAX }
 import { A2A_UNTITLED } from './a2a-service.js'
 import type { A2aBufferInput, A2aConversationRef, A2aInitiator, A2aService } from './a2a-service.js'
 
@@ -78,8 +83,7 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-/** Bound for a notice summary — mirrors upstream CONTEXT_SUMMARY_MAX_CHARS. */
-export const A2A_NOTICE_SUMMARY_MAX = 120
+/** Bound for a notice summary — owned by a2a-wire.ts since R1 (see the re-export above). */
 
 /**
  * Bound one notice summary to {@link A2A_NOTICE_SUMMARY_MAX} — the same
