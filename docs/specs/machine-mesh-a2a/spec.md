@@ -6,8 +6,8 @@
 > 本 spec 取代上一轮讨论中与 0.1.5+ 地基冲突的所有条目（per-agent UI 拷贝、
 > CTX7+ 远端 UI world、`/<label>/` URL path 寻址——均随 path-separation 裁决退役）。
 > 关联：ADR 0002（superD-to-superD only）、ADR 0007（token→cookie mint）、
-> **ADR 0009（本 spec 落档）**、blueprint §3.6/§6、orchestra openspec（agent-listing
-> 等语义先例）、dashr better-dsh `src/remote/`（BYO-PTY 借用源）。
+> **ADR 0009（本 spec 落档）**、**ADR 0011（邮局形态，2026-09-28 pivot 改形）**、blueprint §3.6/§6、
+> orchestra openspec（agent-listing 窗口/状态语义先例）、dashr better-dsh `src/remote/`（BYO-PTY 借用源）。
 
 ---
 
@@ -38,6 +38,10 @@
 | D13 | 工具面单一 | 一个工具 **SuperD Hub**（id `superd-hub`），子能力按 call-shape dispatch；未实现腿返回 "not yet implemented" 占位 |
 | D14 | 注入分阶段 | DSH 原生先行（与 hub 服务层同步开发，DSH 即自举测试 agent）；OMP/Pi per-spawn 增量插件、Claude Code 盘注入、Codex 机制调研随后 |
 | D15 | UI 寄生 CTX0 不变 | 后端功能挂 CTX0 hub host 半边；无独立 hub UI 页面；机器/agent 呈现进现有 HubPage 与 switch |
+| D16 | 邮局形态（2026-09-28 user 裁决，ADR 0011） | hub-to-hub 线上只做 `<m4>-<a6>` 寻址 + 不透明流量（A2A 信封/回信/通知，将来 PTY 帧与呈现流）；session-plane 业务逻辑与 session 同居（谁的会话谁 handling——同机同版本，兼容白拿）；呈现车道豁免（UI 消费远端数据只做呈现，corids slot 自愈吸收漂移，永不反推业务）。0.1.6-g 的 federated 直打远端 session plane（跨线 session/follow 完成捕获）退役改造；版本耦合点从 O(机对×runtime 版本) 收缩到 1（hub-to-hub 信封协议） |
+| D17 | conversation title 概念剥离 | Super D 层自有 title，与上游 runtime session title 永不 write-through（异构：Hermes 可指定、OMP 可 mutable，开发权在上游，下版即可能变）；首次指定后 **immutable**（寻址恒走短 ID，title 只是记忆标签；话题变了开新会话）；未指定存占位 `[undefined]`（显示层可美化）；镜像行 verbatim 收养、双侧 immutable |
+| D18 | roster 瘦 + per-agent 状态查询 | roster（5min 周期 sweep，`reprobeIntervalSec` 默认 300）只带 machine 状态 + agent 行（a6/label/ready）——3-4 机 × 6-7 agent 时 session 进 roster 即臃肿；session 列表移 **per-agent 按需状态查询**（alive-first ≤5 窗口，orchestra 语义）：行 = `{conversationId?, sessionId(截断), status, mtime}`，`conversationId` 有则显示、无则留空（无论何因）；`sessionId` 数据面握全长、照常可 resume；title 暂不进列表（已接受）；呈现面标明 5min cadence + last-fetch，即时按 machine 显式 live fetch——全单向 API |
+| D19 | 双向拓扑 = mutual pairing | 双向由双侧各自 add-machine 贴 token 达成（manual，机制零新增）；auto-reverse-registration（A 加 B 时反向登记给 B）仍留后续；D2 开放问题据此关闭 |
 
 ## 2. 术语
 
@@ -118,12 +122,12 @@ CTX0 hub
  ├─ 连接管理（per-machine cookie jar + mint + probe + 健康状态）
  ├─ Gateway 注册表（现有）+= RemoteGatewayFace（per 远端 agent）
  ├─ Roster 聚合（本地 world + 各远端 roster → machines 分组 + a6）
- ├─ A2A 服务（conversation 层 + send/receive 路由 + receipt + 回投）
+ ├─ A2A 服务（信封协议：ingest / send / 回信路由 + receipt + conversation 注册表；session-plane 只碰本机——D16/ADR 0011）
  ├─ SuperD Hub 工具（ctx0 tools 服务注册，单工具 call-shape dispatch）
  └─ Exec 端点（POST /api/superd/exec one-shot；upgrade PTY WS）
-        │ wire（cookie 随行）
+        │ wire（cookie 随行）——只运不透明载荷：A2A 信封/回信、呈现流、（P4）PTY 帧
         ▼
-远端 hub（同构 super-dsh）：/hub 家族应答 envelope/mux；/api/superd/* 应答 mesh 自有面
+远端 hub（同构 super-dsh）：/api/superd/a2a 信封 ingest；/hub 家族 envelope/mux（呈现车道）；/api/superd/* mesh 自有面
 ```
 
 - **远端 agent 零本地容器**：不需要 CTX spawn、不需要 UI world——原生 UI 经
@@ -166,6 +170,7 @@ CTX0 hub
 - 机器不可达 → 该机全部 agent 行降级 `unreachable`（roster 保留，orchestra
   reachability 语义）；switch 预检 toast 报机器错误。
 - 远端 roster 变更（agent 增删）在下一次探测收敛；不做推送（open question：常驻 WS 控制通道）。
+- 呈现契约（D18）：machines/roster 面明示「每 5 分钟自动刷新」+ last-fetch 时间戳；需要即时状态按 machine 显式 live fetch（现有手动 reprobe op 露出）——单向 API，无推送。
 
 ## 7. A2A 服务（P3）
 
@@ -179,20 +184,27 @@ CTX0 hub
 
 ### 7.2 方法集（SuperD Hub 工具的 a2a 部分）
 
-- **`agents`**（无参或 `{machine?}`）：machines → agents → 各 agent 近期
-  conversation（alive-first、≤5、带 title/短 ID/status/mtime；orchestra
-  agent-listing 语义）。按需 fan-out（本地 gateway 直查 session 列表；
-  远端经 wire 同一 RPC）。
-- **`new_conversation`** `{agent: '<m4>-<a6>', title}`：经目标 gateway 建会话
-  + 设标题（与 UI 新建会话同链路）→ 返回 `{conversationId (短 ID), sessionId,
-  agent, machine}`。title 非标识符、可空，但建议给（LM 语义辨识）。
-- **`send`** `{agent, conversationId?, title?, message, delivery?: 'queue'|'steer',
-  replyTo?}`：目标存在 conversation → resume + 注入 user turn；无 conversationId
-  → 等价 new_conversation（title 可给）。返回 receipt：
+- **`agents`**（无参或 `{machine?}`）：瘦 roster——machines → agents（a6/label/
+  ready/status），不含 session 列表（D18）。
+- **`agent_status`** `{agent: '<m4>-<a6>'}`（per-agent 状态查询，D18）：该 agent
+  近期/运行中 session 窗口（alive-first、≤5、mtime 倒序；orchestra 窗口语义
+  ——不在窗口 ≠ 任何状态暗示）。行 = `{conversationId?, sessionId, status,
+  mtime}`：`conversationId` 有则显示、无则留空（无论何因）；`sessionId` = DSH
+  原生 id 剥前缀截 uuid 头几位（呈现用；数据面握全长 id，照常可 resume）。
+  title 暂不进列表（异构未解决，D18 接受）。本地 agent = 进程内直查；远端
+  agent = 状态查询信封发给对端 hub，**对端从本机知识序列化**（D16：解释自己
+  的 session、交摘要信封；本机永不解析对端 session 格式）。
+- **`new_conversation`** `{agent: '<m4>-<a6>', title}`：new-conversation 信封投给
+  目标机器的 a2a ingest（本地 = 同一协议进程内短路；远端 = wire）→ **对端本机**
+  建会话 + 注入教学信封 → 回执 `{conversationId (短 ID), sessionId, agent,
+  machine}`。title 只写双方 registry 行（D17：immutable、`[undefined]` 占位，
+  不 write-through 上游 session title）。
+- **`send`** `{agent, conversationId?, title?, message, delivery?: 'queue'|'steer'}`：
+  同一 ingest 通道投 message 信封 → 对端 resolve conversation（命中 → resume +
+  注入；无 conversationId → 按新会话处理）→ inbox-acceptance 即返 receipt
   `{outcome: 'injected'|'queued'|'failed', messageId, conversationId, sessionId}`。
-  注入的信封自带回复语法说明（"用 SuperD Hub 的 send + replyTo 回给
-  `<发起方地址>`"）——对端有工具（DSH 原生）即可回；没有（foreign，P5 前）
-  则用户可在其会话里看到消息并人工/经其自有机制回。
+  发起方零 session-plane 调用（D16）。教学信封（E3 措辞）：正常作答即自动回投；
+  对端也有 superd-hub 工具时可用 conversationId 续聊（镜像行兑得现）。
 - **`read`** `{conversationId?}`：未读清扫兜底（auto-delivery 为主通道，
   工具描述明示 NEVER poll）。
 - **`stop`** `{agent, conversationId, scope: 'turn'|'session'}`：turn 级 = cancel
@@ -201,22 +213,30 @@ CTX0 hub
 
 ### 7.3 投递与回投
 
-- **向目标投递**：经 GatewayFace（本地 in-process / 远端 wire）create-or-resume
-  + 注入 user turn——A2A 会话天然出现在目标 agent 的正常会话列表里（用户可旁观）。
-- **向发起方回投**（对端完成 turn 产出最终回复时）：发起方 hub 订阅目标会话
-  完成事件（经同一 gateway 的会话事件流），抽取最终 assistant 文本 → 构造
-  user-role message，source kind 自有声明：
+- **向目标投递（在对端机器上执行）**：对端 hub 的 a2a ingest 收信封 → 在它本机
+  create-or-resume + 注入 user turn（A2A 会话天然出现在目标 agent 的正常会话
+  列表里，用户可旁观）。路由规则不变、执行位置在对端：目标 session idle/busy
+  → `followup`（非打断；peer 语义，steer 留给显式 delivery）；teardown →
+  `inject`（落盘不唤醒）。
+- **向发起方回投（D16 改形：对端完成捕获）**：对端 hub 订阅**它本机** session
+  的完成事件（同机同版本，无跨线解析），抽取最终 assistant 文本 → **回信信封**
+  发回发起方 hub → 发起方构造 user-role message，source kind 自有声明：
   - `a2a-relay` / form `relay`：对端 agent 的回复正文（前缀 "Agent <addr> replied:"）。
   - `a2a-notice` / form `notice`：投递状态类事件（失败通知、stop 确认等，
     summary ≤120 字符，UI 折叠行）。
-  路由（DSH subagent `notifySettlement` 同构）：发起 session idle → `followup`
-  （新 turn）；busy → 默认仍 `followup`（非打断；peer 语义，steer 留给显式
-  delivery）；teardown → `inject`（落盘不唤醒）。持久性白拿：inbox 事件 +
-  session log；catalog 式事实记入发起 session（枚举/resume 可用）。
+  发起方路由（DSH subagent `notifySettlement` 同构）：发起 session idle →
+  `followup`（新 turn）；busy → `followup`；teardown → `inject`（落盘不唤醒）。
+  持久性白拿：inbox 事件 + session log。回信投递失败进**对端**有界待发缓冲，
+  随下次接触重投（对称于发起方 unread buffer）。
+- **registry 双侧**：发起方持行（发起 session 上下文 + shortId）；对端持镜像行
+  （peer 地址 + 本机 session）。shortId 由发起方铸造、信封携带、对端原样收养
+  ——信封的 conversationId 续聊条款处处兑得现。
+- **`stop` 信封**：对端取消它本机 session 的 turn（session 级仍按 D11 降级语义：
+  上游无 session-close RPC，如实报 scope）。
 - **no-double-delivery**：投递成功即出队；只有 failed 进有界未读缓冲
   （计数供 `read`/徽标）。
 - 发起方身份信封：`{machine: selfM4, agent: 发起 agent a6, session: 发起会话短ID,
-  messageId, replyTo?}`——跨机时对端 hub 收到的 relay 请求携带同一信封。
+  messageId}`——跨机时对端 hub 收到同一信封（续聊走 conversationId，replyTo 退役）。
 
 ### 7.4 与上游参照的对应
 
@@ -224,7 +244,7 @@ DSH sub-agent 的 receipt（inbox-acceptance 即返）+ steer/followup/inject �
 + `agent-message`/`subagent-settled` 的 kind/form 二轴 = 本设计的回投骨架；
 OMP hub 的 outcome 枚举 / no-double-delivery / auto-delivery+wait 哲学 /
 incoming 信封教学 = receipt 与对端体验语义；orchestra agent-listing =
-roster 会话维度。experimental agent-team 的 durable mailbox 仅作远期参照。
+per-agent 状态查询的窗口/状态语义（D18）。experimental agent-team 的 durable mailbox 仅作远期参照。
 
 ## 8. Remote Execution（P4）
 
@@ -290,7 +310,7 @@ roster 会话维度。experimental agent-team 的 durable mailbox 仅作远期�
 | 版本不匹配 | `version-mismatch` 告警，不阻断（数据面 envelope/mux 由 dsh pin 窗背书） |
 | 远端 agent 消失 | 下轮探测收敛；A2A 寻址 fail-loud（`unknown-agent`，带地址） |
 | conversation 碰撞（短 ID） | 插入时查重步进加长（6→8→10，2026-09-28 修订） |
-| WS 断线 | in-flight 流 wire error 结束；UI 自动重连；A2A 回投订阅随 mux 重建 |
+| WS 断线 | in-flight 流 wire error 结束；UI 自动重连；A2A 回投 = 对端回信信封（D16）——断线期间对端回信入有界待发缓冲，重连即投 |
 | exec 超时 | 两段式中断 + 组杀；结果标 `timedOut` |
 
 ## 12. 与核心不变量的关系
@@ -314,7 +334,7 @@ roster 会话维度。experimental agent-team 的 durable mailbox 仅作远期�
 |---|---|---|
 | **P1 Machine Mesh 地基** | 机器注册表 + 持久化；add-machine API（mint+probe+采纳）；HubPage machines 接真 API；agent a6 + roster 扩展 | 自环：curl add self → probe reachable → roster 含 hub.machineId 与 a6 |
 | **P2 Remote gateways** | RemoteGatewayFace（envelope+mux client）；gateway 注册表接入；roster 联邦 + 降级 | 自环：自己作为"远端" agent 经 wire 出现在 switch，建会话+收发一轮 |
-| **P3 A2A + 工具面** | conversation 层、send/receipt/回投、read、stop、roster 会话维度；SuperD Hub 工具（DSH 原生注入） | DSH agent 工具调用：agents → new_conversation → send → 答案自动回投；stop 生效且 resumable |
+| **P3 A2A + 工具面** | conversation 层、send/receipt/回投（信封协议，D16）、read、stop、per-agent 状态查询（D18）；SuperD Hub 工具（DSH 原生注入） | DSH agent 工具调用：agents → new_conversation → send → 答案自动回投；stop 生效且 resumable |
 | **P4 Remote execution** | one-shot API + PTY WS + BYO-PTY 移植 | 自环 exec one-shot 与 PTY 会话（多行命令、超时中断）全绿 |
 | **P5 注入扩展** | OMP/Pi per-spawn、Claude 盘注入、Codex 调研 | 各 runtime 内以第一人称调用工具完成一次 send |
 | **P6+ 编排层** | A2A seam 之上：DAG、executor/reviewer 角色、可见性/kill 权限、审计评分 | 另立 spec |
@@ -324,9 +344,10 @@ roster 会话维度。experimental agent-team 的 durable mailbox 仅作远期�
 
 ## 15. 开放问题
 
-1. 反向添加策略（D2）：单向先行；何时需要双向（A2A 回投在单向下的可达性已由"发起方持 cookie 订阅"解决，双向非刚需）。
-2. ~~常驻 hub-to-hub WS 控制通道（roster 变更推送、A2A 事件推送）vs 现行轮询/订阅混合——P3 后评估~~ → **已裁决关闭（2026-09-27 user）**：状态更新走单向 API + 5 分钟周期轮询即可，不做 WebSocket 控制通道（太重）。A2A 回投不受影响——按 §7.3 走 per-conversation 的 mux 会话流订阅（数据面，非控制通道）。
+1. ~~反向添加策略（D2）~~ → **已裁决关闭（2026-09-28 user，D19）**：双向 = mutual pairing（双侧各自贴 token）；回投改形（D16）后亦不依赖发起方跨线订阅；auto-reverse-registration 留后续策略讨论。
+2. ~~常驻 hub-to-hub WS 控制通道（roster 变更推送、A2A 事件推送）vs 现行轮询/订阅混合——P3 后评估~~ → **已裁决关闭（2026-09-27 user）**：状态更新走单向 API + 5 分钟周期轮询即可，不做 WebSocket 控制通道（太重）。（2026-09-28 D16 注：回投已改形为对端回信信封，更无跨线会话流订阅。）
 3. token 迁移 credentials store。
 4. `stop` session 级在 foreign runtime 上的确切语义映射（各 adapter 的 close/dispose 面）——P3 落地时按 adapter 记录。
 5. alphabet 是否剔除易混淆字符（出现人工抄录需求再议）。
 6. 编排层（P6）独立 brainstorming。
+7. per-agent 状态查询的 title 呈现（D18 暂缺）：候选解 = 对端序列化时回传其 runtime 自有 title 作呈现透传（呈现车道豁免内）；write-through 仍禁止（D17）。
