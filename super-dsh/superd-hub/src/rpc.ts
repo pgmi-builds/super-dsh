@@ -14,8 +14,8 @@
  * so two tabs on two worlds cannot step on each other.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { createRequire } from 'node:module'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { PACK_VERSION } from './pack-version.js'
 import { listRuntimeKeys } from './targets.js'
 import { agentLinks } from './agent-roster.js'
 import { ensureSelf } from './machines.js'
@@ -43,10 +43,12 @@ export interface AgentRuntimeDeps {
   home?: string
 }
 
-/** The hub package's own version, read once at module load. createRequire
- * keeps it sync and resolves from dist/ too — package.json always ships
- * beside the compiled output (npm includes it unconditionally). */
-const { version: HUB_VERSION } = createRequire(import.meta.url)('../package.json') as { version: string }
+/** The version this hub SERVES as `hub.version` — the super-dsh PACK version
+ * (D6): the subpackage's own 0.1.0 never moves, so peers comparing against it
+ * could never see a mismatch. The pack manifest ships exactly two hops above
+ * the compiled output in every layout (see pack-version.ts); 'unknown' when
+ * unreadable — an honest non-number, not a fake one. */
+const HUB_VERSION = PACK_VERSION
 
 /** Structural type of `ctx.connection.fetch` (upstream: HostConnectionFetch). */
 interface ConnectionFetchFace {

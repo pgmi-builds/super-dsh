@@ -20,8 +20,8 @@
  * records a `versionWarning` on the status entry (diff major/minor or
  * unparsable → warn; patch-only drift → clean).
  */
-import { createRequire } from 'node:module'
 import { type MachineRow, loadMachines, saveMachines, upsertRemote, listRemotes } from './machines.js'
+import { PACK_VERSION } from './pack-version.js'
 
 /** One roster agent as seen through a successful probe (§6.2 additive fields). */
 export interface ProbeAgent {
@@ -64,13 +64,12 @@ export interface MachineStatusEntry {
 }
 
 /**
- * This hub package's own version — the `ours` side of the I2 comparison.
- * Read once at module load exactly the way rpc.ts reads its HUB_VERSION
- * (createRequire keeps it sync and resolves from dist/ too — package.json
- * always ships beside the compiled output). Kept HERE rather than imported
- * from rpc.ts so this module stays a pure, route-free dependency leaf.
+ * The `ours` side of the I2 comparison — the super-dsh PACK version (D6: the
+ * hub subpackage's constant 0.1.0 made the comparator dead; the pack number
+ * is what `dsh plugin add` versions and the only one that moves). Exported so
+ * tests can pin the comparator's production input to the real pack manifest.
  */
-const { version: OWN_VERSION } = createRequire(import.meta.url)('../package.json') as { version: string }
+export const OWN_VERSION = PACK_VERSION
 
 /**
  * Parse a version's major.minor core (I2): tolerant of a leading `v`, a

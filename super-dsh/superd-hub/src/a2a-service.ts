@@ -67,7 +67,7 @@ import { wireArgsOf } from './wire-endpoints.js'
 
 /** One tracked conversation = one target-side DSH session (spec §2). */
 export interface ConversationRow {
-  /** Display/tool alias — first 8 chars of the session id, collision-lengthened. */
+  /** Display/tool alias — first 6 chars of the session id's uuid part (the constant `session-` prefix stripped), collision-lengthened 6→8→10; legacy rows keep older spellings verbatim. */
   shortId: string
   /** Machine id (m4) the conversation lives on. */
   machine: string
@@ -144,17 +144,19 @@ export function saveConversations(home: string, file: ConversationsFile): void {
   renameSync(tmp, target)
 }
 
-/** shortId mint: first 8 chars of the session id, lengthening by one on collision with a different session; a re-seen sessionId keeps its row's shortId (stable across restarts). */
+/** shortId mint (D2 fix): DSH session ids are `session-<uuid>`, so slicing the raw id only ever captures the constant prefix (the live registry degenerated to "session-", "session-3", …). Strip the optional leading `session-`, mint the first 6 chars of the uuid part, and collision-lengthen 6→8→10… (step 2, spec §11). Ids without the prefix (older/foreign spellings) mint from the whole id the same way. A re-seen sessionId keeps its row's shortId (stable across restarts); LEGACY rows keep their stored shortIds verbatim — they stay valid aliases and stay reserved as taken, never rewritten. */
 export function shortIdFor(sessionId: string, rows: readonly ConversationRow[]): string {
   const existing = rows.find((r) => r.sessionId === sessionId)
   if (existing) return existing.shortId
-  for (let len = Math.min(8, sessionId.length); len <= sessionId.length; len++) {
-    const candidate = sessionId.slice(0, len)
+  const stripped = sessionId.startsWith('session-') ? sessionId.slice('session-'.length) : sessionId
+  const base = stripped === '' ? sessionId : stripped
+  for (let len = 6; len < base.length; len += 2) {
+    const candidate = base.slice(0, len)
     if (!rows.some((r) => r.shortId === candidate)) return candidate
   }
+  if (!rows.some((r) => r.shortId === base)) return base
   throw new Error(`a2a: short-id space exhausted for session ${sessionId}`)
 }
-
 // ---------------------------------------------------------------- envelopes
 
 /**
@@ -283,11 +285,17 @@ export interface A2aSubscribeOptions {
 
 export type A2aStopScope = 'turn' | 'session'
 
-/** stop() result: 'turn' answers a turn-scope stop; 'turn-only' reports the session-scope degradation. */
+/** stop() idle note — the honest answer when the pre-cancel liveness snapshot showed no live turn (D5). */
+export const A2A_NO_TURN_ACTIVE_NOTE = 'no turn was active'
+
+/** stop() result: 'turn' answers a turn-scope stop; 'turn-only' reports the session-scope degradation.
+ * `cancelled:false` is the honest idle answer (D5): the cancel RPC still fired (today's wire behavior
+ * is unchanged), but the pre-cancel liveness read showed no turn to stop — the note says so. */
 export type A2aStopResult =
   | { scope: 'turn'; cancelled: true }
+  | { scope: 'turn'; cancelled: false; note: typeof A2A_NO_TURN_ACTIVE_NOTE }
   | { scope: 'turn-only'; cancelled: true; reason: typeof A2A_NO_SESSION_CLOSE_REASON }
-
+  | { scope: 'turn-only'; cancelled: false; note: typeof A2A_NO_TURN_ACTIVE_NOTE; reason: typeof A2A_NO_SESSION_CLOSE_REASON }
 /** One buffered (undelivered) inbound message for an initiator session. */
 export interface A2aBufferedMessage {
   messageId: string
@@ -307,9 +315,21 @@ export interface A2aGateway {
   openWireStream(endpoint: string, payload: unknown, signal: AbortSignal): AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
 }
 
+/**
+ * D7: the three distinct ways a gateway can fail to resolve. The error the
+ * model sees must name the ACTUAL problem — a typo'd a6 on a known machine is
+ * not a pairing issue, and an unpaired machine is not an agent problem.
+ * `unreachable` keeps today's message (roster knows the agent; its plane is
+ * down or the machine does not answer).
+ */
+export type A2aGatewayMiss =
+  | { miss: 'unknown-agent' }
+  | { miss: 'unknown-machine' }
+  | { miss: 'unreachable' }
+
 export interface A2aServiceDeps {
   home: string
-  gatewayFor(addr: A2aAddress): A2aGateway | undefined
+  gatewayFor(addr: A2aAddress): A2aGateway | A2aGatewayMiss | undefined
   now?(): number
 }
 
@@ -321,7 +341,7 @@ export interface A2aService {
   send(req: A2aSendRequest, initiator: A2aInitiator): Promise<A2aReceipt>
   /** Subscribe turn completions of one conversation over session/follow; returns the dispose fn. */
   subscribeCompletion(conv: A2aConversationRef, cb: A2aCompletionCb, opts?: A2aSubscribeOptions): () => void
-  /** Cancel the active turn; 'session' scope degrades to turn-only with the typed reason. */
+  /** Cancel the active turn; 'session' scope degrades to turn-only with the typed reason. cancelled:false + note is the honest idle answer (D5 — the cancel still fires; a pre-cancel snapshot read proved no turn was live). */
   stop(conv: A2aConversationRef, scope: A2aStopScope): Promise<A2aStopResult>
   /** Buffer one undelivered message for an initiator (bounded A2A_BUFFER_MAX, oldest dropped). */
   buffer(initiatorSessionId: string, message: A2aBufferInput): void
@@ -359,6 +379,85 @@ function freshSignal(): AbortSignal {
   return new AbortController().signal
 }
 
+/** Type guard: a resolution is a miss object (D7) rather than a live gateway. */
+function isGatewayMiss(resolution: A2aGateway | A2aGatewayMiss | undefined): resolution is A2aGatewayMiss {
+  return resolution !== undefined && typeof resolution === 'object' && 'miss' in resolution
+}
+
+/** The wire error body for one gateway miss — three honest branches (D7):
+ * unknown agent on a known machine / entirely unknown machine / known-but-unreachable (today's message). */
+function gatewayMissBody(addr: A2aAddress, miss: A2aGatewayMiss): { code: string; message: string } {
+  if (miss.miss === 'unknown-agent') {
+    return { code: 'a2a/unknown-agent', message: `a2a: unknown-agent ${addr.machine}-${addr.id} (no such agent on machine ${addr.machine})` }
+  }
+  if (miss.miss === 'unknown-machine') {
+    return { code: 'a2a/unknown-machine', message: `a2a: unknown-machine ${addr.machine} (not paired)` }
+  }
+  return { code: 'a2a/gateway-unavailable', message: `a2a: no gateway for ${addr.machine}-${addr.id} — machine unreachable or not paired` }
+}
+
+/** The typed-error form of {@link gatewayMissBody} (throw sites: newConversation / stop). */
+function gatewayMissError(addr: A2aAddress, miss: A2aGatewayMiss): EnvelopeError {
+  const { code, message } = gatewayMissBody(addr, miss)
+  return a2aError(code, message)
+}
+
+/** Resolve or fail: `undefined` from a legacy resolver is spelled 'unreachable' (D7 keeps it honest). */
+function gatewayOrThrow(gatewayFor: A2aServiceDeps['gatewayFor'], addr: A2aAddress): A2aGateway {
+  const resolution = gatewayFor(addr)
+  if (isGatewayMiss(resolution)) throw gatewayMissError(addr, resolution)
+  if (resolution === undefined) throw gatewayMissError(addr, { miss: 'unreachable' })
+  return resolution
+}
+
+/** Bound for the stop() liveness read — a healthy session plane answers the first
+ * follow frame in well under a second, even cross-machine; the bound only fires on
+ * a wedged plane, where the cancel RPC itself would stall anyway. */
+const STOP_LIVENESS_TIMEOUT_MS = 3_000
+
+/**
+ * D5 turn-liveness read: open the follow stream, replay the FIRST snapshot
+ * frame's records, and report whether a turn is still open (a turn/start not
+ * followed by its turn/end). Read manually (no for-await) and aborted BEFORE
+ * returning — closing an async generator suspended at an await must not gate
+ * the answer (the close promise can reject on abort and would eat the result).
+ * @returns true (a turn is live), false (idle), or undefined when the plane
+ * could not answer (stream death, stream end, no snapshot, read timeout) —
+ * callers treat undefined conservatively: cancel anyway, keep today's shape.
+ */
+async function turnLivenessOf(gateway: A2aGateway, sessionId: string): Promise<boolean | undefined> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), STOP_LIVENESS_TIMEOUT_MS)
+  try {
+    const request: SessionFollowRequestMirror = { address: { kind: 'session', sessionId } } // no assistantStream — liveness needs no live partials
+    const iterable = await gateway.openWireStream(WIRE.streamOpen, wireArgsOf(WIRE.streamOpen, request), controller.signal)
+    const iterator = (await iterable)[Symbol.asyncIterator]()
+    for (;;) {
+      const next = await iterator.next()
+      if (next.done) return undefined
+      const frame = next.value
+      if (!isRecord(frame) || frame['type'] !== 'snapshot') continue
+      const records = frame['records']
+      if (!Array.isArray(records)) return undefined
+      let openTurn: number | undefined
+      for (const record of records) {
+        if (!isRecord(record) || record['type'] !== 'event') continue
+        const event = record['event']
+        if (!isRecord(event) || typeof event['type'] !== 'string') continue
+        const data = isRecord(event['data']) ? event['data'] : {}
+        if (event['type'] === 'turn/start' && typeof data['turn'] === 'number') openTurn = data['turn']
+        else if (event['type'] === 'turn/end' && data['turn'] === openTurn) openTurn = undefined
+      }
+      controller.abort() // snapshot consumed — drop the stream now
+      return openTurn !== undefined
+    }
+  } catch {
+    return undefined
+  } finally {
+    controller.abort()
+    clearTimeout(timer)
+  }
+}
 /**
  * One session-plane RPC through the gateway: payload via `wireArgsOf`,
  * `{ok:false,error}` rethrown as a typed EnvelopeError (error body verbatim),
@@ -445,10 +544,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
 
   const service: A2aService = {
     async newConversation(addr, title) {
-      const gateway = deps.gatewayFor(addr)
-      if (gateway === undefined) {
-        throw a2aError('a2a/gateway-unavailable', `a2a: no gateway for ${addr.machine}-${addr.id} — machine unreachable or not paired`)
-      }
+      const gateway = gatewayOrThrow(deps.gatewayFor, addr)
       const createRequest: SessionCreateRequestMirror = {}
       const created = await sessionRpc<{ sessionId: string }>(gateway, WIRE.sessionCreate, createRequest)
       if (!isRecord(created) || typeof created['sessionId'] !== 'string' || created['sessionId'] === '') {
@@ -499,13 +595,13 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         }
       }
 
-      const gateway = deps.gatewayFor(req.to)
-      if (gateway === undefined) {
-        return fail({
-          code: 'a2a/gateway-unavailable',
-          message: `a2a: no gateway for ${req.to.machine}-${req.to.id} — machine unreachable or not paired`,
-        }, row?.sessionId ?? '', row?.shortId)
+      const resolution = deps.gatewayFor(req.to)
+      if (resolution === undefined || isGatewayMiss(resolution)) {
+        // D7: the receipt carries the honest branch — unknown agent / unknown
+        // machine / today's unreachable message (undefined = legacy spelling).
+        return fail(gatewayMissBody(req.to, isGatewayMiss(resolution) ? resolution : { miss: 'unreachable' }), row?.sessionId ?? '', row?.shortId)
       }
+      const gateway = resolution
 
       if (row === undefined) {
         // create path — no conversationId ≡ new conversation (title optional)
@@ -579,14 +675,14 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         })
         return () => { }
       }
-      const gateway = deps.gatewayFor(conv.to)
-      if (gateway === undefined) {
-        opts.onError?.({
-          code: 'a2a/gateway-unavailable',
-          message: `a2a: no gateway for ${conv.to.machine}-${conv.to.id} — machine unreachable or not paired`,
-        })
+      const resolution = deps.gatewayFor(conv.to)
+      if (resolution === undefined || isGatewayMiss(resolution)) {
+        const miss = isGatewayMiss(resolution) ? resolution : { miss: 'unreachable' as const }
+        const body = gatewayMissBody(conv.to, miss)
+        opts.onError?.({ code: body.code, message: body.message })
         return () => { }
       }
+      const gateway = resolution
 
       const controller = new AbortController()
       const state: FollowState = {
@@ -738,14 +834,21 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (row.machine !== conv.to.machine || row.agent !== conv.to.id) {
         throw a2aError('a2a/conversation-machine-mismatch', `a2a: conversation "${row.shortId}" belongs to ${row.machine}-${row.agent}, not ${conv.to.machine}-${conv.to.id}`)
       }
-      const gateway = deps.gatewayFor(conv.to)
-      if (gateway === undefined) {
-        throw a2aError('a2a/gateway-unavailable', `a2a: no gateway for ${conv.to.machine}-${conv.to.id} — machine unreachable or not paired`)
-      }
+      const gateway = gatewayOrThrow(deps.gatewayFor, conv.to)
+      // D5 honesty: read turn liveness BEFORE the cancel — a post-cancel
+      // snapshot cannot distinguish "idle all along" from "we just aborted
+      // it", so the pre-cancel state is the fact the result reports. The
+      // cancel itself always fires (today's wire behavior); an undeterminable
+      // read (dead stream, no snapshot, timeout) stays conservative: stopped.
+      const live = await turnLivenessOf(gateway, row.sessionId)
       const cancelRequest: SessionCancelRequestMirror = { sessionId: row.sessionId }
       // Both scopes cancel the active turn; 'session' cannot go further —
       // upstream has no session-close RPC (WIRE.sessionClose === undefined).
       await sessionRpc(gateway, WIRE.turnCancel, cancelRequest)
+      if (live === false) {
+        if (scope === 'turn') return { scope: 'turn', cancelled: false, note: A2A_NO_TURN_ACTIVE_NOTE }
+        return { scope: 'turn-only', cancelled: false, note: A2A_NO_TURN_ACTIVE_NOTE, reason: A2A_NO_SESSION_CLOSE_REASON }
+      }
       if (scope === 'turn') return { scope: 'turn', cancelled: true }
       return { scope: 'turn-only', cancelled: true, reason: A2A_NO_SESSION_CLOSE_REASON }
     },

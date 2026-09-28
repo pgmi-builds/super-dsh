@@ -231,7 +231,7 @@ const DESCRIPTION =
   '  {action:"new_conversation", agent, title?} → open a conversation → {conversationId, sessionId, agent, machine}.\n' +
   '  {action:"send", agent, conversationId?, title?, message, delivery?} → inject one user turn (omit conversationId to open a new conversation). Receipt {outcome, messageId, conversationId, sessionId, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
-  '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn.\n' +
+  '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn (answers stopped:false with a note when no turn was active).\n' +
   '  {action:"exec"} → not yet implemented (P4).\n' +
   'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: after send the hub watches the peer\'s turn and the reply arrives in this conversation automatically as a new message (read only sweeps what was buffered while this session was down). stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it.'
 
@@ -402,6 +402,8 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             stopped: result.cancelled === true,
             scope: result.scope,
             ...(result.scope === 'turn-only' ? { reason: result.reason } : {}),
+            // D5: the honest idle answer — the note rides along instead of a bare stopped:false
+            ...(result.cancelled === true ? {} : { note: result.note }),
           }
         }
 

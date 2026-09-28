@@ -6,20 +6,28 @@
 // versionWarningFor directly with an explicit `ours`; the integration cases
 // run the real pairMachine/reprobeMachine against a loopback hub fixture and
 // read the module status table — the comparator's production `ours` is the
-// hub package's own package.json version (rpc.ts's HUB_VERSION twin).
+// super-dsh PACK version (D6: the hub subpackage's constant 0.1.0 made the
+// comparator dead; OWN_VERSION is exported to pin it to the real manifest).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { versionWarningFor, pairMachine, reprobeMachine, machineStatus, resetMachineStatus } from '../dist/mesh-link.js'
+import { versionWarningFor, pairMachine, reprobeMachine, machineStatus, resetMachineStatus, OWN_VERSION } from '../dist/mesh-link.js'
 import { upsertRemote } from '../dist/machines.js'
 
 const home = () => mkdtempSync(join(tmpdir(), 'superd-version-warn-'))
 
 /** The hub package's own version — the comparator's production `ours`. */
-const OURS = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const OURS = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
+
+// ---- the production input (D6) ----------------------------------------------
+
+test('OWN_VERSION (D6): the comparator\'s production `ours` IS the pack manifest version', () => {
+  assert.equal(OWN_VERSION, OURS, 'OWN_VERSION must track super-dsh/package.json, not the hub subpackage constant')
+  assert.notEqual(OWN_VERSION, '0.1.0', 'the dead constant would silence every real mismatch')
+})
 
 // ---- the pure comparator ----------------------------------------------------
 

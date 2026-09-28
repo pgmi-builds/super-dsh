@@ -367,6 +367,28 @@ test('stop session scope: the turn-only degradation note rides along', async () 
   assert.deepEqual(service.state.calls.stop[0].scope, 'session')
 })
 
+test('stop idle (D5): stopped:false + the honest note; session scope keeps the degradation reason', async () => {
+  const { tool, service } = makeTool()
+  service.state.stopResult = { scope: 'turn', cancelled: false, note: 'no turn was active' }
+  const value = await tool.execute(
+    { action: 'stop', agent: 'w2cd-cd33x1', conversationId: 'conv0001' },
+    fakeExec(),
+  )
+  assert.deepEqual(value, { action: 'stop', stopped: false, scope: 'turn', note: 'no turn was active' })
+  service.state.stopResult = { scope: 'turn-only', cancelled: false, note: 'no turn was active', reason: 'no session-close endpoint upstream' }
+  const session = await tool.execute(
+    { action: 'stop', agent: 'w2cd-cd33x1', conversationId: 'conv0001', scope: 'session' },
+    fakeExec(),
+  )
+  assert.deepEqual(session, {
+    action: 'stop',
+    stopped: false,
+    scope: 'turn-only',
+    reason: 'no session-close endpoint upstream',
+    note: 'no turn was active',
+  })
+})
+
 // ---------------------------------------------------------------- exec placeholder
 
 test('exec: placeholder leg', async () => {

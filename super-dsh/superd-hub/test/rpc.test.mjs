@@ -18,7 +18,7 @@ import { registerHostMount } from '../dist/world-host.js'
 import { agentRosterRow } from '../dist/agent-roster.js'
 
 const tmpHome = () => mkdtempSync(join(tmpdir(), 'superd-rpc-'))
-const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const pkgVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version // D6: the PACK (super-dsh) version, not the hub subpackage's constant
 
 function fakeCtx() {
   const routes = []

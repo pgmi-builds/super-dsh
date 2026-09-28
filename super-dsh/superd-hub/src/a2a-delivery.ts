@@ -48,7 +48,10 @@ export interface A2aRelaySource {
 }
 
 /** Why a runtime-owned notice was produced (the failure taxonomy of the a2a face). */
-export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop'
+/** Why a runtime-owned notice was produced (the failure taxonomy of the a2a face): a failed
+ * send, a dead completion stream, a stop, or a turn that ended non-completed with no captured
+ * reply text (D3 — the initiator is told the turn aborted instead of receiving an empty relay). */
+export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop' | 'aborted'
 
 /**
  * Durable attribution for the hub's own account of an A2A conversation event
@@ -305,12 +308,12 @@ export type A2aCompletionSource = Pick<A2aService, 'subscribeCompletion' | 'list
  * Wire one conversation's completion stream to the initiator's delivery face:
  * every fired completion becomes one relayed reply (titled from the registry
  * row); a completion-stream death becomes one bounded stream-dead notice.
- * @param ctx - live-agent face + buffer leg.
- * @param service - Task 2's conversation service (subscribe + registry).
- * @param initiator - who asked (delivery target, buffer key).
- * @param conv - the conversation being watched.
- * @param opts - `requestId` correlates one send (fires exactly once, auto-disposes).
- * @returns the subscription's dispose function.
+ * Wire one conversation's completion stream to the initiator's delivery face:
+ * every fired completion becomes one relayed reply (titled from the registry
+ * row) — EXCEPT a turn that ended non-completed with NO captured text, which
+ * degrades to a bounded 'aborted' notice (D3: a content-free relay is noise
+ * and can wake an idle initiator for nothing); a completion-stream death
+ * becomes one bounded stream-dead notice.
  */
 export function wireCompletionToDelivery(
   ctx: A2aDeliveryCtx,
@@ -324,6 +327,23 @@ export function wireCompletionToDelivery(
   return service.subscribeCompletion(
     conv,
     (completion) => {
+      // D3: a terminal turn that produced NO reply must not relay — aborted
+      // WITH captured text still relays (the words exist); only the empty
+      // non-completed end becomes a bounded notice.
+      if (completion.reason !== 'completed' && completion.text === '') {
+        deliverNotice(
+          ctx,
+          initiator,
+          `conversation "${completion.conversationId}": turn aborted, no reply`,
+          {
+            senderMachine: conv.to.machine,
+            senderAgent: conv.to.id,
+            conversationId: completion.conversationId,
+            reason: 'aborted',
+          },
+        )
+        return
+      }
       deliverReply(ctx, initiator, completion.text, {
         senderMachine: conv.to.machine,
         senderAgent: conv.to.id,

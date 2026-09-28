@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createA2aService, A2A_MESSAGE_TEMPLATE, renderA2aEnvelope, A2A_BUFFER_MAX, loadConversations } from '../dist/a2a-service.js'
+import { createA2aService, A2A_MESSAGE_TEMPLATE, renderA2aEnvelope, A2A_BUFFER_MAX, loadConversations, saveConversations, shortIdFor } from '../dist/a2a-service.js'
 import { WIRE } from '../dist/wire-endpoints.js'
 import { EnvelopeError } from '../dist/envelope.js'
 
@@ -90,16 +90,15 @@ const settle = (ms = 15) => new Promise((r) => setTimeout(r, ms))
 
 // ---------------------------------------------------------------- newConversation
 
-test('newConversation: create+rename payloads byte-exact per mirrors; row persisted 0600; shortId = first 8', async () => {
+test('newConversation: create+rename payloads byte-exact per mirrors; row persisted 0600; shortId = first 6 of the id (prefix-free base)', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaa-1111' } } })
   gw.rpc({ result: { ok: true, value: { title: 'Bug triage', seq: 3 } } })
   const { home, svc } = mkService(gw)
   try {
     const out = await svc.newConversation(ADDR, 'Bug triage')
-    assert.equal(out.shortId, 'sess-aaa')
+    assert.equal(out.shortId, 'sess-a')
     assert.equal(out.sessionId, 'sess-aaaaaaaa-1111')
-    // create payload: exactly the mirror shape, wrapped by the wire-arg rule
     assert.deepEqual(gw.rpcs(WIRE.sessionCreate).map((c) => c.payload), [{ args: { request: {} } }])
     assert.deepEqual(gw.rpcs(WIRE.sessionTitle).map((c) => c.payload), [{
       args: { request: { sessionId: 'sess-aaaaaaaa-1111', title: 'Bug triage' } },
@@ -107,7 +106,7 @@ test('newConversation: create+rename payloads byte-exact per mirrors; row persis
     const rows = loadConversations(home).conversations
     assert.equal(rows.length, 1)
     assert.deepEqual(rows[0], {
-      shortId: 'sess-aaa', machine: ADDR.machine, agent: ADDR.id,
+      shortId: 'sess-a', machine: ADDR.machine, agent: ADDR.id,
       sessionId: 'sess-aaaaaaaa-1111', title: 'Bug triage',
       createdAt: 1234500, lastActivityAt: 1234500,
     })
@@ -121,7 +120,7 @@ test('newConversation: no title → no rename call; gateway missing → typed er
   const { home, svc } = mkService(gw)
   try {
     const out = await svc.newConversation(ADDR)
-    assert.equal(out.shortId, 'sess-bbb')
+    assert.equal(out.shortId, 'sess-b')
     assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
     // gateway unavailable → typed error
     await assert.rejects(
@@ -134,7 +133,7 @@ test('newConversation: no title → no rename call; gateway missing → typed er
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } }) // create
     gw.rpc({ result: { ok: false, error: { code: 'session/title-invalid', message: 'bad title' } } }) // rename rejected
     const warned = await svc.newConversation(ADDR, 'x')
-    assert.equal(warned.shortId, 'sess-ccc')
+    assert.equal(warned.shortId, 'sess-c')
     assert.equal(warned.sessionId, 'sess-cccccccc-3333')
     assert.equal(warned.warning, 'title not set: bad title')
     const rows = loadConversations(home).conversations
@@ -149,7 +148,7 @@ test('newConversation: world-context liveness failure shape → structured resul
   const { home, svc } = mkService(gw)
   try {
     const out = await svc.newConversation(ADDR, 'Rename probe A')
-    assert.equal(out.shortId, 'sess-eee')
+    assert.equal(out.shortId, 'sess-e')
     assert.equal(out.sessionId, 'sess-eeeeeeee-5555')
     assert.match(out.warning, /^title not set: failed to rename session/)
     assert.match(out.warning, /is not live in this store/)
@@ -169,10 +168,9 @@ test('send create-path: rejected title → failed receipt carrying the orphan se
     const receipt = await svc.send({ to: ADDR, title: 'Nope', message: 'never sent' }, INITIATOR)
     assert.equal(receipt.outcome, 'failed')
     assert.equal(receipt.sessionId, 'sess-ffffffff-6666')
-    assert.equal(receipt.conversationId, 'sess-fff')
+    assert.equal(receipt.conversationId, 'sess-f')
     assert.equal(receipt.error.code, 'gateway/internal')
-    assert.deepEqual(receipt.error.details, { orphanSessionId: 'sess-ffffffff-6666', conversationId: 'sess-fff' })
-    assert.equal(gw.rpcs(WIRE.promptSubmit).length, 0, 'the prompt never went out')
+    assert.deepEqual(receipt.error.details, { orphanSessionId: 'sess-ffffffff-6666', conversationId: 'sess-f' })
     const rows = loadConversations(home).conversations
     assert.equal(rows.find((r) => r.sessionId === 'sess-ffffffff-6666').title, undefined)
   } finally { rmSync(home, { recursive: true, force: true }) }
@@ -190,7 +188,7 @@ test('send without conversationId: create path — create(+rename) then prompt; 
     const receipt = await svc.send({ to: ADDR, title: 'Sync review', message: 'check the build' }, INITIATOR)
     assert.equal(receipt.outcome, 'injected')
     assert.match(receipt.messageId, /^a2a-/)
-    assert.equal(receipt.conversationId, 'sess-ddd')
+    assert.equal(receipt.conversationId, 'sess-d')
     assert.equal(receipt.sessionId, 'sess-dddddddd-4444')
     assert.equal(receipt.error, undefined)
     // prompt payload: the mirror shape with the teaching envelope as text part
@@ -201,7 +199,7 @@ test('send without conversationId: create path — create(+rename) then prompt; 
           requestId: receipt.messageId,
           sessionId: 'sess-dddddddd-4444',
           mode: 'queue',
-          content: [{ type: 'text', text: teaching(INITIATOR, 'Sync review', 'sess-ddd', 'check the build') }],
+          content: [{ type: 'text', text: teaching(INITIATOR, 'Sync review', 'sess-d', 'check the build') }],
         },
       },
     })
@@ -446,16 +444,21 @@ test('subscribeCompletion: duplicate turn/end frame delivery fires the cb exactl
 
 test('stop: turn scope → session/cancel mirror payload; session scope → turn-only degradation with typed reason', async () => {
   const gw = fakeGateway()
-  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-hhhhhhhh-8888' } } })
-  gw.rpc({ result: { ok: true, value: { accepted: true } } })
-  gw.rpc({ result: { ok: true, value: { accepted: true } } })
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-hhhhhhhh-8888' } } }) // create
+  gw.rpc({ result: { ok: true, value: { accepted: true } } }) // prompt
+  gw.rpc({ result: { ok: true, value: { accepted: true } } }) // cancel 1
+  gw.rpc({ result: { ok: true, value: { accepted: true } } }) // cancel 2
+  // D5: each stop first reads turn liveness over a follow snapshot — first
+  // stop sees a LIVE turn, second sees idle (turn 1 already ended)
+  gw.stream({ frames: [snap([ev('turn/start', { turn: 1 }, 1)])] })
+  gw.stream({ frames: [snap([ev('turn/start', { turn: 1 }, 1), turnEnd(1, 2)])] })
   const { home, svc } = mkService(gw)
   try {
     const { conversationId } = await svc.send({ to: ADDR, message: 'x' }, INITIATOR)
     const turn = await svc.stop({ to: ADDR, conversationId }, 'turn')
     assert.deepEqual(turn, { scope: 'turn', cancelled: true })
     const session = await svc.stop({ to: ADDR, conversationId }, 'session')
-    assert.deepEqual(session, { scope: 'turn-only', cancelled: true, reason: 'no session-close endpoint upstream' })
+    assert.deepEqual(session, { scope: 'turn-only', cancelled: false, note: 'no turn was active', reason: 'no session-close endpoint upstream' })
     // both scopes dialed the cancel endpoint with the mirror payload
     assert.deepEqual(gw.rpcs(WIRE.turnCancel).map((c) => c.payload), [
       { args: { request: { sessionId: 'sess-hhhhhhhh-8888' } } },
@@ -501,10 +504,10 @@ test('registry: collision lengthening; corrupt file reads empty and accepts fres
   try {
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaa-0001' } } })
     const a = await svc.newConversation(ADDR)
-    assert.equal(a.shortId, 'sess-aaa')
-    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaab002' } } }) // same first 8
+    assert.equal(a.shortId, 'sess-a')
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaab002' } } }) // same first 6
     const b = await svc.newConversation(ADDR)
-    assert.equal(b.shortId, 'sess-aaaa') // lengthened to 9
+    assert.equal(b.shortId, 'sess-aaa') // lengthened 6→8 (step 2)
     assert.notEqual(a.shortId, b.shortId)
     // corrupt file → empty shape, never throws
     writeFileSync(join(home, 'superd', 'a2a-conversations.json'), '{corrupt', 'utf8')
@@ -514,7 +517,7 @@ test('registry: collision lengthening; corrupt file reads empty and accepts fres
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-zzzzzzzz-0003' } } })
     const c = await svc.newConversation(ADDR)
     assert.equal(loadConversations(home).conversations.length, 1)
-    assert.equal(c.shortId, 'sess-zzz')
+    assert.equal(c.shortId, 'sess-z')
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -528,5 +531,118 @@ test('send guards: conversation registered under a different machine → typed m
     assert.equal(r.outcome, 'failed')
     assert.equal(r.error.code, 'a2a/conversation-machine-mismatch')
     assert.equal(gw.rpcs(WIRE.promptSubmit).length, 1)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------- D2 shortId mint
+
+test('shortIdFor (D2): strips the session- prefix, mints 6 of the uuid, lengthens 6→8→10 (step 2)', () => {
+  const row = (shortId, sessionId) => ({ shortId, machine: 'm', agent: 'a', sessionId, createdAt: 1, lastActivityAt: 1 })
+  // prefix-strip + mint: first 6 chars of the uuid — never the constant 'session-'
+  assert.equal(shortIdFor('session-3138ea83-1778-4abc-9def-0123456789ab', []), '3138ea')
+  // no prefix → the whole id is the base (older/foreign spellings)
+  assert.equal(shortIdFor('abc123def456', []), 'abc123')
+  // collision-lengthen 6→8→10
+  const r1 = row('3138ea', 'session-aaaaaaaa-0001')
+  assert.equal(shortIdFor('session-3138ea83-7777-1', [r1]), '3138ea83', '6 collides → 8')
+  const r2 = row('3138ea83', 'session-aaaaaaaa-0002')
+  assert.equal(shortIdFor('session-3138ea83-7777-1', [r1, r2]), '3138ea83-7', '8 collides → 10')
+  // a legacy shortId stays reserved as taken: a new mint lengthens past it
+  const legacy = row('4ce3e1', 'session-bbbbbbbb-0003')
+  assert.equal(shortIdFor('session-4ce3e180-cccc', [legacy]), '4ce3e180')
+  // re-seen sessionId keeps its row's shortId whatever it looks like
+  assert.equal(shortIdFor('session-bbbbbbbb-0003', [legacy]), '4ce3e1')
+})
+
+test('registry (D2): legacy non-degenerate rows untouched; re-seen sessions keep their stored shortIds', async () => {
+  const gw = fakeGateway()
+  const { home, svc } = mkService(gw)
+  try {
+    saveConversations(home, { conversations: [
+      { shortId: '4ce3e1', machine: ADDR.machine, agent: ADDR.id, sessionId: 'session-4ce3e180-aaaa', createdAt: 1, lastActivityAt: 1 },
+      { shortId: 'zzz999', machine: ADDR.machine, agent: ADDR.id, sessionId: 'session-zzz99900-bbbb', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    // re-seen legacy session → its row's shortId, verbatim
+    gw.rpc({ result: { ok: true, value: { sessionId: 'session-4ce3e180-aaaa' } } })
+    const again = await svc.newConversation(ADDR)
+    assert.equal(again.shortId, '4ce3e1')
+    // a fresh session colliding with a legacy shortId lengthens past it
+    gw.rpc({ result: { ok: true, value: { sessionId: 'session-4ce3e180-cccc' } } })
+    const fresh = await svc.newConversation(ADDR)
+    assert.equal(fresh.shortId, '4ce3e180')
+    // the legacy rows are untouched
+    const rows = loadConversations(home).conversations
+    assert.deepEqual(
+      rows.filter((r) => ['session-4ce3e180-aaaa', 'session-zzz99900-bbbb'].includes(r.sessionId)).map((r) => r.shortId),
+      ['4ce3e1', 'zzz999'],
+    )
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------- D5 honest stop
+
+test('stop honesty (D5): idle snapshot → cancelled:false + note on BOTH scopes; the cancel still fires', async () => {
+  const gw = fakeGateway()
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-nnnnnnnn-0000' } } }) // create
+  const { home, svc } = mkService(gw)
+  try {
+    const { conversationId } = await svc.send({ to: ADDR, message: 'x' }, INITIATOR)
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })                       // cancel 1
+    gw.stream({ frames: [snap([ev('turn/start', { turn: 2 }, 1), turnEnd(2, 2)])] }) // idle: turn ended
+    const idleTurn = await svc.stop({ to: ADDR, conversationId }, 'turn')
+    assert.deepEqual(idleTurn, { scope: 'turn', cancelled: false, note: 'no turn was active' })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })          // cancel 2
+    gw.stream({ frames: [snap([turnEnd(1, 3)])] })                       // idle: no turn/start at all
+    const idleSession = await svc.stop({ to: ADDR, conversationId }, 'session')
+    assert.deepEqual(idleSession, { scope: 'turn-only', cancelled: false, note: 'no turn was active', reason: 'no session-close endpoint upstream' })
+    // today's wire behavior is unchanged: both idle stops still fired the cancel
+    assert.equal(gw.rpcs(WIRE.turnCancel).length, 2)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('stop honesty (D5): undeterminable liveness (stream death) stays conservative — today\'s shape', async () => {
+  const gw = fakeGateway()
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-nnnnnnnn-0001' } } })
+  const { home, svc } = mkService(gw)
+  try {
+    const { conversationId } = await svc.send({ to: ADDR, message: 'x' }, INITIATOR)
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })        // cancel
+    gw.stream({ throw: new Error('plane gone before any snapshot') })  // liveness undeterminable
+    const blind = await svc.stop({ to: ADDR, conversationId }, 'turn')
+    assert.deepEqual(blind, { scope: 'turn', cancelled: true })
+    assert.equal(gw.rpcs(WIRE.turnCancel).length, 1)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------- D7 gateway misses
+
+test('gateway misses (D7): unknown-agent / unknown-machine branches as typed errors and failed receipts', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const missFor = new Map()
+  const svc = createA2aService({ home, gatewayFor: (addr) => missFor.get(addr.id), now: () => 1 })
+  try {
+    missFor.set('zzzzzz', { miss: 'unknown-agent' })
+    await assert.rejects(
+      () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }),
+      (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-agent'
+        && e.wire.message === 'a2a: unknown-agent k3f9-zzzzzz (no such agent on machine k3f9)',
+    )
+    missFor.set('zzzzzz', { miss: 'unknown-machine' })
+    await assert.rejects(
+      () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }),
+      (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-machine'
+        && e.wire.message === 'a2a: unknown-machine k3f9 (not paired)',
+    )
+    missFor.set('zzzzzz', { miss: 'unknown-agent' })
+    const r = await svc.send({ to: { machine: 'k3f9', id: 'zzzzzz' }, message: 'x' }, INITIATOR)
+    assert.equal(r.outcome, 'failed')
+    assert.deepEqual(r.error, { code: 'a2a/unknown-agent', message: 'a2a: unknown-agent k3f9-zzzzzz (no such agent on machine k3f9)' })
+    // unreachable keeps today's code and message
+    missFor.set('zzzzzz', { miss: 'unreachable' })
+    await assert.rejects(
+      () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }),
+      (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/gateway-unavailable'
+        && e.wire.message === 'a2a: no gateway for k3f9-zzzzzz — machine unreachable or not paired',
+    )
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

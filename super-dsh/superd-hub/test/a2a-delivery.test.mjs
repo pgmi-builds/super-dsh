@@ -22,7 +22,7 @@ import {
 import { createA2aService, saveConversations } from '../dist/a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from '../dist/a2a-host.js'
 import { ensureAgentId, agentIdMap } from '../dist/agent-ids.js'
-import { ensureSelf } from '../dist/machines.js'
+import { ensureSelf, upsertRemote } from '../dist/machines.js'
 import { registerForeignTarget, unregisterForeignTarget } from '../dist/targets.js'
 import { federateAgents, defederateMachine } from '../dist/mesh-federate.js'
 import { listAgents, unregisterAgent } from '../dist/roster.js'
@@ -375,7 +375,7 @@ test('resolveA2aGatewayFor: federated wire adapters pass through UNWRAPPED; loca
     assert.equal(nativeRaw.calls.openWireStream[0].signal, signal)
     assert.ok(nativeRaw.calls.openWireStream[0].control instanceof AbortController)
 
-    assert.equal(gatewayFor({ machine: selfM4, id: 'unknown' }), undefined) // unknown a6
+    assert.deepEqual(gatewayFor({ machine: selfM4, id: 'unknown' }), { miss: 'unknown-agent' }) // unknown a6 on a KNOWN machine (D7)
   } finally {
     cleanupRegistries()
     rmSync(home, { recursive: true, force: true })
@@ -441,6 +441,67 @@ test('localA2aInitiator: real machine m4 + the roster a6 of the calling world + 
     assert.equal(initiator.sessionId, 'sess-live-7')
     assert.notEqual(initiator.agent, '') // minted, not empty
   } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+
+// ---------------------------------------------------------------- D3 aborted turns
+
+test('wireCompletionToDelivery (D3): aborted turn with no captured text → bounded aborted notice, never an empty relay', () => {
+  const { ctx, agents } = fakeCtx('idle')
+  const svc = fakeService([{ shortId: '4ce3e1', title: 'mesh review' }])
+  const conv = { to: { machine: 'k3f9', id: 'q7m2xp' }, conversationId: '4ce3e1' }
+  wireCompletionToDelivery(ctx, svc, INITIATOR, conv)
+  svc.subs[0].cb({ conversationId: '4ce3e1', sessionId: 'session-4ce3e180-aaaa', turn: 3, reason: 'aborted', text: '' })
+  assert.equal(agents.calls.followup.length, 1)
+  const [notice] = agents.calls.followup
+  assert.equal(notice.source.kind, 'a2a-notice')
+  assert.equal(notice.source.form, 'notice')
+  assert.equal(notice.source.reason, 'aborted')
+  assert.equal(notice.source.conversationId, '4ce3e1')
+  assert.equal(notice.source.summary, 'conversation "4ce3e1": turn aborted, no reply')
+  assert.deepEqual(notice.content, [{ type: 'text', text: notice.source.summary }])
+  // no relay prefix anywhere — the peer is never credited with words it did not write
+  assert.ok(!notice.content[0].text.includes('replied'))
+})
+
+test('wireCompletionToDelivery (D3): aborted turn WITH captured text still relays; completed relays', () => {
+  const { ctx, agents } = fakeCtx('idle')
+  const svc = fakeService([{ shortId: '4ce3e1', title: 'mesh review' }])
+  const conv = { to: { machine: 'k3f9', id: 'q7m2xp' }, conversationId: '4ce3e1' }
+  wireCompletionToDelivery(ctx, svc, INITIATOR, conv)
+  svc.subs[0].cb({ conversationId: '4ce3e1', sessionId: 'session-4ce3e180-aaaa', turn: 3, reason: 'aborted', text: 'partial but real' })
+  svc.subs[0].cb({ conversationId: '4ce3e1', sessionId: 'session-4ce3e180-aaaa', turn: 4, reason: 'completed', text: 'done' })
+  assert.equal(agents.calls.followup.length, 2)
+  assert.equal(agents.calls.followup[0].source.kind, 'a2a-relay')
+  assert.ok(agents.calls.followup[0].content[0].text.includes('partial but real'))
+  assert.equal(agents.calls.followup[1].source.kind, 'a2a-relay')
+  assert.ok(agents.calls.followup[1].content[0].text.includes('done'))
+})
+
+// ---------------------------------------------------------------- D7 miss classification
+
+test('resolveA2aGatewayFor (D7): unknown machine / unknown agent on a paired machine / roster-known a6 without a plane', () => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-host-'))
+  try {
+    upsertRemote(home, { id: 'p1nk', name: 'peer', label: 'peer', origin: 'http://127.0.0.1:9', enabled: true, addedAt: 1 })
+    const selfM4 = ensureSelf(home, 'local').id
+    const gatewayFor = resolveA2aGatewayFor({ home })
+    // machine entirely unknown → unknown-machine (not paired)
+    assert.deepEqual(gatewayFor({ machine: 'q7xk', id: 'aaaaaa' }), { miss: 'unknown-machine' })
+    // paired machine + an a6 no store has ever seen → unknown-agent naming the machine
+    assert.deepEqual(gatewayFor({ machine: 'p1nk', id: 'zzzzzz' }), { miss: 'unknown-agent' })
+    // self machine + unknown a6 → unknown-agent
+    assert.deepEqual(gatewayFor({ machine: selfM4, id: 'zzzzzz' }), { miss: 'unknown-agent' })
+    // roster-known LOCAL a6 whose world target is absent → unreachable (plane down, not an addressing error)
+    const orphanA6 = ensureAgentId(home, 'orphan')
+    assert.deepEqual(gatewayFor({ machine: selfM4, id: orphanA6 }), { miss: 'unreachable' })
+    // the native seam without an injected face → unreachable
+    const nativeA6 = ensureAgentId(home, 'native')
+    assert.deepEqual(gatewayFor({ machine: selfM4, id: nativeA6 }), { miss: 'unreachable' })
+  } finally {
+    cleanupRegistries()
     rmSync(home, { recursive: true, force: true })
   }
 })
