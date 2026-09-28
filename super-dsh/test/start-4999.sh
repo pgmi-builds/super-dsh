@@ -12,12 +12,21 @@
 # Red line (repo AGENTS §〇): this script refuses to run against any home that
 # is not this repo's .tests tree — the launch step owns the dev/test boundary,
 # business code never does.
+#
+# 2026-09-27 user rulings baked in below:
+#   • ports are UNOWNED test ports (4999 included): this rig stops test-owned
+#     occupant units and takes the port; only a non-test listener refuses.
+#   • the auth seed persists in the home's .credentials.yaml — browser cookies
+#     stay valid across restarts (connection.cookieMaxAgeDays, default 30d).
+#     The ?token= in each boot's log is a per-process launch token for FIRST
+#     mint only — never re-inject cookies between test restarts.
 set -euo pipefail
-# Rig knobs (docs/07 §3.3 compat/clean pairing): the defaults below are the
-# COMPAT rig (long-lived home, session-format verification). A CLEAN rig:
+# Rig knobs: the defaults below are the long-lived compat home (session-format
+# verification, reused across runs — user data is a test asset). A throwaway
+# fresh-home boot (only when first-boot behavior itself is under test):
 #   SUPERD_PORT=4997 SUPERD_HOME_DIR=$PWD/.tests/superd-clean \
 #     bash super-dsh/test/start-4999.sh
-# (disposable home — delete it between runs; see test/README.md).
+# (delete that home afterwards; see docs/07-cordis-dsh-dev-test-guides.md §3).
 PORT="${SUPERD_PORT:-4999}"
 UNIT="superd-${PORT}-test"
 # The line's repo root = wherever THIS script lives (main checkout or a dev
@@ -42,23 +51,37 @@ esac
 RELAY="superd-lan-${PORT}-relay"
 LAN_IP=$(hostname -I | awk '{print $1}')
 
-# Idempotent restart of THIS rig's own named units only (same names ⇒ same
-# rig). A foreign listener on the port still refuses below. Repo port
-# discipline: a 4999 occupant is retired ONLY on explicit user instruction —
-# never kill anything this rig does not own.
+# Idempotent restart of THIS rig's own named units; then, per the 2026-09-27
+# port ruling (test ports are unowned, 4999 included), any OTHER test-owned
+# unit still holding the port is stopped and the port taken over. Only an
+# unknown non-test listener refuses the start.
 systemctl --user stop "$UNIT" "$RELAY" 2>/dev/null || true
 systemctl --user reset-failed "$UNIT" "$RELAY" 2>/dev/null || true
+# Map the port's listener pid to its user unit via /proc/<pid>/cgroup
+# (launcher = app.slice/<unit>.service; socat relay = its own unit).
+test_unit_on_port() {
+  local pid unit
+  pid=$(ss -tlnp 2>/dev/null | grep ":${PORT} " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+  [ -n "$pid" ] || return 1
+  unit=$(sed -n 's#^.*/\([^/]*\.service\)$#\1#p' "/proc/${pid}/cgroup" 2>/dev/null | head -1)
+  [ -n "$unit" ] || return 1
+  case "$unit" in
+    superd-*|dsh-*|*-test|*-relay) printf '%s' "$unit" ;;
+    *) return 1 ;;
+  esac
+}
 for _ in $(seq 1 15); do ss -tln | grep -q ":${PORT} " || break; sleep 1; done
 if ss -tln | grep -q ":${PORT} "; then
-  echo "refusing to start: port ${PORT} already listening (foreign process):" >&2
-  ss -tlnp | grep ":${PORT} " >&2 || true
-  if [ "$PORT" = "4999" ]; then
-    echo "  4999 = shared Caddy-backed port (test.pc.internal.test). Either:" >&2
-    echo "    ① SUPERD_PORT=<free> bash super-dsh/test/start-4999.sh  # socat LAN relay auto-starts" >&2
-    echo "    ② user explicitly retires the occupant — never kill it silently." >&2
-  else
-    echo "  pick another port: SUPERD_PORT=<free> bash super-dsh/test/start-4999.sh" >&2
+  if OCCUPANT=$(test_unit_on_port); then
+    echo "--- port ${PORT} held by test unit ${OCCUPANT}: stopping (ports are unowned test infra)"
+    systemctl --user stop "$OCCUPANT"
+    for _ in $(seq 1 15); do ss -tln | grep -q ":${PORT} " || break; sleep 1; done
   fi
+fi
+if ss -tln | grep -q ":${PORT} "; then
+  echo "refusing to start: port ${PORT} held by a non-test listener:" >&2
+  ss -tlnp | grep ":${PORT} " >&2 || true
+  echo "  pick another port: SUPERD_PORT=<free> bash super-dsh/test/start-4999.sh" >&2
   exit 1
 fi
 WATERMARK=$(wc -l < "$LOG" 2>/dev/null || echo 0)
@@ -107,9 +130,8 @@ if [ -n "$BUN_DIR" ] && [ -d "$BUN_DIR" ]; then
 fi
 
 # ---- 3. boot via the repo build's dsh CLI (no custom boot code) ----
-# ---- test preparation (2026-09-24 user ruling; see super-dsh/AGENTS.md
-# 「测试准备」) — the line must see the world production sees, or the test
-# tests the wrong thing:
+# ---- test preparation (2026-09-24 user ruling; spec: docs/07 §7) — the line
+# must see the world production sees, or the test tests the wrong thing:
 #   1. provider keys: copy the prod home's .env into the line home (the
 #      launcher's env layering is inherited > invoking-dir > HOME .env; an
 #      inherited EMPTY value would BLOCK the file layer, so we deliberately
@@ -124,6 +146,13 @@ if [ ! -f "$HOME/.dsh/.env" ]; then
 fi
 cp -f "$HOME/.dsh/.env" "$DSH_HOME_DIR/.env"
 chmod 600 "$DSH_HOME_DIR/.env"
+
+# Auth seed awareness (2026-09-27 user ruling): the browser-session signing
+# secret persists at the home root (.credentials.yaml, owner-only). When it
+# already exists, cookies minted before this restart remain valid — the boot's
+# launch token only serves first mint / new clients.
+SEED_EXISTED=""
+[ -f "$DSH_HOME_DIR/.credentials.yaml" ] && SEED_EXISTED=1
 
 # ctx0's native /api + /hub fences read the CONNECTION service's trustedHosts
 # (= webRuntime: bind-derived loopback literals + EXPLICIT --trusted-host
@@ -173,7 +202,12 @@ if [ "$PORT" != "4999" ]; then
   done
   [ -n "$lan_ok" ] || echo "WARN: socat relay $RELAY not listening on ${LAN_IP}:${PORT}" >&2
 fi
-echo "--- listening on ${PORT}; token URL (this boot):"
+if [ -n "$SEED_EXISTED" ]; then
+  echo "--- listening on ${PORT}; auth seed persisted — existing browser cookies stay valid (≤30d),"
+  echo "    no re-injection needed; the token URL is for first mint / new clients only:"
+else
+  echo "--- listening on ${PORT}; NEW home seed — mint your cookie once via the token URL (valid 30d per authority):"
+fi
 JAR=$(mktemp)
 # ctx0's token can land a few seconds after the bind (worlds interleave their
 # virtual webServer lines around it) — poll until one actually authenticates.

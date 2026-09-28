@@ -17,21 +17,18 @@
 
 | 形态 | 组成 | 用途 |
 |---|---|---|
-| **A. standalone app**（首选开发/测试形态） | `dsh(完整 composition: base + web-app + adapter bundle patch)`，单进程、自有 home、真实监听端口 | 开发、验收、单包测试；`dsh + adapter` ≈ standalone app |
-| **B. world ctx**（super-dsh 桥） | hub `spawnWorld()` 在 CTX0 进程内 `boot()` 出的 ctxN，adapter 挂在其中；roster/selector/委托由 hub 提供 | 多 runtime 并存、UI 内切换 |
+| **A. standalone app** | `dsh(完整 composition: base + web-app + adapter bundle patch)`，单进程、自有 home、真实监听端口 | 形态不变量：`dsh + adapter` 须是自洽 web app（world 形态的正确性基础）。⚠ 不再单独立线测试（2026-09-24 场景退役，见 §2） |
+| **B. world ctx**（super-dsh 桥） | hub `spawnWorld()` 在 CTX0 进程内 `boot()` 出的 ctxN，adapter 挂在其中；roster/selector/委托由 hub 提供 | 多 runtime 并存、UI 内切换；行为级验证地点 = 整包线（§2） |
 
 - 差异**只允许**来自 patch 层注入（端口、home、注入行），**不允许**出现两份代码路径。
-- 形态 B 的 client surface 也必须能在形态 A 正确交付（见 §4 客户端面交付层）。
+- 形态 B 的 client surface 也必须能在形态 A 正确交付（见 §4.1 客户端面交付层）。
 
-## 2. 测试准则（Testing）
+## 2. 测试准则（Testing；2026-09-24 场景退役，2026-09-27 user 重申）
 
-1. **每个 adapter 先按 standalone dsh web app 测**（真实例 + 真 runtime turn + 浏览器/curl 两者），直到该形态不再成立才引入形态 B。形态 B 的验收建立在形态 A 之上，不得反向。
-2. 验收证据必须是**运行时行为**：
-   - 真 runtime turn（**不得**以注入 fake factory 的 turn 作为验收证据；fake 仅限管道测试）；
-   - HTTP wire（`POST /api/<ns>/<method>`，envelope `{type:"client-request",rpcId,method,payload}`）走一遍 create→prompt→readback；
-   - 包自身测试套件在**该 app 的 home** 全绿（不是只在共享 home 绿）。
-3. **专属 home**：adapter 单测/单跑时用自有 home（如 `SUPERD_APP_HOME`），其 DSH 级状态（workspace 注册表、settings、session 日志）不与别条线共享；共享 home 里的残留（别线的 workspace、陈旧 settings）会污染结论。
-4. adapter 自有 app 数据与 DSH 数据分账：见 §5。
+1. **不做 per-agent（单 adapter）场景测试——即使本次改动是 per-agent 的**。行为级验证一律把**整个 superd app** 拉起来测（整包 pack 线 `super-dsh/test/start-4999.sh` + dev3 目标机实装，见 `docs/07-cordis-dsh-dev-test-guides.md` §6）。理由：单 adapter 场景测试要求把它变成独立 Dash 插件形态（自有 rig / patch / yaml 全套重写），与交付物（整包）不符，毫无意义。
+2. adapter 侧只保留**单元测试**：`node --test test/*.test.mjs`（fakes / 映射 / 事件转译 / lazy 不变量），测试导入 `dist/`，**先 build 后 test**。
+3. 验收证据仍是**运行时行为**（真 runtime turn——fake 仅限管道测试；HTTP wire create→prompt→readback），但取证地点 = **整包线 home**（`.tests/superd`），不是 adapter 私有 rig。
+4. home / 端口 / 认证纪律见 `docs/07` §3（长寿命 home 复用、user data 是测试资产、测试口无主化、seed-cookie 免重注入；绝不触碰 `~/.dsh` / `~/.superd`）。
 
 ## 3. 接线域（Wiring domains）—— 逐项，缺项必须显式记录为“未接/降级”
 
@@ -86,7 +83,7 @@
 - **占位/降级值禁止外流**：fail-soft 的占位模型（如 `codex-default`）不得写进 settings、不得传给真实 runtime；降级必须显式 skip。
 - **事件词汇**：映射到 DSH wire 词汇（`agent_start/turn_start/message_*/tool_execution_*/turn_end/agent_end`），保持与既有 adapter 一致，便于 agent.ts 平移。
 - **fail-soft 与可观测**：readiness/目录/rollout 读取失败要降级且留痕（trace/logger），不得静默假成功。
-- **测试 env 三件套**：`DSH_HOME=<专属 home>`、`SUPERD_DSH_ANCHOR=<install anchor package.json>`、必要时 `SUPERD_BARE_BASE=<home>/profiles/node_modules/`。
+- **测试 env**：`DSH_HOME=<专属 home>`、`SUPERD_DSH_ANCHOR=<install anchor package.json>`（bare world 解析锚）。⚠ 旧第三件 `SUPERD_BARE_BASE=<home>/profiles/node_modules/` 已随 0.1.7 进程内解析表 + 2026-09-26 farm 物理清零退役（零代码引用），勿再使用。
 
 ## 7. agent-codex 现状（SDK-first 调查结论，2026-09-15）
 
@@ -220,13 +217,13 @@ events: thread.started / turn.started|completed|failed / item.started|updated|co
   - 「native 面被 patch/替换」属正常手段（例：pin `browse` 目录选择器、替换 `*-auto` 行、换掉 world 的 webserver 姿态）；但**上游源码零修改**仍是红线——定制一律走 patch 层或自有插件/包。
   - 定制决策必须落档在该 adapter 的文档里（发现即记录），便于将来另一个 adapter 做相反选择。
 
-## 13. Home 与 profile 布局（2026-09-17 user 裁定改版，取代 2026-09-16 版）
+## 13. Home 与 profile 布局（2026-09-17 user 裁定改版；2026-09-27 与 docs/07 §3 对齐——farm 清零、home 复用）
 
-- **`$DSH_HOME` = 测试 home**（仓内约定：`<repo>/.tests`；绝不触碰 `~/.dsh` / `~/.superd`）。
-- **agent world DSH home = `$DSH_HOME/agents/<label>`**（例：codex → `<repo>/.tests/agents/codex`）——该 agent 的 dsh web app（world）自有 DSH home：`sessions/`、`storages/`、`settings.yaml`、`profiles/web`，外加 adapter 自有 DSH 态（`dsh-sessions.json`）。**不再是 native app 的 app home**（旧「agent app home = `$DSH_HOME/agents/<label>`」裁定废止）。
+- **`$DSH_HOME` = 测试 home**（仓内约定：`<repo>/.tests/...`；整包线 = `.tests/superd`；绝不触碰 `~/.dsh` / `~/.superd`。home 复用纪律见 `docs/07` §3.2）。
+- **agent world DSH home = `$DSH_HOME/agents/<label>`**（整包线下即 `.tests/superd/agents/<label>`）——该 agent 的 dsh web app（world）自有 DSH home：`sessions/`、`storages/`、`settings.yaml`、`profiles/web`，外加 adapter 自有 DSH 态（`dsh-sessions.json`）。**不再是 native app 的 app home**（旧「agent app home = `$DSH_HOME/agents/<label>`」裁定废止）。
 - **foreign runtime app home = 原生 home**（`~/.omp` / `~/.codex` / `~/.claude` / `~/.pi`）——spawn 零重定向、零 config 拷贝；测试隔离只走 runtime 自己的 env knob（`OMP_HOME` / `CODEX_HOME` / `CLAUDE_CONFIG_DIR` / `PI_CODING_AGENT_DIR`）。
-- **agent dsh profile packages = `$DSH_HOME/profiles/<label>`**（例：`<repo>/.tests/profiles/codex`）——该 agent 的 dsh profile（`package.json` 的 `dsh.profile.bundles`、`cordis.patch.yml`、`pnpm-workspace.yaml`）。
-- **禁止自造 per-app home**（`.tests/codex-app`、`<world>/.codex` 嵌套等均属违规先例）；`profiles/node_modules/@pgmi-builds/*` 仍集中在 `$DSH_HOME/profiles/node_modules/`。
+- **agent dsh profile packages = `$DSH_HOME/profiles/<name>`**（整包线 = `.tests/superd/profiles/superd-pub`）——dsh profile（`package.json` 的 `dsh.profile.bundles`、`cordis.patch.yml`、`pnpm-workspace.yaml`）。⚠ 依赖安装是 **profile 本地物理安装**（tarball `file:` 进 `<profile>/node_modules`，ground 0 语义）；任何 `<home>/profiles/node_modules` 级共享 farm 已于 2026-09-26 物理清零，勿重建。
+- **禁止自造 per-app home**（`.tests/codex-app`、`<world>/.codex` 嵌套等均属违规先例）；场景级一次性 home（`plugin-acc2` / `superd-014gate` 等）已随场景退役删除。
 - `<label>` 取 agent 的 roster key / 运行时短名（codex、omp、claude、pi、…）。
 
 ## 14. 会话物化纪律：两类数据面（2026-09-18 user 裁定）

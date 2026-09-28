@@ -11,7 +11,7 @@
 | [`00-blueprint.md`](./00-blueprint.md) | 开发蓝图 **v0.4**（grilling 4 轮收敛 + 2026-09-08 v0.2–v0.4 修订：Agent UI Adapter 对偶组合层、DSH 全透传与认证链、selector 落位 `sidebar.footer.action`） |
 | [`01-component-boundaries.md`](./01-component-boundaries.md) | 组件边界与 UI 组合层 **v0.3**：两幅 Mermaid（host / 浏览器侧）+ 包 roster 三档草案 + 切换机制两档 |
 | [`06-package-update-guidelines.md`](./06-package-update-guidelines.md) | **包与基线更新指南**（2026-09-21）：上游 dsh 基线对齐操作程序 + 0.1.6 线实证陷阱表 + 自有包构建/发布纪律（正例 = dashr 对齐轮；红线仍以根 AGENTS.md §〇 为准） |
-| [`07-cordis-dsh-dev-test-guides.md`](./07-cordis-dsh-dev-test-guides.md) | **Cordis/DSH 开发与测试指南**（2026-09-24，移植自 dashr 同名规范 + 本仓落点改写）：插件行/两平面/供给三分桶、client 半边与依赖归属、`dsh plugin` 命令语义、热插拔 Comply-or-Explain、测试环境（端口/种子-运行 home/compat-clean 双 home）+ **本仓 adoption 偏差记账**（client lane 缺 / clean home 缺） |
+| [`07-cordis-dsh-dev-test-guides.md`](./07-cordis-dsh-dev-test-guides.md) | **通用测试指引（本仓唯一）**（2026-09-27 大改版：两层文档制的第二层，根 `AGENTS.md` §七只留速记）：插件行/两平面/供给三分桶、client 半边与依赖归属、`dsh plugin` 命令语义、热插拔 Comply-or-Explain、测试环境（端口无主化 / test home 复用 / seed-cookie 免重注入）、验收三层与 per-agent 场景测试退役 |
 | [`adr/`](./adr/) | 架构决策记录 0001–0007（**0006** 前端组合层对偶、**0007** DSH 透传 + routing mux + token mint 为 2026-09-08 新增；0001/0005 附当日精化注） |
 | [`image.png`](./image.png) | selector 位置参考截图（Codex 侧栏形态：brand → 命令行区 → Projects） |
 
