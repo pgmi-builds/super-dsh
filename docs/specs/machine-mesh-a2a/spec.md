@@ -45,7 +45,7 @@
 - **machineId（m4）**：机器自铸并持久化的 4 位随机 ID（`[a-z0-9]`，36⁴≈168 万），全网唯一（owner 铸造 + 传播采纳）。
 - **agentId（a6）**：agent 归属 hub 铸造的 6 位随机 ID（36⁶≈22 亿）。本地六 runtime + native 各一个，持久化。
 - **地址**：`<m4>-<a6>`（如 `k3f9-q7m2xp`）。会话级寻址 = 地址 + 会话短 ID。
-- **conversation**：A2A 的第二层 = 一个 agent runtime 的 session。统一用 DSH session id（所有 adapter 已映射为 DSH 会话）；**短 ID** = 截首 8 位显示/工具面别名。
+- **conversation**：A2A 的第二层 = 一个 agent runtime 的 session。统一用 DSH session id（所有 adapter 已映射为 DSH 会话）；**短 ID** = 剥离 `session-` 前缀后取 uuid 段首 6 位（碰撞 6→8→10 步进加长）——2026-09-28 修订：DSH id 固定前缀使"截首 8 位"退化为常量（rig 实测 D2）；registry 退化解存量行随修订一次性重铸。
 - **wire gateway / RemoteGatewayFace**：实现 `GatewayFace {dispatchRpc, openWireStream}` 的 HTTP+WS 适配器，指向远端 `/hub` 家族；注册进现有 gateway 注册表后与本地 world 网关不可区分。
 - **receipt**：send 的即时返回；`outcome: 'injected' | 'queued' | 'failed'`（沿 OMP hub 语义），failed 附"下一步调什么"的可执行错误文案。
 
@@ -289,7 +289,7 @@ roster 会话维度。experimental agent-team 的 durable mailbox 仅作远期�
 | cookie 过期 | 自动重铸（存量 token）；失败 → `auth-expired` + UI 重贴提示 |
 | 版本不匹配 | `version-mismatch` 告警，不阻断（数据面 envelope/mux 由 dsh pin 窗背书） |
 | 远端 agent 消失 | 下轮探测收敛；A2A 寻址 fail-loud（`unknown-agent`，带地址） |
-| conversation 碰撞（短 ID） | 插入时查重加长（8→10→12…） |
+| conversation 碰撞（短 ID） | 插入时查重步进加长（6→8→10，2026-09-28 修订） |
 | WS 断线 | in-flight 流 wire error 结束；UI 自动重连；A2A 回投订阅随 mux 重建 |
 | exec 超时 | 两段式中断 + 组杀；结果标 `timedOut` |
 
