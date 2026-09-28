@@ -79,3 +79,24 @@ Live verification (both machines on 0.1.6-j): PC `?mesh=1` → 7 rows all
 `local`; PC→dev3 probe → bfwu 0.1.6-j **7 agents**; **PC full roster
 {local: 7, bfwu: 7}** — duplicates gone; dev3 `?mesh=1` → 7 local; dev3→PC
 probe → 79he 0.1.6-j 7 agents. Suite 433/0/0.
+
+## Addendum 2 — exactly-once inbound delivery (0.1.6-k, `7a6db7e`)
+
+The USER's own first-person self-test session (initiator `session-a3ba70af`,
+report `2026-09-28-superd-hub-first-person-0.1.6-j.md` §7.1) caught a defect my
+rig pass missed: a cross-machine reply delivered TWICE with the same messageId
+(seq 399 + 426). Mechanism: the ingest's return-envelope arms answered the
+sender with a delivery outcome (`{delivered:'followup'}`), which
+`postA2aEnvelope`'s receipt guard rejects — AFTER the receiver had already
+delivered — so the sender parked the envelope and the 5-min sweep re-pulled and
+re-delivered it. The peer write-back arm had the same bug class.
+
+Fix (both layers): every ingest response is now a v1 send-receipt shape the
+sender's guard accepts; inbound envelopes are idempotent by messageId
+(persisted bounded seen-set `<home>/superd/a2a-seen.json`, ≤128) — a re-POSTed
+envelope is re-ACKed, never re-executed. Stop envelopes stay naturally
+idempotent. Suite 433/0/0.
+
+Live re-verification on 0.1.6-k (both machines): exactly ONE user/message relay
+event (seq 32, single messageId) for the cross reply, attribution
+`Agent bfwu-ea3yvg replied` / `senderMachine:"bfwu"`, dev3 outbox empty.
