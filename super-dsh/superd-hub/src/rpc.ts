@@ -92,7 +92,16 @@ export async function handleAgentRuntime(
     // multi-machine UI; the a6 row ids ride on every agents row.
     const home = deps?.home ?? resolveDshHome()
     const self = ensureSelf(home, 'local')
-    return json(200, { available, agents: agentLinks(home), hub: { machineId: self.id, label: self.label, version: HUB_VERSION } })
+    // Self-description discipline (2026-09-28 user ruling): a peer's discovery
+    // probe (`?mesh=1`) receives THIS machine's own rows only — a hub never
+    // re-broadcasts other remotes' agents to its peers (hub-to-hub is P2P;
+    // the requester fans out one probe per paired machine and merges itself).
+    // The plain browser GET keeps the full roster — the local UI's machine
+    // grouping consumes exactly that.
+    const links = new URL(request.url).searchParams.get('mesh') === '1'
+      ? agentLinks(home).filter((l) => l.machine === 'local')
+      : agentLinks(home)
+    return json(200, { available, agents: links, hub: { machineId: self.id, label: self.label, version: HUB_VERSION } })
   }
   // A POST that used to switch a global selector has no meaning any more:
   // the addressed world is the mount path of the request, not a shared value.

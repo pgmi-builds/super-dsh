@@ -125,6 +125,26 @@ test('mintCookie 失败分支：非 303/2xx throw 附状态码；无 dsh-auth co
   } finally { await foreign.close() }
 })
 
+test('probeMachine (self-description discipline)：第三方行永不被采纳——应答者联邦来的他机 agents 一律丢弃，只收 machine === local', async () => {
+  // 0.1.6-i 形状的应答：本机行 + 它联邦来的两台第三方机的镜像行（含对我方的镜像）
+  const hub = await startRemoteHub({
+    agents: [
+      { id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false, machine: 'local' },
+      { id: '8ah589', key: 'native', label: 'DSH', ready: true, failed: false, machine: '79he' },
+      { id: 'ea3yvg', key: 'pi', label: 'Pi', ready: true, failed: false, machine: 'bfwu' },
+      // legacy row without a machine field = self-hosted by construction
+      { id: 'zz1zz2', key: 'omp', label: 'OMP', ready: false, failed: true },
+    ],
+  })
+  try {
+    const cookie = await mintCookie(hub.origin, 'ok')
+    const ok = await probeMachine(hub.origin, cookie)
+    assert.equal(ok.ok, true)
+    assert.deepEqual(ok.agents.map((a) => a.id), ['q7m2xp', 'zz1zz2'])
+    assert.ok(ok.agents.every((a) => a.machine === 'local'))
+  } finally { await hub.close() }
+})
+
 test('probeMachine：200 → ok + agents；401 → auth-expired；拒连 → unreachable', async () => {
   const hub = await startRemoteHub()
   try {
@@ -133,7 +153,7 @@ test('probeMachine：200 → ok + agents；401 → auth-expired；拒连 → unr
     assert.equal(ok.ok, true)
     assert.equal(ok.machineId, 'k3f9')
     assert.equal(ok.version, '0.1.6')
-    assert.deepEqual(ok.agents, [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false }])
+    assert.deepEqual(ok.agents, [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false, machine: 'local' }])
 
     const expired = await probeMachine(hub.origin, 'dsh-auth-x=unknown')
     assert.equal(expired.ok, false)

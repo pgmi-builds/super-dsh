@@ -30,6 +30,8 @@ export interface ProbeAgent {
   label: string
   ready: boolean
   failed: boolean
+  /** Row machine as the peer reported it: `'local'` = self-hosted on the responder; an m4 = a THIRD-party machine the responder federated — never adopted (self-description discipline, 2026-09-28 user ruling). */
+  machine: string
 }
 
 /** Roster probe outcome: 200+hub → ok with adopted machineId; 401 → auth-expired; network/peer-shape errors → unreachable. */
@@ -186,6 +188,7 @@ function coerceAgent(v: unknown): ProbeAgent {
     label: typeof a.label === 'string' ? a.label : '',
     ready: a.ready === true,
     failed: a.failed === true,
+    machine: typeof a.machine === 'string' && a.machine !== '' ? a.machine : 'local',
   }
 }
 
@@ -198,7 +201,10 @@ function coerceAgent(v: unknown): ProbeAgent {
 export async function probeMachine(origin: string, cookie: string, fetchImpl: typeof fetch = globalThis.fetch): Promise<ProbeResult> {
   let res: Response
   try {
-    res = await fetchImpl(`${origin}/api/agent-runtime`, {
+    // `?mesh=1` asks the peer for ITS OWN rows only (self-description
+    // discipline): a hub never re-broadcasts other remotes' agents. The
+    // adoption filter below is the belt-and-braces leg for older peers.
+    res = await fetchImpl(`${origin}/api/agent-runtime?mesh=1`, {
       headers: cookie === '' ? {} : { cookie },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
@@ -222,7 +228,12 @@ export async function probeMachine(origin: string, cookie: string, fetchImpl: ty
   if (typeof hub.machineId !== 'string' || hub.machineId === '') {
     return { ok: false, status: 'unreachable', error: 'peer roster has no hub block' }
   }
-  const agents = Array.isArray(o.agents) ? o.agents.map(coerceAgent) : []
+  // P2P (2026-09-28 user ruling): adopt ONLY the responder's own rows
+  // (machine === 'local'). Whatever else its roster carries — mirrors of US,
+  // third-party remotes it federates — is its own business; the requester
+  // merges its N paired machines itself, one probe each.
+  const agents = (Array.isArray(o.agents) ? o.agents.map(coerceAgent) : [])
+    .filter((a) => a.machine === 'local')
   return {
     ok: true,
     machineId: hub.machineId,
