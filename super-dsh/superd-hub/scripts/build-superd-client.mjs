@@ -63,6 +63,12 @@ export async function buildSuperdClient({ outDir = DELIVERED_DIR } = {}) {
     // (110112B vs 110244B = 'superd-hub/' × 12 region comments). Byte
     // determinism is only true with the anchor pinned to the hub root.
     cwd: hubRoot,
+    // info spam stays OFF: the drift guard runs this emitter inside a
+    // node:test child whose stdout is the runner's result channel — bundler
+    // chatter under load desynced that channel once (runner-side
+    // 'Unable to deserialize cloned data', 2026-09-29; the 0.1.6-era 'IPC
+    // flake at full concurrency' lore). Warnings/errors still surface.
+    logLevel: 'warn',
     name: `${ID}/client`,
     config: false,
     name: `${ID}/client`,
