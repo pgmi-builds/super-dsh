@@ -71,9 +71,10 @@ const mkService = (gw, opts = {}) => {
     gatewayFor,
     ...(opts.noIngest ? {} : { ingest: () => ingestRef }),
     ...(opts.fetchImpl === undefined ? {} : { fetchImpl: opts.fetchImpl }),
+    ...(opts.log === undefined ? {} : { log: opts.log }),
     now: () => 1234500,
   })
-  ingestRef = opts.noIngest ? undefined : createA2aIngest({ home, gatewayFor, delivery, now: () => 1234500 })
+  ingestRef = opts.noIngest ? undefined : createA2aIngest({ home, gatewayFor, delivery, now: () => 1234500, ...(opts.log === undefined ? {} : { log: opts.log }) })
   return { home, svc, selfM4 }
 }
 
@@ -1064,5 +1065,52 @@ test('D21: newConversation with message → opening + content land as ONE inject
       type: 'text',
       text: teaching(localInitiator(selfM4), 'Task', out.shortId, 'the actual task in the opening turn'),
     }])
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ------------------------------------------------------- operational journal (0.1.7-b)
+
+test('operational journal: new/send/write-back each leave one line (conversation.new, conversation.adopt, send.channel, send.ok)', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'x', conversationId: 'jrnl02', sessionId: 'sess-init-at-k3f9' } })
+  saveConversations(home, { conversations: [{
+    shortId: 'jrnl02', machine: 'k3f9', agent: 'a2b3c4', sessionId: 'sess-host-2', title: 'jrnl',
+    hostAgent: 'q7m2xp', createdAt: 1, lastActivityAt: 1,
+  }] })
+  const lines = []
+  const log = (level, event, fields = {}) => lines.push({ level, event, fields })
+  let ingestRef
+  const svc = createA2aService({ home, gatewayFor: () => gw.face, fetchImpl: remote.fetchImpl, now: () => 7, log, ingest: () => ingestRef })
+  ingestRef = createA2aIngest({ home, gatewayFor: () => gw.face, delivery: { agents: { get: () => undefined }, buffer: () => {} }, now: () => 7, log })
+  const find = (event) => lines.find((l) => l.event === event)
+  try {
+    // the channel write-back: one line for the latch, one for the routed send
+    const r = await svc.send(
+      { to: { machine: 'k3f9', id: 'a2b3c4' }, conversationId: 'jrnl02', message: 'channel reply' },
+      { machine: selfM4, agent: 'q7m2xp', sessionId: 'sess-host-2' },
+    )
+    assert.equal(r.outcome, 'injected')
+    const latch = find('send.channel')
+    assert.ok(latch, 'send.channel present')
+    assert.equal(latch.fields.conversation, 'jrnl02')
+    assert.equal(latch.fields.latch, true)
+    assert.equal(latch.fields.from, `${selfM4}-q7m2xp`)
+    const ok = find('send.ok')
+    assert.ok(ok, 'send.ok present')
+    assert.equal(ok.fields.conversation, 'jrnl02')
+    assert.equal(ok.fields.to, 'k3f9-a2b3c4')
+    // a local create: the initiator line plus the peer-side adoption line
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-jrnl-9' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const created = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'J', 'opening', { machine: selfM4, agent: 'zz1y2', sessionId: 'sess-jrnl-init' })
+    const created_line = lines.find((l) => l.event === 'conversation.new' && l.fields.conversation === created.shortId)
+    assert.ok(created_line, 'conversation.new present')
+    assert.equal(created_line.fields.peer, `${selfM4}-q7m2xp`)
+    assert.equal(created_line.fields.initiator, `${selfM4}-zz1y2`)
+    const adopt = lines.find((l) => l.event === 'conversation.adopt' && l.fields.conversation === created.shortId)
+    assert.ok(adopt, 'conversation.adopt present (self-hosted create adopts the mirror row)')
+    assert.equal(adopt.fields.hostAgent, 'q7m2xp')
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

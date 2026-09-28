@@ -68,6 +68,7 @@ import type { A2aIngest } from './a2a-ingest.js'
 import type { A2aDeliveryOutcome } from './a2a-delivery.js'
 import { ensureSelf, listRemotes, mintShortId as mintMachineId } from './machines.js'
 import { cookieOf } from './mesh-link.js'
+import type { A2aLogFn } from './a2a-log.js'
 import { WIRE, type SessionFollowRequestMirror, wireArgsOf } from './wire-endpoints.js'
 // compat re-export (postoffice R1): the class moved to the protocol layer
 // (a2a-wire.ts) so the wire helpers can classify with it; every existing
@@ -449,6 +450,8 @@ export interface A2aServiceDeps {
   ingest?(): A2aIngest | undefined
   /** R4: fetch override for the remote wire leg (tests inject fixtures). */
   fetchImpl?: typeof fetch
+  /** Operational journal (0.1.7-b): one greppable line per machine event; the cordis host wires it onto ctx.logger, tests inject a collector. */
+  log?: A2aLogFn
   now?(): number
 }
 
@@ -763,7 +766,7 @@ export function subscribeSessionCompletion(
 
 export function createA2aService(deps: A2aServiceDeps): A2aService {
   const now = deps.now ?? Date.now
-  // D2 migration: re-mint degenerate shortIds at assembly — writes only when a
+  const alog = deps.log
   // degenerate row exists; after the first pass the registry stays clean.
   migrateConversations(deps.home)
   const bufferByInitiator = new Map<string, A2aBufferedMessage[]>()
@@ -929,18 +932,22 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       // (the write-through is gone). The vestigial `warning` stays for
       // signature stability and is never set.
       recordInitiatorRow(shortId, addr, answer.sessionId, normalizeA2aTitle(title), initiator)
+      alog?.('info', 'conversation.new', { conversation: shortId, session: answer.sessionId, peer: `${addr.machine}-${addr.id}`, initiator: `${initiator.machine}-${initiator.agent}` })
       return { shortId, sessionId: answer.sessionId }
     },
 
     async send(req, initiator) {
       const messageId = `a2a-${randomUUID()}`
-      const fail = (error: A2aReceiptError, sessionId = '', conversationId?: string): A2aReceipt => ({
-        outcome: 'failed',
-        messageId,
-        ...(conversationId === undefined ? {} : { conversationId }),
-        sessionId,
-        error,
-      })
+      const fail = (error: A2aReceiptError, sessionId = '', conversationId?: string): A2aReceipt => {
+        alog?.('warn', 'send.fail', { code: error.code, conversation: conversationId, message: messageId })
+        return {
+          outcome: 'failed',
+          messageId,
+          ...(conversationId === undefined ? {} : { conversationId }),
+          sessionId,
+          error,
+        }
+      }
 
       let row: ConversationRow | undefined
       if (req.conversationId !== undefined) {
@@ -975,6 +982,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
           // channel), set before routing so the completion watch can never
           // race it; a routing failure parks/retries without un-latching.
           markChannelUsed(row)
+          alog?.('info', 'send.channel', { conversation: row.shortId, from: `${selfM4()}-${row.hostAgent}`, latch: true })
         }
       }
 
@@ -1040,6 +1048,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         if (row === undefined && answer.sessionId !== '' && answer.conversationId !== undefined && answer.conversationId !== '') {
           recordInitiatorRow(answer.conversationId, req.to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
         }
+        alog?.('warn', 'send.fail', { code: (answer.error ?? { code: 'a2a/remote-failed' }).code, conversation: answer.conversationId ?? row?.shortId, message: messageId })
         return {
           outcome: 'failed',
           messageId,
@@ -1056,6 +1065,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       } else {
         touchRow(row, row.hostAgent === undefined ? initiator.sessionId : undefined)
       }
+      alog?.('info', 'send.ok', { conversation: conversationId, to: `${envelope.to.machine}-${envelope.to.id}`, message: messageId })
       return { outcome: 'injected', messageId, conversationId, sessionId: answer.sessionId }
     },
 
@@ -1131,6 +1141,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       list.push({ ...message, initiatorSessionId, bufferedAt: now() })
       while (list.length > A2A_BUFFER_MAX) list.shift()
       bufferByInitiator.set(initiatorSessionId, list)
+      alog?.('info', 'deliver.buffer', { session: initiatorSessionId, conversation: message.conversationId, depth: list.length })
     },
 
     read(initiatorSessionId) {

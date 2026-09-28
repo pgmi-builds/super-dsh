@@ -485,6 +485,10 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           return { action, note: EXEC_PLACEHOLDER_NOTE }
 
         default:
+          // Unreachable through the tool surface (the input schema's action
+          // enum rejects unknowns before execute) — kept as the switch's
+          // totality guard: if the enum and this dispatch ever drift, this
+          // names the gap instead of silently returning undefined.
           throw new Error(`[E_BAD_ACTION] superd-hub: unknown action ${JSON.stringify(action)}`)
       }
     },

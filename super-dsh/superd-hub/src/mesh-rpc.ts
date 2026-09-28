@@ -85,11 +85,12 @@ export interface MachinePublicRow {
 }
 
 /** Structural type of `ctx.connection.fetch` (upstream: HostConnectionFetch).
- *  Methods widened with 'DELETE' — see the module header's dispatch note. */
+ *  Methods widened with 'DELETE' | 'PUT' | 'PATCH' — see the module header's
+ *  dispatch note (runtime route table dispatches an untyped method set). */
 interface ConnectionFetchFace {
   register(route: {
     path: string
-    methods: readonly ('GET' | 'HEAD' | 'POST' | 'DELETE')[]
+    methods: readonly ('GET' | 'HEAD' | 'POST' | 'DELETE' | 'PUT' | 'PATCH')[]
     requestBody: 'buffered'
     fetch: (request: Request) => Promise<Response>
   }): () => Promise<void>
@@ -216,12 +217,19 @@ export function registerMeshRpc(ctx: Context, deps: MeshDeps): void {
     if (fetchFace === undefined) return // connection not actually present (test ctx)
     connCtx.effect(() => fetchFace.register({
       path: MESH_API_BASE,
-      methods: ['GET', 'POST', 'DELETE'],
+      methods: [...ROUTE_METHODS],
       requestBody: 'buffered',
       fetch: (request) => handleMeshMachines(request, deps),
     }), 'superd-hub: /api/superd/machines route')
   })
 }
+
+/** Every method our exact paths claim on the shared `/api` channel — unknown
+ * methods land in the HANDLER's honest 405 (a PUT on a known path is "method
+ * not supported", not a fall-through host 404; 2026-09-29 field finding:
+ * PUT /api/superd/machines answered 404 because the registration only
+ * claimed GET/POST/DELETE). */
+const ROUTE_METHODS = ['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD'] as const
 
 // ---------------------------------------------------------------- a2a (postoffice R3)
 
@@ -234,6 +242,9 @@ export function registerMeshRpc(ctx: Context, deps: MeshDeps): void {
  * the decoder's named reason.
  */
 export async function handleA2aIngestPost(request: Request, ingest: A2aIngest): Promise<Response> {
+  if (request.method !== 'POST') {
+    return json(405, { error: `mesh-api: method ${request.method} is not supported on ${A2A_ENDPOINT_PATH} (use POST)` })
+  }
   let body: unknown
   try {
     body = await request.json()
@@ -251,6 +262,9 @@ export async function handleA2aIngestPost(request: Request, ingest: A2aIngest): 
  * envelopes addressed to the claiming machine (declarative claim, D1).
  */
 export function handleA2aOutboxGet(request: Request, ingest: A2aIngest): Response {
+  if (request.method !== 'GET') {
+    return json(405, { error: `mesh-api: method ${request.method} is not supported on ${A2A_OUTBOX_PATH} (use GET)` })
+  }
   const machine = new URL(request.url).searchParams.get('machine') ?? ''
   if (machine === '') {
     return json(400, { error: 'mesh-api: a2a outbox claim requires a non-empty ?machine= query parameter' })
@@ -272,13 +286,13 @@ export function registerA2aRpc(ctx: Context, ingest: A2aIngest): void {
     // (the ingest instance is injected — one instance shared with the service)
     connCtx.effect(() => fetchFace.register({
       path: A2A_ENDPOINT_PATH,
-      methods: ['POST'],
+      methods: [...ROUTE_METHODS],
       requestBody: 'buffered',
       fetch: (request) => handleA2aIngestPost(request, ingest),
     }), 'superd-hub: /api/superd/a2a route')
     connCtx.effect(() => fetchFace.register({
       path: A2A_OUTBOX_PATH,
-      methods: ['GET'],
+      methods: [...ROUTE_METHODS],
       requestBody: 'buffered',
       fetch: (request) => Promise.resolve(handleA2aOutboxGet(request, ingest)),
     }), 'superd-hub: /api/superd/a2a/outbox route')

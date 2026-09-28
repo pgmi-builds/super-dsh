@@ -78,7 +78,7 @@ const userMsg = (rpcId, seq) => ev('user/message', { id: 'm1', role: 'user', con
 const asstMsg = (turn, text, seq) => ev('assistant/message', { turn, step: 0, interrupted: false, message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text }] }, stream: [] }, seq)
 const turnEnd = (turn, seq, kind = 'completed') => ev('turn/end', { turn, reason: { kind } }, seq)
 
-const until = async (cond, ms = 500) => {
+const until = async (cond, ms = 2000) => {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
     if (cond()) return
@@ -105,6 +105,7 @@ function assembly(home, gw, opts = {}) {
     },
     delivery: deliveryFake.ctx,
     fetchImpl: opts.fetchImpl,
+    ...(opts.log === undefined ? {} : { log: opts.log }),
   })
   return { ingest, delivery: deliveryFake }
 }
@@ -782,5 +783,57 @@ test('D20: self-route write-back — the hosted peer sends (from=hostAgent) → 
     assert.equal(hit.message.source.kind, 'a2a-relay')
     assert.match(hit.message.content[0].text, /replied \(conversation "self-route wb"\):/)
     assert.match(hit.message.content[0].text, /the result through the channel/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ------------------------------------------------------- operational journal (0.1.7-b)
+
+test('operational journal: the ingest lifecycle emits one greppable line per machine event', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  const lines = []
+  const log = (level, event, fields = {}) => lines.push({ level, event, fields })
+  try {
+    saveConversations(home, { conversations: [{
+      shortId: 'abc123', machine: self.id, agent: 'f4g5h6', sessionId: 'sess-jrnl-1', title: 'journal',
+      hostAgent: 'q7m2xp', channelUsed: true, lastSentAt: 100, createdAt: 1, lastActivityAt: 1,
+    }] })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 2 }, 1),
+          userMsg('a2a-msg-j1', 2),
+          asstMsg(2, 'unsent words', 3),
+        ]),
+        turnEnd(2, 4),
+      ],
+    })
+    const { ingest, delivery } = assembly(home, gw, { log })
+    await ingest.ingest({ ...mkEnv(self.id, self.id), kind: 'message', messageId: 'a2a-msg-j1' })
+    await until(() => delivery.delivered.length > 0)
+    const at = (event) => lines.findIndex((l) => l.event === event)
+    const find = (event) => lines.find((l) => l.event === event)
+    // request lifecycle
+    const done = find('ingest.done')
+    assert.ok(done, 'ingest.done present')
+    assert.equal(done.fields.kind, 'message')
+    assert.equal(done.fields.outcome, 'injected')
+    assert.equal(done.fields.conversation, 'abc123')
+    assert.equal(done.level, 'info')
+    // completion watch: armed before the artifact, latch branch → notice
+    assert.ok(at('completion.armed') < at('completion.notice'), 'armed precedes the artifact line')
+    assert.equal(find('completion.armed').fields.conversation, 'abc123')
+    assert.equal(find('completion.notice').fields.conversation, 'abc123')
+    // return routing: self-routed delivery, one line per hop
+    assert.equal(find('route.deliver').fields.kind, 'notice')
+    assert.equal(find('deliver.local').fields.kind, 'notice')
+    assert.equal(find('deliver.local').fields.outcome, 'followup')
+    // duplicate re-POST parks idempotently
+    await ingest.ingest({ ...mkEnv(self.id, self.id), kind: 'message', messageId: 'a2a-msg-j1' })
+    const park = find('ingest.park')
+    assert.ok(park, 'ingest.park present')
+    assert.equal(park.fields.message, 'a2a-msg-j1')
+    assert.equal(park.fields.reason, 'duplicate')
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

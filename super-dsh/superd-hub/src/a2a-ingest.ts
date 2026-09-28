@@ -72,6 +72,7 @@ import {
 } from './a2a-wire.js'
 import { ensureSelf, listRemotes } from './machines.js'
 import { cookieOf } from './mesh-link.js'
+import type { A2aLogFn } from './a2a-log.js'
 
 /** Ingest assembly inputs: hub home + the LOCAL resolver + the in-process delivery face. */
 export interface A2aIngestDeps {
@@ -81,6 +82,8 @@ export interface A2aIngestDeps {
   /** The initiator-side delivery face (live agents + the bounded unread buffer). */
   delivery: A2aDeliveryCtx
   fetchImpl?: typeof fetch
+  /** Operational journal (0.1.7-b): one greppable line per machine event; the cordis host wires it onto ctx.logger, tests inject a collector. */
+  log?: A2aLogFn
   now?(): number
 }
 
@@ -188,6 +191,7 @@ function receiptErrorOf(error: unknown): { code: string; message: string; detail
 
 export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
   const now = deps.now ?? Date.now
+  const alog = deps.log
   const selfId = (): string => ensureSelf(deps.home, 'local').id
 
   // ---------------- registry (mirror rows)
@@ -228,6 +232,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     }
     rows.push(row)
     saveConversations(deps.home, { conversations: rows })
+    alog?.('info', 'conversation.adopt', { conversation: row.shortId, session: row.sessionId, peer: `${env.from.machine}-${env.from.agent}`, hostAgent: env.to.id })
     return row
   }
 
@@ -246,7 +251,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     const initiator = { machine: envelope.to.machine, agent: envelope.to.agent, sessionId: envelope.to.sessionId }
     const row = mirrorRowOf(envelope.conversation)
     if (envelope.kind === 'reply') {
-      return deliverReply(deps.delivery, initiator, envelope.text, {
+      const outcome = deliverReply(deps.delivery, initiator, envelope.text, {
         senderMachine: sender.machine,
         senderAgent: sender.agent,
         conversationId: envelope.conversation,
@@ -257,13 +262,17 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // it; absent = the peer chose to send this through the channel.
         transcribed: envelope.transcribed === true,
       })
+      alog?.('info', 'deliver.local', { conversation: envelope.conversation, kind: envelope.kind, outcome: outcome.delivered, from: `${sender.machine}-${sender.agent}` })
+      return outcome
     }
-    return deliverNotice(deps.delivery, initiator, envelope.summary, {
+    const outcome = deliverNotice(deps.delivery, initiator, envelope.summary, {
       senderMachine: sender.machine,
       senderAgent: sender.agent,
       conversationId: envelope.conversation,
       reason: noticeReason,
     })
+    alog?.('info', 'deliver.local', { conversation: envelope.conversation, kind: envelope.kind, outcome: outcome.delivered, from: `${sender.machine}-${sender.agent}` })
+    return outcome
   }
 
   const parkInOutbox = (envelope: A2aReplyEnvelope | A2aNoticeEnvelope): void => {
@@ -276,6 +285,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
   const routeReturn: A2aIngest['routeReturn'] = async (envelope, meta) => {
     if (envelope.to.machine === selfId()) {
       deliverLocal(envelope, { machine: selfId(), agent: meta.responderAgent }, meta.noticeReason)
+      alog?.('info', 'route.deliver', { conversation: envelope.conversation, kind: envelope.kind })
       return 'delivered'
     }
     const machine = listRemotes(deps.home).find((r) => r.id === envelope.to.machine)
@@ -285,14 +295,17 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           cookie: cookieOf(machine.id, deps.home),
           fetchImpl: deps.fetchImpl,
         })
+        alog?.('info', 'route.post', { conversation: envelope.conversation, kind: envelope.kind, to: envelope.to.machine })
         return 'posted'
       } catch {
         // peer briefly down — park for the next contact (sweep pull / next send)
         parkInOutbox(envelope)
+        alog?.('warn', 'route.park', { conversation: envelope.conversation, kind: envelope.kind, to: envelope.to.machine, reason: 'peer-unreachable' })
         return 'outbox'
       }
     }
     parkInOutbox(envelope)
+    alog?.('warn', 'route.park', { conversation: envelope.conversation, kind: envelope.kind, to: envelope.to.machine, reason: 'unknown-machine' })
     return 'outbox'
   }
 
@@ -325,7 +338,10 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // Hallucinated/irrelevant content is content-layer business —
         // transcribe verbatim and let the sender judge.
         const fresh = mirrorRowOf(row.shortId)
-        if ((fresh?.lastSentAt ?? 0) > armedSentAt) return
+        if ((fresh?.lastSentAt ?? 0) > armedSentAt) {
+          alog?.('info', 'completion.quiet', { conversation: row.shortId, reason: 'channel-send-in-window' })
+          return
+        }
         const envelope: A2aReplyEnvelope | A2aNoticeEnvelope = fresh?.channelUsed === undefined && completion.text !== ''
           ? {
             kind: 'reply',
@@ -337,28 +353,37 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
             transcribed: true,
           }
           : noticeOf(`conversation "${row.shortId}": turn ended, no reply`)
+        alog?.('info', envelope.kind === 'reply' ? 'completion.transcript' : 'completion.notice', {
+          conversation: row.shortId,
+          ...(envelope.kind === 'reply' ? { bytes: completion.text.length } : {}),
+        })
         void routeReturn(envelope, { responderAgent: env.to.id }).catch(() => parkInOutbox(envelope))
       },
       {
         requestId: env.messageId,
         onError: (error) => {
+          alog?.('warn', 'completion.error', { conversation: row.shortId, error: error.message })
           const notice = noticeOf(`A2A completion stream for conversation "${row.shortId}" failed: ${error.message}`)
           void routeReturn(notice, { responderAgent: env.to.id, noticeReason: 'stream-dead' }).catch(() => parkInOutbox(notice))
         },
       },
     )
+    alog?.('info', 'completion.armed', { conversation: row.shortId, session: row.sessionId, watermark: armedSentAt })
   }
 
   // ---------------- request kinds
 
   const ingestRequest = async (env: A2aNewConversationEnvelope | A2aMessageEnvelope): Promise<A2aWireReceipt | A2aDeliveryOutcome> => {
-    const fail = (error: { code: string; message: string; details?: unknown }, sessionId = '', conversationId?: string): A2aWireReceipt => ({
-      outcome: 'failed',
-      messageId: env.messageId,
-      ...(conversationId === undefined ? {} : { conversationId }),
-      sessionId,
-      error,
-    })
+    const fail = (error: { code: string; message: string; details?: unknown }, sessionId = '', conversationId?: string): A2aWireReceipt => {
+      alog?.('warn', 'ingest.fail', { code: error.code, conversation: conversationId, message: env.messageId })
+      return {
+        outcome: 'failed',
+        messageId: env.messageId,
+        ...(conversationId === undefined ? {} : { conversationId }),
+        sessionId,
+        error,
+      }
+    }
 
     //
     // MESSAGE envelopes resolve the registry row FIRST: a peer write-back
@@ -395,7 +420,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
             message: `a2a: conversation "${row.shortId}" has no persisted initiator session — asynchronous write-backs cannot be addressed`,
           }, row.sessionId, row.shortId)
         }
-        deliverReply(deps.delivery, {
+        const writeBackOutcome = deliverReply(deps.delivery, {
           machine: env.to.machine,
           agent: env.to.id,
           sessionId: row.initiatorSession,
@@ -406,6 +431,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           messageId: env.messageId,
           title: row.title,
         })
+        alog?.('info', 'deliver.writeback', { conversation: row.shortId, from: `${env.from.machine}-${env.from.agent}`, via: 'self-route', outcome: writeBackOutcome.delivered })
         // v1 send-receipt shape (exactly-once wrapper contract)
         return { outcome: 'injected', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
       }
@@ -439,7 +465,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
             message: `a2a: conversation "${row.shortId}" has no persisted initiator session — asynchronous write-backs cannot be addressed`,
           }, row.sessionId, row.shortId)
         }
-        deliverReply(deps.delivery, {
+        const writeBackOutcome = deliverReply(deps.delivery, {
           machine: env.to.machine,
           agent: env.to.id,
           sessionId: row.initiatorSession,
@@ -453,6 +479,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // v1 send-receipt shape (double-delivery fix): a {delivered:…} body
         // fails the sender's receipt guard → park → sweep re-POST → the
         // write-back would deliver twice.
+        alog?.('info', 'deliver.writeback', { conversation: row.shortId, from: `${env.from.machine}-${env.from.agent}`, via: 'peer', outcome: writeBackOutcome.delivered })
         return { outcome: 'injected', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
       }
     }
@@ -516,8 +543,10 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
   }
 
   const ingestStop = async (env: A2aStopEnvelope): Promise<A2aStopReceipt> => {
-    const stopped = (scope: 'turn' | 'turn-only', reason?: string): A2aStopReceipt =>
-      ({ stopped: false, scope, ...(reason === undefined ? {} : { reason }) })
+    const stopped = (scope: 'turn' | 'turn-only', reason?: string): A2aStopReceipt => {
+      alog?.('warn', 'stop.refused', { conversation: env.conversationId, scope, reason })
+      return { stopped: false, scope, ...(reason === undefined ? {} : { reason }) }
+    }
     const row = mirrorRowOf(env.conversationId)
     if (row === undefined) {
       return stopped(env.scope === 'session' ? 'turn-only' : 'turn', `a2a: conversation "${env.conversationId}" is not in the registry`)
@@ -544,6 +573,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           ? { scope: 'turn', cancelled: true }
           : { scope: 'turn-only', cancelled: true, reason: A2A_NO_SESSION_CLOSE_REASON })
       const parts = [result.scope === 'turn-only' ? result.reason : undefined, 'note' in result ? result.note : undefined]
+      alog?.('info', 'stop', { conversation: env.conversationId, stopped: result.cancelled, scope: result.scope })
       return {
         stopped: result.cancelled,
         scope: result.scope,
@@ -590,6 +620,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       // turn answers honestly).
       const mid = (envelope as { messageId?: string }).messageId
       if (mid !== undefined && seenMessageIds(deps.home).has(mid)) {
+        alog?.('info', 'ingest.park', { message: mid, reason: 'duplicate' })
         return envelope.kind === 'reply' || envelope.kind === 'notice'
           ? { outcome: 'injected', messageId: mid, conversationId: envelope.conversation, sessionId: envelope.to.sessionId }
           : { outcome: 'injected', messageId: mid, conversationId: (envelope as { conversationId?: string }).conversationId ?? '', sessionId: '' }
@@ -598,6 +629,12 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       const outcome = (out as { outcome?: unknown }).outcome
       const accepted = typeof outcome === 'string' ? outcome === 'injected' : true
       if (mid !== undefined && accepted) rememberMessageId(deps.home, mid)
+      alog?.(accepted ? 'info' : 'warn', 'ingest.done', {
+        kind: envelope.kind,
+        outcome: accepted ? 'injected' : typeof outcome === 'string' ? outcome : 'failed',
+        message: mid,
+        conversation: (envelope as { conversationId?: string, conversation?: string }).conversationId ?? (envelope as { conversation?: string }).conversation,
+      })
       return out
     },
     claimOutbox(machine: string): A2aEnvelope[] {
@@ -605,6 +642,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       const claimed = file.envelopes.filter((e) => e.to.machine === machine)
       if (claimed.length === 0) return []
       saveOutbox(deps.home, { envelopes: file.envelopes.filter((e) => e.to.machine !== machine) })
+      alog?.('info', 'outbox.claim', { machine, count: claimed.length })
       return claimed
     },
     routeReturn,

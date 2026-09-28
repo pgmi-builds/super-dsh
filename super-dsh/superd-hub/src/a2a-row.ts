@@ -43,6 +43,7 @@ import { createSuperdHubTool } from './hub-tool.js'
 import { createA2aIngest, type A2aIngest } from './a2a-ingest.js'
 import { statusSweepLegs, loadAgentStatus } from './agent-status.js'
 import { setSweepCollectors } from './mesh-link.js'
+import { formatA2aLogLine, type A2aLogFn, type A2aLogLevel } from './a2a-log.js'
 import { createA2aService } from './a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from './a2a-host.js'
 import { registerA2aRpc } from './mesh-rpc.js'
@@ -112,13 +113,21 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     // a LAZY provider: the ingest's delivery face buffers through the
     // service's own buffer leg, so it can only be built after the service.
     const gatewayFor = resolveA2aGatewayFor({ home, nativeGateway: raw })
+    // Operational journal (0.1.7-b): the pure modules only format lines; this
+    // is where they meet the cordis logger and land in the unit journal
+    // (4999 rig / dev3 dsh.service). One line per machine event, no secrets.
+    const alog: A2aLogFn = (level: A2aLogLevel, event, fields) => {
+      const logger = ctx.logger as Partial<Record<A2aLogLevel, ((message: string) => void) | undefined>> | undefined
+      const emit = logger?.[level]
+      if (typeof emit === 'function') emit.call(logger, formatA2aLogLine(event, fields))
+    }
     let ingestRef: A2aIngest | undefined
-    const service = createA2aService({ home, gatewayFor, ingest: () => ingestRef })
+    const service = createA2aService({ home, gatewayFor, ingest: () => ingestRef, log: alog })
     const delivery: A2aDeliveryCtx = {
       agents: { get: (sessionId) => liveAgentHandle(ctx, sessionId) },
       buffer: (initiatorSessionId, message) => { service.buffer(initiatorSessionId, message) },
     }
-    ingestRef = createA2aIngest({ home, gatewayFor, delivery })
+    ingestRef = createA2aIngest({ home, gatewayFor, delivery, log: alog })
     // postoffice R5: the sweep's dual-responsibility legs (outbox pull +
     // session-list collection) over THIS assembly — registered process-level;
     // gateway.ts's existing sweep timer picks them up (no second timer).

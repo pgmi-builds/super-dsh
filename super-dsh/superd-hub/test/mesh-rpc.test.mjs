@@ -9,7 +9,8 @@ import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { handleMeshMachines, registerMeshRpc, MESH_API_BASE } from '../dist/mesh-rpc.js'
+import { handleMeshMachines, handleA2aIngestPost, handleA2aOutboxGet, registerMeshRpc, MESH_API_BASE } from '../dist/mesh-rpc.js'
+import { A2A_OUTBOX_PATH } from '../dist/a2a-wire.js'
 import { machineStatus, resetMachineStatus, onMeshFederationEvent } from '../dist/mesh-link.js'
 import { listRemotes, upsertRemote } from '../dist/machines.js'
 
@@ -270,7 +271,7 @@ test('registerMeshRpc：fake ctx 上注册唯一精确路由（GET/POST/DELETE�
     const route = ctx.routes[0]
     assert.equal(route.path, MESH_API_BASE)
     assert.equal(route.path, '/api/superd/machines')
-    assert.deepEqual(route.methods, ['GET', 'POST', 'DELETE'])
+    assert.deepEqual(route.methods, ['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD'], 'unknown methods route into the handler\'s 405 (2026-09-29 finding: PUT answered a fall-through 404)')
     assert.equal(route.requestBody, 'buffered')
     const res = await route.fetch(new Request(`http://x${MESH_API_BASE}`))
     assert.equal(res.status, 200)
@@ -319,5 +320,22 @@ test('I2 投影加性：跨 minor 对端 → GET 行携带 versionWarning；同 
     rmSync(h, { recursive: true, force: true })
     await hub.close()
     resetMachineStatus()
+  }
+})
+
+test('unknown methods on a KNOWN path answer the honest 405, not a fall-through 404 (2026-09-29 field finding)', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'superd-mesh-'))
+  try {
+    const put = await handleMeshMachines(req('PUT', {}), { home: h })
+    assert.equal(put.status, 405)
+    assert.match(String((await put.json()).error), /PUT is not supported/)
+    const post = await handleA2aIngestPost(req('POST', { v: 1, envelope: null }), undefined)
+    assert.equal(post.status, 400, 'POST stays the a2a endpoint\'s method (malformed frame → 400, never 405)')
+    const get = await handleA2aIngestPost(req('GET'), undefined)
+    assert.equal(get.status, 405)
+    const del = await handleA2aOutboxGet(new Request(`http://x${A2A_OUTBOX_PATH}?machine=zz`, { method: 'DELETE' }), undefined)
+    assert.equal(del.status, 405)
+  } finally {
+    rmSync(h, { recursive: true, force: true })
   }
 })
