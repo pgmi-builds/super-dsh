@@ -314,7 +314,8 @@ export interface A2aServiceDeps {
 }
 
 export interface A2aService {
-  /** Create a conversation on the target (session/create [+ session/rename]); typed errors on 401/unreachable/business rejection. */
+  /** Create a conversation on the target (session/create [+ session/rename]); typed errors on 401/unreachable/business rejection — EXCEPT a rejected title, which returns the created conversation with a `warning` (D1 hardening: never orphan an addressable row). */
+  newConversation(addr: A2aAddress, title?: string): Promise<{ shortId: string; sessionId: string; warning?: string }>
   newConversation(addr: A2aAddress, title?: string): Promise<{ shortId: string; sessionId: string }>
   /** Create-or-resume + inject one user turn; receipt semantics (never throws — failures are 'failed' receipts). */
   send(req: A2aSendRequest, initiator: A2aInitiator): Promise<A2aReceipt>
@@ -457,8 +458,14 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (title !== undefined && row.title !== title) {
         const renameRequest: SessionRenameRequestMirror = { sessionId: row.sessionId, title }
         // Row is already persisted: a rejected title leaves the conversation
-        // addressable (untitled) rather than orphaned upstream.
-        await sessionRpc(gateway, WIRE.sessionTitle, renameRequest)
+        // addressable (untitled) rather than orphaned upstream. D1 hardening:
+        // return the structured result with a warning instead of throwing —
+        // the caller MUST learn the conversation's ids either way.
+        try {
+          await sessionRpc(gateway, WIRE.sessionTitle, renameRequest)
+        } catch (error) {
+          return { shortId: row.shortId, sessionId: row.sessionId, warning: `title not set: ${messageOf(error)}` }
+        }
         touchRow(row, title)
         row.title = title
       }
@@ -510,7 +517,19 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
           row = insertRow(req.to, created['sessionId'])
           if (req.title !== undefined && row.title !== req.title) {
             const renameRequest: SessionRenameRequestMirror = { sessionId: row.sessionId, title: req.title }
-            await sessionRpc(gateway, WIRE.sessionTitle, renameRequest)
+            try {
+              await sessionRpc(gateway, WIRE.sessionTitle, renameRequest)
+            } catch (error) {
+              // D1 hardening: the failure happened during create (the prompt
+              // has NOT gone out) — the receipt fails as today, but the orphan
+              // session is addressable and its id rides in error details.
+              const base = receiptErrorOf(error)
+              throw a2aError(base.code, base.message, {
+                ...(isRecord(base.details) ? base.details : {}),
+                orphanSessionId: row.sessionId,
+                conversationId: row.shortId,
+              })
+            }
             touchRow(row, req.title)
             row.title = req.title
           }

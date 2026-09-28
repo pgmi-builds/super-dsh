@@ -12,6 +12,7 @@ function fakeSession() {
   const events = []
   let seq = 0
   return {
+    id: 'session-fake',
     events,
     append(type, data, opts) {
       const event = { type, seq: seq++, time: 0, data, ...(opts ?? {}) }
@@ -212,4 +213,60 @@ test('multi-turn flow: wrapper step accounting stays aligned across turns', () =
   validateReader(session.events)
   const stepStarts = session.events.filter(e => e.type === 'step/start')
   assert.deepEqual(stepStarts.map(e => e.data), [{ turn: 1, step: 1 }, { turn: 2, step: 1 }])
+})
+
+// ---------------------------------------------------------------- identity (D1)
+
+/**
+ * The upstream liveness gate session-title's rename() applies — verbatim
+ * shape of packages/session/session-title/src/index.ts: a session is only
+ * renamable when it IS the object the store registered.
+ */
+function renameLiveness(store, session) {
+  if (store.get(session.id) !== session) {
+    throw new Error(`session "${session.id}" is not live in this store`)
+  }
+}
+
+test('D1 identity: withSystemHead returns the store-registered object itself — the upstream rename liveness check passes', () => {
+  // The world shape (agent-pi/src/index.ts): sessions.prepare() mints the
+  // session, the adapter enters THAT object into the store
+  // (`agent.ctx.sessions.enter(session)` + announce), and the Agent handle's
+  // `.session` is whatever withSystemHead returns. rename() then compares
+  // ctx.sessions.get(id) === agent.session. A wrapper object (the pre-fix
+  // Proxy) fails that check in EVERY world context.
+  const session = fakeSession()
+  const store = new Map([[session.id, session]]) // sessions.enter(session)
+  const wrapped = withSystemHead(session, () => ({ role: 'system', content: [], id: 'x', source: { kind: 'system-prompt' } }))
+  assert.equal(wrapped, session, 'withSystemHead must not manufacture a wrapper object')
+  assert.doesNotThrow(() => renameLiveness(store, wrapped), 'the liveness identity the title service demands holds')
+  // and the co-writer stays armed on that same object
+  wrapped.append('turn/start', { turn: 1 })
+  wrapped.append('user/message', { content: [] }, { surfaceOp: 'append' })
+  assert.ok(session.events.some((e) => e.type === 'system/message'), 'placeholder head landed')
+  validateReader(session.events)
+})
+
+test('D1 identity: upstream holders of the same session append through the co-writer transparently', () => {
+  // After the fix the store's object and the agent's object are one, so an
+  // upstream service resolving the session from the store also goes through
+  // the interception — the rename path's own session/title append must pass
+  // through byte-untouched.
+  const session = fakeSession()
+  const wrapped = withSystemHead(session, () => ({ role: 'system', content: [], id: 'x', source: { kind: 'system-prompt' } }))
+  wrapped.append('turn/start', { turn: 1 })
+  wrapped.append('user/message', { content: [] }, { surfaceOp: 'append' })
+  const ev = wrapped.append('session/title', { title: 'Rename probe', messageSeqs: [], source: { kind: 'user' } })
+  assert.equal(ev.type, 'session/title')
+  assert.deepEqual(session.events.at(-1).data, { title: 'Rename probe', messageSeqs: [], source: { kind: 'user' } })
+  validateReader(session.events)
+})
+
+test('D1 identity: wrapping is idempotent — a second withSystemHead returns the same armed object', () => {
+  const session = fakeSession()
+  const placeholder = () => ({ role: 'system', content: [], id: 'x', source: { kind: 'system-prompt' } })
+  const first = withSystemHead(session, placeholder)
+  const second = withSystemHead(session, placeholder)
+  assert.equal(first, session)
+  assert.equal(second, session)
 })

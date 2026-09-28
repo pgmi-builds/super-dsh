@@ -323,6 +323,9 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             sessionId: created.sessionId,
             agent: addr.id,
             machine: addr.machine,
+            // D1 hardening: a rejected title must not hide the created
+            // conversation — the warning rides along with its ids.
+            ...(created.warning === undefined ? {} : { warning: created.warning }),
           }
         }
 

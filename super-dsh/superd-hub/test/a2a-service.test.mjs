@@ -115,7 +115,7 @@ test('newConversation: create+rename payloads byte-exact per mirrors; row persis
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('newConversation: no title → no rename call; gateway missing / business error → typed errors', async () => {
+test('newConversation: no title → no rename call; gateway missing → typed error; rejected title → structured warning (D1 hardening)', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-bbbbbbbb-2222' } } })
   const { home, svc } = mkService(gw)
@@ -128,13 +128,53 @@ test('newConversation: no title → no rename call; gateway missing / business e
       () => svc.newConversation({ machine: 'nowhere', id: 'zzzzzz' }),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/gateway-unavailable',
     )
-    // business {ok:false,error} → typed error, code verbatim
-    gw.rpc({ result: { ok: false, error: { code: 'session/title-invalid', message: 'bad title' } } })
-    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } })
-    await assert.rejects(
-      () => svc.newConversation(ADDR, 'x'),
-      (e) => e instanceof EnvelopeError && e.wire.code === 'session/title-invalid' && e.wire.message === 'bad title',
-    )
+    // business {ok:false,error} on the rename → NOT a throw anymore: the
+    // conversation exists upstream and the row is addressable, so the caller
+    // gets the ids back with a warning (D1: never orphan, never bare Error:)
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } }) // create
+    gw.rpc({ result: { ok: false, error: { code: 'session/title-invalid', message: 'bad title' } } }) // rename rejected
+    const warned = await svc.newConversation(ADDR, 'x')
+    assert.equal(warned.shortId, 'sess-ccc')
+    assert.equal(warned.sessionId, 'sess-cccccccc-3333')
+    assert.equal(warned.warning, 'title not set: bad title')
+    const rows = loadConversations(home).conversations
+    assert.equal(rows.find((r) => r.sessionId === 'sess-cccccccc-3333').title, undefined, 'rejected title not persisted')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('newConversation: world-context liveness failure shape → structured result, row addressable (D1 wire shape)', async () => {
+  const gw = fakeGateway()
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-eeeeeeee-5555' } } })
+  gw.rpc({ result: { ok: false, error: { code: 'gateway/internal', message: 'failed to rename session "sess-eeeeeeee-5555": Error: session "sess-eeeeeeee-5555" is not live in this store' } } })
+  const { home, svc } = mkService(gw)
+  try {
+    const out = await svc.newConversation(ADDR, 'Rename probe A')
+    assert.equal(out.shortId, 'sess-eee')
+    assert.equal(out.sessionId, 'sess-eeeeeeee-5555')
+    assert.match(out.warning, /^title not set: failed to rename session/)
+    assert.match(out.warning, /is not live in this store/)
+    const rows = loadConversations(home).conversations
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].sessionId, 'sess-eeeeeeee-5555')
+    assert.equal(rows[0].title, undefined)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('send create-path: rejected title → failed receipt carrying the orphan sessionId in details (D1 hardening)', async () => {
+  const gw = fakeGateway()
+  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-ffffffff-6666' } } }) // create
+  gw.rpc({ result: { ok: false, error: { code: 'gateway/internal', message: 'failed to rename session "sess-ffffffff-6666": Error: session "sess-ffffffff-6666" is not live in this store' } } })
+  const { home, svc } = mkService(gw)
+  try {
+    const receipt = await svc.send({ to: ADDR, title: 'Nope', message: 'never sent' }, INITIATOR)
+    assert.equal(receipt.outcome, 'failed')
+    assert.equal(receipt.sessionId, 'sess-ffffffff-6666')
+    assert.equal(receipt.conversationId, 'sess-fff')
+    assert.equal(receipt.error.code, 'gateway/internal')
+    assert.deepEqual(receipt.error.details, { orphanSessionId: 'sess-ffffffff-6666', conversationId: 'sess-fff' })
+    assert.equal(gw.rpcs(WIRE.promptSubmit).length, 0, 'the prompt never went out')
+    const rows = loadConversations(home).conversations
+    assert.equal(rows.find((r) => r.sessionId === 'sess-ffffffff-6666').title, undefined)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
