@@ -107,7 +107,27 @@ export interface A2aStopEnvelope {
   conversationId: string
   scope: 'turn' | 'session'
 }
+/**
+ * Sender identity on a return envelope — the machine+agent that PRODUCED the
+ * reply/notice. Additive v1 field: absent on older peers, in which case the
+ * receiver falls back to registry attribution (the local row for the
+ * conversation points at the peer). Never the receiver's own id.
+ */
+export interface A2aReturnSender {
+  readonly machine: string
+  readonly agent: string
+}
 
+export interface A2aReplyEnvelope {
+  kind: 'reply'
+  to: A2aWireOrigin
+  /** Conversation shortId (requests say `conversationId`; returns say `conversation` — contract asymmetry, kept verbatim). */
+  conversation: string
+  text: string
+  messageId: string
+  /** Who replied — the hosting machine + host agent (additive v1). */
+  sender?: A2aReturnSender
+}
 export interface A2aReplyEnvelope {
   kind: 'reply'
   to: A2aWireOrigin
@@ -124,6 +144,8 @@ export interface A2aNoticeEnvelope {
   /** Bounded ≤ {@link A2A_NOTICE_SUMMARY_MAX}. */
   summary: string
   messageId: string
+  /** Who noticed — the hosting machine + host agent (additive v1). */
+  sender?: A2aReturnSender
 }
 
 export type A2aEnvelope =
@@ -233,6 +255,10 @@ function isTarget(v: unknown): v is A2aWireTarget {
   return isRecord(v) && hasExactKeys(v, ['machine', 'id']) && nonEmptyString(v.machine) && nonEmptyString(v.id)
 }
 
+function isReturnSender(v: unknown): v is A2aReturnSender {
+  return isRecord(v) && hasExactKeys(v, ['machine', 'agent']) && nonEmptyString(v.machine) && nonEmptyString(v.agent)
+}
+
 function isOrigin(v: unknown): v is A2aWireOrigin {
   return isRecord(v) && hasExactKeys(v, ['machine', 'agent', 'sessionId']) &&
     nonEmptyString(v.machine) && nonEmptyString(v.agent) && nonEmptyString(v.sessionId)
@@ -258,12 +284,14 @@ export function isA2aEnvelope(v: unknown): v is A2aEnvelope {
       return hasExactKeys(v, ['kind', 'to', 'conversationId', 'scope']) &&
         isTarget(v['to']) && nonEmptyString(v['conversationId']) && (v['scope'] === 'turn' || v['scope'] === 'session')
     case 'reply':
-      return hasExactKeys(v, ['kind', 'to', 'conversation', 'text', 'messageId']) &&
-        isOrigin(v['to']) && nonEmptyString(v['conversation']) && nonEmptyString(v['text']) && nonEmptyString(v['messageId'])
+      return hasExactKeys(v, ['kind', 'to', 'conversation', 'text', 'messageId'], ['sender']) &&
+        isOrigin(v['to']) && nonEmptyString(v['conversation']) && nonEmptyString(v['text']) && nonEmptyString(v['messageId']) &&
+        (isReturnSender(v['sender']) || v['sender'] === undefined)
     case 'notice':
-      return hasExactKeys(v, ['kind', 'to', 'conversation', 'summary', 'messageId']) &&
+      return hasExactKeys(v, ['kind', 'to', 'conversation', 'summary', 'messageId'], ['sender']) &&
         isOrigin(v['to']) && nonEmptyString(v['conversation']) && nonEmptyString(v['summary']) &&
-        typeof v['summary'] === 'string' && v['summary'].length <= A2A_NOTICE_SUMMARY_MAX && nonEmptyString(v['messageId'])
+        typeof v['summary'] === 'string' && v['summary'].length <= A2A_NOTICE_SUMMARY_MAX && nonEmptyString(v['messageId']) &&
+        (isReturnSender(v['sender']) || v['sender'] === undefined)
     default:
       return false
   }

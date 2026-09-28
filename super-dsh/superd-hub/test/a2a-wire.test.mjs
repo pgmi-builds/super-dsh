@@ -316,3 +316,17 @@ test('R1 moves keep the old import surfaces: A2aAddressError via a2a-service, no
   assert.equal(A2aAddressErrorViaService, A2aAddressError)
   assert.equal(NOTICE_MAXViaDelivery, 120)
 })
+
+// ---------------------------------------------------- return-sender (v1 additive)
+
+test('return envelopes: optional sender accepted when well-formed, rejected when malformed', () => {
+  const withSender = { ...REPLY, sender: { machine: 'dev3', agent: 'cd33x1' } }
+  assert.equal(isA2aEnvelope(withSender), true)
+  assert.equal(isA2aEnvelope({ ...NOTICE, sender: { machine: 'dev3', agent: 'cd33x1' } }), true)
+  // absent stays valid (legacy peers)
+  assert.equal(isA2aEnvelope(REPLY), true)
+  // malformed shapes rejected: extra key inside sender, empty strings, non-object
+  assert.equal(isA2aEnvelope({ ...REPLY, sender: { machine: 'dev3', agent: 'cd33x1', extra: 1 } }), false)
+  assert.equal(isA2aEnvelope({ ...REPLY, sender: { machine: '', agent: 'cd33x1' } }), false)
+  assert.equal(isA2aEnvelope({ ...REPLY, sender: 'dev3' }), false)
+})

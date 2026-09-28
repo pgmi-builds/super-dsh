@@ -483,7 +483,7 @@ test('GET /api/superd/a2a/outbox handler: ?machine= claim → {v:1, envelopes}; 
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('inbound reply envelope (peer POSTed at us): delivers into the local initiator with registry attribution', async () => {
+test('inbound reply envelope (peer POSTed at us): envelope sender wins; absent sender falls back to the registry row', async () => {
   const gw = fakeGateway()
   const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
   const self = ensureSelf(home, 'local')
@@ -492,17 +492,41 @@ test('inbound reply envelope (peer POSTed at us): delivers into the local initia
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
     const { ingest, delivery } = assembly(home, gw)
     await ingest.ingest(mkEnv(self.id, self.id))
+    // (1) sender on the envelope — attribution is verbatim the producer
     const out = await ingest.ingest({
       kind: 'reply',
       to: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
       conversation: 'abc123',
       text: 'a late reply',
       messageId: 'a2a-relay-late',
+      sender: { machine: 'dev3', agent: 'cd33x1' },
     })
     assert.deepEqual(out, { delivered: 'followup' })
     assert.equal(delivery.delivered.length, 1)
     assert.match(delivery.delivered[0].message.content[0].text, /a late reply/)
     assert.equal(delivery.delivered[0].message.source.conversationId, 'abc123')
+    assert.equal(delivery.delivered[0].message.source.senderMachine, 'dev3')
+    assert.equal(delivery.delivered[0].message.source.senderAgent, 'cd33x1')
+    assert.match(delivery.delivered[0].message.content[0].text, /Agent dev3-cd33x1 replied/)
+    // (2) legacy envelope without sender — the registry row supplies the
+    // attribution. A PEER-hosted conversation (initiator row pointing at
+    // dev3) proves the fallback names the PEER, never selfId().
+    saveConversations(home, { conversations: [
+      ...JSON.parse(readFileSync(join(home, 'superd', 'a2a-conversations.json'), 'utf8')).conversations,
+      { shortId: 'xyz789', machine: 'dev3', agent: 'cd33x1', sessionId: 'sess-at-dev3', title: 'cross', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    const out2 = await ingest.ingest({
+      kind: 'reply',
+      to: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
+      conversation: 'xyz789',
+      text: 'an older reply',
+      messageId: 'a2a-relay-legacy',
+    })
+    assert.deepEqual(out2, { delivered: 'followup' })
+    assert.equal(delivery.delivered.length, 2)
+    assert.equal(delivery.delivered[1].message.source.senderMachine, 'dev3')
+    assert.equal(delivery.delivered[1].message.source.senderAgent, 'cd33x1')
+    assert.notEqual(delivery.delivered[1].message.source.senderMachine, self.id)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 

@@ -211,21 +211,21 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
   // ---------------- return routing
 
   /** Deliver one return envelope into the LOCAL initiator session (self-routed or inbound). */
-  const deliverLocal = (envelope: A2aReplyEnvelope | A2aNoticeEnvelope, responderAgent: string, noticeReason: A2aNoticeReason = 'peer'): A2aDeliveryOutcome => {
+  const deliverLocal = (envelope: A2aReplyEnvelope | A2aNoticeEnvelope, sender: { machine: string, agent: string }, noticeReason: A2aNoticeReason = 'peer'): A2aDeliveryOutcome => {
     const initiator = { machine: envelope.to.machine, agent: envelope.to.agent, sessionId: envelope.to.sessionId }
     const row = mirrorRowOf(envelope.conversation)
     if (envelope.kind === 'reply') {
       return deliverReply(deps.delivery, initiator, envelope.text, {
-        senderMachine: selfId(),
-        senderAgent: responderAgent,
+        senderMachine: sender.machine,
+        senderAgent: sender.agent,
         conversationId: envelope.conversation,
         messageId: envelope.messageId,
         title: row?.title,
       })
     }
     return deliverNotice(deps.delivery, initiator, envelope.summary, {
-      senderMachine: selfId(),
-      senderAgent: responderAgent,
+      senderMachine: sender.machine,
+      senderAgent: sender.agent,
       conversationId: envelope.conversation,
       reason: noticeReason,
     })
@@ -240,7 +240,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
 
   const routeReturn: A2aIngest['routeReturn'] = async (envelope, meta) => {
     if (envelope.to.machine === selfId()) {
-      deliverLocal(envelope, meta.responderAgent, meta.noticeReason)
+      deliverLocal(envelope, { machine: selfId(), agent: meta.responderAgent }, meta.noticeReason)
       return 'delivered'
     }
     const machine = listRemotes(deps.home).find((r) => r.id === envelope.to.machine)
@@ -270,6 +270,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       conversation: row.shortId,
       summary: boundNoticeSummary(summary),
       messageId: `a2a-notice-${randomUUID()}`,
+      sender: { machine: selfId(), agent: env.to.id },
     })
     subscribeSessionCompletion(
       { gateway, sessionId: row.sessionId, conversationId: row.shortId },
@@ -284,6 +285,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
             conversation: row.shortId,
             text: completion.text,
             messageId: `a2a-relay-${randomUUID()}`,
+            sender: { machine: selfId(), agent: env.to.id },
           }
         void routeReturn(envelope, { responderAgent: env.to.id, noticeReason: completion.reason !== 'completed' && completion.text === '' ? 'aborted' : undefined }).catch(() => parkInOutbox(envelope))
       },
@@ -473,11 +475,18 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         case 'stop':
           return ingestStop(envelope)
         case 'reply':
-        case 'notice':
-          // inbound return envelope (peer POSTed / sweep pulled): the registry
-          // row for this conversation points AT the sender — its agent is the
-          // attribution; a missing row degrades the sender to 'unknown'.
-          return deliverLocal(envelope, mirrorRowOf(envelope.conversation)?.agent ?? 'unknown')
+        case 'notice': {
+          // inbound return envelope (peer POSTed / sweep pulled). Sender
+          // attribution, in order: the envelope's own `sender` (additive v1 —
+          // the producing hub stamps itself), else the registry row (the local
+          // row for this conversation points AT the peer), else honest
+          // 'unknown'. NEVER selfId() — the receiver is not the sender (the
+          // 0.1.6-h cross-machine bug: replies landed attributed bfwu-8ah589).
+          const row = mirrorRowOf(envelope.conversation)
+          const sender = envelope.sender ??
+            (row !== undefined ? { machine: row.machine, agent: row.agent } : { machine: 'unknown', agent: 'unknown' })
+          return deliverLocal(envelope, sender)
+        }
       }
     },
     claimOutbox(machine: string): A2aEnvelope[] {
