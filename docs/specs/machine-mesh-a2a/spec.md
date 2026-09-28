@@ -28,7 +28,7 @@
 | D3 | 寻址 = `m4-a6` | machine 4 位随机字符、agent 6 位随机字符、`<m4>-<a6>` 两级寻址；查表路由：本机 → 本机 world，远端 → wire 转发 |
 | D4 | ID owner 铸造 + 传播 | 各机器自铸 machineId 持久化；agent ID 由 agent 归属 hub 铸造；peer 经 roster 探测**采纳 owner 的 ID**（全网同义，不搞本地重编号） |
 | D5 | 本地 agent 保留原生名 | label（codex/omp/…）继续作显示与 `?agent=` 兼容别名；canonical key = a6 |
-| D6 | 会话短 ID = 截取 + 护栏 | DSH session id 截首 8 位为短 ID；conversation 注册表插入查重，碰撞加长；wire 上永远全长 id |
+| D6 | 会话短 ID = 护栏查重 | **2026-09-28 R4 修订（post-office）**：conversationId 由**发起方随机铸造**（发起方在对端会话存在前就要铸造，不再截取 session id）；6 位起步、registry 查重碰撞加长 6→8→10；对端 verbatim 收养；wire 上永远全长 id。D18 agent_status 呈现层的「截断 sessionId」是另一概念 = 对原生 session id 的显示派生，与本条无关 |
 | D7 | A2A = 消息通道心智 | content/task/role agnostic、对等透明、无 spawn 层级语义；`new_conversation`（可指定 title）≈ 表面上的 spawn sub-agent，实质是沟通渠道 |
 | D8 | receipt 语义 | `send` 在 inbox-acceptance 即返 receipt（outcome: `injected\|queued\|failed` + messageId + 目标会话），不等待对端答案；答案事后自动投递（不走 user prompt 渠道） |
 | D9 | 结果回投 = DSH subagent 同构 | user-role message + 自有 source kind（`a2a-relay`/form relay、`a2a-notice`/form notice），经 `ctx.agents` 的 followup（默认，非打断）/ steer（显式 delivery）/ inject（teardown 兜底）路由；投递即离队、仅失败进有界缓冲；工具描述写死 NEVER poll |
@@ -49,7 +49,7 @@
 - **machineId（m4）**：机器自铸并持久化的 4 位随机 ID（`[a-z0-9]`，36⁴≈168 万），全网唯一（owner 铸造 + 传播采纳）。
 - **agentId（a6）**：agent 归属 hub 铸造的 6 位随机 ID（36⁶≈22 亿）。本地六 runtime + native 各一个，持久化。
 - **地址**：`<m4>-<a6>`（如 `k3f9-q7m2xp`）。会话级寻址 = 地址 + 会话短 ID。
-- **conversation**：A2A 的第二层 = 一个 agent runtime 的 session。统一用 DSH session id（所有 adapter 已映射为 DSH 会话）；**短 ID** = 剥离 `session-` 前缀后取 uuid 段首 6 位（碰撞 6→8→10 步进加长）——2026-09-28 修订：DSH id 固定前缀使"截首 8 位"退化为常量（rig 实测 D2）；registry 退化解存量行随修订一次性重铸。
+- **conversation**：A2A 的第二层 = 一个 agent runtime 的 session。统一用 DSH session id（所有 adapter 已映射为 DSH 会话；wire 永远全长）。**conversationId（短 ID）** = 发起方铸造的随机 6 位（registry 查重，碰撞 6→8→10 步进加长）——2026-09-28 两度修订：① 截首 8 位因 DSH id 固定前缀退化为常量（rig 实测 D2）；② post-office 改形后发起方在会话存在前铸造，不再派生自 session id（R4），存量行随重铸迁移。
 - **wire gateway / RemoteGatewayFace**：实现 `GatewayFace {dispatchRpc, openWireStream}` 的 HTTP+WS 适配器，指向远端 `/hub` 家族；注册进现有 gateway 注册表后与本地 world 网关不可区分。
 - **receipt**：send 的即时返回；`outcome: 'injected' | 'queued' | 'failed'`（沿 OMP hub 语义），failed 附"下一步调什么"的可执行错误文案。
 
