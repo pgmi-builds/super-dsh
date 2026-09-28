@@ -103,9 +103,23 @@ window suppression via a gated stream, `transcribed:true` on the wire,
 self-route write-back never-injects, write-back send leg + latch, mirror-row
 continuation no-latch guard, one-turn opening, wire guard additive field,
 render prefix variants; contract updates for wording/template/signature).
-Pack-wide sequential rerun recorded separately (the concurrent runner hit the
-known IPC flake twice — died silently at test 16 with zero `not ok` lines).
+Pack-wide **bare `node --test` from the pack root now completes in ~25 s:
+919/920** — the one failure is the pre-existing client-bundle-drift build
+non-determinism (passes 3/3 in isolation; unrelated to this round).
 
+> **Correction (2026-09-29, same day).** An earlier revision of this report
+> blamed "the concurrent runner's IPC flake" and then "a runner multi-file
+> orchestration bug" for pack runs dying after `ok 16`. Both were WRONG. The
+> real cause, isolated by minimal repro on Node v22.22.1: **`node --test`'s
+> default file discovery matches `.mjs` files under `test/fixtures/`** — our
+> stdio mock fixtures (`mock_agy.mjs`, `mock_bridge.mjs` — `stdin.on('data')`
+loops that never exit) were being executed AS TEST FILES; the runner waits
+> forever for the "file" to finish. Deterministic by traversal order
+> (`agent.test` + `agy-client` = 16 oks, then `fixtures/` — exactly where every
+> run died). Single-file and per-file runs never trigger discovery, which is
+> why every file passed alone. Fix: `git mv agent-agy/test/fixtures
+> agent-agy/fixtures` (out of the discovered tree; the only affected package) —
+after which the bare pack run completes. The runner was never at fault.
 ## Residuals
 
 - The notice path (`turn ended, no reply`) was exercised in unit tests and by

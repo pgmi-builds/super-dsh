@@ -11,7 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 const here = new URL(".", import.meta.url).pathname;
-const fixtures = join(here, "fixtures");
+const fixtures = join(here, "..", "fixtures");
 const dist = join(here, "..", "dist");
 
 const { AgyBridgeClient } = await import(join(dist, "agy-client.js"));

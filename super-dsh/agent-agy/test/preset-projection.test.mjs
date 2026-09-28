@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const { AgyCliClient } = await import(join(new URL(".", import.meta.url).pathname, "..", "dist", "agy-cli-client.js"));
 const here = new URL(".", import.meta.url).pathname;
-const fixtures = join(here, "fixtures");
+const fixtures = join(here, "..", "fixtures");
 
 const { AGY_PRESET, registerAntigravityPreset } = await import("../dist/agent-preset-agy.js");
 
