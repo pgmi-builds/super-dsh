@@ -83,12 +83,25 @@ export interface ConversationRow {
   sessionId: string
   /** Operator-facing title (optional; never an identity). */
   title?: string
+  /**
+   * R4 amendment (2026-09-28 review): present ONLY on MIRROR rows (the peer
+   * hosted the conversation here) = the LOCAL a6 hosting the session.
+   * Presence identifies the row as locally-hosted and routes continuations
+   * to our own ingest. Absent = initiator-row semantics (the session lives
+   * at {machine, agent}). Additive optional; no migration.
+   */
+  hostAgent?: string
+  /**
+   * R4 amendment: present ONLY on INITIATOR rows = the initiator identity's
+   * full session id (persisted at create/first-send) — the peer→initiator
+   * asynchronous delivery address. Absent = pre-R4 rows / not yet sent.
+   */
+  initiatorSession?: string
   /** Epoch ms when the row was created. */
   createdAt: number
   /** Epoch ms of the last successful send. */
   lastActivityAt: number
 }
-
 /** The whole registry file. */
 export interface ConversationsFile {
   conversations: ConversationRow[]
@@ -107,6 +120,8 @@ function isConversationRow(v: unknown): v is ConversationRow {
     typeof r.agent === 'string' && r.agent !== '' &&
     typeof r.sessionId === 'string' && r.sessionId !== '' &&
     (r.title === undefined || typeof r.title === 'string') &&
+    (r.hostAgent === undefined || typeof r.hostAgent === 'string') &&
+    (r.initiatorSession === undefined || typeof r.initiatorSession === 'string') &&
     typeof r.createdAt === 'number' && typeof r.lastActivityAt === 'number'
   )
 }

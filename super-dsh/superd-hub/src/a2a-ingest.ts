@@ -178,7 +178,8 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     if (existing !== undefined) {
       const sameConversation = existing.shortId === env.conversationId &&
         existing.sessionId === sessionId &&
-        existing.machine === env.from.machine && existing.agent === env.from.agent
+        existing.machine === env.from.machine && existing.agent === env.from.agent &&
+        existing.hostAgent === env.to.id
       if (sameConversation) return existing
       throw new Error(`a2a: conversation-id conflict — "${env.conversationId}" is already bound to ${existing.machine}-${existing.agent}/${existing.sessionId} (claimed by ${env.from.machine}-${env.from.agent}/${sessionId})`)
     }
@@ -188,6 +189,9 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       agent: env.from.agent,
       sessionId,
       title,
+      // R4 amendment: mirror rows carry the LOCAL a6 hosting the session —
+      // presence is the locally-hosted marker continuation routing keys on.
+      hostAgent: env.to.id,
       createdAt: now(),
       lastActivityAt: now(),
     }
@@ -295,7 +299,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
 
   // ---------------- request kinds
 
-  const ingestRequest = async (env: A2aNewConversationEnvelope | A2aMessageEnvelope): Promise<A2aWireReceipt> => {
+  const ingestRequest = async (env: A2aNewConversationEnvelope | A2aMessageEnvelope): Promise<A2aWireReceipt | A2aDeliveryOutcome> => {
     const fail = (error: { code: string; message: string; details?: unknown }, sessionId = '', conversationId?: string): A2aWireReceipt => ({
       outcome: 'failed',
       messageId: env.messageId,
@@ -303,6 +307,65 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       sessionId,
       error,
     })
+
+    //
+    // MESSAGE envelopes resolve the registry row FIRST: a peer write-back
+    // (an initiator row, no hostAgent) delivers without ever touching the
+    // local session plane — the plane is only resolved when THIS machine
+    // hosts the conversation and must inject.
+    //
+    let row: ConversationRow | undefined
+    if (env.kind === 'message') {
+      row = mirrorRowOf(env.conversationId)
+      if (row === undefined) {
+        return fail({
+          code: 'a2a/conversation-not-found',
+          message: `a2a: conversation "${env.conversationId}" is not in the registry — the initiator's conversationId does not resolve here`,
+        })
+      }
+      if (row.machine !== env.from.machine || row.agent !== env.from.agent) {
+        return fail({
+          code: 'a2a/conversation-machine-mismatch',
+          message: `a2a: conversation "${row.shortId}" belongs to ${row.machine}-${row.agent}, not ${env.from.machine}-${env.from.agent}`,
+        }, row.sessionId, row.shortId)
+      }
+      //
+      // R4 amendment — PEER WRITE-BACK: the row is an INITIATOR row (no
+      // hostAgent ⇒ the session lives at the PEER). A message envelope from
+      // the very peer, addressed to this machine, is the peer using its
+      // superd-hub tool with OUR shortId (the teaching envelope's
+      // asynchronous-reply clause): deliver into the initiator's session with
+      // peer attribution — NEVER a session injection (the session is not
+      // ours to drive). deliverReply buffers into the bounded unread buffer
+      // when the initiator session is not live (existing machinery, keyed by
+      // the initiator's session id).
+      //
+      if (row.hostAgent === undefined) {
+        if (env.to.machine !== selfId()) {
+          return fail({
+            code: 'a2a/conversation-machine-mismatch',
+            message: `a2a: conversation "${row.shortId}" is hosted at ${row.machine}-${row.agent} — a peer write-back must target this machine, not ${env.to.machine}`,
+          }, row.sessionId, row.shortId)
+        }
+        if (row.initiatorSession === undefined || row.initiatorSession === '') {
+          return fail({
+            code: 'a2a/no-initiator-session',
+            message: `a2a: conversation "${row.shortId}" has no persisted initiator session — asynchronous write-backs cannot be addressed`,
+          }, row.sessionId, row.shortId)
+        }
+        return deliverReply(deps.delivery, {
+          machine: env.to.machine,
+          agent: env.to.id,
+          sessionId: row.initiatorSession,
+        }, env.message, {
+          senderMachine: env.from.machine,
+          senderAgent: env.from.agent,
+          conversationId: row.shortId,
+          messageId: env.messageId,
+          title: row.title,
+        })
+      }
+    }
 
     const local: A2aAddress = { machine: env.to.machine, id: env.to.id }
     let gateway: A2aGateway | undefined
@@ -316,7 +379,6 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       return fail({ code: 'a2a/gateway-unavailable', message: A2aAddressError.messageOf('unreachable', local) })
     }
 
-    let row: ConversationRow | undefined
     try {
       if (env.kind === 'new-conversation') {
         const created = await sessionRpc<{ sessionId: string }>(gateway, WIRE.sessionCreate, {} as SessionCreateRequestMirror)
@@ -325,24 +387,16 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         }
         // D17: mirror rows adopt the title VERBATIM (the '[undefined]' placeholder included)
         row = adoptMirrorRow(env, created.sessionId, env.title)
-      } else {
-        row = mirrorRowOf(env.conversationId)
-        if (row === undefined) {
-          return fail({
-            code: 'a2a/conversation-not-found',
-            message: `a2a: conversation "${env.conversationId}" is not in the registry — the initiator's conversationId does not resolve here`,
-          })
-        }
-        if (row.machine !== env.from.machine || row.agent !== env.from.agent) {
-          return fail({
-            code: 'a2a/conversation-machine-mismatch',
-            message: `a2a: conversation "${row.shortId}" belongs to ${row.machine}-${row.agent}, not ${env.from.machine}-${env.from.agent}`,
-          }, row.sessionId, row.shortId)
-        }
       }
+      // (message envelopes resolved their row above — only mirror rows reach here)
     } catch (error) {
       // adoptMirrorRow's fail-loud collision + any registry write failure
       return fail(receiptErrorOf(error))
+    }
+
+    if (row === undefined) {
+      // unreachable by construction (message rows resolved above; new-conversation adopted or failed)
+      return fail({ code: 'a2a/conversation-not-found', message: `a2a: conversation "${env.conversationId}" did not resolve to a hosted session` })
     }
 
     const promptRequest: SessionPromptRequestMirror = {

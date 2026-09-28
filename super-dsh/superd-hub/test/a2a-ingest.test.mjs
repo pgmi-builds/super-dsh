@@ -146,6 +146,7 @@ test('new-conversation (local): create + inject + verbatim mirror row; teaching 
     assert.deepEqual(rows, [{
       shortId: 'abc123', machine: self.id, agent: 'f4g5h6',
       sessionId: 'sess-aaaaaaaa-1111', title: '[undefined]',
+      hostAgent: 'q7m2xp', // R4 amendment: mirror rows carry the LOCAL hosting a6
       createdAt: rows[0].createdAt, lastActivityAt: rows[0].lastActivityAt,
     }])
     // the completion watcher armed on the envelope's messageId
@@ -502,6 +503,106 @@ test('inbound reply envelope (peer POSTed at us): delivers into the local initia
     assert.equal(delivery.delivered.length, 1)
     assert.match(delivery.delivered[0].message.content[0].text, /a late reply/)
     assert.equal(delivery.delivered[0].message.source.conversationId, 'abc123')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------- R4 amendments: row fields + peer write-back
+
+test('registry accepts the additive row fields (hostAgent / initiatorSession) and rejects junk types', () => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  try {
+    saveConversations(home, { conversations: [
+      { shortId: 'mir001', machine: 'pc0', agent: 'f4g5h6', sessionId: 'sess-local-1', title: '[undefined]', hostAgent: 'q7m2xp', createdAt: 1, lastActivityAt: 1 },
+      { shortId: 'ini002', machine: 'dev3', agent: 'cd33x1', sessionId: 'sess-remote-2', initiatorSession: 'session-init-9', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    const rows = loadConversations(home).conversations
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0].hostAgent, 'q7m2xp')
+    assert.equal(rows[1].initiatorSession, 'session-init-9')
+    // absent = existing semantics (pre-R4 rows load verbatim)
+    saveConversations(home, { conversations: [
+      { shortId: 'old003', machine: 'm', agent: 'a', sessionId: 'sess-3', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    assert.deepEqual(loadConversations(home).conversations[0], { shortId: 'old003', machine: 'm', agent: 'a', sessionId: 'sess-3', createdAt: 1, lastActivityAt: 1 })
+    // a non-string hostAgent is dropped by the row guard (corrupt-row discipline)
+    writeFileSync(join(home, 'superd', 'a2a-conversations.json'), JSON.stringify({ conversations: [
+      { shortId: 'bad004', machine: 'm', agent: 'a', sessionId: 's4', hostAgent: 7, createdAt: 1, lastActivityAt: 1 },
+    ] }))
+    assert.deepEqual(loadConversations(home).conversations, [])
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('peer write-back: message envelope hitting an INITIATOR row delivers into initiatorSession — never injects', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    // seed the initiator row OUR side holds for a conversation at peer dev3
+    saveConversations(home, { conversations: [{
+      shortId: 'ini777', machine: 'dev3', agent: 'cd33x1', sessionId: 'sess-at-dev3',
+      title: 'mesh review', initiatorSession: 'session-init-1', createdAt: 1, lastActivityAt: 1,
+    }] })
+    const { ingest, delivery } = assembly(home, gw)
+    const out = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'q7m2xp' },
+      conversationId: 'ini777',
+      message: 'writing back asynchronously',
+      from: { machine: 'dev3', agent: 'cd33x1', sessionId: 'session-at-dev3-side' },
+      messageId: 'a2a-pwb-1',
+    })
+    assert.deepEqual(out, { delivered: 'followup' })
+    // delivered into the initiator's session with PEER attribution
+    assert.equal(delivery.delivered.length, 1)
+    const hit = delivery.delivered[0]
+    assert.equal(hit.sessionId, 'session-init-1')
+    assert.match(hit.message.content[0].text, /Agent dev3-cd33x1 replied/)
+    assert.match(hit.message.content[0].text, /writing back asynchronously/)
+    assert.equal(hit.message.source.kind, 'a2a-relay')
+    assert.equal(hit.message.source.senderMachine, 'dev3')
+    assert.equal(hit.message.source.senderAgent, 'cd33x1')
+    // NEVER a session-plane call — the session lives at the peer
+    assert.equal(gw.calls.length, 0)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('peer write-back: initiator not live → bounded unread buffer; initiatorSession absent → honest failure', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    saveConversations(home, { conversations: [{
+      shortId: 'ini888', machine: 'dev3', agent: 'cd33x1', sessionId: 'sess-at-dev3',
+      initiatorSession: 'session-gone-away', createdAt: 1, lastActivityAt: 1,
+    }] })
+    // no live agent for 'session-gone-away' → the existing buffer machinery
+    const { ingest, delivery } = assembly(home, gw, { liveSession: 'session-other' })
+    const buffered = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'q7m2xp' },
+      conversationId: 'ini888',
+      message: 'buffered write-back',
+      from: { machine: 'dev3', agent: 'cd33x1', sessionId: 'session-at-dev3-side' },
+      messageId: 'a2a-pwb-2',
+    })
+    assert.deepEqual(buffered, { delivered: 'buffered' })
+    assert.equal(delivery.buffered.length, 1)
+    assert.equal(delivery.buffered[0].initiatorSessionId, 'session-gone-away')
+    assert.equal(delivery.buffered[0].message.conversationId, 'ini888')
+    // initiatorSession never persisted → the write-back cannot be addressed
+    saveConversations(home, { conversations: [{
+      shortId: 'ini999', machine: 'dev3', agent: 'cd33x1', sessionId: 'sess-at-dev3', createdAt: 1, lastActivityAt: 1,
+    }] })
+    const failed = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'q7m2xp' },
+      conversationId: 'ini999',
+      message: 'x',
+      from: { machine: 'dev3', agent: 'cd33x1', sessionId: 'session-at-dev3-side' },
+      messageId: 'a2a-pwb-3',
+    })
+    assert.equal(failed.outcome, 'failed')
+    assert.equal(failed.error.code, 'a2a/no-initiator-session')
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
