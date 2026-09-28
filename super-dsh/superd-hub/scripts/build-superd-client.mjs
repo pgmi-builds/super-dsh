@@ -44,7 +44,8 @@ const CLIENT_EXTERNALS = [
 /**
  * Build the delivered super-dsh client bundle. Byte-deterministic: the same
  * src/client tree always emits the same bytes, whatever the output directory
- * (pinned NODE_ENV, fixed id/banner/footer, no timestamps) — which is what
+ * AND whatever the invoking process's cwd (tsdown cwd is pinned to the hub
+ * root — rolldown renders module ids relative to that anchor) — which is what
  * makes the drift guard's byte-compare meaningful.
  * @param {{ outDir?: string }} [opts] - output directory (default: the
  *   delivered super-dsh/client/).
@@ -53,6 +54,16 @@ const CLIENT_EXTERNALS = [
 export async function buildSuperdClient({ outDir = DELIVERED_DIR } = {}) {
   mkdirSync(outDir, { recursive: true })
   await build({
+    // Pin the anchor: rolldown renders module ids (the //#region path
+    // comments) relative to this cwd. Unpinned, the emitted bytes vary with
+    // the INVOKING lane's process.cwd() (pack lane: hub root; pack test
+    // lane: super-dsh/; a bare run from the repo root: yet another prefix),
+    // which made the drift guard fail only in lanes that happened to start
+    // elsewhere — the "load-dependent flake" of 2026-09-29 was exactly this
+    // (110112B vs 110244B = 'superd-hub/' × 12 region comments). Byte
+    // determinism is only true with the anchor pinned to the hub root.
+    cwd: hubRoot,
+    name: `${ID}/client`,
     config: false,
     name: `${ID}/client`,
     entry: { index: join(hubRoot, 'src/client/index.ts') },

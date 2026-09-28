@@ -31,6 +31,9 @@ mkdirSync(OUT_DIR, { recursive: true })
 
 await build({
   config: false,
+  // Pin the anchor (see build-superd-client.mjs for the full story): the
+  // emitted module ids must not vary with the invoking process's cwd.
+  cwd: root,
   name: `${ID}/client`,
   entry: { index: join(root, 'src/client/index.ts') },
   outDir: OUT_DIR,

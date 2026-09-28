@@ -15,3 +15,4 @@ node_modules
 
 # SDD working notes inside the main line
 super-dsh/.superpowers/
+graphify-out/

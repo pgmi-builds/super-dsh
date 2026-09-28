@@ -9,9 +9,12 @@
 // → red, with the rebuild command in the failure message.
 //
 // The byte-compare is meaningful because the emitter is byte-deterministic:
-// pinned NODE_ENV, fixed id/banner/footer, no timestamps — independent
-// output directories hash identically (verified when this guard landed).
-// If the build tooling is unavailable in the test env, the guard skips
+// pinned NODE_ENV, fixed id/banner/footer, no timestamps, and tsdown's cwd
+// pinned to the hub root (independent output directories AND invoking
+// cwds hash identically — verified when this guard landed and locked in by
+// the cwd-variance leg below). If the build tooling is unavailable in the
+// test env, the guard skips LOUDLY rather than lying green — on this repo's
+// dev env it must run.
 // LOUDLY rather than lying green — on this repo's dev env it must run.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -45,6 +48,30 @@ test('the delivered client bundle is byte-fresh against src/client (drift guard)
   try {
     const fresh = await buildSuperdClient({ outDir: temp })
     const want = readFileSync(fresh)
+
+    // cwd-variance leg (2026-09-29 root cause): rolldown renders module ids
+    // (//#region paths) relative to process.cwd() unless the emitter pins
+    // tsdown's cwd. The pack lane runs this suite from super-dsh/ while
+    // isolated runs start in the hub root — an unpinned emitter byte-varies
+    // with the lane (110112B vs 110244B = 'superd-hub/' × 12 region
+    // comments), which is what made this guard look like a load-dependent
+    // flake. The pinned emitter must reproduce the delivered bytes from ANY
+    // cwd; this leg rebuilds from the pack lane's cwd to lock that in.
+    const prevCwd = process.cwd()
+    let fromPackLaneCwd
+    try {
+      process.chdir(LINE)
+      fromPackLaneCwd = await buildSuperdClient({ outDir: temp })
+    } finally {
+      process.chdir(prevCwd)
+    }
+    const wantFromLane = readFileSync(fromPackLaneCwd)
+    assert.ok(
+      delivered.equals(wantFromLane),
+      `delivered bundle is cwd-sensitive: rebuilding with process.cwd()=${LINE} produced ` +
+      `${wantFromLane.length}B vs delivered ${delivered.length}B — the emitter must pin tsdown's cwd anchor, ` +
+      `not inherit the invoking lane's process.cwd()`,
+    )
     if (!delivered.equals(want)) {
       const sha = (b) => createHash('sha256').update(b).digest('hex').slice(0, 12)
       assert.fail(
