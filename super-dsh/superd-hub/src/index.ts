@@ -209,13 +209,17 @@ export {
   createSuperdHubTool,
   parseAgentAddress,
   RECENT_CONVERSATIONS_MAX,
+  AGENT_STATUS_WINDOW_MAX,
+  HUB_A2A_TITLE_MARKER,
+  UNHOSTED_TITLE,
+  shapeAgentStatusWindow,
+  type AgentStatusEntryRow,
   EXEC_PLACEHOLDER_NOTE,
   type HubToolDeps,
   type HubToolService,
   type HubRosterView,
   type HubMachineEntry,
   type HubAgentEntry,
-  type HubConversationEntry,
 } from './hub-tool.js'
 export {
   wireHubToolRow,

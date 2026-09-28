@@ -33,8 +33,8 @@ import { WIRE } from '../dist/wire-endpoints.js'
 const home = () => mkdtempSync(join(tmpdir(), 'superd-agent-status-'))
 const row = (id, origin, enabled = true) => ({ id, name: id, label: id, origin, enabled, addedAt: 1 })
 
-/** A face answering session/list with the given items (recorded calls). */
-function fakeListFace(items) {
+/** A face answering session/list with the given items + a workspace baseline (recorded calls). */
+function fakeListFace(items, workspaces = []) {
   const calls = []
   return {
     calls,
@@ -43,7 +43,13 @@ function fakeListFace(items) {
         calls.push({ endpoint, payload })
         return { ok: true, value: { items } }
       },
-      openWireStream() { throw new Error('not needed') },
+      openWireStream(endpoint, payload, signal) {
+        calls.push({ endpoint, payload })
+        return (async function* () {
+          yield { type: 'baseline', value: { items: workspaces } }
+          await new Promise((_, reject) => { signal?.addEventListener('abort', () => reject(new Error('aborted'))) })
+        })()
+      },
     },
   }
 }
@@ -134,7 +140,7 @@ test('collectRemoteMachine: honest rows over the presentation lane; per-agent fa
     assert.deepEqual(codex.rows[0], { sessionId: 'session-busy1', mtime: 30, status: 'busy', agentAvailable: true })
     assert.deepEqual(codex.rows[1], { sessionId: 'session-idle2', mtime: 20, status: 'idle', agentAvailable: true })
     assert.deepEqual(codex.rows[2], { sessionId: 'session-unknwn', mtime: 10, status: 'unknown', agentAvailable: false })
-    assert.deepEqual(list.calls.map((c) => c.endpoint), ['session/list'])
+    assert.deepEqual(list.calls.map((c) => c.endpoint), ['session/list', 'workspace/follow'])
     assert.deepEqual(list.calls[0].payload, { args: { _request: {} } })
     // no face → an honest miss, never a guess
     assert.deepEqual(machine.agents[1], { a6: 'noFace9', rows: [], error: 'no gateway face for the session list' })
@@ -254,10 +260,10 @@ test('sweep integration: one sweep → local bucket + outbox claimed + remote ca
     // local bucket collected
     const file = loadAgentStatus(h)
     assert.deepEqual(file.machines[self.id].agents,
-      [{ a6: nativeA6, rows: [{ sessionId: 'session-nat9', mtime: 99, status: 'idle', agentAvailable: true }] }])
+      [{ a6: nativeA6, rows: [{ sessionId: 'session-nat9', mtime: 99, status: 'idle', agentAvailable: true }], workspaces: [] }])
     // remote bucket collected over the presentation-lane face
     assert.deepEqual(file.machines.k3f9.agents,
-      [{ a6: 'cd33x1', rows: [{ sessionId: 'session-rem9', mtime: 98, status: 'busy', agentAvailable: true }] }])
+      [{ a6: 'cd33x1', rows: [{ sessionId: 'session-rem9', mtime: 98, status: 'busy', agentAvailable: true }], workspaces: [] }])
     // the outbox claim delivered the reply into the local initiator session
     assert.equal(delivery.delivered.length, 1)
     assert.match(delivery.delivered[0].message.content[0].text, /swept reply/)
@@ -298,5 +304,45 @@ test('sweep degradation: a throwing outbox pull never breaks the loop; the regis
     } finally {
       setSweepCollectors(undefined)
     }
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('workspace baseline collection: join fields land in the cache; a failing follow keeps rows + notes the error', async () => {
+  const h = home()
+  try {
+    const face = {
+      async dispatchRpc() { return { ok: true, value: { items: [{ sessionId: 'session-ws001', updatedAt: 5, running: false, agentAvailable: true }] } } },
+      openWireStream(endpoint, payload, signal) {
+        return (async function* () {
+          yield {
+            type: 'baseline',
+            value: { items: [
+              { workspaceId: 'ws-1', path: '/home/x', title: 'repo work', sessionIds: ['session-ws001', 'session-ws002'], createdAt: 't', updatedAt: 't' },
+              { workspaceId: 'ws-2', path: '/home/y', title: 'scratch', sessionIds: [], createdAt: 't', updatedAt: 't' },
+              { workspaceId: '', title: 'junk', sessionIds: [] }, // dropped by validation
+            ] },
+          }
+          await new Promise((_, reject) => { signal?.addEventListener('abort', () => reject(new Error('aborted'))) })
+        })()
+      },
+    }
+    await collectRemoteMachine(h, row('k3f9', 'http://k3f9:4999'), probeOk([{ id: 'cd33x1', key: 'codex', label: 'codex', ready: true, failed: false }]), { faceOf: () => face })
+    const agent = loadAgentStatus(h).machines.k3f9.agents[0]
+    // join fields only — path/createdAt/updatedAt trimmed; invalid rows dropped
+    assert.deepEqual(agent.workspaces, [
+      { workspaceId: 'ws-1', title: 'repo work', sessionIds: ['session-ws001', 'session-ws002'] },
+      { workspaceId: 'ws-2', title: 'scratch', sessionIds: [] },
+    ])
+    assert.equal(agent.error, undefined)
+    // a workspace-follow death keeps the fresh rows and notes it (title join falls back honestly)
+    const dyingFace = {
+      async dispatchRpc() { return { ok: true, value: { items: [] } } },
+      openWireStream() { throw new Error('feed gone') },
+    }
+    await collectRemoteMachine(h, row('k3f9', 'http://k3f9:4999'), probeOk([{ id: 'cd33x1', key: 'codex', label: 'codex', ready: true, failed: false }]), { faceOf: () => dyingFace })
+    const marked = loadAgentStatus(h).machines.k3f9.agents[0]
+    assert.deepEqual(marked.rows, [])
+    assert.equal(marked.workspaces, undefined)
+    assert.match(marked.error, /workspace follow failed — feed gone/)
   } finally { rmSync(h, { recursive: true, force: true }) }
 })

@@ -158,15 +158,10 @@ test('description carries the key sentences: address format, NEVER poll, stop se
 
 // ---------------------------------------------------------------- agents listing
 
-test('{} → agents listing: machines grouping, addresses, ready/failed, conversations', async () => {
+test('{} → agents listing: machines grouping, addresses, ready/failed — THIN rows (R6 strip)', async () => {
   const { tool, service } = makeTool()
-  // 7 native conversations: only the 5 most recent survive, newest first
+  // conversations exist in the registry, but the listing NEVER embeds them anymore
   service.state.conversations = [
-    { shortId: 'old00001', machine: 'm1ab', agent: 'na1ive', sessionId: 's0', createdAt: 1, lastActivityAt: 50 },
-    ...Array.from({ length: 5 }, (_, i) => ({
-      shortId: `nat0000${i + 1}`, machine: 'm1ab', agent: 'na1ive', sessionId: `s${i + 1}`,
-      createdAt: 1, lastActivityAt: 100 + i * 10,
-    })),
     { shortId: 'titl0001', machine: 'm1ab', agent: 'na1ive', sessionId: 's6', title: 'mesh review', createdAt: 1, lastActivityAt: 500 },
     { shortId: 'dev00001', machine: 'w2cd', agent: 'cd33x1', sessionId: 's7', title: 'dev3 chat', createdAt: 1, lastActivityAt: 200 },
   ]
@@ -186,22 +181,16 @@ test('{} → agents listing: machines grouping, addresses, ready/failed, convers
   assert.equal(native.address, 'm1ab-na1ive')
   assert.equal(native.ready, true)
   assert.equal(native.failed, false)
-  // alive-first = newest lastActivityAt first; ≤ RECENT_CONVERSATIONS_MAX; title only when set
-  assert.equal(native.conversations.length, RECENT_CONVERSATIONS_MAX)
-  assert.deepEqual(
-    native.conversations.map((c) => c.conversationId),
-    ['titl0001', 'nat00005', 'nat00004', 'nat00003', 'nat00002'],
-  )
-  assert.deepEqual(native.conversations[0], { conversationId: 'titl0001', title: 'mesh review', lastActivityAt: 500 })
-  assert.deepEqual(native.conversations[1], { conversationId: 'nat00005', lastActivityAt: 140 })
+  // THE STRIP: no conversations key anywhere in the listing
+  assert.equal('conversations' in native, false)
+  for (const m of value.machines) for (const a of m.agents) assert.equal('conversations' in a, false)
+  assert.deepEqual(native, { id: 'na1ive', label: 'DSH', address: 'm1ab-na1ive', ready: true, failed: false })
 
   const omp = machineOf('m1ab').agents[1]
   assert.equal(omp.address, 'm1ab-om11p2')
-  assert.deepEqual(omp.conversations, [])
 
   const codex = machineOf('w2cd').agents[0]
   assert.equal(codex.address, 'w2cd-cd33x1')
-  assert.deepEqual(codex.conversations, [{ conversationId: 'dev00001', title: 'dev3 chat', lastActivityAt: 200 }])
 
   const pi = machineOf('w3ef').agents[0]
   assert.equal(pi.ready, false)
@@ -552,7 +541,7 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
     const native = roster.machines[0].agents[0]
     assert.match(native.id, /^[a-z0-9]{6}$/)
     assert.equal(native.key ?? native.label !== undefined, true)
-    assert.deepEqual(native.conversations, [])
+    assert.equal('conversations' in native, false, 'R6 strip: thin rows')
 
     // self-addressed send through the NATIVE seam (the bridged raw gateway)
     const receipt = await tool.execute(
@@ -594,4 +583,101 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------- agent_status (R6)
+
+/** One cache file fixture. */
+const statusFileOf = (machines) => ({ machines })
+
+test('agent_status: registry join → shortId + "{title} [hub A2A]"; workspace fallback; unhosted; truncation; collectedAt passthrough', async () => {
+  const cache = statusFileOf({
+    m1ab: {
+      collectedAt: 1234500,
+      agents: [{
+        a6: 'na1ive',
+        rows: [
+          { sessionId: 'session-11111111-aaaa-bbbb-cccc-dddddddddddd', mtime: 30, status: 'busy', agentAvailable: true },
+          { sessionId: 'session-22222222-aaaa-bbbb-cccc-dddddddddddd', mtime: 20, status: 'idle', agentAvailable: true },
+          { sessionId: 'session-33333333-aaaa-bbbb-cccc-dddddddddddd', mtime: 10, status: 'unknown', agentAvailable: false },
+        ],
+        workspaces: [
+          { workspaceId: 'ws1', title: 'mesh playground', sessionIds: ['session-22222222-aaaa-bbbb-cccc-dddddddddddd'] },
+        ],
+      }],
+    },
+  })
+  const service = fakeService()
+  service.state.conversations = [
+    { shortId: 'conv111', machine: 'm1ab', agent: 'na1ive', sessionId: 'session-11111111-aaaa-bbbb-cccc-dddddddddddd', title: 'mesh review', createdAt: 1, lastActivityAt: 1 },
+  ]
+  const { tool } = makeTool({ service, deps: { status: () => cache } })
+  const value = await tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
+  assert.equal(value.action, 'agent_status')
+  assert.equal(value.collectedAt, 1234500)
+  assert.equal(value.machine, 'm1ab')
+  assert.equal(value.agent, 'na1ive')
+  assert.equal(value.note, undefined)
+  assert.deepEqual(value.sessions, [
+    // registry join: shortId + the exact marker; sessionId truncated to the uuid head
+    { conversationId: 'conv111', sessionId: '111111', title: 'mesh review [hub A2A]', status: 'busy', agentAvailable: true, mtime: 30 },
+    // workspace join: the workspace title verbatim, no conversationId
+    { sessionId: '222222', title: 'mesh playground', status: 'idle', agentAvailable: true, mtime: 20 },
+    // neither source names it → the honest unhosted fallback
+    { sessionId: '333333', title: '[unhosted]', status: 'unknown', agentAvailable: false, mtime: 10 },
+  ])
+  // an untitled registry conversation keeps its placeholder verbatim inside the marker
+  service.state.conversations = [
+    { shortId: 'conv222', machine: 'm1ab', agent: 'na1ive', sessionId: 'session-22222222-aaaa-bbbb-cccc-dddddddddddd', title: '[undefined]', createdAt: 1, lastActivityAt: 1 },
+  ]
+  const again = await tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
+  assert.deepEqual(again.sessions[1], { conversationId: 'conv222', sessionId: '222222', title: '[undefined] [hub A2A]', status: 'idle', agentAvailable: true, mtime: 20 })
+})
+
+test('agent_status window: alive-first then mtime desc, ≤5; missing cache/bucket/agent answered honestly', async () => {
+  const rows = [
+    ...Array.from({ length: 4 }, (_, i) => ({ sessionId: `session-a${i}00000-0000-0000-0000-000000000000`, mtime: 10 + i, status: 'idle', agentAvailable: false })),
+    { sessionId: 'session-b0000000-0000-0000-0000-000000000000', mtime: 1, status: 'busy', agentAvailable: true },
+    { sessionId: 'session-c0000000-0000-0000-0000-000000000000', mtime: 2, status: 'busy', agentAvailable: true },
+  ]
+  const cache = statusFileOf({ m1ab: { collectedAt: 77, agents: [{ a6: 'na1ive', rows }] } })
+  const { tool } = makeTool({ deps: { status: () => cache } })
+  const value = await tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
+  // alive-first (the two live sessions), mtime desc within each group; ≤5 total —
+  // not-in-window implies nothing (the note in the description says so)
+  assert.deepEqual(value.sessions.map((r) => r.sessionId), ['c00000', 'b00000', 'a30000', 'a20000', 'a10000'])
+  assert.equal(value.collectedAt, 77)
+  // missing agent in the bucket → honest empty + note
+  const noAgent = await tool.execute({ action: 'agent_status', agent: 'm1ab-zz99y8' }, fakeExec('sess-1'))
+  assert.deepEqual(noAgent.sessions, [])
+  assert.equal(noAgent.collectedAt, 77)
+  assert.match(noAgent.note, /no collected status/)
+  // missing machine bucket → collectedAt 0 + note
+  const noBucket = await tool.execute({ action: 'agent_status', agent: 'zzzz-zz99y8' }, fakeExec('sess-1'))
+  assert.equal(noBucket.collectedAt, 0)
+  assert.match(noBucket.note, /no collected status/)
+  // no status dep wired at all → the same honest empty
+  const bare = makeTool()
+  const none = await bare.tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
+  assert.deepEqual(none.sessions, [])
+  assert.equal(none.collectedAt, 0)
+  // agent param required, address validated
+  await assert.rejects(
+    () => bare.tool.execute({ action: 'agent_status' }, fakeExec('sess-1')),
+    /E_MISSING_AGENT/,
+  )
+  await assert.rejects(
+    () => bare.tool.execute({ action: 'agent_status', agent: 'notanaddress' }, fakeExec('sess-1')),
+    /E_BAD_ADDRESS/,
+  )
+})
+
+test('description and schema carry the agent_status leg and the thin-roster wording', () => {
+  const { tool } = makeTool()
+  assert.ok(tool.description.includes('agent_status'))
+  assert.ok(tool.description.includes('machines → agents (id, label, address, ready)'))
+  assert.ok(!tool.description.includes('recent conversations'))
+  assert.ok(tool.description.includes('5-minute sweep'))
+  assert.ok(tool.description.includes('collectedAt'))
+  assert.ok(JSON.stringify(tool.parameters).includes('agent_status'), 'the action enum carries agent_status')
 })

@@ -41,7 +41,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { createSuperdHubTool } from './hub-tool.js'
 import { createA2aIngest, type A2aIngest } from './a2a-ingest.js'
-import { statusSweepLegs } from './agent-status.js'
+import { statusSweepLegs, loadAgentStatus } from './agent-status.js'
 import { setSweepCollectors } from './mesh-link.js'
 import { createA2aService } from './a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from './a2a-host.js'
@@ -130,6 +130,8 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     t.tools.register(createSuperdHubTool({
       service,
       delivery,
+      // R6: the agent_status leg reads the R5 cache (the sweep's legs fill it)
+      status: () => loadAgentStatus(home),
       roster: () => rosterViewOf(home),
       // This row mounts in ctx0 only (header ruling): every caller is a
       // native DSH session, so the initiator's a6 is the 'native' row's.

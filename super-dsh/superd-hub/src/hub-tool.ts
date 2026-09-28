@@ -40,6 +40,7 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { A2aDeliveryCtx } from './a2a-delivery.js' // (wireCompletionToDelivery retired in R4 — replies ride reply/notice envelopes through the ingest)
 import type { AgentLink } from './agent-roster.js'
+import type { AgentStatusFile } from './agent-status.js'
 import type {
   A2aAddress,
   A2aBufferedMessage,
@@ -54,22 +55,13 @@ export type HubToolService = Pick<
 >
 
 /** Per-agent recent-conversation bound (spec §7.2: alive-first, ≤5). */
+/** R6: retired from the agents listing (the strip); kept exported for compat — agent_status windows AGENT_STATUS_WINDOW_MAX rows instead. */
 export const RECENT_CONVERSATIONS_MAX = 5
 
 /** The exec placeholder note (P4 owns the leg; spec §9 placeholder discipline). */
 export const EXEC_PLACEHOLDER_NOTE = 'not yet implemented: exec (P4)'
 
-/** One recent conversation of an agent, from the registry (liveness proxy = lastActivityAt). */
-export type HubConversationEntry = {
-  /** Conversation shortId (the tool-facing alias). */
-  conversationId: string
-  /** Operator-facing title; omitted when the conversation has none. */
-  title?: string
-  /** Epoch ms of the last successful send (alive-first sort key, newest first). */
-  lastActivityAt: number
-}
-
-/** One addressable agent row in the listing. */
+/** One addressable agent row in the listing (R6: THIN — the conversations embedding is retired; per-agent session state lives on the agent_status leg). */
 export type HubAgentEntry = {
   /** Agent id (a6). */
   id: string
@@ -81,8 +73,6 @@ export type HubAgentEntry = {
   ready: boolean
   /** Whether the agent's spawn rejected (row stays for diagnosis). */
   failed: boolean
-  /** Recent conversations with this agent as the TARGET, newest first. */
-  conversations: HubConversationEntry[]
 }
 
 /** One machine block: its agents grouped under it. */
@@ -130,6 +120,12 @@ export interface HubToolDeps {
    * nothing — the subscription auto-disposes on fire).
    */
   onWatch?(dispose: () => void): void
+  /**
+   * R6: the R5 information-status cache reader (the row wires
+   * `() => loadAgentStatus(home)`); absent = agent_status answers honestly
+   * empty with collectedAt 0.
+   */
+  status?(): AgentStatusFile
 }
 
 /** agent-roster.ts's LOCAL_MACHINE literal ('local') — local rows' grouping key, not a real m4. */
@@ -163,22 +159,12 @@ function initiatorOfExec(deps: HubToolDeps, exec: ToolRunContext): A2aInitiator 
   return deps.initiatorOf(sessionId)
 }
 
-/** The `agents` listing: machines → agents → recent conversations (one JSON value). */
+/** The `agents` listing: machines → agents, thin rows (R6 strip — session state lives on agent_status). */
 function agentsListing(deps: HubToolDeps): { action: 'agents'; machines: HubMachineEntry[] } {
   const view = deps.roster()
-  const conversations = deps.service.listConversations()
   const agentsByMachine = new Map<string, HubAgentEntry[]>()
   for (const link of view.agents) {
     const machine = link.machine === LOCAL_MACHINE ? view.self.id : link.machine
-    const recent = conversations
-      .filter((row) => row.machine === machine && row.agent === link.id)
-      .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
-      .slice(0, RECENT_CONVERSATIONS_MAX)
-      .map((row) => ({
-        conversationId: row.shortId,
-        ...(row.title === undefined ? {} : { title: row.title }),
-        lastActivityAt: row.lastActivityAt,
-      }))
     const list = agentsByMachine.get(machine) ?? []
     list.push({
       id: link.id,
@@ -186,7 +172,6 @@ function agentsListing(deps: HubToolDeps): { action: 'agents'; machines: HubMach
       address: `${machine}-${link.id}`,
       ready: link.ready === true,
       failed: link.failed === true,
-      conversations: recent,
     })
     agentsByMachine.set(machine, list)
   }
@@ -205,6 +190,77 @@ function agentsListing(deps: HubToolDeps): { action: 'agents'; machines: HubMach
     if (!seen.has(machine)) machines.push({ machine, label: machine, agents: agentsByMachine.get(machine) ?? [] })
   }
   return { action: 'agents', machines }
+}
+
+/** The agent_status window size (Orchestra semantics — not-in-window implies nothing). */
+export const AGENT_STATUS_WINDOW_MAX = 5
+
+/** D18 marker appended to registry-joined titles. */
+export const HUB_A2A_TITLE_MARKER = '[hub A2A]'
+
+/** The honest fallback when neither the registry nor a workspace names the session. */
+export const UNHOSTED_TITLE = '[unhosted]'
+
+/** Display truncation: strip the `session-` prefix, take the uuid head (6 chars); the cache keeps full ids. */
+function displaySessionId(sessionId: string): string {
+  const base = sessionId.startsWith('session-') ? sessionId.slice('session-'.length) : sessionId
+  return base.slice(0, 6)
+}
+
+/** One shaped agent_status row. */
+export interface AgentStatusEntryRow {
+  conversationId?: string
+  /** Display-truncated session id (uuid head; the full id stays in the cache). */
+  sessionId: string
+  title: string
+  status: 'busy' | 'idle' | 'unknown'
+  agentAvailable: boolean
+  mtime: number
+}
+
+/**
+ * Shape one agent's window from the R5 cache (D18): alive-first (a session
+ * owning a live Agent first), mtime desc within each group, ≤5 rows —
+ * not-in-window implies nothing. Title: registry join (full session id) →
+ * `{conversationTitle} [hub A2A]`; else the owning workspace's title
+ * verbatim; else '[unhosted]'. conversationId rides only on a registry hit.
+ */
+export function shapeAgentStatusWindow(
+  entry: { rows: AgentStatusEntrySrcRow[]; workspaces?: Array<{ title: string; sessionIds: string[] }> },
+  conversations: ReadonlyArray<{ shortId: string; sessionId: string; title?: string }>,
+): AgentStatusEntryRow[] {
+  const bySession = new Map<string, { shortId: string; title?: string }>()
+  for (const row of conversations) bySession.set(row.sessionId, row)
+  const workspaceTitleOf = new Map<string, string>()
+  for (const workspace of entry.workspaces ?? []) {
+    for (const sessionId of workspace.sessionIds) workspaceTitleOf.set(sessionId, workspace.title)
+  }
+  const sorted = [...entry.rows].sort((a, b) => {
+    const alive = Number(b.agentAvailable) - Number(a.agentAvailable)
+    return alive !== 0 ? alive : b.mtime - a.mtime
+  })
+  return sorted.slice(0, AGENT_STATUS_WINDOW_MAX).map((row) => {
+    const conversation = bySession.get(row.sessionId)
+    const title = conversation !== undefined
+      ? `${conversation.title ?? '[undefined]'} ${HUB_A2A_TITLE_MARKER}`
+      : workspaceTitleOf.get(row.sessionId) ?? UNHOSTED_TITLE
+    return {
+      ...(conversation === undefined ? {} : { conversationId: conversation.shortId }),
+      sessionId: displaySessionId(row.sessionId),
+      title,
+      status: row.status,
+      agentAvailable: row.agentAvailable,
+      mtime: row.mtime,
+    }
+  })
+}
+
+/** The cache row face the shaper consumes (structural subset of AgentStatusRow). */
+export interface AgentStatusEntrySrcRow {
+  sessionId: string
+  mtime: number
+  status: 'busy' | 'idle' | 'unknown'
+  agentAvailable: boolean
 }
 
 /** Render one buffered message for the `read` sweep: the sender as a full address. */
@@ -226,13 +282,14 @@ function readEntry(message: A2aBufferedMessage): {
 
 const DESCRIPTION =
   'SuperD Hub — agent-to-agent messaging across the Super D machine mesh. Call shapes:\n' +
-  '  {} | {action:"agents"} → the roster: machines → agents → each agent\'s recent conversations.\n' +
+  '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
+  '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime}]}.\n' +
   '  {action:"new_conversation", agent, title?} → open a conversation → {conversationId, sessionId, agent, machine}.\n' +
   '  {action:"send", agent, conversationId?, title?, message, delivery?} → inject one user turn (omit conversationId to open a new conversation). Receipt {outcome, messageId, conversationId, sessionId, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn (answers stopped:false with a note when no turn was active).\n' +
   '  {action:"exec"} → not yet implemented (P4).\n' +
-  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: after send the hub watches the peer\'s turn and the reply arrives in this conversation automatically as a new message (read only sweeps what was buffered while this session was down). stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it.'
+  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: after send the hub watches the peer\'s turn and the reply arrives in this conversation automatically as a new message (read only sweeps what was buffered while this session was down). stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
 
 /**
  * Build the one SuperD Hub tool.
@@ -246,7 +303,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
     parameters: {
       action: {
         type: 'string',
-        enum: ['agents', 'new_conversation', 'send', 'read', 'stop', 'exec'],
+        enum: ['agents', 'new_conversation', 'send', 'read', 'stop', 'agent_status', 'exec'],
         description: 'Omitted/\"agents\" → the roster. The other legs are self-describing call shapes.',
       },
       agent: {
@@ -282,7 +339,9 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
         additionalProperties: false,
         properties: {
           action: { type: 'string', required: true },
-          machines: { type: 'json', description: 'agents listing: machines → agents → recent conversations' },
+          machines: { type: 'json', description: 'agents listing: machines → agents (thin rows — no conversations; use agent_status)' },
+          collectedAt: { type: 'integer', description: 'agent_status: when the machine bucket was last collected (epoch ms; 0 = never)' },
+          sessions: { type: 'json', description: 'agent_status: window rows {conversationId?, sessionId (truncated), title, status, agentAvailable, mtime}' },
           conversationId: { type: 'string' },
           sessionId: { type: 'string' },
           agent: { type: 'string' },
@@ -396,6 +455,29 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             ...(result.scope === 'turn-only' ? { reason: result.reason } : {}),
             // D5: the honest idle answer — the note rides along instead of a bare stopped:false
             ...(result.cancelled === true ? {} : { note: result.note }),
+          }
+        }
+
+        case 'agent_status': {
+          if (args.agent === undefined || args.agent === '') {
+            throw new Error('[E_MISSING_AGENT] superd-hub: agent_status requires agent ("<m4>-<a6>")')
+          }
+          const addr = parseAgentAddress(args.agent)
+          const file = deps.status?.() ?? { machines: {} }
+          const bucket = file.machines[addr.machine]
+          const entry = bucket?.agents.find((a) => a.a6 === addr.id)
+          const sessions = entry === undefined ? [] : shapeAgentStatusWindow(entry, deps.service.listConversations())
+          return {
+            action,
+            agent: addr.id,
+            machine: addr.machine,
+            collectedAt: bucket?.collectedAt ?? 0,
+            // the rows crossed no envelope, so they are JSON by construction —
+            // one boundary cast onto the schema's json-typed field (the error leg's pattern)
+            sessions: sessions as unknown as import('@deepseek-ai/dsh-util-values').JsonValue,
+            ...(bucket === undefined || entry === undefined
+              ? { note: 'no collected status for this agent yet — the 5-minute sweep fills the cache; call agents for the roster' }
+              : {}),
           }
         }
 

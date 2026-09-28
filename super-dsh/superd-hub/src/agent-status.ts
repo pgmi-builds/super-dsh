@@ -54,11 +54,25 @@ export interface AgentStatusRow {
   agentAvailable: boolean
 }
 
+/** One workspace join entry — exactly the title-join fields the R6 ruling needs (WorkspaceView, workspace-controller types.ts:17-29). */
+export interface AgentWorkspaceEntry {
+  workspaceId: string
+  /** User-visible title (non-null upstream — the session fallback display title). */
+  title: string
+  sessionIds: string[]
+}
+
 /** One agent's collected window (bounded, payload order kept). */
 export interface AgentStatusAgent {
   a6: string
   rows: AgentStatusRow[]
-  /** Per-agent collection failure (face miss / session-list rejection). */
+  /**
+   * Workspace membership for the title join (R6 title-source ruling): the
+   * `workspace/follow` baseline's WorkspaceViews, trimmed to the join fields.
+   * Absent when the workspace leg failed (the error note says so).
+   */
+  workspaces?: AgentWorkspaceEntry[]
+  /** Per-agent collection failure (face miss / session-list rejection / workspace-follow death). */
   error?: string
 }
 
@@ -96,6 +110,18 @@ function coerceFile(v: unknown): AgentStatusFile {
     const agents: AgentStatusAgent[] = []
     for (const a of raw['agents']) {
       if (!isRecord(a) || typeof a['a6'] !== 'string' || a['a6'] === '' || !Array.isArray(a['rows'])) continue
+      let workspaces: AgentWorkspaceEntry[] | undefined
+      if (Array.isArray(a['workspaces'])) {
+        workspaces = []
+        for (const w of a['workspaces']) {
+          if (!isRecord(w) || typeof w['workspaceId'] !== 'string' || w['workspaceId'] === '' || typeof w['title'] !== 'string') continue
+          workspaces.push({
+            workspaceId: w['workspaceId'],
+            title: w['title'],
+            sessionIds: Array.isArray(w['sessionIds']) ? w['sessionIds'].filter((sid): sid is string => typeof sid === 'string') : [],
+          })
+        }
+      }
       const rows: AgentStatusRow[] = []
       for (const r of a['rows']) {
         if (!isRecord(r) || typeof r['sessionId'] !== 'string' || r['sessionId'] === '') continue
@@ -107,7 +133,12 @@ function coerceFile(v: unknown): AgentStatusFile {
           agentAvailable: r['agentAvailable'] === true,
         })
       }
-      agents.push({ a6: a['a6'], rows, ...(typeof a['error'] === 'string' && a['error'] !== '' ? { error: a['error'] } : {}) })
+      agents.push({
+        a6: a['a6'],
+        rows,
+        ...(workspaces === undefined ? {} : { workspaces }),
+        ...(typeof a['error'] === 'string' && a['error'] !== '' ? { error: a['error'] } : {}),
+      })
     }
     const machine: AgentStatusMachine = {
       collectedAt: typeof raw['collectedAt'] === 'number' ? raw['collectedAt'] : 0,
@@ -172,6 +203,53 @@ export function recordMachineFailure(home: string, machine: string, error: strin
 
 // ---------------------------------------------------------------- collection
 
+/**
+ * `workspace/follow` — the workspace face's reconnect-safe STATE verb
+ * (workspace-controller index.ts:199 `@Remote({ mode: 'stream' }) follow(signal)`:
+ * signal-only, no request parameter — the wire payload is a bare `{args:{}}`).
+ * Every generation starts with EXACTLY ONE
+ * `{type:'baseline', value:{items: WorkspaceView[], ...}}` frame; increments
+ * after it are mutations we do not consume. All other verbs on the controller
+ * are mutations (create / rename / delete / insert-before / archive / pin) — excluded.
+ */
+export const WORKSPACE_FOLLOW = 'workspace/follow'
+
+/** Workspaces kept per agent (join-sized; a host has few). */
+export const AGENT_WORKSPACES_MAX = 32
+
+/** One agent's workspace baseline over one face: first frame, abort, join fields only. */
+async function workspaceBaselineOf(face: A2aGateway, timeoutMs = 10_000): Promise<AgentWorkspaceEntry[]> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const iterable = await face.openWireStream(WORKSPACE_FOLLOW, { args: {} }, controller.signal)
+    const iterator = (await iterable)[Symbol.asyncIterator]()
+    for (;;) {
+      const next = await iterator.next()
+      if (next.done) return []
+      const frame = next.value
+      if (!isRecord(frame) || frame['type'] !== 'baseline') continue
+      const value = isRecord(frame['value']) ? frame['value'] : {}
+      const items = Array.isArray(value['items']) ? value['items'] : []
+      const out: AgentWorkspaceEntry[] = []
+      for (const item of items) {
+        if (!isRecord(item) || typeof item['workspaceId'] !== 'string' || item['workspaceId'] === '' || typeof item['title'] !== 'string') continue
+        out.push({
+          workspaceId: item['workspaceId'],
+          title: item['title'],
+          sessionIds: Array.isArray(item['sessionIds']) ? item['sessionIds'].filter((sid): sid is string => typeof sid === 'string') : [],
+        })
+        if (out.length >= AGENT_WORKSPACES_MAX) break
+      }
+      controller.abort() // baseline consumed — drop the stream now
+      return out
+    }
+  } finally {
+    controller.abort()
+    clearTimeout(timer)
+  }
+}
+
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -185,6 +263,20 @@ function rowOf(item: unknown): AgentStatusRow | undefined {
     mtime: typeof item['updatedAt'] === 'number' ? item['updatedAt'] : 0,
     status: running === true ? 'busy' : running === false ? 'idle' : 'unknown',
     agentAvailable: item['agentAvailable'] === true,
+  }
+}
+
+/**
+ * Collect one agent fully: the session list AND the workspace baseline (the
+ * R6 title source). A workspace-leg failure keeps the fresh rows and notes
+ * the error — the title join then falls back honestly ('[unhosted]').
+ */
+async function collectAgent(face: A2aGateway, a6: string): Promise<AgentStatusAgent> {
+  const rows = await collectAgentRows(face)
+  try {
+    return { a6, rows, workspaces: await workspaceBaselineOf(face) }
+  } catch (error) {
+    return { a6, rows, error: `workspace follow failed — ${errMsg(error)}` }
   }
 }
 
@@ -237,7 +329,7 @@ export async function collectRemoteMachine(
         agents.push({ a6: agent.id, rows: [], error: 'no gateway face for the session list' })
         continue
       }
-      agents.push({ a6: agent.id, rows: await collectAgentRows(face) })
+      agents.push(await collectAgent(face, agent.id))
     } catch (error) {
       agents.push({ a6: agent.id, rows: [], error: errMsg(error) })
     }
@@ -258,7 +350,7 @@ export async function collectLocalMachine(
   for (const [, a6] of Object.entries(agentIdMap(home))) {
     try {
       const face = gatewayFor({ machine: self.id, id: a6 })
-      agents.push({ a6, rows: await collectAgentRows(face) })
+      agents.push(await collectAgent(face, a6))
     } catch (error) {
       agents.push({ a6, rows: [], error: errMsg(error) })
     }
