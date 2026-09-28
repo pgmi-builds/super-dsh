@@ -239,8 +239,9 @@ CTX0 hub
   上游无 session-close RPC，如实报 scope）。
 - **no-double-delivery**：投递成功即出队；只有 failed 进有界未读缓冲
   （计数供 `read`/徽标）。
-- 发起方身份信封：`{machine: selfM4, agent: 发起 agent a6, session: 发起会话短ID,
-  messageId}`——跨机时对端 hub 收到同一信封（续聊走 conversationId，replyTo 退役）。
+- 发起方身份信封：`{machine: selfM4, agent: 发起 agent a6, session: 发起会话全长
+  id（D6：wire 永远全长）, messageId}`——跨机时对端 hub 收到同一信封（续聊走
+  conversationId，replyTo 退役）。
 
 ### 7.4 与上游参照的对应
 
