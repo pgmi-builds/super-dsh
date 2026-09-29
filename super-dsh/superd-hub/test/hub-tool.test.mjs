@@ -677,12 +677,13 @@ test('agent_status: registry join → shortId + "{title} [hub A2A]"; workspace f
     // neither source names it → the honest unhosted fallback
     { sessionId: '333333', title: '[unhosted]', status: 'unknown', agentAvailable: false, mtime: 10 },
   ])
-  // an untitled registry conversation keeps its placeholder verbatim inside the marker
+  // F2 (0.1.7-n): the sentinel is a wire/registry fact — the DISPLAY renders
+  // the friendly untitled form (D17 sanctions display beautification)
   service.state.conversations = [
     { shortId: 'conv222', machine: 'm1ab', agent: 'na1ive', sessionId: 'session-22222222-aaaa-bbbb-cccc-dddddddddddd', title: '[undefined]', createdAt: 1, lastActivityAt: 1 },
   ]
   const again = await tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
-  assert.deepEqual(again.sessions[1], { conversationId: 'conv222', sessionId: '222222', title: '[undefined] [hub A2A]', status: 'idle', agentAvailable: true, mtime: 20 })
+  assert.deepEqual(again.sessions[1], { conversationId: 'conv222', sessionId: '222222', title: '(untitled) [hub A2A]', status: 'idle', agentAvailable: true, mtime: 20 })
 })
 
 test('agent_status window: alive-first then mtime desc, ≤5; missing cache/bucket/agent answered honestly', async () => {
@@ -731,4 +732,36 @@ test('description and schema carry the agent_status leg and the thin-roster word
   assert.ok(tool.description.includes('5-minute sweep'))
   assert.ok(tool.description.includes('collectedAt'))
   assert.ok(JSON.stringify(tool.parameters).includes('agent_status'), 'the action enum carries agent_status')
+})
+
+test('0.1.7-n F1: cwd on the pty leg is refused loudly (no silent parameter no-op); oneshot still honors it', async () => {
+  const seen = []
+  const { tool } = makeTool({
+    exec: {
+      selfM4: () => 'm1ab',
+      run: async (input) => {
+        seen.push(input)
+        return { exit: 0, stdout: 'pwd-out', stderr: '', durationMs: 1, truncated: false, timedOut: false, outcome: 'exited' }
+      },
+      post: async () => { throw new Error('unused') },
+      pty: async () => ({ output: 'pty-out', exit: 0, cwd: '/tmp', timedOut: false, reconnected: false, durationMs: 1 }),
+    },
+  })
+  await assert.rejects(
+    () => tool.execute({ action: 'exec', mode: 'pty', cmd: 'pwd', cwd: '/etc' }, fakeExec()),
+    /\[E_BAD_EXEC\].*cwd is not supported with mode "pty".*cd <dir>/,
+  )
+  // oneshot keeps honoring cwd — the asymmetry is now explicit, not silent
+  await tool.execute({ action: 'exec', cmd: 'pwd', cwd: '/etc' }, fakeExec())
+  assert.equal(seen[0].cwd, '/etc')
+})
+
+test('0.1.7-n O3/O4: the description states the owner-address rule and the message-less open cost', () => {
+  const { tool } = makeTool()
+  // O3 lives on the agent parameter; O4 and the cwd asymmetry on the tool description
+  assert.match(tool.parameters.properties.agent.description, /OWNER address/)
+  assert.match(tool.parameters.properties.agent.description, /a peer opened with you it is YOUR OWN address/)
+  assert.match(tool.description, /Omitting message is NOT silent/)
+  assert.match(tool.description, /cwd is oneshot-only/)
+  assert.match(tool.parameters.properties.cwd.description, /Not accepted with mode "pty"/)
 })

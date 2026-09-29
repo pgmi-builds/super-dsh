@@ -65,6 +65,11 @@ import type {
   A2aInitiator,
   A2aService,
 } from './a2a-service.js'
+// F2 (0.1.7-n, PC 0.1.7-m first-person): the wire/registry sentinel stays
+// '[undefined]', but the DISPLAY surface must not show it to a human — D17
+// already sanctions display-layer beautification.
+import { A2A_UNTITLED } from './a2a-service.js'
+import { A2A_TITLE_PLACEHOLDER } from './a2a-wire.js'
 
 /** The service face the tool consumes (structural subset of T2/T3's A2aService). */
 export type HubToolService = Pick<
@@ -266,8 +271,14 @@ export function shapeAgentStatusWindow(
   })
   return sorted.slice(0, AGENT_STATUS_WINDOW_MAX).map((row) => {
     const conversation = bySession.get(row.sessionId)
+    const registryTitle = conversation?.title
+    // F2: the sentinel (absent/empty/'[undefined]') renders as '(untitled)' here —
+    // never '[undefined] [hub A2A]' in front of a human.
+    const displayTitle = registryTitle === undefined || registryTitle === '' || registryTitle === A2A_TITLE_PLACEHOLDER
+      ? A2A_UNTITLED
+      : registryTitle
     const title = conversation !== undefined
-      ? `${conversation.title ?? '[undefined]'} ${HUB_A2A_TITLE_MARKER}`
+      ? `${displayTitle} ${HUB_A2A_TITLE_MARKER}`
       : workspaceTitleOf.get(row.sessionId) ?? UNHOSTED_TITLE
     return {
       ...(conversation === undefined ? {} : { conversationId: conversation.shortId }),
@@ -309,11 +320,11 @@ const DESCRIPTION =
   'SuperD Hub — agent-to-agent messaging across the Super D machine mesh. Call shapes:\n' +
   '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
   '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime}]}.\n' +
-  '  {action:"new_conversation", agent, title?, message?} → open a conversation (message, when given, IS the first turn — opening and content land as ONE injected turn) → {conversationId, sessionId, agent, machine}.\n' +
+  '  {action:"new_conversation", agent, title?, message?} → open a conversation (message, when given, IS the first turn — opening and content land as ONE injected turn) → {conversationId, sessionId, agent, machine}. Omitting message is NOT silent: the peer still receives one waking turn carrying "(conversation opened)" — pass a message unless you want exactly that.\n' +
   '  {action:"send", agent, conversationId?, title?, message, delivery?} → inject one user turn (omit conversationId to open a new conversation). Receipt {outcome, messageId, conversationId, sessionId, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
-  '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn (answers stopped:false with a note when no turn was active).\n' +
-  '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}. mode "pty": a PERSISTENT shell per (your session, machine) — cwd and env SURVIVE across dispatches (cd once, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. Prefer oneshot for independent commands; pty when shell state matters.\n' +
+  '  {action:"stop", agent, conversationId, scope?} → cancel the active turn of the conversation\'s owner (agent = the owner address, see the agent field; answers stopped:false with a note when no turn was active).\n' +
+  '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}; cwd sets its working directory. mode "pty": a PERSISTENT shell per (your session, machine) — the shell OWNS its cwd and env and they SURVIVE across dispatches (cd once inside the command, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. cwd is oneshot-only: passing it with mode "pty" is refused (use `cd <dir> && …` inside the command). Prefer oneshot for independent commands; pty when shell state matters.\n' +
   'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) is injected into the peer\'s session as a waking turn — it never interrupts an active turn, it queues behind it; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead, form=transcript); a turn that ends with no channel artifact yields one notice whose reason= distinguishes peer-silent (ended, said nothing) / peer-error (stream died or turn aborted) / stopped-by-initiator (you stopped it). read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
 
 /**
@@ -333,7 +344,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       },
       agent: {
         type: 'string',
-        description: 'Target address "<m4>-<a6>" — call agents first to list valid ids.',
+        description: 'Address "<m4>-<a6>". new_conversation: the target agent to open with. send/stop/agent_status: the conversation\'s OWNER address — for a conversation you opened that is the peer; for one a peer opened with you it is YOUR OWN address (a mismatch is refused with the correct address). Call agents first to list valid ids.',
       },
       conversationId: {
         type: 'string',
@@ -367,7 +378,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       },
       cwd: {
         type: 'string',
-        description: 'exec: optional absolute working directory.',
+        description: 'exec oneshot: optional absolute working directory. Not accepted with mode "pty" (the persistent shell keeps its own session cwd — pass `cd <dir> && …` in the command).',
       },
       timeoutSec: {
         type: 'integer',
@@ -540,6 +551,12 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
         case 'exec': {
           if (args.mode === 'pty') {
             if (typeof args.cmd !== 'string' || args.cmd.trim() === '') throw new Error('[E_BAD_EXEC] superd-hub: exec: cmd must be a non-empty string')
+            // F1 (0.1.7-n, PC 0.1.7-m first-person): cwd was silently ignored on
+            // this leg — the persistent shell owns its cwd. Refuse it loudly and
+            // teach the workaround instead of a silent parameter no-op.
+            if (args.cwd !== undefined) {
+              throw new Error('[E_BAD_EXEC] superd-hub: exec: cwd is not supported with mode "pty" — the persistent shell keeps its own cwd; use `cd <dir> && …` inside the command')
+            }
             const sessionKey = initiatorOfExec(deps, exec).sessionId
             const machine = args.machine ?? deps.exec.selfM4()
             try {
