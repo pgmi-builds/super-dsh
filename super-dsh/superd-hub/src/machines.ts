@@ -29,6 +29,8 @@ export interface MachineRow {
   /** Last minted request cookie (spec §4): persisted so hub restarts keep the remote's 30-day session instead of forcing a re-mint on every boot. */
   cookie?: string
   enabled: boolean
+  /** P4 exec knob on the INITIATOR side (spec §5): undefined/true = this machine's agents may exec there; false = the tool leg refuses. */
+  execEnabled?: boolean
   /** Epoch ms when this row was added. */
   addedAt: number
 }
@@ -57,7 +59,8 @@ function isMachineRow(v: unknown): v is MachineRow {
     typeof r.id === 'string' && typeof r.name === 'string' && typeof r.label === 'string' &&
     typeof r.origin === 'string' && typeof r.enabled === 'boolean' && typeof r.addedAt === 'number' &&
     (r.token === undefined || typeof r.token === 'string') &&
-    (r.cookie === undefined || typeof r.cookie === 'string')
+    (r.cookie === undefined || typeof r.cookie === 'string') &&
+    (r.execEnabled === undefined || r.execEnabled === true || r.execEnabled === false)
   )
 }
 

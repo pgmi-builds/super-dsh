@@ -124,10 +124,16 @@ function makeTool(overrides = {}) {
   const service = overrides.service ?? fakeService()
   const delivery = overrides.delivery ?? fakeDelivery()
   const initiators = overrides.initiators ?? fakeInitiators()
+  const execFace = overrides.exec ?? {
+    selfM4: () => 'm1ab',
+    run: async (input) => ({ exit: 0, stdout: `ran: ${input.cmd}`, stderr: '', durationMs: 1, truncated: false, timedOut: false }),
+    post: async (machineId) => { throw new Error(`unknown machine "${machineId}" — call agents for the roster`) },
+  }
   const watches = []
   const tool = createSuperdHubTool({
     service,
     delivery,
+    exec: execFace,
     roster: overrides.roster ?? fakeRosterView,
     initiatorOf: initiators.initiatorOf,
     onWatch: (dispose) => { watches.push(dispose) },
@@ -150,7 +156,7 @@ test('description carries the key sentences: address format, NEVER poll, stop se
     'turn-only',
     'steer',
     'queue',
-    'not yet implemented',
+    'action:"exec", cmd',
   ]) {
     assert.ok(tool.description.includes(needle), `description must mention ${needle}`)
   }
@@ -374,12 +380,31 @@ test('stop idle (D5): stopped:false + the honest note; session scope keeps the d
   })
 })
 
-// ---------------------------------------------------------------- exec placeholder
+// ---------------------------------------------------------------- exec (P4 one-shot)
 
-test('exec: placeholder leg', async () => {
+test('exec: local one-shot runs on THIS machine; pty answers honestly; unknown machine is typed', async () => {
   const { tool } = makeTool()
   const value = await tool.execute({ action: 'exec', mode: 'oneshot', cmd: 'ls' }, fakeExec())
-  assert.deepEqual(value, { action: 'exec', note: 'not yet implemented: exec (P4)' })
+  assert.deepEqual(value, {
+    action: 'exec',
+    machine: 'm1ab',
+    exit: 0,
+    stdout: 'ran: ls',
+    stderr: '',
+    durationMs: 1,
+    truncated: false,
+    timedOut: false,
+  })
+  const pty = await tool.execute({ action: 'exec', mode: 'pty', cmd: 'ls' }, fakeExec())
+  assert.match(pty.note, /not implemented yet/)
+  await assert.rejects(
+    tool.execute({ action: 'exec', cmd: 'ls', machine: 'nowhere' }, fakeExec()),
+    /E_EXEC_FAILED.*unknown machine "nowhere"/,
+  )
+  await assert.rejects(
+    tool.execute({ action: 'exec', cmd: '' }, fakeExec()),
+    /E_BAD_EXEC.*cmd must be a non-empty string/,
+  )
 })
 
 // ---------------------------------------------------------------- gates
@@ -427,7 +452,7 @@ test('render is one JSON text block; every action value passes the declared outp
     await tool.execute({ action: 'send', agent: 'm1ab-na1ive', message: 'hi' }, fakeExec()),
     await tool.execute({ action: 'read' }, fakeExec()),
     await tool.execute({ action: 'stop', agent: 'm1ab-na1ive', conversationId: 'conv0001' }, fakeExec()),
-    await tool.execute({ action: 'exec' }, fakeExec()),
+    await tool.execute({ action: 'exec', cmd: 'ls' }, fakeExec()),
   ]
   for (const value of values) {
     const violations = validateJsonSchemaValue(tool.output.schema, value, '')

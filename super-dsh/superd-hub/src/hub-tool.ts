@@ -41,6 +41,17 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { A2aDeliveryCtx } from './a2a-delivery.js' // (wireCompletionToDelivery retired in R4 — replies ride reply/notice envelopes through the ingest)
 import type { AgentLink } from './agent-roster.js'
 import type { AgentStatusFile } from './agent-status.js'
+import { parseOneShotExecBody, type OneShotExecInput, type OneShotExecResult } from './exec.js'
+
+/** P4 exec face (spec §8.1): the executing side + the wire leg, closed over the hub home by a2a-row. */
+export interface HubToolExecFace {
+  /** This machine's m4 (the default exec target). */
+  selfM4(): string
+  /** Run one command on THIS machine. */
+  run(input: OneShotExecInput): Promise<OneShotExecResult>
+  /** Run one command on a paired machine over the wire. Throws typed Errors: unknown machine / exec disabled / peer unreachable. */
+  post(machineId: string, input: OneShotExecInput): Promise<OneShotExecResult>
+}
 import type {
   A2aAddress,
   A2aBufferedMessage,
@@ -107,6 +118,13 @@ export interface HubToolDeps {
   delivery: A2aDeliveryCtx
   /** Roster snapshot for the `agents` listing (row: the real hub home view). */
   roster(): HubRosterView
+  /**
+   * P4 exec face (spec §8.1): the local executing side + the cross-machine
+   * wire leg, closed over the hub home by a2a-row (self id, remote rows,
+   * pairing cookies, journal). `post` throws typed Errors (unknown machine,
+   * exec disabled on the row, peer unreachable).
+   */
+  exec: HubToolExecFace
   /**
    * Initiator identity for the calling session — the row closes this over
    * T3's `localA2aInitiator(home, 'native', sessionId)`. Called exactly once
@@ -288,7 +306,7 @@ const DESCRIPTION =
   '  {action:"send", agent, conversationId?, title?, message, delivery?} → inject one user turn (omit conversationId to open a new conversation). Receipt {outcome, messageId, conversationId, sessionId, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn (answers stopped:false with a note when no turn was active).\n' +
-  '  {action:"exec"} → not yet implemented (P4).\n' +
+  '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine) and get {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut}. machine = an m4 id from the agents listing. mode "pty" (persistent terminal over WS) is not implemented yet.\n' +
   'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead); a turn that ends with no reply yields one notice. read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
 
 /**
@@ -332,6 +350,27 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
         enum: ['turn', 'session'],
         description: "'turn' (default): cancel the active turn. 'session': degrades to turn-only — the conversation stays resumable.",
       },
+      machine: {
+        type: 'string',
+        description: 'exec target: an m4 machine id (defaults to this machine). The initiator-side registry row may disable exec per machine (execEnabled).',
+      },
+      cmd: {
+        type: 'string',
+        description: 'exec: the shell command run via bash -lc (non-empty, ≤4096 chars).',
+      },
+      cwd: {
+        type: 'string',
+        description: 'exec: optional absolute working directory.',
+      },
+      timeoutSec: {
+        type: 'integer',
+        description: 'exec: timeout in seconds, 1–600 (default 120). SIGTERM then SIGKILL to the process group.',
+      },
+      mode: {
+        type: 'string',
+        enum: ['oneshot', 'pty'],
+        description: "exec mode: 'oneshot' (default). 'pty' is not implemented yet.",
+      },
     },
     output: {
       schema: {
@@ -355,6 +394,12 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           reason: { type: 'string', description: 'the turn-only degradation note on session-scope stops' },
           count: { type: 'integer' },
           messages: { type: 'json', description: 'read sweep: buffered messages with from as "<m4>-<a6>"' },
+          exit: { type: 'json', description: 'exec: the command exit code (null when killed by timeout/signal)' },
+          stdout: { type: 'json', description: 'exec: the last 30k of stdout' },
+          stderr: { type: 'json', description: 'exec: the last 30k of stderr' },
+          durationMs: { type: 'integer', description: 'exec: wall-clock duration' },
+          truncated: { type: 'boolean', description: 'exec: a stream\'s total output exceeded the returned tail window' },
+          timedOut: { type: 'boolean', description: 'exec: the timeout fired (SIGTERM→SIGKILL to the group)' },
         },
       },
       render: (_args, value): ContentBlock[] => [{ type: 'text', text: JSON.stringify(value) }],
@@ -481,8 +526,26 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           }
         }
 
-        case 'exec':
-          return { action, note: EXEC_PLACEHOLDER_NOTE }
+        case 'exec': {
+          if (args.mode === 'pty') {
+            return { action, note: 'exec mode "pty" (persistent terminal over WS) is not implemented yet — use mode "oneshot" (spec §8.2 rides a later round)' }
+          }
+          const parsed = parseOneShotExecBody({
+            cmd: args.cmd,
+            ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+            ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }),
+          })
+          if (!parsed.ok) throw new Error(`[E_BAD_EXEC] superd-hub: ${parsed.error}`)
+          const machine = args.machine ?? deps.exec.selfM4()
+          try {
+            const result = machine === deps.exec.selfM4()
+              ? await deps.exec.run(parsed.value)
+              : await deps.exec.post(machine, parsed.value)
+            return { action, machine, ...result }
+          } catch (err) {
+            throw new Error(`[E_EXEC_FAILED] superd-hub: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
 
         default:
           // Unreachable through the tool surface (the input schema's action

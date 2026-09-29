@@ -54,6 +54,8 @@ import { type MachineRow, ensureSelf, listRemotes, removeRemote } from './machin
 import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type ProbeResult, type MachineStatusEntry } from './mesh-link.js'
 import { type A2aIngest } from './a2a-ingest.js'
 import { A2A_ENDPOINT_PATH, A2A_OUTBOX_PATH, A2A_WIRE_VERSION, decodeA2aWireFrame } from './a2a-wire.js'
+import type { A2aLogFn } from './a2a-log.js'
+import { EXEC_API_BASE, parseOneShotExecBody, runOneShotExec } from './exec.js'
 
 /** The shared-channel Fetch route path this API owns. */
 export const MESH_API_BASE = '/api/superd/machines'
@@ -296,5 +298,44 @@ export function registerA2aRpc(ctx: Context, ingest: A2aIngest): void {
       requestBody: 'buffered',
       fetch: (request) => Promise.resolve(handleA2aOutboxGet(request, ingest)),
     }), 'superd-hub: /api/superd/a2a/outbox route')
+  })
+}
+
+// ---------------------------------------------------------------- exec (P4, spec §8.1)
+
+/**
+ * POST /api/superd/exec — one-shot `bash -lc <cmd>` on THIS machine (spec
+ * §8.1): tail-windowed stdout/stderr, two-stage group kill on timeout. The
+ * auth trust boundary is the shared `/api` fence (same as machines/a2a);
+ * the initiator-side per-machine knob (`execEnabled`) lives on the CALLER's
+ * registry row, not here.
+ */
+export async function handleExecPost(request: Request, log?: A2aLogFn): Promise<Response> {
+  if (request.method !== 'POST') {
+    return json(405, { error: `mesh-api: method ${request.method} is not supported on ${EXEC_API_BASE} (use POST)` })
+  }
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch (err) {
+    return json(400, { error: `mesh-api: exec body is not valid JSON — ${err instanceof Error ? err.message : String(err)}` })
+  }
+  const parsed = parseOneShotExecBody(body)
+  if (!parsed.ok) return json(400, { error: `mesh-api: ${parsed.error}` })
+  const result = await runOneShotExec(parsed.value, log)
+  return json(200, result)
+}
+
+/** Register the exec endpoint on the shared `/api` connection channel. */
+export function registerExecRpc(ctx: Context, log?: A2aLogFn): void {
+  ctx.inject(['connection'], (connCtx) => {
+    const fetchFace = (Reflect.get(connCtx, 'connection') as { fetch?: ConnectionFetchFace } | undefined)?.fetch
+    if (fetchFace === undefined) return // connection not actually present (test ctx)
+    connCtx.effect(() => fetchFace.register({
+      path: EXEC_API_BASE,
+      methods: [...ROUTE_METHODS],
+      requestBody: 'buffered',
+      fetch: (request) => handleExecPost(request, log),
+    }), 'superd-hub: /api/superd/exec route')
   })
 }

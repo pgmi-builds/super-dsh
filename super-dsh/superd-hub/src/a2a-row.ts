@@ -46,12 +46,14 @@ import { setSweepCollectors } from './mesh-link.js'
 import { formatA2aLogLine, type A2aLogFn } from './a2a-log.js'
 import { createA2aService } from './a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from './a2a-host.js'
-import { registerA2aRpc } from './mesh-rpc.js'
-import type { HubRosterView } from './hub-tool.js'
+import { registerA2aRpc, registerExecRpc } from './mesh-rpc.js'
+import { runOneShotExec, postOneShotExec } from './exec.js'
+import { ensureSelf, listRemotes } from './machines.js'
+import { cookieOf } from './mesh-link.js'
+import type { HubToolExecFace, HubRosterView } from './hub-tool.js'
 import type { RawTypertGatewayFace } from './a2a-host.js'
 import type { A2aAgentHandle, A2aDeliveryCtx } from './a2a-delivery.js'
 import type { A2aGateway } from './a2a-service.js'
-import { ensureSelf, listRemotes } from './machines.js'
 import { agentLinks } from './agent-roster.js'
 
 /** Stable Cordis plugin (row) name. */
@@ -141,9 +143,26 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     // /api fence like the machines route; registered on the same inject scope
     // (they live and die with the typertGateway seam).
     registerA2aRpc(t, ingestRef)
+    // P4: the exec endpoint rides the same shared /api fence (spec §8.1).
+    registerExecRpc(t, alog)
+    // P4 exec face: the local executing side + the wire leg over the pairing
+    // cookie. The initiator-side per-machine knob (execEnabled) is honored
+    // here, before any bytes leave (spec §5).
+    const execFace: HubToolExecFace = {
+      selfM4: () => ensureSelf(home, 'local').id,
+      run: (input) => runOneShotExec(input, alog),
+      post: async (machineId, input) => {
+        const row = listRemotes(home).find((r) => r.id === machineId)
+        if (row === undefined) throw new Error(`unknown machine "${machineId}" — call agents for the roster`)
+        if (row.execEnabled === false) throw new Error(`exec is disabled for machine "${machineId}" on this registry row (execEnabled=false)`)
+        alog?.('info', 'exec.remote', { machine: machineId, cmd: input.cmd, timeoutSec: input.timeoutSec ?? 120 })
+        return postOneShotExec(row.origin, input, { cookie: cookieOf(row.id, home) })
+      },
+    }
     t.tools.register(createSuperdHubTool({
       service,
       delivery,
+      exec: execFace,
       // R6: the agent_status leg reads the R5 cache (the sweep's legs fill it)
       status: () => loadAgentStatus(home),
       roster: () => rosterViewOf(home),
