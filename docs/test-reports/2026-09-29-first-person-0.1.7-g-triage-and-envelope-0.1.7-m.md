@@ -9,7 +9,7 @@
   dev3 `~/.dsh/profiles/web`), boot `world failed 0` both sides, full E2E envelope
   round verified live cross-machine.
 
-## 1. D1 — MCP PTY output schema rejected `value.mode` (0.1.7-g finding) — FIXED
+## 1. D1 — PTY output schema rejected `value.mode` on the DSH-native tool surface (0.1.7-g finding) — FIXED
 
 The pty rollout added `mode` (and shipped `reconnected`) in the tool result without
 declaring them in the hub-tool output schema (`additionalProperties:false`).

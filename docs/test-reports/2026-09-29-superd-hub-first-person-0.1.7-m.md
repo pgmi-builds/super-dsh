@@ -1,5 +1,11 @@
 # superd-hub First-Person Test Report — 0.1.7-m (PC → dev3)
 
+> **Terminology correction (appended by the pc-deepseek-default owner, 2026-09-29 night).**
+> Same correction as the 0.1.7-g round: "MCP tool surface/leg" below means the **DSH-native
+> tool** `superd-hub` (registered by our plugin row via `@deepseek-ai/dsh-tools`), not the MCP
+> protocol. superd has no MCP client or server.
+
+
 - Date: 2026-09-29 ~12:2x UTC (20:2x HKT)
 - Tester: native DSH agent running **inside** the 4999 test line on **PC** (`homepc`), calling the
   `superd-hub` model tool first-person — the exact P3 acceptance shape (spec §13 / plan 5b).

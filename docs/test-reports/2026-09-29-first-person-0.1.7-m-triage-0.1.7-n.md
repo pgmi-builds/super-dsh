@@ -11,7 +11,7 @@
 ## 1. What the report closed (accepted as verified)
 
 - **D1 (PTY blocked by the tool output schema)** — confirmed fixed; PTY now usable over
-  the MCP tool surface, 7/7 dispatches, local + cross-machine.
+  the DSH-native tool surface, 7/7 dispatches, local + cross-machine.
 - **D2 (orphaned executor/WS)** — no orphans in the normal lifecycle on either host. The
   report is honest about the boundary: the original trigger (harness rejecting the tool
   result) is unreachable now that D1 is fixed, so this is "old path cannot recur", not

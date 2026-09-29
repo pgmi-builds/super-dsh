@@ -388,6 +388,13 @@ no-op 是最坏选项，现改为显式拒绝 `[E_BAD_EXEC]`，并教 `cd <dir> 
 
 ## 10. 注入分阶段（P5）
 
+> **载体纪律（ADR 0012，2026-09-29 落档）：superd 的工具面一律走各 runtime 自己的
+> 插件/扩展接口，代码是我们自己的；MCP 明确不作载体（superd 不实现 MCP server、
+> 不经 MCP client 投递自身能力）。** 已落地的 DSH 原生 = 进程内 `tools` 服务注册
+> （`ctx.tools.register(defineTool(...))`）；a2a 回复走宿主 Agent handle，exec/PTY 走
+> hub↔hub HTTP/WS——都不借 MCP。命名纪律：模型面/文档按实际载体称呼，
+> 不得把 DSH 原生工具写成 MCP（术语错误即产品缺陷）。
+
 | runtime | 机制 | 状态 |
 |---|---|---|
 | DSH 原生 | ctx0 tools 服务注册 | P3 交付 |

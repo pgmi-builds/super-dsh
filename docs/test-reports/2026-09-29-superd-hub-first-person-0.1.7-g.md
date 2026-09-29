@@ -1,5 +1,14 @@
 # superd-hub First-Person Test Report — 0.1.7-g (dev3 → PC)
 
+> **Terminology correction (appended by the pc-deepseek-default owner, 2026-09-29 night).**
+> This report says "MCP" for what is in fact the **DSH-native tool surface**: `superd-hub` is a
+> DSH tool registered in-process by our own cordis plugin row
+> (`ctx.tools.register(defineTool(...))`, `@deepseek-ai/dsh-tools`). superd contains no MCP
+> client or server; tools delivered over MCP appear in a session as `mcp__<server>__<tool>`,
+> while ours is the bare name `superd-hub`. The "MCP" wording below is kept verbatim as the
+> tester's original text; read it as "the model-facing tool surface".
+
+
 - Date: 2026-09-29 (UTC)
 - Tester: dev3-deepseek-default, first-person, via the `superd-hub` MCP tool surface from a DSH web session (dev3 GUI 127.0.0.1:3080)
 - Nodes: local `bfwu` = dev3 (`srv1637772`), peer `79he` = PC (`homepc`)
