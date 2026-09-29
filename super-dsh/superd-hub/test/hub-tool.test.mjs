@@ -131,6 +131,10 @@ function makeTool(overrides = {}) {
       if (machineId === 'w2cd') throw new Error('exec is disabled for machine "w2cd" on this registry row (execEnabled=false)')
       throw new Error(`unknown machine "${machineId}" — call agents for the roster`)
     },
+    pty: async (sessionKey, machine, cmd) => ({
+      output: `pty-ran[${sessionKey}@${machine}]: ${cmd}\n`, exit: 0, cwd: '/tmp', timedOut: false,
+      reconnected: machine === 'w3ef', durationMs: 2,
+    }),
   }
   const watches = []
   const tool = createSuperdHubTool({
@@ -399,8 +403,18 @@ test('exec: local one-shot runs on THIS machine; pty answers honestly; unknown m
     timedOut: false,
     outcome: 'exited',
   })
-  const pty = await tool.execute({ action: 'exec', mode: 'pty', cmd: 'ls' }, fakeExec())
-  assert.match(pty.note, /not implemented yet/)
+  const pty = await tool.execute({ action: 'exec', mode: 'pty', cmd: 'ls', machine: 'w3ef' }, fakeExec())
+  assert.deepEqual(pty, {
+    action: 'exec',
+    mode: 'pty',
+    machine: 'w3ef',
+    output: 'pty-ran[sess-777@w3ef]: ls\n',
+    exit: 0,
+    cwd: '/tmp',
+    timedOut: false,
+    reconnected: true,
+    durationMs: 2,
+  })
   await assert.rejects(
     tool.execute({ action: 'exec', cmd: 'ls', machine: 'nowhere' }, fakeExec()),
     /E_EXEC_FAILED.*unknown machine "nowhere"/,

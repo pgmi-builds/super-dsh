@@ -32,6 +32,8 @@ import { agentRosterRow } from './agent-roster.js'
 import { getTarget } from './targets.js'
 import { registerHubRoute } from './hub-route.js'
 import { WorldWebServer, type RealWebServerFace } from './world-web-server.js'
+import { registerPtyExecutor } from './exec-pty-rpc.js'
+import { consoleA2aLog } from './a2a-log.js'
 import type { CarrierGatewayFace } from './carrier.js'
 
 /** Stable Cordis plugin name. */
@@ -124,6 +126,16 @@ export function apply(ctx: Context, config?: HubConfig): void {
       gatewayOf: (label) => (federatedGatewayOf(label) ?? getTarget(label)?.gateway) as CarrierGatewayFace | undefined,
     })
     ctx.effect(() => dispose, 'superd-hub: /hub route family')
+    // P4 §8.2: the PTY executor's upgrade route — same gate as the /hub family
+    // (authorizeIndex cookie auth first, then the browser-trust fence). The
+    // dumb pump lives in exec-pty-rpc.ts; a2a-row owns the initiator half.
+    void registerPtyExecutor(real as RealWebServerFace, {
+      authorize: (req, res) => connection.authorizeIndex(req, res),
+      requestRejection: (req) => connection.requestRejection(req),
+      log: consoleA2aLog(),
+    }).then((disposePty) => {
+      ctx.effect(() => disposePty, 'superd-hub: PTY executor upgrade route')
+    }, () => { /* ws unavailable in this env — route not offered */ })
   })
 }
 export default apply

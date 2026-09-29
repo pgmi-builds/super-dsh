@@ -43,7 +43,7 @@ import { createSuperdHubTool } from './hub-tool.js'
 import { createA2aIngest, type A2aIngest } from './a2a-ingest.js'
 import { statusSweepLegs, loadAgentStatus } from './agent-status.js'
 import { setSweepCollectors } from './mesh-link.js'
-import { formatA2aLogLine, type A2aLogFn } from './a2a-log.js'
+import { consoleA2aLog, type A2aLogFn } from './a2a-log.js'
 import { createA2aService } from './a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from './a2a-host.js'
 import { registerA2aRpc, registerExecRpc } from './mesh-rpc.js'
@@ -51,6 +51,9 @@ import { runOneShotExec, postOneShotExec } from './exec.js'
 import { ensureSelf, listRemotes } from './machines.js'
 import { cookieOf } from './mesh-link.js'
 import type { HubToolExecFace, HubRosterView } from './hub-tool.js'
+import { PtyPool } from './exec-pty-session.js'
+import { LocalScriptChannel, WsPtyChannel, type PtyChannel } from './exec-pty-channel.js'
+import { PTY_EXEC_PATH } from './exec-pty-rpc.js'
 import type { RawTypertGatewayFace } from './a2a-host.js'
 import type { A2aAgentHandle, A2aDeliveryCtx } from './a2a-delivery.js'
 import type { A2aGateway } from './a2a-service.js'
@@ -122,12 +125,7 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     // (verified live 2026-09-29 — zero a2a lines through a full envelope
     // flow). Console matches the world-join/world-provision precedent for
     // operational lines. One line per machine event, no secrets.
-    const alog: A2aLogFn = (level, event, fields) => {
-      const line = formatA2aLogLine(event, fields)
-      if (level === 'warn') console.warn(line)
-      else if (level === 'error') console.error(line)
-      else console.log(line)
-    }
+    const alog: A2aLogFn = consoleA2aLog()
     let ingestRef: A2aIngest | undefined
     const service = createA2aService({ home, gatewayFor, ingest: () => ingestRef, log: alog })
     const delivery: A2aDeliveryCtx = {
@@ -148,7 +146,7 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     // P4 exec face: the local executing side + the wire leg over the pairing
     // cookie. The initiator-side per-machine knob (execEnabled) is honored
     // here, before any bytes leave (spec §5).
-    const execFace: HubToolExecFace = {
+    const execFace: Omit<HubToolExecFace, 'pty'> = {
       selfM4: () => ensureSelf(home, 'local').id,
       run: (input) => runOneShotExec(input, alog),
       post: async (machineId, input) => {
@@ -170,11 +168,38 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
         return result
       },
     }
+    // P4 §8.2 initiator half: the PTY pool. Session key = (calling DSH
+    // session, machine) — per-agent direct, no central allocation (D12).
+    const ptyPool = new PtyPool({ idleTtlSec: 600 })
+    ctx.effect(() => () => { void ptyPool.disposeAll() }, 'superd-a2a: pty pool teardown')
+    const execPty: HubToolExecFace['pty'] = async (sessionKey, machine, cmd, opts = {}) => {
+      const channelOf = (): PtyChannel => {
+        if (machine === ensureSelf(home, 'local').id) return new LocalScriptChannel()
+        const row = listRemotes(home).find((r) => r.id === machine)
+        if (row === undefined) throw new Error(`unknown machine "${machine}" — call agents for the roster`)
+        if (row.execEnabled === false) throw new Error(`exec is disabled for machine "${machine}" on this registry row (execEnabled=false)`)
+        alog?.('info', 'exec.pty.dial', { machine, session: sessionKey })
+        return new WsPtyChannel(`${row.origin.replace(/^http/, 'ws')}${PTY_EXEC_PATH}`, { cookie: cookieOf(row.id, home) })
+      }
+      const session = ptyPool.getOrCreate(`${sessionKey}|m:${machine}`, channelOf)
+      const result = await session.dispatch(cmd, { ...(opts.timeoutSec === undefined ? {} : { timeoutSec: opts.timeoutSec }) })
+      alog?.('info', 'exec.pty.run', {
+        machine,
+        cmd: cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd,
+        exit: result.exit ?? 'none',
+        ...(result.cwd !== null ? { cwd: result.cwd } : {}),
+        durationMs: result.durationMs,
+        ...(result.reconnected ? { reconnected: true } : {}),
+        ...(result.timedOut ? { timedOut: true } : {}),
+      })
+      return result
+    }
+    const execFaceFull: HubToolExecFace = { ...execFace, pty: execPty }
     // the a2a endpoints (POST /api/superd/a2a + GET /api/superd/a2a/outbox) ride the shared
     t.tools.register(createSuperdHubTool({
       service,
       delivery,
-      exec: execFace,
+      exec: execFaceFull,
       // R6: the agent_status leg reads the R5 cache (the sweep's legs fill it)
       status: () => loadAgentStatus(home),
       roster: () => rosterViewOf(home),

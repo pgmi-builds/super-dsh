@@ -41,7 +41,8 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { A2aDeliveryCtx } from './a2a-delivery.js' // (wireCompletionToDelivery retired in R4 — replies ride reply/notice envelopes through the ingest)
 import type { AgentLink } from './agent-roster.js'
 import type { AgentStatusFile } from './agent-status.js'
-import { parseOneShotExecBody, type OneShotExecInput, type OneShotExecResult } from './exec.js'
+import { parseOneShotExecBody, EXEC_TAIL_WINDOW, type OneShotExecInput, type OneShotExecResult } from './exec.js'
+import { tailWindow } from './exec-pty-framing.js'
 
 /** P4 exec face (spec §8.1): the executing side + the wire leg, closed over the hub home by a2a-row. */
 export interface HubToolExecFace {
@@ -51,6 +52,12 @@ export interface HubToolExecFace {
   run(input: OneShotExecInput): Promise<OneShotExecResult>
   /** Run one command on a paired machine over the wire. Throws typed Errors: unknown machine / exec disabled / peer unreachable. */
   post(machineId: string, input: OneShotExecInput): Promise<OneShotExecResult>
+  /**
+   * P4 §8.2 persistent PTY: dispatch one command into a per-(session,
+   * machine) shell that KEEPS its cwd/env across dispatches. Throws typed
+   * Errors: unknown machine / exec disabled / transport failure.
+   */
+  pty(sessionKey: string, machine: string, cmd: string, opts?: { timeoutSec?: number }): Promise<import('./exec-pty-session.js').PtyDispatchResult>
 }
 import type {
   A2aAddress,
@@ -306,7 +313,7 @@ const DESCRIPTION =
   '  {action:"send", agent, conversationId?, title?, message, delivery?} → inject one user turn (omit conversationId to open a new conversation). Receipt {outcome, messageId, conversationId, sessionId, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn (answers stopped:false with a note when no turn was active).\n' +
-  '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine) and get {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut}. machine = an m4 id from the agents listing. mode "pty" (persistent terminal over WS) is not implemented yet.\n' +
+  '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}. mode "pty": a PERSISTENT shell per (your session, machine) — cwd and env SURVIVE across dispatches (cd once, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. Prefer oneshot for independent commands; pty when shell state matters.\n' +
   'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead); a turn that ends with no reply yields one notice. read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
 
 /**
@@ -369,7 +376,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       mode: {
         type: 'string',
         enum: ['oneshot', 'pty'],
-        description: "exec mode: 'oneshot' (default). 'pty' is not implemented yet.",
+        description: "exec mode: 'oneshot' (default, independent). 'pty' keeps one shell per (session, machine) — cwd/env persist across dispatches.",
       },
     },
     output: {
@@ -386,6 +393,9 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           agent: { type: 'string' },
           machine: { type: 'string' },
           outcome: { type: 'string', description: "send receipt: 'injected' | 'failed'; exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
+          output: { type: 'json', description: 'exec pty: the session output, tail-windowed (a truncation banner carries the exact counts)' },
+          cwd: { type: 'json', description: 'exec pty: the session working directory after the command (null when unknown)' },
+          reconnected: { type: 'boolean', description: 'exec pty: the transport died since the last dispatch and a fresh shell answered' },
           messageId: { type: 'string' },
           error: { type: 'json', description: 'wire error body {code, message, details?} on failed sends' },
           note: { type: 'string', description: 'model-facing reminder riding successful sends' },
@@ -528,7 +538,27 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
 
         case 'exec': {
           if (args.mode === 'pty') {
-            return { action, note: 'exec mode "pty" (persistent terminal over WS) is not implemented yet — use mode "oneshot" (spec §8.2 rides a later round)' }
+            if (typeof args.cmd !== 'string' || args.cmd.trim() === '') throw new Error('[E_BAD_EXEC] superd-hub: exec: cmd must be a non-empty string')
+            const sessionKey = initiatorOfExec(deps, exec).sessionId
+            const machine = args.machine ?? deps.exec.selfM4()
+            try {
+              const r = await deps.exec.pty(sessionKey, machine, args.cmd, { ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }) })
+              const out = tailWindow(r.output, EXEC_TAIL_WINDOW)
+              return {
+                action,
+                mode: 'pty',
+                machine,
+                output: out.text,
+                exit: r.exit,
+                cwd: r.cwd,
+                timedOut: r.timedOut,
+                reconnected: r.reconnected,
+                durationMs: r.durationMs,
+                ...(out.truncated !== undefined ? { truncated: true } : {}), // char counts ride tailWindow's own banner in `output`
+              }
+            } catch (err) {
+              throw new Error(`[E_EXEC_FAILED] superd-hub: ${err instanceof Error ? err.message : String(err)}`)
+            }
           }
           const parsed = parseOneShotExecBody({
             cmd: args.cmd,

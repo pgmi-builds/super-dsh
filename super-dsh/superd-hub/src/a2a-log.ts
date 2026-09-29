@@ -30,3 +30,18 @@ export function formatA2aLogLine(event: string, fields: A2aLogFields = {}): stri
   }
   return parts.join(' ')
 }
+
+/**
+ * The host wiring both rows share: level → process console. NOT ctx.logger —
+ * the pack composes no cordis logger-console exporter, so LoggerService
+ * records go nowhere (verified live 2026-09-29); console matches the
+ * world-join / world-provision precedent and lands in every unit log.
+ */
+export function consoleA2aLog(): A2aLogFn {
+  return (level, event, fields) => {
+    const line = formatA2aLogLine(event, fields)
+    if (level === 'warn') console.warn(line)
+    else if (level === 'error') console.error(line)
+    else console.log(line)
+  }
+}
