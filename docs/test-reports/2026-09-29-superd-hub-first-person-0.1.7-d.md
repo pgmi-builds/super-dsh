@@ -26,6 +26,7 @@ first-person report for the 0.1.7 line. This is the first 0.1.7-d pass.
 | Auth fence | **Green** — every unauthenticated `/api/*` path, including a bogus one, is 401 |
 | `execEnabled=false` gating | **Green** — remote refused, local unaffected, registry restored |
 | Defects found | 1 real (silent bad-`cwd` failure), plus 4 observations/doc nits — §5 |
+| Model-facing a2a surface | **§8 (appended after operator review) — BASE REQUIREMENT violation**: provenance not serialized, notices carry no cause; semantic development is a product-class requirement, not an enhancement |
 
 ---
 
@@ -373,6 +374,9 @@ triggered this response." A recognized kind would read better — `agent-message
 "Task message received" — or upstream could declare an a2a kind. Cosmetic; delivery,
 ordering and exactly-once are unaffected.
 
+**Superseded by §8:** the operator reclassified this from a cosmetic UI nit to a
+base-requirement violation on the model-facing surface. See §8 (R1–R4).
+
 
 Everything else matched the documentation and the spec comments: address validation, the
 `[E_*]` taxonomy and ordering, the tail window, the group kill, the `execEnabled` knob,
@@ -406,6 +410,91 @@ active turn from an idle one, and cross-machine send/follow-up round-trips in ~3
 
 The only real defect is F1 — a bad `cwd` failing with an empty, `null`-exit shape and no
 diagnostic — which is a small, self-contained fix in `exec.js`'s `error` handler.
+
+---
+
+## 8. Addendum (2026-09-29, after operator review): semantic development is a base requirement
+
+This section was appended after the operator reviewed §2.6.1 against the live session. It is
+filed as a **requirement**, not a recommendation and not an enhancement.
+
+### 8.1 The ruling
+
+> 现在开发不单单有硬编码逻辑的开发，还有语义层面的开发。如果语义上没有达到那个
+> 效果、不能逻辑自洽，做不到恰到好处的 surface，那这个产品的定位就没有达到。
+> 这不是 enhancement，这是基本要求。2026 年了。
+
+In English: for an app whose consumer is an LLM, development does not stop at hardcoded
+logic — it includes **semantic development**. The text surface handed to the model must be
+logically self-consistent and must deliver exactly what the runtime needs. If it does not,
+the product's stated positioning ("an app for agents") is simply not met. That is a base
+requirement of this product class in 2026, not polish.
+
+Two tester-level corrections are recorded alongside, because the review that produced this
+section caught both mistakes in this very pass:
+
+- **Answer the surface that matters.** Asked "did you see this exact content", the tester
+  first answered with UI source strings. The only well-formed answer for an LLM-facing app
+  is what text actually reached the model's context. The UI is a different surface for a
+  different consumer and is not evidence about the model surface.
+- **Do not defend the upstream.** "It is generic by design" explains a choice; it does not
+  discharge a defect. The upstream is itself a tool written by people and can be wrong. A
+  first-person pass evaluates the surface as its consumer — the model — experiences it.
+
+### 8.2 The measured model surface (not source, not UI)
+
+Taken directly from this session's log:
+
+1. **The UI strings never reached the model.** "Execution requested" and "This
+   notification triggered this response." first occur at seq 407/412 — the operator's own
+   paste. Before that turn: zero occurrences anywhere in the log.
+2. **Each a2a delivery reached the model as one prose block**, exactly:
+   - `Agent bfwu-ea3yvg — last output at turn end (conversation "A2A simple test 0.1.7-d"):\n\nA2A-NEW-OK-7d4e`
+   - `conversation "k8h2e8": turn ended, no reply`
+   - `Agent 79he-8ah589 replied (conversation "A2A cross-machine simple test 0.1.7-d"):\n\nA2A-XM-OK-b3a7`
+3. **The fields that carry the semantics are dropped at the surface.** The same events hold
+   `source = {kind, form, senderMachine, senderAgent, conversationId, messageId}` (notices
+   additionally `reason`); none of it is serialized into `content`. The model must recover
+   sender, conversation, event class and cause by parsing English sentences.
+4. **The surface is not self-consistent.** One event class (relay) has two wordings with no
+   stated difference; notices carry no cause (stop-by-initiator, peer crash and peer silent
+   end are textually identical); and a corti-memory injection rides the same turn in the
+   same user role — three ambiguities stacked on one surface.
+
+### 8.3 Requirements (base level, superd-side)
+
+**R1 — Machine-readable envelope.** Every injected turn states its provenance as text, in
+one stable vocabulary:
+
+```
+[superd-hub:a2a] kind=reply form=relay conversation=k8h2e8 from=bfwu-ea3yvg message=a2a-relay-…
+A2A-NEW-OK-7d4e
+```
+
+```
+[superd-hub:a2a] kind=notice conversation=k8h2e8 reason=peer summary="turn ended, no reply"
+```
+
+**R2 — Notice cause taxonomy.** `reason` must distinguish `stopped-by-initiator`,
+`peer-error`, `peer-silent`. One sentence covering three different facts is a correctness
+risk: a model reading "turn ended, no reply" cannot tell wait from abort from crash.
+
+**R3 — Model-facing prose is product too.** The tool description's "lands like an ordinary
+user message" (`superd-hub/dist/hub-tool.js:170`) is itself model-facing text and is
+inaccurate — the delivery is a synthetic waking turn, not an ordinary user message.
+Descriptions the model reads are held to the same self-consistency standard as payloads.
+
+**R4 — Ambiguity is a runtime cost, not a style issue.** An ambiguous surface is paid for
+on every turn, in attention and in inference risk, so semantic incoherence ranks as a
+defect class of its own, alongside logic bugs — never as a polish item.
+
+All four are **superd-side changes** (customize, not fork): the relay/notice text is
+composed by superd's own code at `superd-hub/dist/a2a-delivery.js:95-96` (relay wordings)
+and `superd-hub/dist/a2a-ingest.js:279` (notice). The UI card title ("Execution requested")
+is upstream DSH's fixed kind-switch with no per-kind seam; per-kind UI labels would require
+forking upstream and are explicitly out of scope for this requirement.
+
+§5/F7's "cosmetic" classification is superseded by this section.
 
 ---
 

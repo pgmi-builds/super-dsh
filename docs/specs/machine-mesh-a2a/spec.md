@@ -270,7 +270,7 @@ To reply, send a message back: with a superd-hub tool, if available,
 message:"…"}. You can send at any point, more than once — sending does not
 end your turn.
 
-If we do not receive a superd-hub message from you (intentionally or whatever
+If the hub receive no hub message from you (intentionally or whatever
 situation prevents so), your last output at this turn's end is delivered to
 the sender as your reply.
 ```
@@ -279,11 +279,29 @@ the sender as your reply.
   + 渠道即合同（防「它都看到了」错觉）/ **异质性披露**——明说工具可用性因 runtime
   而异（无工具的模型读到这句就不会去满世界找工具，OMP 事故的文本级免疫）/
   怎么回、随时可回、回不结束 turn（DSH `withContinuableReturnGuidance` 同款
-  关键句）/ 兜底——从**接收方的运行时事实**措辞（「我们没有收到」，覆盖故意不发
+  关键句）/ 兜底——从**接收方的运行时事实**措辞（0.1.7-h user ruling 定稿：「the hub
+  receive no hub message」——接收方是 hub，消息类是 hub message；覆盖故意不发
   与不能发两种情形），转写代投带标注（informed consent，同时就是对无工具 peer
   的 subagent 契约句）。
   `{machine}-{agent}` 填 initiator 地址（write-back 直接可用）；单遍渲染防注入
   机制不变；**绝不独立 user prompt**（OMP 事故）。
+- **模型面信封（0.1.7-h R1/R2，operator §8 裁决：语义开发是基本要求）**：
+  每一个注入 turn——relay 与 notice——的第一行都是同一套机器可读词表的
+  `k=v` 信封，provenance 不再靠模型从英文句子里反推：
+  - reply：`[superd-hub:a2a] kind=reply form=relay|transcript conversation=<shortId>
+    from=<m4>-<a6> message=<messageId>[ note="…"]` + 空行 + 正文。`form` 即 D20
+    出身二分（channel 亲发 vs 运行时转写 turn-end 末次输出；transcript 的 note
+    按 no-jargon redline 写观察事实）。
+  - notice：`[superd-hub:a2a] kind=notice[ conversation=<shortId>] from=<m4>-<a6>
+    reason=<peer-silent|peer-error|stopped-by-initiator> summary="<一行事实>"`
+    （单行，无正文）。R2 因果三值由 wire 税射映射：`stop`→stopped-by-initiator、
+    `peer`→peer-silent、`stream-dead`/`aborted`/`send-failed`→peer-error；
+    wire notice 信封加 additive `reason` 字段（老 peer 缺省回落 'peer'）。
+  - **stop 溯源**：stop 信封真取消活 turn 时写行 `stoppedAt`（additive），
+    completion watch 以 arm 水位比对——initiator 自己按下的 stop 不得伪装成
+    「peer 沉默」。
+  - title 不进信封（会话身份是 shortId）；摘要内嵌双引号消毒为单引号保证 k=v
+    可解析；缓冲副本携带同一信封行（read 扫出的与 live 注入的逐字节一致）。
 - **registry 双侧**：发起方持行（发起 session 上下文 + shortId）；对端持镜像行
   （peer 地址 + 本机 session）。shortId 由发起方铸造、信封携带、对端原样收养
   ——信封的 conversationId 续聊条款处处兑得现。
