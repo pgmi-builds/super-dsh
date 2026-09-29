@@ -53,7 +53,7 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EnvelopeError, type WireError } from './envelope.js'
-import { A2aAddressError, A2A_TITLE_PLACEHOLDER, normalizeA2aTitle, postA2aEnvelope, a2aAddressOf } from './a2a-wire.js'
+import { A2aAddressError, A2A_TITLE_PLACEHOLDER, A2A_NOTICE_SUMMARY_MAX, normalizeA2aTitle, postA2aEnvelope, a2aAddressOf } from './a2a-wire.js'
 import type {
   A2aEnvelope,
   A2aMessageEnvelope,
@@ -62,6 +62,7 @@ import type {
   A2aStopReceipt,
   A2aWireOrigin,
   A2aWireReceipt,
+  A2aNoticeEnvelope,
 } from './a2a-wire.js'
 // R4: the ingest leg — TYPE-ONLY (the instance is injected; no runtime cycle).
 import type { A2aIngest } from './a2a-ingest.js'
@@ -99,9 +100,13 @@ export interface ConversationRow {
    */
   hostAgent?: string
   /**
-   * R4 amendment: present ONLY on INITIATOR rows = the initiator identity's
-   * full session id (persisted at create/first-send) — the peer→initiator
-   * asynchronous delivery address. Absent = pre-R4 rows / not yet sent.
+   * The initiator identity's full session id — the peer→initiator asynchronous
+   * delivery address. R4: persisted at create/first-send on INITIATOR rows.
+   * 0.1.7-i: MIRROR rows persist it at adoption too (the opener's session
+   * from the envelope) — the send-failed notice must address the original
+   * initiator even when the write-back dies before the initiator-side ingest
+   * ever learned the conversation. Additive; absent = pre-R4 rows / not yet
+   * sent.
    */
   initiatorSession?: string
   /**
@@ -114,6 +119,14 @@ export interface ConversationRow {
   channelUsed?: true
   /** D20: epoch ms of the peer's LAST channel send on this row — the watermark the completion watch compares against its arm time to detect "sent during this turn's window" (suppresses the artifact when the send already was it). */
   lastSentAt?: number
+  /**
+   * 0.1.7-h R2: epoch ms when a stop envelope cancelled a LIVE turn here.
+   * The completion watch compares it against its arm watermark — a turn that
+   * ends because the INITIATOR stopped it must surface as
+   * reason=stopped-by-initiator, not as the peer going silent. Additive
+   * optional; no migration.
+   */
+  stoppedAt?: number
   /** Epoch ms when the row was created. */
   createdAt: number
   /** Epoch ms of the last successful send. */
@@ -259,13 +272,15 @@ export function migrateConversations(home: string): ConversationRow[] {
  * availability genuinely differs per runtime — this is what stops a
  * tool-less model from hunting for one) / how+when to send (sending does
  * not end the turn) / the fallback, phrased from the RECEIVER's operational
- * truth ("we do not receive" — intentionally or prevented). The "if
- * available" conditional is evaluated by the MODEL against its own tool
+ * truth ("the hub receive no hub message" — intentionally or prevented;
+ * wording per user ruling 0.1.7-h: the receiver is the hub, the message
+ * class is a hub message). The "if available" conditional is evaluated by
+ * the MODEL against its own tool
  * list; never pre-select variants on unknowable runtime state. Never a
  * separate user prompt (the OMP 20-tool-call incident).
  */
 export const A2A_MESSAGE_TEMPLATE =
-  'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"{machine}-{agent}", conversationId:"{shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.'
+  'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"{machine}-{agent}", conversationId:"{shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf the hub receive no hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.'
 
 /** Title shown when the conversation has none. */
 export const A2A_UNTITLED = '(untitled)'
@@ -992,6 +1007,9 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       // machine/agent the row points at.
       const from = originOf(initiator)
       let envelope: A2aNewConversationEnvelope | A2aMessageEnvelope
+      // hoisted for the failed-receipt leg below: a failed WRITE-BACK must
+      // still reach the original initiator (0.1.7-h R2 send-failed notice).
+      let writeBackOrigin: A2aWireOrigin | undefined
       if (row === undefined) {
         envelope = {
           kind: 'new-conversation',
@@ -1013,6 +1031,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         const peerOrigin: A2aWireOrigin | undefined = writeBack && row.hostAgent !== undefined
           ? { machine: selfM4(), agent: row.hostAgent, sessionId: row.sessionId }
           : undefined
+        writeBackOrigin = peerOrigin
         const to = peerOrigin !== undefined
           ? { machine: row.machine, id: row.agent }
           : row.hostAgent !== undefined
@@ -1049,6 +1068,40 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
           recordInitiatorRow(answer.conversationId, req.to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
         }
         alog?.('warn', 'send.fail', { code: (answer.error ?? { code: 'a2a/remote-failed' }).code, conversation: answer.conversationId ?? row?.shortId, message: messageId })
+        // 0.1.7-h R2 live finding (r2e2eh probe): a FAILED write-back still
+        // bumps the row's send watermark (markChannelUsed ran at send time),
+        // so the peer's completion watch goes quiet — the turn's only artifact
+        // was lost and the original initiator never heard a word. The taxonomy
+        // reserved 'send-failed' for exactly this: mint the notice and route it
+        // to the original initiator (notices deliver without a registry row —
+        // deliverLocal keys off envelope.to alone; deliverNotice re-bounds the
+        // summary). Fire-and-forget: the caller still gets its failed receipt;
+        // parked sends stay silent (a parked envelope is pending, not failed —
+        // it delivers on retry).
+        if (writeBackOrigin !== undefined && row?.initiatorSession !== undefined && row.initiatorSession !== '') {
+          const notice: A2aNoticeEnvelope = {
+            kind: 'notice',
+            to: { machine: row.machine, agent: row.agent, sessionId: row.initiatorSession },
+            conversation: row.shortId,
+            // answer.error is the WIRE error shape {code, message} — messageOf it and it stringifies as [object Object].
+            // Bound at MINT time: the receiving side's strict guard 400s an
+            // over-max summary (0.1.7-l live finding — the long ingest error
+            // message blew the 120 bound and the notice died as 'unreachable').
+            summary: (() => {
+              const raw = `conversation ${row.shortId}: the peer's reply could not be delivered — ${answer.error?.message ?? 'unknown error'}`
+              return raw.length > A2A_NOTICE_SUMMARY_MAX ? raw.slice(0, A2A_NOTICE_SUMMARY_MAX - 1) + '…' : raw
+            })(),
+            messageId: `a2a-notice-${randomUUID()}`,
+            sender: { machine: selfM4(), agent: row.hostAgent ?? row.agent },
+            reason: 'send-failed',
+          }
+          // 0.1.7-i live lesson: a swallowed emission failure reads as "no notice"
+          // downstream — journal it (the r2e2ej probe chased a silent strict-guard
+          // rejection for a round because of this exact swallow).
+          void routeEnvelope(notice).catch((error: unknown) => {
+            alog?.('warn', 'send.notice-fail', { conversation: row.shortId, error: messageOf(error) })
+          })
+        }
         return {
           outcome: 'failed',
           messageId,

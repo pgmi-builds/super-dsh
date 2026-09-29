@@ -95,7 +95,7 @@ const mkRemote = (home, opts = {}) => {
 const ADDR = { machine: 'k3f9', id: 'q7m2xp' }
 const INITIATOR = { machine: 'm1ab', agent: 'a2b3c4', sessionId: 'sess-init-1' }
 const teaching = (i, title, shortId, message) =>
-  `A2A message from ${i.machine}-${i.agent} (conversation "${title}"):\n\n${message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"${i.machine}-${i.agent}", conversationId:"${shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn's end is delivered to the sender as your reply.`
+  `A2A message from ${i.machine}-${i.agent} (conversation "${title}"):\n\n${message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"${i.machine}-${i.agent}", conversationId:"${shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf the hub receive no hub message from you (intentionally or whatever situation prevents so), your last output at this turn's end is delivered to the sender as your reply.`
 
 const seedConversation = (gw, sessionId = 'sess-gggggggg-7777') => {
   gw.rpc({ result: { ok: true, value: { sessionId } } })
@@ -323,11 +323,11 @@ test('send failure taxonomy: gateway throw → failed verbatim; business {ok:fal
 test('teaching template: ONE exported constant; renderer fills initiator identity; untitled fallback', () => {
   assert.equal(
     A2A_MESSAGE_TEMPLATE,
-    'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"{machine}-{agent}", conversationId:"{shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.',
+    'A2A message from {machine}-{agent} (conversation "{title}"):\n\n{message}\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"{machine}-{agent}", conversationId:"{shortId}", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf the hub receive no hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.',
   )
   assert.equal(
     renderA2aEnvelope({ machine: 'm1ab', agent: 'a2b3c4', title: 'T', shortId: 'sess-ddd', message: 'hi' }),
-    'A2A message from m1ab-a2b3c4 (conversation "T"):\n\nhi\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"m1ab-a2b3c4", conversationId:"sess-ddd", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf we do not receive a superd-hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.',
+    'A2A message from m1ab-a2b3c4 (conversation "T"):\n\nhi\n\nThis conversation is initiated through superd-hub by the sender. The sender sees only what arrives through this conversation.\n\nAs superd-hub hosts various kinds of agent runtimes, integration into each runtime and superd-hub tool availability in each runtime session might differ.\n\nTo reply, send a message back: with a superd-hub tool, if available, {action:"send", agent:"m1ab-a2b3c4", conversationId:"sess-ddd", message:"…"}. You can send at any point, more than once — sending does not end your turn.\n\nIf the hub receive no hub message from you (intentionally or whatever situation prevents so), your last output at this turn\'s end is delivered to the sender as your reply.',
   )
   assert.ok(renderA2aEnvelope({ machine: 'm', agent: 'a', shortId: 's', message: 'x' }).includes('"(untitled)"'))
   // D17: the '[undefined]' registry placeholder renders as the friendly untitled display
@@ -758,7 +758,7 @@ test('gateway misses (D7): unknown-agent / unknown-machine / unreachable — typ
     await assert.rejects(
       () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
       (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-machine'
-        && e.wire.message === 'a2a: unknown-machine k3f9 (not paired)',
+        && e.wire.message === 'a2a: unknown-machine "k3f9" — address "k3f9-zzzzzz" is not a paired machine (addresses are "<m4>-<a6>")',
     )
     // send: typed failures land as failed receipts (send never throws)
     missFor.set('zzzzzz', 'unknown-agent')
@@ -1112,5 +1112,65 @@ test('operational journal: new/send/write-back each leave one line (conversation
     const adopt = lines.find((l) => l.event === 'conversation.adopt' && l.fields.conversation === created.shortId)
     assert.ok(adopt, 'conversation.adopt present (self-hosted create adopts the mirror row)')
     assert.equal(adopt.fields.hostAgent, 'q7m2xp')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('0.1.7-h R2: a FAILED write-back notifies the original initiator (send-failed) — the turn artifact is never silently lost', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  upsertRemote(home, { id: 'w3ef', name: 'peer', label: 'peer', origin: 'http://127.0.0.1:9', enabled: true, addedAt: 1 })
+  // mirror row: the conversation is hosted HERE (hostAgent set); the original
+  // initiator lives at w3ef-na1ive with its persisted session on record
+  saveConversations(home, { conversations: [{
+    shortId: 'sf1red',
+    machine: 'w3ef',
+    agent: 'na1ive',
+    sessionId: 'session-eeeeeeee-9999',
+    title: '[undefined]',
+    hostAgent: 'h0stag',
+    initiatorSession: 'session-init-7777',
+    createdAt: 1,
+    lastActivityAt: 1,
+  }] })
+  const posts = []
+  const fetchImpl = async (_url, opts) => {
+    const body = JSON.parse(opts.body)
+    posts.push(body)
+    return new Response(JSON.stringify({
+      outcome: 'failed',
+      messageId: body.envelope.messageId,
+      conversationId: 'sf1red',
+      sessionId: '',
+      error: { code: 'a2a/conversation-not-found', message: 'a2a: conversation "sf1red" is not in the registry' },
+    }), { status: 200 })
+  }
+  const svc = createA2aService({
+    home,
+    gatewayFor: () => { throw new A2aAddressError('unknown-machine', { machine: 'w3ef', id: 'na1ive' }) },
+    ingest: () => undefined,
+    fetchImpl,
+    now: () => 1,
+  })
+  try {
+    const receipt = await svc.send(
+      { to: { machine: 'w3ef', id: 'na1ive' }, conversationId: 'sf1red', message: 'the reply text' },
+      { machine: selfM4, agent: 'h0stag', sessionId: 'session-h0st-1' },
+    )
+    assert.equal(receipt.outcome, 'failed')
+    assert.equal(receipt.error.code, 'a2a/conversation-not-found')
+    // the fire-and-forget notice route gets a beat
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(posts.length, 2, 'the send-failed notice must ride the wire to the original initiator')
+    const notice = posts[1].envelope
+    assert.equal(notice.kind, 'notice')
+    assert.equal(notice.reason, 'send-failed')
+    assert.equal(notice.conversation, 'sf1red')
+    assert.equal(notice.to.machine, 'w3ef')
+    assert.equal(notice.to.agent, 'na1ive')
+    assert.equal(notice.to.sessionId, 'session-init-7777')
+    assert.match(notice.summary, /could not be delivered/)
+    // the receiving side's strict guard 400s over-max summaries — the mint
+    // must pre-bound (0.1.7-l live finding)
+    assert.ok(notice.summary.length <= 120, `summary must be bounded, got ${notice.summary.length}`)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

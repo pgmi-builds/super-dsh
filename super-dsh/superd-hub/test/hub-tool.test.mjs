@@ -475,6 +475,10 @@ test('render is one JSON text block; every action value passes the declared outp
     await tool.execute({ action: 'read' }, fakeExec()),
     await tool.execute({ action: 'stop', agent: 'm1ab-na1ive', conversationId: 'conv0001' }, fakeExec()),
     await tool.execute({ action: 'exec', cmd: 'ls' }, fakeExec()),
+    // 0.1.7-h D1 lock: the pty result shape (mode included) must pass the SAME
+    // schema — the live mesh rejected `value.mode is not a declared property`
+    // because the pty rollout added the field without declaring it here.
+    await tool.execute({ action: 'exec', mode: 'pty', cmd: 'ls', machine: 'w3ef' }, fakeExec()),
   ]
   for (const value of values) {
     const violations = validateJsonSchemaValue(tool.output.schema, value, '')

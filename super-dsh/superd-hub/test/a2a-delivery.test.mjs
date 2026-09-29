@@ -17,6 +17,8 @@ import {
   deliverNotice,
   wireCompletionToDelivery,
   renderA2aRelayText,
+  renderA2aNoticeText,
+  modelNoticeReason,
   A2A_NOTICE_SUMMARY_MAX,
 } from '../dist/a2a-delivery.js'
 import { createA2aService, saveConversations } from '../dist/a2a-service.js'
@@ -92,7 +94,7 @@ test('deliverReply: idle initiator → followup with the relay message shape', (
   assert.notEqual(msg.id, '')
   assert.ok(Object.isFrozen(msg), 'published message is frozen')
   assert.deepEqual(msg.content, [
-    { type: 'text', text: 'Agent k3f9-q7m2xp replied (conversation "mesh review"):\n\npeer final text' },
+    { type: 'text', text: '[superd-hub:a2a] kind=reply form=relay conversation=sess-aaa from=k3f9-q7m2xp message=a2a-relay-0001\n\npeer final text' },
   ])
   // source: our declared kind, the relay context form, producer attribution
   assert.equal(msg.source.kind, 'a2a-relay')
@@ -134,22 +136,21 @@ test('deliverReply: missing initiator agent → buffered via the a2a-service buf
   assert.equal(entry.message.conversationId, 'sess-aaa')
   assert.equal(
     entry.message.text,
-    'Agent k3f9-q7m2xp replied (conversation "mesh review"):\n\nreply while away',
+    '[superd-hub:a2a] kind=reply form=relay conversation=sess-aaa from=k3f9-q7m2xp message=a2a-relay-0001\n\nreply while away',
   )
   assert.equal(dropped.agents.calls.steer.length, 0)
   assert.equal(dropped.agents.calls.inject.length, 0)
 })
 
-test('renderA2aRelayText: untitled conversations render the (untitled) placeholder', () => {
-  assert.equal(
-    renderA2aRelayText({ ...RELAY_META, title: undefined }, 'x'),
-    'Agent k3f9-q7m2xp replied (conversation "(untitled)"):\n\nx',
-  )
-  // D17: the '[undefined]' registry placeholder gets the same friendly display
-  assert.equal(
-    renderA2aRelayText({ ...RELAY_META, title: '[undefined]' }, 'x'),
-    'Agent k3f9-q7m2xp replied (conversation "(untitled)"):\n\nx',
-  )
+test('renderA2aRelayText: title never leaks into the R1 envelope (conversation id is the identity)', () => {
+  const withTitle = renderA2aRelayText({ ...RELAY_META }, 'x')
+  const untitled = renderA2aRelayText({ ...RELAY_META, title: undefined }, 'x')
+  // D17 heritage: the '[undefined]' registry placeholder behaves like absent
+  const placeholder = renderA2aRelayText({ ...RELAY_META, title: '[undefined]' }, 'x')
+  const header = '[superd-hub:a2a] kind=reply form=relay conversation=sess-aaa from=k3f9-q7m2xp message=a2a-relay-0001'
+  assert.equal(withTitle, `${header}\n\nx`)
+  assert.equal(untitled, withTitle)
+  assert.equal(placeholder, withTitle)
 })
 
 // ---------------------------------------------------------------- notices
@@ -175,8 +176,8 @@ test('deliverNotice: notice form, summary bounded to 120 chars with ellipsis', (
   assert.equal(A2A_NOTICE_SUMMARY_MAX, 120)
   // upstream boundContextSummary semantics: 119 chars + ellipsis
   assert.equal(msg.source.summary, 'x'.repeat(119) + '…')
-  // the model-visible text IS the bounded summary
-  assert.deepEqual(msg.content, [{ type: 'text', text: msg.source.summary }])
+  // R1: the model-visible text is the envelope line carrying the bounded summary
+  assert.deepEqual(msg.content, [{ type: 'text', text: '[superd-hub:a2a] kind=notice conversation=sess-aaa from=k3f9-q7m2xp reason=peer-error summary="' + 'x'.repeat(119) + '…' + '"' }])
 })
 
 test('deliverNotice: short summary passes through verbatim; missing initiator buffers', () => {
@@ -200,7 +201,8 @@ test('deliverNotice: short summary passes through verbatim; missing initiator bu
   })
   assert.deepEqual(buffered, { delivered: 'buffered' })
   assert.equal(dropped.buffered.length, 1)
-  assert.equal(dropped.buffered[0].message.text, 'send failed')
+  // R1: the buffered copy carries the same envelope line the live inject would
+  assert.equal(dropped.buffered[0].message.text, '[superd-hub:a2a] kind=notice conversation=sess-aaa from=k3f9-q7m2xp reason=peer-error summary="send failed"')
   assert.equal(dropped.buffered[0].message.conversationId, 'sess-aaa')
   assert.deepEqual(dropped.buffered[0].message.from, { machine: 'k3f9', id: 'q7m2xp' })
 })
@@ -262,8 +264,8 @@ test('wireCompletionToDelivery: completion cb → deliverReply once with the fin
   assert.equal(first.source.senderMachine, 'k3f9')
   assert.equal(first.source.conversationId, 'sess-aaa')
   assert.ok(first.content[0].text.includes('the peer answer'))
-  assert.ok(first.content[0].text.includes('"mesh review"'))
-  assert.ok(first.content[0].text.startsWith('Agent k3f9-q7m2xp replied'))
+  assert.ok(first.content[0].text.startsWith('[superd-hub:a2a] kind=reply form=relay conversation=sess-aaa from=k3f9-q7m2xp'))
+  assert.ok(first.content[0].text.includes('message=a2a-relay-'))
   // each relay carries its own durable message identity
   assert.notEqual(agents.calls.followup[0].source.messageId, agents.calls.followup[1].source.messageId)
   dispose()
@@ -467,8 +469,9 @@ test('wireCompletionToDelivery (D3): aborted turn with no captured text → boun
   assert.equal(notice.source.form, 'notice')
   assert.equal(notice.source.reason, 'aborted')
   assert.equal(notice.source.conversationId, '4ce3e1')
-  assert.equal(notice.source.summary, 'conversation "4ce3e1": turn aborted, no reply')
-  assert.deepEqual(notice.content, [{ type: 'text', text: notice.source.summary }])
+  assert.equal(notice.source.summary, 'conversation 4ce3e1: turn aborted, no reply')
+  // R1/R2: the model-visible text is the envelope line; the wire cause maps abort→peer-error
+  assert.deepEqual(notice.content, [{ type: 'text', text: '[superd-hub:a2a] kind=notice conversation=4ce3e1 from=k3f9-q7m2xp reason=peer-error summary="conversation 4ce3e1: turn aborted, no reply"' }])
   // no relay prefix anywhere — the peer is never credited with words it did not write
   assert.ok(!notice.content[0].text.includes('replied'))
 })
@@ -504,7 +507,7 @@ test('resolveA2aGatewayFor (D7): unknown machine / unknown agent on a paired mac
     assert.ok(unknownMachine instanceof A2aAddressError && unknownMachine.kind === 'unknown-machine')
     assert.equal(unknownMachine.machine, 'q7xk')
     assert.deepEqual(unknownMachine.address, { machine: 'q7xk', id: 'aaaaaa' })
-    assert.match(unknownMachine.message, /unknown-machine q7xk \(not paired\)/)
+    assert.match(unknownMachine.message, /unknown-machine "q7xk" — address "q7xk-aaaaaa" is not a paired machine/)
     // paired machine + an a6 no store has ever seen → unknown-agent naming the machine
     const pairedUnknown = missOf({ machine: 'p1nk', id: 'zzzzzz' })
     assert.ok(pairedUnknown instanceof A2aAddressError && pairedUnknown.kind === 'unknown-agent')
@@ -523,16 +526,33 @@ test('resolveA2aGatewayFor (D7): unknown machine / unknown agent on a paired mac
   }
 })
 
-// D20: the provenance prefix — "last output at turn end" for the runtime-delivered
-// fallback, "replied" for the channel reply the peer chose to send
-test('renderA2aRelayText: transcribed renders the observable-fact prefix (no jargon)', () => {
+// D20 via R1: the provenance split is the envelope form — "transcript" for the
+// runtime-delivered turn-end last output, "relay" for the channel reply the
+// peer chose to send
+test('renderA2aNoticeText: R2 reason mapping + inner quotes sanitized; no-conversation notices omit the field', () => {
+  assert.equal(
+    renderA2aNoticeText({ senderMachine: 'bfwu', senderAgent: '0kdzjk', conversationId: 'k8h2e8', reason: 'peer' }, 'conversation "k8h2e8": turn ended, no reply'),
+    '[superd-hub:a2a] kind=notice conversation=k8h2e8 from=bfwu-0kdzjk reason=peer-silent summary="conversation \'k8h2e8\': turn ended, no reply"',
+  )
+  assert.equal(
+    renderA2aNoticeText({ senderMachine: 'bfwu', senderAgent: '0kdzjk', reason: 'stop' }, 'conversation k8h2e8: turn stopped by initiator request'),
+    '[superd-hub:a2a] kind=notice from=bfwu-0kdzjk reason=stopped-by-initiator summary="conversation k8h2e8: turn stopped by initiator request"',
+  )
+  assert.equal(modelNoticeReason('stop'), 'stopped-by-initiator')
+  assert.equal(modelNoticeReason('stream-dead'), 'peer-error')
+  assert.equal(modelNoticeReason('aborted'), 'peer-error')
+  assert.equal(modelNoticeReason('send-failed'), 'peer-error')
+  assert.equal(modelNoticeReason('peer'), 'peer-silent')
+})
+
+test('renderA2aRelayText: transcribed renders form=transcript with the observable-fact note (no jargon)', () => {
   const meta = { senderMachine: 'k3f9', senderAgent: 'q7m2xp', conversationId: 'abc123', messageId: 'm1', title: 'mesh review' }
   assert.equal(
     renderA2aRelayText({ ...meta, transcribed: true }, 'x'),
-    'Agent k3f9-q7m2xp — last output at turn end (conversation "mesh review"):\n\nx',
+    '[superd-hub:a2a] kind=reply form=transcript conversation=abc123 from=k3f9-q7m2xp message=m1 note="the peer never sent through the channel — this is the runtime delivering the peer\'s last output at turn end"\n\nx',
   )
   assert.equal(
     renderA2aRelayText(meta, 'x'),
-    'Agent k3f9-q7m2xp replied (conversation "mesh review"):\n\nx',
+    '[superd-hub:a2a] kind=reply form=relay conversation=abc123 from=k3f9-q7m2xp message=m1\n\nx',
   )
 })

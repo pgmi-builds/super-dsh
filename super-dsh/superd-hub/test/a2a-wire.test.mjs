@@ -13,9 +13,9 @@ import {
   A2A_OUTBOX_PATH,
   A2A_NOTICE_SUMMARY_MAX,
   a2aWireFrameOf,
+  decodeA2aWireFrame,
   isA2aEnvelope,
   isA2aWireFrame,
-  decodeA2aWireFrame,
   normalizeA2aTitle,
   postA2aEnvelope,
   fetchA2aOutbox,
@@ -345,4 +345,22 @@ test('reply envelope guard: transcribed true passes, junk values fail (additive 
   assert.ok(!isA2aEnvelope({ ...base, transcribed: false }))
   assert.ok(!isA2aEnvelope({ ...base, transcribed: 'yes' }))
   assert.ok(!isA2aEnvelope({ ...base, transcription: true }), 'unknown additive keys stay rejected (exact key sets)')
+})
+
+test('0.1.7-i: the strict notice guard accepts the additive reason field (send-failed made it load-bearing)', () => {
+  const base = {
+    kind: 'notice',
+    to: { machine: '79he', agent: '8ah589', sessionId: 'session-90ae6fba' },
+    conversation: 'r2e2ej',
+    summary: 'conversation r2e2ej: the peer\'s reply could not be delivered — boom',
+    messageId: 'a2a-notice-x',
+    sender: { machine: 'bfwu', agent: '0kdzjk' },
+  }
+  assert.equal(decodeA2aWireFrame({ v: 1, envelope: { ...base, reason: 'send-failed' } }).ok, true)
+  assert.equal(decodeA2aWireFrame({ v: 1, envelope: { ...base, reason: 'peer' } }).ok, true)
+  assert.equal(decodeA2aWireFrame({ v: 1, envelope: base }).ok, true, 'older peers omit reason')
+  const bad = decodeA2aWireFrame({ v: 1, envelope: { ...base, reason: 'nonsense' } })
+  assert.equal(bad.ok, false)
+  // and an UNKNOWN extra field still fails the strict shape check
+  assert.equal(decodeA2aWireFrame({ v: 1, envelope: { ...base, wat: 1 } }).ok, false)
 })

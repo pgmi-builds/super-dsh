@@ -148,6 +148,7 @@ test('new-conversation (local): create + inject + verbatim mirror row; teaching 
       shortId: 'abc123', machine: self.id, agent: 'f4g5h6',
       sessionId: 'sess-aaaaaaaa-1111', title: '[undefined]',
       hostAgent: 'q7m2xp', // R4 amendment: mirror rows carry the LOCAL hosting a6
+      initiatorSession: 'session-init-1', // 0.1.7-i: the opener's session persists too (send-failed notice address)
       createdAt: rows[0].createdAt, lastActivityAt: rows[0].lastActivityAt,
     }])
     // the completion watcher armed on the envelope's messageId
@@ -273,7 +274,7 @@ test('completion → in-process reply (self-routed): relay text + a2a-relay sour
     const hit = delivery.delivered[0]
     assert.equal(hit.sessionId, 'session-init-1')
     assert.equal(hit.how, 'followup')
-    assert.match(hit.message.content[0].text, new RegExp(`Agent ${self.id}-q7m2xp — last output at turn end \\(conversation "\\(untitled\\)"\\):`))
+    assert.match(hit.message.content[0].text, new RegExp(`\\[superd-hub:a2a\\] kind=reply form=transcript conversation=abc123 from=${self.id}-q7m2xp message=`))
     assert.match(hit.message.content[0].text, /the local answer/)
     assert.equal(hit.message.source.kind, 'a2a-relay')
     assert.equal(hit.message.source.senderAgent, 'q7m2xp')
@@ -509,7 +510,7 @@ test('inbound reply envelope (peer POSTed at us): envelope sender wins; absent s
     assert.equal(delivery.delivered[0].message.source.conversationId, 'abc123')
     assert.equal(delivery.delivered[0].message.source.senderMachine, 'dev3')
     assert.equal(delivery.delivered[0].message.source.senderAgent, 'cd33x1')
-    assert.match(delivery.delivered[0].message.content[0].text, /Agent dev3-cd33x1 replied/)
+    assert.match(delivery.delivered[0].message.content[0].text, /\[superd-hub:a2a\] kind=reply form=relay conversation=abc123 from=dev3-cd33x1 message=a2a-relay-late/)
     // (2) legacy envelope without sender — the registry row supplies the
     // attribution. A PEER-hosted conversation (initiator row pointing at
     // dev3) proves the fallback names the PEER, never selfId().
@@ -594,7 +595,7 @@ test('peer write-back: message envelope hitting an INITIATOR row delivers into i
     assert.equal(delivery.delivered.length, 1)
     const hit = delivery.delivered[0]
     assert.equal(hit.sessionId, 'session-init-1')
-    assert.match(hit.message.content[0].text, /Agent dev3-cd33x1 replied/)
+    assert.match(hit.message.content[0].text, /\[superd-hub:a2a\] kind=reply form=relay conversation=ini777 from=dev3-cd33x1 message=a2a-pwb-1/)
     assert.match(hit.message.content[0].text, /writing back asynchronously/)
     assert.equal(hit.message.source.kind, 'a2a-relay')
     assert.equal(hit.message.source.senderMachine, 'dev3')
@@ -680,6 +681,52 @@ test('D20: latch set (channel used in an earlier turn) → turn end yields the p
     const hit = delivery.delivered[0]
     assert.equal(hit.message.source.kind, 'a2a-notice')
     assert.match(hit.message.content[0].text, /turn ended, no reply/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('0.1.7-h R2: a stop stamped on the row → the completion watch attributes the turn end to the initiator (stopped-by-initiator), never peer-silent', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-eeeeeeee-7777' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    // The stop stamp rides the registry before the watch arms. Production
+    // writes it between arm and turn end (ingestStop, after a live cancel);
+    // pre-staging it keeps the framed turnEnd deterministically ordered after
+    // the stamp — the watch compares stamps against its arm watermark only.
+    saveConversations(home, { conversations: [{
+      shortId: 'abc123',
+      machine: self.id,
+      agent: 'f4g5h6',
+      sessionId: 'sess-eeeeeeee-7777',
+      title: '[undefined]',
+      hostAgent: 'q7m2xp',
+      initiatorSession: 'session-init-1',
+      createdAt: 1,
+      lastActivityAt: 1,
+      stoppedAt: Date.now(),
+    }] })
+    gw.stream({
+      frames: [
+        snap([
+          ev('turn/start', { turn: 1 }, 1),
+          userMsg('a2a-msg-1', 2),
+          asstMsg(1, 'the local answer', 3),
+        ]),
+        turnEnd(1, 4, 'aborted'),
+      ],
+    })
+    const { ingest, delivery } = assembly(home, gw)
+    await ingest.ingest(mkEnv(self.id, self.id))
+    await until(() => delivery.delivered.length > 0)
+    const hit = delivery.delivered[0]
+    assert.equal(hit.message.source.kind, 'a2a-notice')
+    assert.equal(hit.message.source.reason, 'stop')
+    assert.equal(
+      hit.message.content[0].text,
+      `[superd-hub:a2a] kind=notice conversation=abc123 from=${self.id}-q7m2xp reason=stopped-by-initiator summary="conversation abc123: turn stopped by initiator request"`,
+    )
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -781,7 +828,7 @@ test('D20: self-route write-back — the hosted peer sends (from=hostAgent) → 
     const hit = delivery.delivered[0]
     assert.equal(hit.sessionId, 'session-init-9')
     assert.equal(hit.message.source.kind, 'a2a-relay')
-    assert.match(hit.message.content[0].text, /replied \(conversation "self-route wb"\):/)
+    assert.match(hit.message.content[0].text, /\[superd-hub:a2a\] kind=reply form=relay conversation=wb005 from=....-q7m2xp message=a2a-wb-1/)
     assert.match(hit.message.content[0].text, /the result through the channel/)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

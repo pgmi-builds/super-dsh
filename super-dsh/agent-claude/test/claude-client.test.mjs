@@ -147,6 +147,19 @@ test("steer/followUp/interrupt/setModel/setPermissionMode reach the query and th
 test("pathToClaudeCodeExecutable defaults to the host binary and honors CLAUDE_EXECUTABLE", async () => {
   resetClaudeClientState();
   const saved = process.env.CLAUDE_EXECUTABLE;
+  const savedPath = process.env.PATH;
+
+  // The default leg asserts the BARE name, which the resolver only returns
+  // when `claude` is findable on PATH. Pin a stub dir onto PATH so the leg is
+  // machine-independent (0.1.7-h bare-lane note: a runner whose PATH lacks
+  // ~/.local/bin drove the native-installer fallback -> absolute path -> red).
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const stubBin = mkdtempSync(join(tmpdir(), "claude-path-"));
+  mkdirSync(stubBin, { recursive: true });
+  writeFileSync(join(stubBin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  process.env.PATH = `${stubBin}:${savedPath}`;
 
   const defaultCalls = [];
   setClaudeFactory((o) => { defaultCalls.push(o); return fakeQuery([]); });
@@ -162,6 +175,7 @@ test("pathToClaudeCodeExecutable defaults to the host binary and honors CLAUDE_E
     if (saved === undefined) delete process.env.CLAUDE_EXECUTABLE;
     else process.env.CLAUDE_EXECUTABLE = saved;
   }
+  process.env.PATH = savedPath;
 
   const envCalls = [];
   setClaudeFactory((o) => { envCalls.push(o); return fakeQuery([]); });

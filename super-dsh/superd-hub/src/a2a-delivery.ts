@@ -29,12 +29,12 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import { A2A_NOTICE_SUMMARY_MAX, A2A_TITLE_PLACEHOLDER } from './a2a-wire.js'
-// compat re-export (postoffice R1): the bound moved to the protocol layer
-// (a2a-wire.ts) so the envelope guard enforces the same number this module
-// bounds in-process summaries with; existing importers keep compiling.
-export { A2A_NOTICE_SUMMARY_MAX }
-import { A2A_UNTITLED } from './a2a-service.js'
+import { A2A_NOTICE_SUMMARY_MAX, type A2aNoticeReason } from './a2a-wire.js'
+// compat re-exports (postoffice R1 / 0.1.7-h R2): both moved to the protocol
+// layer (a2a-wire.ts) — the bound so the envelope guard enforces the same
+// number this module bounds with, the reason type because it now crosses the
+// wire; existing importers keep compiling.
+export { A2A_NOTICE_SUMMARY_MAX, type A2aNoticeReason }
 import type { A2aBufferInput, A2aConversationRef, A2aInitiator, A2aService } from './a2a-service.js'
 
 /** Durable attribution for one peer reply relayed into the initiator's conversation. */
@@ -52,13 +52,9 @@ export interface A2aRelaySource {
   readonly messageId: string
 }
 
-/** Why a runtime-owned notice was produced (the failure taxonomy of the a2a face). */
-/** Why a runtime-owned notice was produced (the failure taxonomy of the a2a face): a failed
- * send, a dead completion stream, a stop, or a turn that ended non-completed with no captured
- * reply text (D3 — the initiator is told the turn aborted instead of receiving an empty relay);
- * 'peer' (postoffice R3) = an account minted by the PEER hub and relayed in — the wire notice
- * envelope carries no reason field, so the attribution says where it came from, not why. */
-export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop' | 'aborted' | 'peer'
+/** Why a runtime-owned notice was produced — the taxonomy now lives on the
+ * protocol layer (a2a-wire.ts, imported + re-exported above): 0.1.7-h R2
+ * made it a wire fact, and the model-facing notice line renders it. */
 
 /**
  * Durable attribution for the hub's own account of an A2A conversation event
@@ -201,22 +197,48 @@ export interface A2aNoticeMeta {
 }
 
 /**
- * Render the model-visible relay text: the peer attribution prefix followed
- * by the reply body.
- * @param meta - the reply attribution (title optional).
- * @param content - the peer's final reply text.
- * @returns `Agent <machine>-<agent> replied (conversation "<title>"):\n\n<text>`.
+ * The model-facing reply envelope (0.1.7-h R1 — one stable machine-readable
+ * vocabulary, replacing the v3 prose prefixes per the operator's §8 ruling:
+ * provenance the model had to recover from English sentences is now stated):
+ * a header line of `k=v` facts, a blank line, then the reply body. `form`
+ * keeps the D20 provenance split — `relay` = the peer chose to send through
+ * the channel; `transcript` = the peer never sent, the runtime is delivering
+ * its last output at turn end (the note spells out that observable fact per
+ * the user's no-jargon redline).
+ * @param meta - the reply attribution.
+ * @param content - the reply text (channel message or transcribed last output).
+ * @returns `[superd-hub:a2a] kind=reply form=… conversation=… from=… message=…[ note="…"]\n\n<body>`.
  */
 export function renderA2aRelayText(meta: A2aReplyMeta, content: string): string {
-  const title = meta.title === undefined || meta.title === '' || meta.title === A2A_TITLE_PLACEHOLDER ? A2A_UNTITLED : meta.title
-  // D20 provenance split (upstream relay/settled honesty, one prefix): a
-  // channel reply the peer chose to send vs the runtime delivering the
-  // turn-end last output — the recipient must never mistake one for the
-  // other. Wording per user redline 2026-09-29: no "transcribed" jargon,
-  // the observable fact only.
-  return meta.transcribed === true
-    ? `Agent ${meta.senderMachine}-${meta.senderAgent} — last output at turn end (conversation "${title}"):\n\n${content}`
-    : `Agent ${meta.senderMachine}-${meta.senderAgent} replied (conversation "${title}"):\n\n${content}`
+  const header = meta.transcribed === true
+    ? `[superd-hub:a2a] kind=reply form=transcript conversation=${meta.conversationId} from=${meta.senderMachine}-${meta.senderAgent} message=${meta.messageId} note="the peer never sent through the channel — this is the runtime delivering the peer's last output at turn end"`
+    : `[superd-hub:a2a] kind=reply form=relay conversation=${meta.conversationId} from=${meta.senderMachine}-${meta.senderAgent} message=${meta.messageId}`
+  return `${header}\n\n${content}`
+}
+
+/** R2: the three model-facing cause values — one wire fact maps to exactly one
+ * model value, so the notice line and its summary can never disagree. */
+export type A2aModelNoticeReason = 'peer-silent' | 'peer-error' | 'stopped-by-initiator'
+
+/** Map the wire cause taxonomy onto the model-facing one. */
+export function modelNoticeReason(reason: A2aNoticeReason): A2aModelNoticeReason {
+  switch (reason) {
+    case 'stop': return 'stopped-by-initiator'
+    case 'peer': return 'peer-silent'
+    default: return 'peer-error' // send-failed / stream-dead / aborted — the peer side ended abnormally
+  }
+}
+
+/**
+ * Render the model-visible notice text (0.1.7-h R1/R2): ONE line in the same
+ * envelope vocabulary as relays, plus the R2 cause and the bounded summary.
+ * Inner double quotes are sanitized to single quotes (legacy peer summaries
+ * embed `conversation "x"`) so the k=v line stays parseable; the wire/source
+ * summary keeps its verbatim text.
+ */
+export function renderA2aNoticeText(meta: A2aNoticeMeta, summary: string): string {
+  const conv = meta.conversationId === undefined ? '' : ` conversation=${meta.conversationId}`
+  return `[superd-hub:a2a] kind=notice${conv} from=${meta.senderMachine}-${meta.senderAgent} reason=${modelNoticeReason(meta.reason)} summary="${summary.replace(/"/g, "'")}"`
 }
 
 /**
@@ -296,8 +318,12 @@ export function deliverNotice(
   opts: { delivery?: A2aReplyDelivery } = {},
 ): A2aDeliveryOutcome {
   const bounded = boundNoticeSummary(summary)
+  // R1: a notice is an injected turn like any other — its model-facing text
+  // is the envelope line (provenance + cause + summary); the buffered copy
+  // carries the same line so a later sweep injects identical text.
+  const noticeText = renderA2aNoticeText(meta, bounded)
   const message = createA2aUserMessage(
-    [{ type: 'text', text: bounded }],
+    [{ type: 'text', text: noticeText }],
     {
       kind: 'a2a-notice',
       form: 'notice',
@@ -310,7 +336,7 @@ export function deliverNotice(
     messageId: `a2a-notice-${randomUUID()}`,
     from: { machine: meta.senderMachine, id: meta.senderAgent },
     conversationId: meta.conversationId,
-    text: bounded,
+    text: noticeText,
   }
   return route(ctx, initiator, message, opts.delivery ?? 'followup', buffered)
 }
@@ -348,7 +374,7 @@ export function wireCompletionToDelivery(
         deliverNotice(
           ctx,
           initiator,
-          `conversation "${completion.conversationId}": turn aborted, no reply`,
+          `conversation ${completion.conversationId}: turn aborted, no reply`,
           {
             senderMachine: conv.to.machine,
             senderAgent: conv.to.id,

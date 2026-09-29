@@ -131,6 +131,16 @@ export interface A2aReplyEnvelope {
   transcribed?: true
 }
 
+/**
+ * Why a runtime-owned notice was produced — THE cause taxonomy of the a2a
+ * face (0.1.7-h R2: this crosses the wire now; the additive `reason` field
+ * rides the notice envelope and the receiver renders it into the model-facing
+ * envelope line, so "turn ended, no reply" stops being three different facts
+ * wearing one sentence). 'peer' = an account minted by the PEER hub and
+ * relayed in; absent wire reason (older peer) falls back to 'peer'.
+ */
+export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop' | 'aborted' | 'peer'
+
 export interface A2aNoticeEnvelope {
   kind: 'notice'
   to: A2aWireOrigin
@@ -140,6 +150,8 @@ export interface A2aNoticeEnvelope {
   messageId: string
   /** Who noticed — the hosting machine + host agent (additive v1). */
   sender?: A2aReturnSender
+  /** R2 (additive 0.1.7-h): the cause — rendered into the model-facing notice line; absent = pre-0.1.7-h peer, receiver falls back to 'peer'. */
+  reason?: A2aNoticeReason
 }
 
 export type A2aEnvelope =
@@ -212,7 +224,12 @@ export class A2aAddressError extends Error {
       return `a2a: unknown-agent ${address.machine}-${address.id} (no such agent on machine ${address.machine})`
     }
     if (kind === 'unknown-machine') {
-      return `a2a: unknown-machine ${address.machine} (not paired)`
+      // 0.1.7-h R3 (dev3 first-person 0.1.7-g §6): a malformed address such as
+      // "no-such-agent-zzz" parses machine="no" — an error naming only "no"
+      // sends the model hunting for a machine it never typed. Name the
+      // fragment AND the full address; split-at-first-dash concat is the raw
+      // input, so this reconstruction is exact.
+      return `a2a: unknown-machine "${address.machine}" — address "${address.machine}-${address.id}" is not a paired machine (addresses are "<m4>-<a6>")`
     }
     return `a2a: no gateway for ${address.machine}-${address.id} — machine unreachable or not paired`
   }
@@ -232,6 +249,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function nonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v !== ''
+}
+
+/** R2 (0.1.7-i): the wire notice reason vocabulary — mirror of the type union. */
+const NOTICE_REASONS: ReadonlySet<string> = new Set(['send-failed', 'stream-dead', 'stop', 'aborted', 'peer'])
+
+function isNoticeReason(v: unknown): v is A2aNoticeReason {
+  return typeof v === 'string' && NOTICE_REASONS.has(v)
 }
 
 function hasExactKeys(v: Record<string, unknown>, keys: readonly string[], optional: readonly string[] = []): boolean {
@@ -283,10 +307,13 @@ export function isA2aEnvelope(v: unknown): v is A2aEnvelope {
         (isReturnSender(v['sender']) || v['sender'] === undefined) &&
         (v['transcribed'] === undefined || v['transcribed'] === true)
     case 'notice':
-      return hasExactKeys(v, ['kind', 'to', 'conversation', 'summary', 'messageId'], ['sender']) &&
+      // 0.1.7-i R2: `reason` rides additively (the send-failed notice made it
+      // load-bearing) — older peers omit it, the guard validates the vocabulary.
+      return hasExactKeys(v, ['kind', 'to', 'conversation', 'summary', 'messageId'], ['sender', 'reason']) &&
         isOrigin(v['to']) && nonEmptyString(v['conversation']) && nonEmptyString(v['summary']) &&
         typeof v['summary'] === 'string' && v['summary'].length <= A2A_NOTICE_SUMMARY_MAX && nonEmptyString(v['messageId']) &&
-        (isReturnSender(v['sender']) || v['sender'] === undefined)
+        (isReturnSender(v['sender']) || v['sender'] === undefined) &&
+        (isNoticeReason(v['reason']) || v['reason'] === undefined)
     default:
       return false
   }

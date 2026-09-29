@@ -28,7 +28,7 @@
  *     into the calling session; `read` only sweeps what was buffered while
  *     the initiator was not live. The description states this in caps.
  *   - `delivery` mirrors upstream `SessionPromptRequest.mode`: 'queue'
- *     (default) is ordinary peer input, never interrupting; 'steer' is
+ *     (default) is queued peer input delivered as a waking turn, never interrupting; 'steer' is
  *     explicit steering for the peer's nearest step boundary.
  *   - `stop` is a hard stop of the peer's ACTIVE TURN; scope 'session'
  *     degrades to turn-only (upstream has no session-close RPC) and the
@@ -314,7 +314,7 @@ const DESCRIPTION =
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", agent, conversationId, scope?} → cancel the peer\'s active turn (answers stopped:false with a note when no turn was active).\n' +
   '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}. mode "pty": a PERSISTENT shell per (your session, machine) — cwd and env SURVIVE across dispatches (cd once, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. Prefer oneshot for independent commands; pty when shell state matters.\n' +
-  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) lands like an ordinary user message and never interrupts the peer; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead); a turn that ends with no reply yields one notice. read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
+  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) is injected into the peer\'s session as a waking turn — it never interrupts an active turn, it queues behind it; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead, form=transcript); a turn that ends with no channel artifact yields one notice whose reason= distinguishes peer-silent (ended, said nothing) / peer-error (stream died or turn aborted) / stopped-by-initiator (you stopped it). read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
 
 /**
  * Build the one SuperD Hub tool.
@@ -350,7 +350,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       delivery: {
         type: 'string',
         enum: ['queue', 'steer'],
-        description: "'queue' (default): ordinary queued input, never interrupts the peer. 'steer': steering input for the peer's nearest step boundary.",
+        description: "'queue' (default): injected as a waking turn — queues behind any active turn, never interrupts. 'steer': steering input for the peer's nearest step boundary.",
       },
       scope: {
         type: 'string',
@@ -395,6 +395,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           outcome: { type: 'string', description: "send receipt: 'injected' | 'failed'; exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
           output: { type: 'json', description: 'exec pty: the session output, tail-windowed (a truncation banner carries the exact counts)' },
           cwd: { type: 'json', description: 'exec pty: the session working directory after the command (null when unknown)' },
+          mode: { type: 'string', description: "exec pty: present with value 'pty' — the result is a persistent-shell dispatch (absent on oneshot). 0.1.7-h D1: the harness output validator rejects undeclared fields, so this MUST stay declared in lockstep with the pty result shape." },
           reconnected: { type: 'boolean', description: 'exec pty: the transport died since the last dispatch and a fresh shell answered' },
           messageId: { type: 'string' },
           error: { type: 'json', description: 'wire error body {code, message, details?} on failed sends' },

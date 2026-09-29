@@ -227,6 +227,13 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       // R4 amendment: mirror rows carry the LOCAL a6 hosting the session —
       // presence is the locally-hosted marker continuation routing keys on.
       hostAgent: env.to.id,
+      // 0.1.7-i: the OPENER's session persists on mirror rows too — the
+      // initiatorSession field's R4 "initiator rows only" contract predates
+      // the send-failed notice (a failed write-back must address the original
+      // initiator even when this hub has never seen their send path) and the
+      // self-route write-back branch already expects it here. Additive; the
+      // initiator-row detection keys on hostAgent absence, never this field.
+      initiatorSession: env.from.sessionId,
       createdAt: now(),
       lastActivityAt: now(),
     }
@@ -269,7 +276,9 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       senderMachine: sender.machine,
       senderAgent: sender.agent,
       conversationId: envelope.conversation,
-      reason: noticeReason,
+      // 0.1.7-h R2: the peer's own reason rides the wire (additive); the
+      // fallback covers self-routed notices and pre-0.1.7-h peers.
+      reason: envelope.reason ?? noticeReason,
     })
     alog?.('info', 'deliver.local', { conversation: envelope.conversation, kind: envelope.kind, outcome: outcome.delivered, from: `${sender.machine}-${sender.agent}` })
     return outcome
@@ -316,13 +325,16 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     // happened inside this armed turn's window, i.e. the peer's send WAS
     // this turn's artifact and the watch must not add a second one.
     const armedSentAt = row.lastSentAt ?? 0
-    const noticeOf = (summary: string): A2aNoticeEnvelope => ({
+    const noticeOf = (summary: string, reason: A2aNoticeReason = 'peer'): A2aNoticeEnvelope => ({
       kind: 'notice',
       to,
       conversation: row.shortId,
       summary: boundNoticeSummary(summary),
       messageId: `a2a-notice-${randomUUID()}`,
       sender: { machine: selfId(), agent: env.to.id },
+      // 0.1.7-h R2: the cause rides the wire (additive) so the receiving side
+      // renders reason= into the model-facing notice line.
+      reason,
     })
     subscribeSessionCompletion(
       { gateway, sessionId: row.sessionId, conversationId: row.shortId },
@@ -331,13 +343,22 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // boundary + last output) and NOTHING from the settlement
         // taxonomy: no abort/complete adjectives, no reason branches. A
         // turn end yields at most ONE artifact:
+        //   initiator stop stamped inside the window → stopped-by-initiator
+        //     notice (0.1.7-h R2 — the initiator's own stop must not read
+        //     as the peer going silent)
         //   send inside the window → the send(s) were it (watch stays quiet)
         //   latch set (channel used in an earlier turn) → plain notice
         //   latch clear + non-empty last output → TRANSCRIBED reply
-        //   latch clear + empty output → plain notice
+        //   latch clear + empty output → plain notice (reason=peer-silent)
         // Hallucinated/irrelevant content is content-layer business —
         // transcribe verbatim and let the sender judge.
         const fresh = mirrorRowOf(row.shortId)
+        if ((fresh?.stoppedAt ?? 0) > armedSentAt) {
+          alog?.('info', 'completion.stopped', { conversation: row.shortId })
+          const stopped = noticeOf(`conversation ${row.shortId}: turn stopped by initiator request`, 'stop')
+          void routeReturn(stopped, { responderAgent: env.to.id, noticeReason: 'stop' }).catch(() => parkInOutbox(stopped))
+          return
+        }
         if ((fresh?.lastSentAt ?? 0) > armedSentAt) {
           alog?.('info', 'completion.quiet', { conversation: row.shortId, reason: 'channel-send-in-window' })
           return
@@ -352,7 +373,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
             sender: { machine: selfId(), agent: env.to.id },
             transcribed: true,
           }
-          : noticeOf(`conversation "${row.shortId}": turn ended, no reply`)
+          : noticeOf(`conversation ${row.shortId}: turn ended, no reply`, 'peer')
         alog?.('info', envelope.kind === 'reply' ? 'completion.transcript' : 'completion.notice', {
           conversation: row.shortId,
           ...(envelope.kind === 'reply' ? { bytes: completion.text.length } : {}),
@@ -363,7 +384,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         requestId: env.messageId,
         onError: (error) => {
           alog?.('warn', 'completion.error', { conversation: row.shortId, error: error.message })
-          const notice = noticeOf(`A2A completion stream for conversation "${row.shortId}" failed: ${error.message}`)
+          const notice = noticeOf(`A2A completion stream for conversation ${row.shortId} failed: ${error.message}`, 'stream-dead')
           void routeReturn(notice, { responderAgent: env.to.id, noticeReason: 'stream-dead' }).catch(() => parkInOutbox(notice))
         },
       },
@@ -573,6 +594,18 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           ? { scope: 'turn', cancelled: true }
           : { scope: 'turn-only', cancelled: true, reason: A2A_NO_SESSION_CLOSE_REASON })
       const parts = [result.scope === 'turn-only' ? result.reason : undefined, 'note' in result ? result.note : undefined]
+      if (result.cancelled === true) {
+        // 0.1.7-h R2: stamp the row so this hub's completion watch attributes
+        // the turn end it is about to observe to the initiator's stop, not to
+        // the peer going silent. Watermark-safe: the watch only honors stamps
+        // set after its own arm time.
+        const rows = loadConversations(deps.home).conversations
+        const idx = rows.findIndex((r) => r.sessionId === row.sessionId)
+        if (idx !== -1) {
+          rows[idx] = { ...rows[idx], stoppedAt: Date.now() }
+          saveConversations(deps.home, { conversations: rows })
+        }
+      }
       alog?.('info', 'stop', { conversation: env.conversationId, stopped: result.cancelled, scope: result.scope })
       return {
         stopped: result.cancelled,
