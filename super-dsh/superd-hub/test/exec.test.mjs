@@ -131,15 +131,24 @@ test('postOneShotExec: cookie rides, result parses; typed errors on 4xx and unre
   const posts = []
   const fetchImpl = async (url, init) => {
     posts.push({ url: String(url), init })
-    return new Response(JSON.stringify({ exit: 5, stdout: 'o', stderr: 'e', durationMs: 9, truncated: true, timedOut: false }), { status: 200, headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify({ exit: 5, stdout: 'o', stderr: 'e', durationMs: 9, truncated: true, timedOut: false, outcome: 'signaled' }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
   const res = await postOneShotExec('http://peer:4999', { cmd: 'x', timeoutSec: 10 }, { cookie: 'dsh-auth-a=1', fetchImpl })
   assert.equal(res.exit, 5)
   assert.equal(res.truncated, true)
+  assert.equal(res.outcome, 'signaled', 'the wire leg passes the peer outcome through')
   assert.equal(posts.length, 1)
   assert.equal(posts[0].url, `http://peer:4999${EXEC_API_BASE}`)
   assert.equal(posts[0].init.headers.cookie, 'dsh-auth-a=1')
   assert.deepEqual(JSON.parse(posts[0].init.body), { cmd: 'x', timeoutSec: 10 })
+
+  // a pre-0.1.7-e peer carries no outcome — derive the closest honest read
+  const legacy = async (body) => postOneShotExec('http://peer:4999', { cmd: 'x' }, {
+    fetchImpl: async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }),
+  })
+  assert.equal((await legacy({ exit: 0, stdout: '', stderr: '', durationMs: 1, truncated: false, timedOut: false })).outcome, 'exited')
+  assert.equal((await legacy({ exit: null, stdout: '', stderr: '', durationMs: 1, truncated: false, timedOut: true })).outcome, 'timeout')
+  assert.equal((await legacy({ exit: null, stdout: '', stderr: '', durationMs: 1, truncated: false, timedOut: false })).outcome, 'signaled', 'legacy spawn failure degrades honestly to signaled')
 
   const failing = (status, body) => async () => {
     await postOneShotExec('http://peer:4999', { cmd: 'x' }, {
@@ -152,4 +161,28 @@ test('postOneShotExec: cookie rides, result parses; typed errors on 4xx and unre
     () => postOneShotExec('http://peer:4999', { cmd: 'x' }, { fetchImpl: async () => { throw new Error('ECONNREFUSED') } }),
     /unreachable.*ECONNREFUSED/,
   )
+})
+
+test('outcome matrix: exited / signaled / timeout / spawn-error are disambiguated (F1/F2)', async () => {
+  const normal = await runOneShotExec({ cmd: 'exit 4' })
+  assert.equal(normal.outcome, 'exited')
+  assert.equal(normal.exit, 4)
+
+  const signaled = await runOneShotExec({ cmd: 'kill -KILL $$' })
+  assert.equal(signaled.outcome, 'signaled')
+  assert.equal(signaled.exit, null)
+  assert.equal(signaled.timedOut, false)
+
+  const timed = await runOneShotExec({ cmd: 'sleep 10', timeoutSec: 1 })
+  assert.equal(timed.outcome, 'timeout')
+  assert.equal(timed.timedOut, true)
+
+  // F1: a bad cwd used to be indistinguishable from a signal death —
+  // spawn-error now names it and the diagnostic rides stderr.
+  const spawnErr = await runOneShotExec({ cmd: 'pwd', cwd: '/nonexistent-xyz-777' })
+  assert.equal(spawnErr.outcome, 'spawn-error')
+  assert.equal(spawnErr.exit, null)
+  assert.equal(spawnErr.timedOut, false)
+  assert.match(spawnErr.stderr, /exec: spawn failed/)
+  assert.match(spawnErr.stderr, /nonexistent-xyz-777/)
 })

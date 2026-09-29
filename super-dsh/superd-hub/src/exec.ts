@@ -30,6 +30,16 @@ export interface OneShotExecResult {
   durationMs: number
   truncated: boolean
   timedOut: boolean
+  /**
+   * Why the process ended (0.1.7-e, first-person finding F1/F2: `exit:null`
+   * alone conflated spawn failure with signal death):
+   * `exited` — normal exit (exit carries the code);
+   * `signaled` — died by a signal we did not send (exit null);
+   * `timeout` — OUR two-stage kill fired (timedOut true);
+   * `spawn-error` — the process never started (bad cwd / ENOENT); the
+   *   diagnostic rides stderr as `exec: spawn failed — <reason>`.
+   */
+  outcome: 'exited' | 'signaled' | 'timeout' | 'spawn-error'
 }
 
 /** Per-stream tail window returned to the caller (spec §8.1: 30k). */
@@ -159,26 +169,39 @@ export async function runOneShotExec(input: OneShotExecInput, log?: A2aLogFn): P
   }, timeoutSec * 1000)
   if (killTimer.unref) killTimer.unref()
 
+  let spawnError: string | undefined
   const exit: number | null = await new Promise((resolve) => {
     child.once('close', (code) => resolve(code))
-    child.once('error', () => resolve(null))
+    child.once('error', (err) => { spawnError = err.message; resolve(null) })
   })
   clearTimeout(killTimer)
   if (graceTimer !== undefined) clearTimeout(graceTimer)
   const outText = stdout.tail(EXEC_TAIL_WINDOW).toString('utf8')
-  const errText = stderr.tail(EXEC_TAIL_WINDOW).toString('utf8')
+  const errText = spawnError !== undefined
+    ? `exec: spawn failed — ${spawnError}${input.cwd === undefined ? '' : ` (cwd: ${input.cwd})`}`
+    : stderr.tail(EXEC_TAIL_WINDOW).toString('utf8')
+  const timedOut = terminationRequested
+  const outcome: OneShotExecResult['outcome'] = spawnError !== undefined
+    ? 'spawn-error'
+    : timedOut
+      ? 'timeout'
+      : exit === null
+        ? 'signaled'
+        : 'exited'
   const result: OneShotExecResult = {
     exit,
     stdout: outText,
     stderr: errText,
     durationMs: Date.now() - started,
     truncated: stdout.total > EXEC_TAIL_WINDOW || stderr.total > EXEC_TAIL_WINDOW,
-    timedOut: terminationRequested,
+    timedOut,
+    outcome,
   }
   log?.('info', 'exec.run', {
     cmd: input.cmd,
     exit: result.exit ?? 'none',
     durationMs: result.durationMs,
+    ...(outcome === 'exited' ? {} : { outcome }),
     ...(result.timedOut ? { timedOut: true } : {}),
     ...(result.truncated ? { truncated: true } : {}),
   })
@@ -214,12 +237,21 @@ export async function postOneShotExec(
   }
   if (typeof body !== 'object' || body === null) throw new Error('exec: peer answered a non-object body')
   const raw = body as Record<string, unknown>
+  const exit: number | null = typeof raw.exit === 'number' || raw.exit === null ? (raw.exit as number | null) : null
+  const timedOut = raw.timedOut === true
+  const parsedOutcome = raw.outcome
+  const outcome: OneShotExecResult['outcome'] =
+    parsedOutcome === 'exited' || parsedOutcome === 'signaled' || parsedOutcome === 'timeout' || parsedOutcome === 'spawn-error'
+      ? parsedOutcome
+      // a pre-0.1.7-e peer carries no outcome — derive the closest honest read
+      : timedOut ? 'timeout' : exit === null ? 'signaled' : 'exited'
   return {
-    exit: typeof raw.exit === 'number' || raw.exit === null ? (raw.exit as number | null) : null,
+    exit,
     stdout: typeof raw.stdout === 'string' ? raw.stdout : '',
     stderr: typeof raw.stderr === 'string' ? raw.stderr : '',
     durationMs: typeof raw.durationMs === 'number' ? raw.durationMs : 0,
     truncated: raw.truncated === true,
-    timedOut: raw.timedOut === true,
+    timedOut,
+    outcome,
   }
 }

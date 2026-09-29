@@ -385,7 +385,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           sessionId: { type: 'string' },
           agent: { type: 'string' },
           machine: { type: 'string' },
-          outcome: { type: 'string' },
+          outcome: { type: 'string', description: "send receipt: 'injected' | 'failed'; exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
           messageId: { type: 'string' },
           error: { type: 'json', description: 'wire error body {code, message, details?} on failed sends' },
           note: { type: 'string', description: 'model-facing reminder riding successful sends' },

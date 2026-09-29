@@ -126,8 +126,11 @@ function makeTool(overrides = {}) {
   const initiators = overrides.initiators ?? fakeInitiators()
   const execFace = overrides.exec ?? {
     selfM4: () => 'm1ab',
-    run: async (input) => ({ exit: 0, stdout: `ran: ${input.cmd}`, stderr: '', durationMs: 1, truncated: false, timedOut: false }),
-    post: async (machineId) => { throw new Error(`unknown machine "${machineId}" — call agents for the roster`) },
+    run: async (input) => ({ exit: 0, stdout: `ran: ${input.cmd}`, stderr: '', durationMs: 1, truncated: false, timedOut: false, outcome: 'exited' }),
+    post: async (machineId, input) => {
+      if (machineId === 'w2cd') throw new Error('exec is disabled for machine "w2cd" on this registry row (execEnabled=false)')
+      throw new Error(`unknown machine "${machineId}" — call agents for the roster`)
+    },
   }
   const watches = []
   const tool = createSuperdHubTool({
@@ -394,12 +397,17 @@ test('exec: local one-shot runs on THIS machine; pty answers honestly; unknown m
     durationMs: 1,
     truncated: false,
     timedOut: false,
+    outcome: 'exited',
   })
   const pty = await tool.execute({ action: 'exec', mode: 'pty', cmd: 'ls' }, fakeExec())
   assert.match(pty.note, /not implemented yet/)
   await assert.rejects(
     tool.execute({ action: 'exec', cmd: 'ls', machine: 'nowhere' }, fakeExec()),
     /E_EXEC_FAILED.*unknown machine "nowhere"/,
+  )
+  await assert.rejects(
+    tool.execute({ action: 'exec', cmd: 'ls', machine: 'w2cd' }, fakeExec()),
+    /E_EXEC_FAILED.*exec is disabled for machine "w2cd".*execEnabled=false/,
   )
   await assert.rejects(
     tool.execute({ action: 'exec', cmd: '' }, fakeExec()),

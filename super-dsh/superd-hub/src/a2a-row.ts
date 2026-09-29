@@ -156,9 +156,21 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
         if (row === undefined) throw new Error(`unknown machine "${machineId}" — call agents for the roster`)
         if (row.execEnabled === false) throw new Error(`exec is disabled for machine "${machineId}" on this registry row (execEnabled=false)`)
         alog?.('info', 'exec.remote', { machine: machineId, cmd: input.cmd, timeoutSec: input.timeoutSec ?? 120 })
-        return postOneShotExec(row.origin, input, { cookie: cookieOf(row.id, home) })
+        const result = await postOneShotExec(row.origin, input, { cookie: cookieOf(row.id, home) })
+        // F6 (first-person 0.1.7-d finding): the initiator side needs its own
+        // completion line — without it a remote result lives only in the tool
+        // response and the initiator's journal stays blind to the outcome.
+        alog?.('info', 'exec.remote.done', {
+          machine: machineId,
+          exit: result.exit ?? 'none',
+          durationMs: result.durationMs,
+          ...(result.outcome === 'exited' ? {} : { outcome: result.outcome }),
+          ...(result.truncated ? { truncated: true } : {}),
+        })
+        return result
       },
     }
+    // the a2a endpoints (POST /api/superd/a2a + GET /api/superd/a2a/outbox) ride the shared
     t.tools.register(createSuperdHubTool({
       service,
       delivery,
