@@ -199,7 +199,9 @@ CTX0 hub
   几位（呈现用；数据面握全长 id，照常可 resume）；**title** = registry 命中
   （全长 sessionId join）→ conversation title + `[hub A2A]` 标记（替换原生
   session title），未命中 → 原生 title 原样（DSH title 非空：空则默认
-  workspace 名）。替换是**纯呈现层 overlay**——落盘 session persistence 里
+  workspace 名）。**未命名呈现（0.1.7-n F2，D17「显示层可美化」的兑现）**：
+  registry 哨兵 `[undefined]` 只在 wire/registry 层存在，呈现层渲染为
+  `(untitled) [hub A2A]`——`[undefined]` 永不进人眼。替换是**纯呈现层 overlay**——落盘 session persistence 里
   hub 发起与原生发起同构（D17 不 write-through）。数据源：本地 agent =
   进程内 session plane；远端 agent = 呈现车道直查对端 session list（unified
   数据面，零新信封——D16 呈现豁免内，与 Web UI 浏览远端会话同一车道）。
@@ -352,7 +354,9 @@ per-agent 状态查询的窗口/状态语义（D18）。agent-team 的 durable m
 ```
 
 远端 `bash -lc <cmd>` 一次执行；输出尾窗 30k、硬上限 ring 4M（better-dash
-教训）；超时 SIGTERM→SIGKILL 组杀。
+教训）；超时 SIGTERM→SIGKILL 组杀。`cwd` = **oneshot 专属**（0.1.7-n F1：PTY
+会话自己有持久 cwd，模型面契约曾把它说成通用参数而 PTY 腿静默忽略——静默
+no-op 是最坏选项，现改为显式拒绝 `[E_BAD_EXEC]`，并教 `cd <dir> && …` 替代）。
 
 ### 8.2 PTY（WS）
 
