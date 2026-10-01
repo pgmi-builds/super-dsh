@@ -45,6 +45,12 @@
 | D20 | 回复语义 v3：通道优先 + latch + 转写兜底（2026-09-29 user 裁决，两轮 + 措辞 redline） | **回复 = peer 经通道的主动 send**（信封进渠道才算沟通；session log 里的 agent response 是它自己的草稿纸；new spawn 经 user prompt 切入是唯一例外——session 只能从 user turn 诞生）。**latch**：hosting hub 镜像行 per-conversation 单调开关——本会话任一次 send（哪怕中间追问）→ 判定具备通道能力，**永久停止采集**（防 moral hazard：per-turn 重置会让「忘了 send 也有人转写」瓦解 guideline，且造成 send+转写双投）。**从未 send + turn 结束** → 按 assistant-output 规则采集 last non-empty output，作为**普通 message** 投递（hub-to-hub 信封与主动回复完全一致），前缀标注来源：`… — last output at turn end`（2026-09-29 user redline：模型面向文本不用 "transcribed" 术语——可观察事实即可，jargon 是实现细节；对齐 DSH relay/settled 刻意分型的诚实性，但不分裂 wire 信封）。**通道面无 abort/complete/max-tokens/refusal 分类**——DSH settlement 词汇是 subagent/delegation 监护人语言（refusal 注释明说「父 agent 不能当成已完成」）；通道只消费两个机器事实：**turn 边界 + last output**；空输出/latch on 零 send → 单一 notice `turn ended, no reply`（无定性词）；stop 的 abort 事实由其同步回执 `{stopped:true}` 承载；答非所问/幻觉 = 内容层的事，逐字转写照投，sender 自行判断。**teaching = 单一合并文本，无变体**：运行时工具可用性不可预判（preset 可禁行、user 可中途关、其他插件可挤掉——静态知识当场变谎话）；「if available」条件句交模型自评（它看一眼自己的工具列表即知，零成本零错误）；**纪律：面向 agent 的文本 merged conditional > pre-selected variant——模型就是解释器，不在不可知的运行时状态上预计算 if-else**；teaching 永远 inline 于信封、有界，绝不独立 user prompt（OMP 二十次工具调用找 A2A 工具的事故）；尾部含出身自述（superd-hub 环境）与异质性披露（工具可用性因 runtime 而异） | 
 | D21 | opening 合一 turn | `new_conversation` 增 optional `message`——opening 与正文合成**一个**注入 turn；裸 `(conversation opened)` 占位信封退役（它独占一个 turn，peer 对着无任务的开场白困惑 22 步、其产出又被当回复转投——F6/F9 同根）；无 message 的 new_conversation 仍合法（纯打招呼/占位） |
 | D22 | spawn receipt β（懒启动 foreign runtime 的 new spawn 边界） | 同步窗 **10s**（常例覆盖：观测 create 均秒级）内拿到 session 即同步全回执；超时 → `{outcome:'pending', messageId, conversationId, note:'spawning, ≤3min'}`——conversationId/messageId 皆发起方铸造、pending 态即刻可用（可 stop/可引用，心智连续）；落盘判定 = DSH 同款（session 文件持久化才算 spawned，lazy sidecar 的首条延迟被吸收）；**3min ceiling**：到点未成 → notice `spawn-failed` + 镜像行标死（后续 send 诚实报错，不注入空气），半启动进程走 stop 机制（上游无 session-close，不造一个）；成功通知经通道投递（notice 进会话）；`'pending'` 在 receipt taxonomy 中 **reserve**（0.1.7-a 落地） |
+| D23 | 工具面 / 工具基底拆分（2026-09-30 user 裁决） | 明确「工具面」（surface，暴露给大模型）与「工具基底」（substrate，硬编码 transport/facility）两个视角，不混用。substrate 之上分两方向：**messaging** 与 **orchestration**（同一抽象层，都调 substrate facility）。surface 分三类工具：① Hub facility & status（machine status / agent runtime 数 / remote exec）② Messaging ③ Orchestration（future work） |
+| D24 | `new_conversation` 并入 `send`（2026-09-30 user 裁决） | surface 第一轮**直接删除** `new_conversation` 动作（不留别名）；底层 `newConversation` 逻辑 wire 进 `send` 参数。**`conversationId` 是唯一 create/continue 判据**：缺省 = new conversation（`title` 可选，空 title 合法）；带 `conversationId` = resume（`title` 忽略 + 警告）。`message` 在 create 时可选（缺省 = typed open `kind=open`），resume 时必填。收编 D7/D21 的「new_conversation 独立门」表述 |
+| D25 | session ownership（2026-09-30 user 裁决） | substrate 层 Hub 对所有 spawn 出的 session **天然全权**（可查 active/idle、可 stop/kill）；但 messaging surface 不暴露对等方 last transcript（对等关系——非本人发起的 conversation 不可查对方 last transcript，只能等回复）。ownership / delegation / 父子 / reviewer / auditor 留给 orchestration 层。**substrate 永远有 ownership，surface 决定给不给、按角色给** |
+| D26 | MCP 明确不做（2026-09-30 user 裁决，强化 ADR 0012） | SuperD 是 Hub 概念，不需要 MCP；以插件身份直接进驻工具面，不做通用 MCP 接口（Orchestra 调研过 MCP 接入面，那是他们的事） |
+| D27 | 边界只投影不穿透（ADR 0013） | 任何边界（MCP inputSchema、工具面/transport 映射）只允许**投影 + 校验**，不允许穿透。MCP 事故（exa `^agent\_run\_` 杀整轮）与 A2A 两扇门同根。原生路径已有注册期编译器（`defineTool` → `assertSupportedJsonSchema`），故原生 > MCP 结构性成立 |
+
 
 ## 2. 术语
 
@@ -205,19 +211,8 @@ CTX0 hub
   hub 发起与原生发起同构（D17 不 write-through）。数据源：本地 agent =
   进程内 session plane；远端 agent = 呈现车道直查对端 session list（unified
   数据面，零新信封——D16 呈现豁免内，与 Web UI 浏览远端会话同一车道）。
-- **`new_conversation`** `{agent: '<m4>-<a6>', title?, message?}`：new-conversation 信封投给
-  目标机器的 a2a ingest（本地 = 同一协议进程内短路；远端 = wire）→ **对端本机**
-  建会话 + 注入教学信封（D21：带 `message` 则 opening 与正文合成**一个**注入 turn；
-  不带则退化为纯开场，`A2A_OPENING_MESSAGE` 占位退役）→ 回执
-  `{conversationId (短 ID), sessionId, agent, machine}`；懒启动对端超同步窗时
-  回 `{outcome:'pending', …}`（D22）。title 只写双方 registry 行（D17：immutable、
-  `[undefined]` 占位，不 write-through 上游 session title）。
-- **`send`** `{agent, conversationId?, title?, message, delivery?: 'queue'|'steer'}`：
-  同一 ingest 通道投 message 信封 → 对端 resolve conversation（命中 → resume +
-  注入；无 conversationId → 按新会话处理）→ inbox-acceptance 即返 receipt
-  `{outcome: 'injected'|'queued'|'pending'(reserved, D22)|'failed', messageId,
-  conversationId, sessionId}`。发起方零 session-plane 调用（D16）。教学信封
-  v3 单一合并文本（D20，措辞见 §7.3）——inline、有界、条件句交模型自评。
+- **`send`** `{agent: '<m4>-<a6>', conversationId?, title?, message, delivery?: 'queue'|'steer'}`：
+  单一门（D24：`new_conversation` 已并入，surface 无独立 open 动作）。**`conversationId` 是唯一 create/continue 判据**——缺省 = new conversation（`title` 可选、空 title 合法；`message` 缺省 → typed open `kind=open` + messageId，`A2A_OPENING_MESSAGE` 字面量退役），带 = resume（`title` 忽略 + `warning`）。投递：new-conversation / message 信封投给目标机器 a2a ingest（本地 = 进程内短路；远端 = wire）→ **对端本机**建会话（D21：带 `message` 则 opening 与正文合成**一个**注入 turn）+ 注入教学信封 → inbox-acceptance 即返 receipt `{outcome: 'injected'|'queued'|'pending'(reserved, D22)|'failed', messageId, conversationId, sessionId, created}`；懒启动对端超同步窗时回 `pending`（D22）。发起方零 session-plane 调用（D16）。title 只写双方 registry 行（D17：immutable、`[undefined]` 占位，不 write-through 上游 session title）。教学信封 v3 单一合并文本（D20，措辞见 §7.3）——inline、有界、条件句交模型自评。
 - **`read`** `{conversationId?}`：未读清扫兜底（auto-delivery 为主通道，
   工具描述明示 NEVER poll）。
 - **`stop`** `{agent, conversationId, scope: 'turn'|'session'}`：turn 级 = cancel
@@ -379,12 +374,18 @@ no-op 是最坏选项，现改为显式拒绝 `[E_BAD_EXEC]`，并教 `cd <dir> 
 - 注册：ctx0 `ctx.inject(['tools'])` + `tools.register(...)`（better-dash
   `plugin.ts` 同款行模式；无 tools 服务时静默不挂）。
 - 名称：`superd-hub`，显示 "SuperD Hub"。call-shape dispatch：
-  `{}`/`{action:'agents'}` → roster+conversations；`{action:'new_conversation'…}`
-  / `{action:'send'…}` / `{action:'read'…}` / `{action:'stop'…}` /
+  `{}`/`{action:'agents'}` → roster+conversations；`{action:'send'…}`（缺 conversationId = 开新会话，D24）
+  / `{action:'read'…}` / `{action:'stop'…}` /
   `{action:'exec', mode:'oneshot'|'pty'…}`。未实现腿返回
   `"not yet implemented: <leg>"`（占位纪律）。
 - 描述文案要点（写给模型）：地址格式与查表规则；NEVER poll（结果自动送达）；
   stop 的硬停语义与 resumable；exec 的 one-shot vs persistent 选择指引。
+### 9.1 工具面 / 工具基底拆分（D23，2026-09-30）
+
+- **工具基底（substrate）**：硬编码的 transport/facility（寻址、信封、ingest、投递、exec、registry、status 采集）。substrate 之上两个方向：**messaging** 与 **orchestration**（同一抽象层，都调 substrate facility，逻辑不同、surface 不同）。
+- **工具面（surface）**：暴露给大模型的工具，分三类——① **Hub facility & status**（machine status / agent runtime 数 / remote exec）② **Messaging**（对等消息通道，Telegram/WhatsApp 心智：sender/recipient 对等，不暴露对等方 last transcript，除非 conversation 由本人发起）③ **Orchestration**（future work：DAG、delegation/父子、reviewer/auditor、可见性/kill 权限）。当前 `superd-hub` 七腿横跨 ①+②，暂不拆工具（D25：描述分族即可）；拆工具留到 orchestration 落地时再判。
+- **presentation 纪律（D25）**：messaging 面不预先给模型讲满工具线（啰嗦）；模型越权（查对等方 transcript）时以「非本人发起、无权限、请等回复」回绝——gate 由「不提供该工具」自然达成，不必先教。
+
 
 ## 10. 注入分阶段（P5）
 
