@@ -182,7 +182,7 @@ function jsonResponse(status, body) {
 
 test('postA2aEnvelope: POSTs the v1 frame with the cookie riding along and decodes the receipt', async () => {
   const seen = []
-  const receipt = { outcome: 'injected', messageId: 'a2a-2', conversationId: 'abc123', sessionId: 'session-xyz' }
+  const receipt = { outcome: 'delivered', messageId: 'a2a-2', conversationId: 'abc123', sessionId: 'session-xyz' }
   const out = await postA2aEnvelope('http://peer:4999', MESSAGE, {
     cookie: 'dsh-auth-x=1',
     fetchImpl: async (url, init) => {
@@ -205,7 +205,7 @@ test('postA2aEnvelope: no cookie option → no Cookie header sent', async () => 
   await postA2aEnvelope('http://peer:4999', MESSAGE, {
     fetchImpl: async (url, init) => {
       seen.push(init)
-      return jsonResponse(200, { outcome: 'injected', messageId: 'a2a-2', conversationId: 'abc123', sessionId: 's' })
+      return jsonResponse(200, { outcome: 'delivered', messageId: 'a2a-2', conversationId: 'abc123', sessionId: 's' })
     },
   })
   assert.equal('cookie' in seen[0].headers, false)

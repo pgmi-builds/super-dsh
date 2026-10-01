@@ -34,10 +34,8 @@
  *     types.ts:196–199) — the stream matcher keys on it.
  *
  * Controller rulings baked in (2026-09-28):
- *   - receipt outcome: 'injected' on EVERY successful prompt submission;
- *     'queued' is RESERVED — the type exists for the OMP-hub-compatible
- *     taxonomy but T2 never returns it (busy-detection is not built — the
- *     target's busy-ness is not cheaply knowable from the hub).
+ *   - receipt outcome: 'delivered' on EVERY successful prompt submission
+ *     (D28: end-to-end delivery complete); 'failed' carries an error body.
  *   - completion correlation is BY TURN via the requestId arming above: one
  *     `turn/end` fires the cb exactly once (debounce-free, order-safe on the
  *     session log's contiguous seq space); the requestId-armed subscription
@@ -347,11 +345,11 @@ export interface A2aInitiator {
 export type A2aDelivery = 'queue' | 'steer'
 
 /**
- * Receipt taxonomy (spec §2, OMP-hub-compatible). 'queued' is RESERVED in
- * T2: busy-detection is deliberately not built, so every successful prompt
- * submission receipts 'injected'.
+ * Receipt taxonomy (D28): 'delivered' on every successful prompt submission
+ * (end-to-end delivery complete); 'failed' carries an executable error body.
+ * ('accepted' / 'spawn-failed' land with the 0.1.8 poll mechanism, T5.)
  */
-export type A2aReceiptOutcome = 'injected' | 'queued' | 'pending' | 'failed'
+export type A2aReceiptOutcome = 'delivered' | 'failed'
 
 /** One failed-send error body, verbatim from the gateway (wire error shape). */
 export interface A2aReceiptError {
@@ -938,7 +936,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (!('outcome' in answer)) {
         throw a2aError('a2a/bad-result', 'a2a: new-conversation envelope answered a non-receipt')
       }
-      if (answer.outcome !== 'injected') {
+      if (answer.outcome !== 'delivered') {
         const err = answer.error ?? { code: 'a2a/remote-failed', message: 'a2a: the peer ingest rejected the envelope without an error body' }
         throw a2aError(err.code, err.message, err.details)
       }
@@ -1061,7 +1059,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (!('outcome' in answer)) {
         return fail({ code: 'a2a/bad-result', message: 'a2a: envelope routed but the answer was not a send receipt' }, row?.sessionId ?? '', row?.shortId ?? envelope.conversationId)
       }
-      if (answer.outcome !== 'injected') {
+      if (answer.outcome !== 'delivered') {
         // D1 hardening: a failed receipt that still carries the peer's session
         // and conversation ids keeps the row addressable — retries resume.
         if (row === undefined && answer.sessionId !== '' && answer.conversationId !== undefined && answer.conversationId !== '') {
@@ -1119,7 +1117,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         touchRow(row, row.hostAgent === undefined ? initiator.sessionId : undefined)
       }
       alog?.('info', 'send.ok', { conversation: conversationId, to: `${envelope.to.machine}-${envelope.to.id}`, message: messageId })
-      return { outcome: 'injected', messageId, conversationId, sessionId: answer.sessionId }
+      return { outcome: 'delivered', messageId, conversationId, sessionId: answer.sessionId }
     },
 
     subscribeCompletion(conv, cb, opts = {}) {

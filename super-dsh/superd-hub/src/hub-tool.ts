@@ -403,7 +403,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           sessionId: { type: 'string' },
           agent: { type: 'string' },
           machine: { type: 'string' },
-          outcome: { type: 'string', description: "send receipt: 'injected' | 'failed'; exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
+          outcome: { type: 'string', description: "send receipt: 'delivered' | 'failed'; exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
           output: { type: 'json', description: 'exec pty: the session output, tail-windowed (a truncation banner carries the exact counts)' },
           cwd: { type: 'json', description: 'exec pty: the session working directory after the command (null when unknown)' },
           mode: { type: 'string', description: "exec pty: present with value 'pty' — the result is a persistent-shell dispatch (absent on oneshot). 0.1.7-h D1: the harness output validator rejects undeclared fields, so this MUST stay declared in lockstep with the pty result shape." },
@@ -488,7 +488,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             // the body crossed an envelope, so it is JSON by construction —
             // one boundary cast onto the schema's json-typed field.
             ...(receipt.error === undefined ? {} : { error: receipt.error as unknown as import('@deepseek-ai/dsh-util-values').JsonValue }),
-            ...(receipt.outcome === 'injected'
+            ...(receipt.outcome === 'delivered'
               ? { note: 'reply auto-delivers as a new message in this conversation — never poll; read only sweeps buffered leftovers' }
               : {}),
           }

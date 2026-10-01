@@ -454,7 +454,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         })
         alog?.('info', 'deliver.writeback', { conversation: row.shortId, from: `${env.from.machine}-${env.from.agent}`, via: 'self-route', outcome: writeBackOutcome.delivered })
         // v1 send-receipt shape (exactly-once wrapper contract)
-        return { outcome: 'injected', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
+        return { outcome: 'delivered', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
       }
       if (row.machine !== env.from.machine || row.agent !== env.from.agent) {
         return fail({
@@ -501,7 +501,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // fails the sender's receipt guard → park → sweep re-POST → the
         // write-back would deliver twice.
         alog?.('info', 'deliver.writeback', { conversation: row.shortId, from: `${env.from.machine}-${env.from.agent}`, via: 'peer', outcome: writeBackOutcome.delivered })
-        return { outcome: 'injected', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
+        return { outcome: 'delivered', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
       }
     }
 
@@ -553,14 +553,14 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       }],
     }
     try {
-      // 'injected' on every successful submission ('queued' reserved — same taxonomy as the initiator side)
+      // 'delivered' on every successful submission (end-to-end delivery complete, D28)
       await sessionRpc(gateway, WIRE.promptSubmit, promptRequest)
     } catch (error) {
       return fail(receiptErrorOf(error), row.sessionId, row.shortId)
     }
     touchMirror(row)
     watchCompletion(gateway, row, env)
-    return { outcome: 'injected', messageId: env.messageId, conversationId: row.shortId, sessionId: row.sessionId }
+    return { outcome: 'delivered', messageId: env.messageId, conversationId: row.shortId, sessionId: row.sessionId }
   }
 
   const ingestStop = async (env: A2aStopEnvelope): Promise<A2aStopReceipt> => {
@@ -639,7 +639,7 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // v1 send-receipt shape: the sender's postA2aEnvelope guard accepts
         // exactly this. The 0.1.6-j double delivery was a {delivered:…} body
         // failing that guard AFTER the receiver had already delivered.
-        return { outcome: 'injected', messageId: envelope.messageId, conversationId: envelope.conversation, sessionId: envelope.to.sessionId }
+        return { outcome: 'delivered', messageId: envelope.messageId, conversationId: envelope.conversation, sessionId: envelope.to.sessionId }
       }
     }
   }
@@ -655,16 +655,16 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       if (mid !== undefined && seenMessageIds(deps.home).has(mid)) {
         alog?.('info', 'ingest.park', { message: mid, reason: 'duplicate' })
         return envelope.kind === 'reply' || envelope.kind === 'notice'
-          ? { outcome: 'injected', messageId: mid, conversationId: envelope.conversation, sessionId: envelope.to.sessionId }
-          : { outcome: 'injected', messageId: mid, conversationId: (envelope as { conversationId?: string }).conversationId ?? '', sessionId: '' }
+          ? { outcome: 'delivered', messageId: mid, conversationId: envelope.conversation, sessionId: envelope.to.sessionId }
+          : { outcome: 'delivered', messageId: mid, conversationId: (envelope as { conversationId?: string }).conversationId ?? '', sessionId: '' }
       }
       const out = await dispatch(envelope)
       const outcome = (out as { outcome?: unknown }).outcome
-      const accepted = typeof outcome === 'string' ? outcome === 'injected' : true
+      const accepted = typeof outcome === 'string' ? outcome === 'delivered' : true
       if (mid !== undefined && accepted) rememberMessageId(deps.home, mid)
       alog?.(accepted ? 'info' : 'warn', 'ingest.done', {
         kind: envelope.kind,
-        outcome: accepted ? 'injected' : typeof outcome === 'string' ? outcome : 'failed',
+        outcome: accepted ? 'delivered' : typeof outcome === 'string' ? outcome : 'failed',
         message: mid,
         conversation: (envelope as { conversationId?: string, conversation?: string }).conversationId ?? (envelope as { conversation?: string }).conversation,
       })

@@ -39,7 +39,7 @@ function fakeService() {
     calls: { newConversation: [], send: [], subscriptions: [], stop: [], read: [] },
     conversations: [],
     newConversationResult: { shortId: 'conv0001', sessionId: 'sess-tgt-1' },
-    sendReceipt: { outcome: 'injected', messageId: 'a2a-m-1', conversationId: 'conv0001', sessionId: 'sess-tgt-1' },
+    sendReceipt: { outcome: 'delivered', messageId: 'a2a-m-1', conversationId: 'conv0001', sessionId: 'sess-tgt-1' },
     stopResult: { scope: 'turn', cancelled: true },
     unread: [],
   }
@@ -255,7 +255,7 @@ test('send: receipt echo, initiator threading, NO post-send watch (R4 — replie
     fakeExec('sess-999'),
   )
   assert.equal(value.action, 'send')
-  assert.equal(value.outcome, 'injected')
+  assert.equal(value.outcome, 'delivered')
   assert.equal(value.messageId, 'a2a-m-1')
   assert.equal(value.conversationId, 'conv0001')
   assert.equal(value.sessionId, 'sess-tgt-1')
@@ -599,7 +599,7 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
       { action: 'send', agent: `${selfId}-${native.id}`, message: 'ping yourself' },
       fakeExec('sess-777'),
     )
-    assert.equal(receipt.outcome, 'injected')
+    assert.equal(receipt.outcome, 'delivered')
     assert.equal(receipt.sessionId, 'sess-tgt-native')
 
     // R4: the completion watch is the INGEST's own (armed on the envelope's

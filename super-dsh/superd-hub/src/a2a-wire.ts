@@ -30,8 +30,8 @@
  *                                     authority over its own outbox).
  *
  * Receipts (contract): new/message → `{outcome,messageId,conversationId,
- * sessionId}` ('injected' on every successful prompt submission — 'queued'
- * is reserved taxonomy, never returned); stop → `{stopped,scope,reason?}`.
+ * sessionId}` ('delivered' on every successful prompt submission — end-to-end
+ * delivery complete; 'failed' carries an error body); stop → `{stopped,scope,reason?}`.
  *
  * Guards are STRICT: exact key sets per kind, non-empty strings everywhere,
  * no unknown fields. Version skew is the outer `v`'s job; within v1 a
@@ -171,7 +171,7 @@ export interface A2aWireFrame {
 
 /** Receipt for new-conversation / message envelopes (inbox-acceptance). */
 export interface A2aSendReceipt {
-  outcome: 'injected' | 'queued' | 'pending' | 'failed'
+  outcome: 'delivered' | 'failed'
   messageId: string
   conversationId?: string
   /** Target session ('' when the failure predates session resolution). */
@@ -355,7 +355,7 @@ function isWireError(v: unknown): v is WireError {
 function isSendReceipt(v: unknown): v is A2aSendReceipt {
   if (!isRecord(v)) return false
   if (!hasExactKeys(v, ['outcome', 'messageId', 'sessionId'], ['conversationId', 'error'])) return false
-  if (v['outcome'] !== 'injected' && v['outcome'] !== 'queued' && v['outcome'] !== 'failed') return false
+  if (v['outcome'] !== 'delivered' && v['outcome'] !== 'failed') return false
   if (!nonEmptyString(v['messageId'])) return false
   if (typeof v['sessionId'] !== 'string') return false
   if ('conversationId' in v && !nonEmptyString(v['conversationId'])) return false

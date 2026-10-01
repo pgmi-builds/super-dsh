@@ -87,7 +87,7 @@ const mkRemote = (home, opts = {}) => {
   const posts = []
   const fetchImpl = opts.fetchImpl ?? (async (url, init) => {
     posts.push({ url: String(url), init })
-    return new Response(JSON.stringify(opts.receipt ?? { outcome: 'injected', messageId: 'x', conversationId: 'rem001', sessionId: 'sess-at-k3f9' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify(opts.receipt ?? { outcome: 'delivered', messageId: 'x', conversationId: 'rem001', sessionId: 'sess-at-k3f9' }), { status: 200, headers: { 'content-type': 'application/json' } })
   })
   return { posts, fetchImpl }
 }
@@ -222,7 +222,7 @@ test('send create-path: title lands in the registry (no rename); prompt still go
   const local = { machine: selfM4, id: 'q7m2xp' }
   try {
     const receipt = await svc.send({ to: local, title: 'Nope', message: 'never sent' }, localInitiator(selfM4))
-    assert.equal(receipt.outcome, 'injected')
+    assert.equal(receipt.outcome, 'delivered')
     assert.equal(receipt.sessionId, 'sess-ffffffff-6666')
     assert.match(receipt.conversationId, /^[a-z0-9]{6}$/)
     assert.equal(receipt.error, undefined)
@@ -244,7 +244,7 @@ test('send without conversationId: create path — create(+rename) then prompt; 
   const local = { machine: selfM4, id: 'q7m2xp' }
   try {
     const receipt = await svc.send({ to: local, title: 'Sync review', message: 'check the build' }, localInitiator(selfM4))
-    assert.equal(receipt.outcome, 'injected')
+    assert.equal(receipt.outcome, 'delivered')
     assert.match(receipt.messageId, /^a2a-/)
     assert.match(receipt.conversationId, /^[a-z0-9]{6}$/)
     assert.equal(receipt.sessionId, 'sess-dddddddd-4444')
@@ -279,7 +279,7 @@ test('send with conversationId: no create call; stored sessionId; lastActivityAt
     // fresh service over the same home = restart; conversationId still resolves
     const svc2 = mkRestartedService(home, gw)
     const second = await svc2.send({ to: local, conversationId: first.conversationId, message: 'two', delivery: 'steer' }, localInitiator(selfM4))
-    assert.equal(second.outcome, 'injected')
+    assert.equal(second.outcome, 'delivered')
     assert.equal(second.conversationId, first.conversationId)
     assert.equal(second.sessionId, 'sess-eeeeeeee-5555')
     assert.equal(gw.rpcs(WIRE.sessionCreate).length, 1) // no second create
@@ -343,11 +343,11 @@ test('title immutability (D17): a later send never rewrites the stored title, wh
   const local = { machine: selfM4, id: 'q7m2xp' }
   try {
     const first = await svc.send({ to: local, title: 'Original', message: 'one' }, localInitiator(selfM4))
-    assert.equal(first.outcome, 'injected')
+    assert.equal(first.outcome, 'delivered')
     // resume with a DIFFERENT title: the create-time title is immutable — the
     // send's title field is simply not a write path for existing rows
     const second = await svc.send({ to: local, conversationId: first.conversationId, title: 'Intruder', message: 'two' }, localInitiator(selfM4))
-    assert.equal(second.outcome, 'injected')
+    assert.equal(second.outcome, 'delivered')
     const rows = loadConversations(home).conversations
     assert.equal(rows.length, 1)
     assert.equal(rows[0].title, 'Original')
@@ -814,7 +814,7 @@ test('registry migration (D2 amended): a migrated shortId addresses its row — 
   const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
   const selfM4 = ensureSelf(home, 'local').id
   void selfM4
-  const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'peer-1', conversationId: '333333', sessionId: 'session-33333333-0000' } })
+  const remote = mkRemote(home, { receipt: { outcome: 'delivered', messageId: 'peer-1', conversationId: '333333', sessionId: 'session-33333333-0000' } })
   const svc = createA2aService({ home, gatewayFor: () => gw.face, fetchImpl: remote.fetchImpl, now: () => 5 })
   try {
     saveConversations(home, { conversations: [
@@ -825,7 +825,7 @@ test('registry migration (D2 amended): a migrated shortId addresses its row — 
     // k3f9, so the message envelope rides the WIRE (R4 continuation routing)
     const svc2 = createA2aService({ home, gatewayFor: () => gw.face, fetchImpl: remote.fetchImpl, now: () => 5 })
     const receipt = await svc2.send({ to: { machine: 'k3f9', id: 'q7m2xp' }, conversationId: '333333', message: 'x' }, INITIATOR)
-    assert.equal(receipt.outcome, 'injected')
+    assert.equal(receipt.outcome, 'delivered')
     assert.equal(receipt.sessionId, 'session-33333333-0000')
     assert.equal(receipt.conversationId, '333333')
     // the wire envelope carried the migrated conversationId verbatim
@@ -850,13 +850,13 @@ test('R4 protocol identity: the self-routed envelope and the wire envelope diffe
   const selfM4 = ensureSelf(home, 'local').id
   try {
     upsertRemote(home, { id: 'k3f9', name: 'k3f9', label: 'k3f9', origin: 'http://k3f9:4999', cookie: 'dsh-auth-k3f9=1', enabled: true, addedAt: 1 })
-    const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'r', conversationId: 'wire01', sessionId: 'sess-wire' } })
+    const remote = mkRemote(home, { receipt: { outcome: 'delivered', messageId: 'r', conversationId: 'wire01', sessionId: 'sess-wire' } })
     const seen = []
     let ingestRef
     const svc = createA2aService({
       home,
       gatewayFor: () => gw.face,
-      ingest: () => ({ ingest: async (envelope) => { seen.push(envelope); return { outcome: 'injected', messageId: envelope.messageId, conversationId: envelope.conversationId, sessionId: 'sess-local' } } }),
+      ingest: () => ({ ingest: async (envelope) => { seen.push(envelope); return { outcome: 'delivered', messageId: envelope.messageId, conversationId: envelope.conversationId, sessionId: 'sess-local' } } }),
       fetchImpl: remote.fetchImpl,
       now: () => 7,
     })
@@ -885,10 +885,10 @@ test('R4 remote wire: receipts mapped verbatim; failed receipts keep addressable
   void selfM4
   try {
     // injected: the initiator row records the peer session + our initiatorSession
-    const ok = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'w1', conversationId: 'wire02', sessionId: 'sess-at-k3f9' } })
+    const ok = mkRemote(home, { receipt: { outcome: 'delivered', messageId: 'w1', conversationId: 'wire02', sessionId: 'sess-at-k3f9' } })
     const svc = createA2aService({ home, gatewayFor: () => gw.face, fetchImpl: ok.fetchImpl, now: () => 9 })
     const r1 = await svc.send({ to: { machine: 'k3f9', id: 'q7m2xp' }, title: 'wire talk', message: 'over there' }, INITIATOR)
-    assert.deepEqual(r1, { outcome: 'injected', messageId: r1.messageId, conversationId: 'wire02', sessionId: 'sess-at-k3f9' })
+    assert.deepEqual(r1, { outcome: 'delivered', messageId: r1.messageId, conversationId: 'wire02', sessionId: 'sess-at-k3f9' })
     const rows = loadConversations(home).conversations
     assert.deepEqual(rows, [{
       shortId: 'wire02', machine: 'k3f9', agent: 'q7m2xp', sessionId: 'sess-at-k3f9',
@@ -951,7 +951,7 @@ test('R4 continuation routing: mirror rows (hostAgent) → OWN ingest; initiator
   const selfM4 = ensureSelf(home, 'local').id
   try {
     upsertRemote(home, { id: 'k3f9', name: 'k3f9', label: 'k3f9', origin: 'http://k3f9:4999', cookie: 'dsh-auth-k3f9=1', enabled: true, addedAt: 1 })
-    const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'w', conversationId: 'init01', sessionId: 'sess-at-k3f9' } })
+    const remote = mkRemote(home, { receipt: { outcome: 'delivered', messageId: 'w', conversationId: 'init01', sessionId: 'sess-at-k3f9' } })
     const seen = []
     let ingestRef
     const svc = createA2aService({
@@ -959,7 +959,7 @@ test('R4 continuation routing: mirror rows (hostAgent) → OWN ingest; initiator
       gatewayFor: () => gw.face,
       ingest: () => ({ ingest: async (envelope) => {
         seen.push(envelope)
-        return { outcome: 'injected', messageId: envelope.messageId, conversationId: envelope.conversationId, sessionId: 'sess-local-hosted' }
+        return { outcome: 'delivered', messageId: envelope.messageId, conversationId: envelope.conversationId, sessionId: 'sess-local-hosted' }
       } }),
       fetchImpl: remote.fetchImpl,
       now: () => 13,
@@ -970,7 +970,7 @@ test('R4 continuation routing: mirror rows (hostAgent) → OWN ingest; initiator
       { shortId: 'mir001', machine: 'dev3', agent: 'cd33x1', sessionId: 'sess-local-hosted', hostAgent: 'q7m2xp', createdAt: 1, lastActivityAt: 1 },
     ] })
     const local = await svc.send({ to: { machine: selfM4, id: 'q7m2xp' }, conversationId: 'mir001', message: 'into the hosted one' }, localInitiator(selfM4))
-    assert.equal(local.outcome, 'injected')
+    assert.equal(local.outcome, 'delivered')
     assert.equal(seen.length, 1)
     assert.deepEqual(seen[0].to, { machine: selfM4, id: 'q7m2xp' }) // OWN ingest, hostAgent address
     assert.equal(seen[0].conversationId, 'mir001')
@@ -980,7 +980,7 @@ test('R4 continuation routing: mirror rows (hostAgent) → OWN ingest; initiator
       { shortId: 'init01', machine: 'k3f9', agent: 'q7m2xp', sessionId: 'sess-at-k3f9', createdAt: 1, lastActivityAt: 1 },
     ] })
     const wire = await svc.send({ to: { machine: 'k3f9', id: 'q7m2xp' }, conversationId: 'init01', message: 'to the peer' }, localInitiator(selfM4))
-    assert.equal(wire.outcome, 'injected')
+    assert.equal(wire.outcome, 'delivered')
     assert.equal(seen.length, 1) // no second self-route
     const sent = JSON.parse(remote.posts[0].init.body).envelope
     assert.equal(sent.kind, 'message')
@@ -1002,7 +1002,7 @@ test('D20 write-back send leg: mirror row + addressing the initiator → envelop
   const gw = fakeGateway()
   const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
   const selfM4 = ensureSelf(home, 'local').id
-  const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'x', conversationId: 'wb001', sessionId: 'sess-init-at-k3f9' } })
+  const remote = mkRemote(home, { receipt: { outcome: 'delivered', messageId: 'x', conversationId: 'wb001', sessionId: 'sess-init-at-k3f9' } })
   saveConversations(home, { conversations: [{
     shortId: 'wb001', machine: 'k3f9', agent: 'a2b3c4', sessionId: 'sess-host-1', title: 'wb',
     hostAgent: 'q7m2xp', createdAt: 1, lastActivityAt: 1,
@@ -1012,7 +1012,7 @@ test('D20 write-back send leg: mirror row + addressing the initiator → envelop
     { to: { machine: 'k3f9', id: 'a2b3c4' }, conversationId: 'wb001', message: 'result through the channel' },
     { machine: selfM4, agent: 'q7m2xp', sessionId: 'sess-host-1' },
   )
-  assert.equal(r.outcome, 'injected')
+  assert.equal(r.outcome, 'delivered')
   assert.equal(r.conversationId, 'wb001')
   // the envelope POSTed to the INITIATOR's hub: to = the initiator, from = the hosted peer itself
   assert.equal(remote.posts.length, 1)
@@ -1046,7 +1046,7 @@ test('D20 write-back guard: a mirror-row send addressing the HOSTED agent still 
     // a third party continuing the conversation addresses the HOSTED agent — allowed, no latch
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
     const r = await svc.send({ to: local, conversationId: created.shortId, message: 'continue' }, localInitiator(selfM4))
-    assert.equal(r.outcome, 'injected')
+    assert.equal(r.outcome, 'delivered')
     const row = loadConversations(home).conversations.find((x) => x.shortId === created.shortId)
     assert.equal(row.channelUsed, undefined, 'an initiator-side continuation is NOT a channel reply — no latch')
   } finally { rmSync(home, { recursive: true, force: true }) }
@@ -1074,7 +1074,7 @@ test('operational journal: new/send/write-back each leave one line (conversation
   const gw = fakeGateway()
   const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
   const selfM4 = ensureSelf(home, 'local').id
-  const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'x', conversationId: 'jrnl02', sessionId: 'sess-init-at-k3f9' } })
+  const remote = mkRemote(home, { receipt: { outcome: 'delivered', messageId: 'x', conversationId: 'jrnl02', sessionId: 'sess-init-at-k3f9' } })
   saveConversations(home, { conversations: [{
     shortId: 'jrnl02', machine: 'k3f9', agent: 'a2b3c4', sessionId: 'sess-host-2', title: 'jrnl',
     hostAgent: 'q7m2xp', createdAt: 1, lastActivityAt: 1,
@@ -1091,7 +1091,7 @@ test('operational journal: new/send/write-back each leave one line (conversation
       { to: { machine: 'k3f9', id: 'a2b3c4' }, conversationId: 'jrnl02', message: 'channel reply' },
       { machine: selfM4, agent: 'q7m2xp', sessionId: 'sess-host-2' },
     )
-    assert.equal(r.outcome, 'injected')
+    assert.equal(r.outcome, 'delivered')
     const latch = find('send.channel')
     assert.ok(latch, 'send.channel present')
     assert.equal(latch.fields.conversation, 'jrnl02')

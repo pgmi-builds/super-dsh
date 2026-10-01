@@ -131,7 +131,7 @@ test('new-conversation (local): create + inject + verbatim mirror row; teaching 
     const { ingest } = assembly(home, gw)
     const env = mkEnv(self.id, self.id) // initiator on THIS machine (in-process short-circuit shape)
     const receipt = await ingest.ingest(env)
-    assert.deepEqual(receipt, { outcome: 'injected', messageId: 'a2a-msg-1', conversationId: 'abc123', sessionId: 'sess-aaaaaaaa-1111' })
+    assert.deepEqual(receipt, { outcome: 'delivered', messageId: 'a2a-msg-1', conversationId: 'abc123', sessionId: 'sess-aaaaaaaa-1111' })
     // create payload byte-exact; prompt mirror byte-exact with the teaching envelope
     assert.deepEqual(gw.rpcs(WIRE.sessionCreate).map((c) => c.payload), [{ args: { request: {} } }])
     const prompt = gw.rpcs(WIRE.promptSubmit)[0].payload.args.request
@@ -170,7 +170,7 @@ test('new-conversation re-delivery: same conversation → idempotent adoption + 
     // session-plane calls (the exactly-once wrapper short-circuits before
     // dispatch — the re-adoption path below stays for peers that re-mint)
     const again = await ingest.ingest(env)
-    assert.equal(again.outcome, 'injected')
+    assert.equal(again.outcome, 'delivered')
     assert.equal(loadConversations(home).conversations.length, 1)
     assert.equal(gw.calls.length, 3) // leg 1's create + prompt + completion-watch stream — the re-POST consumed nothing
     // collision: a DIFFERENT envelope (fresh messageId — a real conflicting
@@ -201,7 +201,7 @@ test('message: resume the mirror row (no create); unknown conversation + initiat
       from: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
       messageId: 'a2a-msg-2',
     })
-    assert.equal(resume.outcome, 'injected')
+    assert.equal(resume.outcome, 'delivered')
     assert.equal(resume.conversationId, 'abc123')
     assert.equal(gw.rpcs(WIRE.sessionCreate).length, 1) // no second create
     assert.equal(gw.rpcs(WIRE.promptSubmit).length, 2)
@@ -334,7 +334,7 @@ test('completion → remote initiator with a machines row: reply POSTs on the wi
     })
     const { ingest } = assembly(home, gw, { fetchImpl })
     const receipt = await ingest.ingest(mkEnv(self.id, 'dev3'))
-    assert.equal(receipt.outcome, 'injected')
+    assert.equal(receipt.outcome, 'delivered')
     await until(() => posts.length > 0)
     assert.equal(posts[0].url, `http://dev3:4999${A2A_ENDPOINT_PATH}`)
     assert.equal(posts[0].init.method, 'POST')
@@ -448,7 +448,7 @@ test('POST /api/superd/a2a handler: valid frame → 200 receipt; bad JSON/bad ve
       body: JSON.stringify({ v: 1, envelope: mkEnv(self.id, self.id) }),
     }), ingest)
     assert.equal(ok.status, 200)
-    assert.deepEqual(await ok.json(), { outcome: 'injected', messageId: 'a2a-msg-1', conversationId: 'abc123', sessionId: 'sess-77777777-7777' })
+    assert.deepEqual(await ok.json(), { outcome: 'delivered', messageId: 'a2a-msg-1', conversationId: 'abc123', sessionId: 'sess-77777777-7777' })
     const badJson = await handleA2aIngestPost(new Request('http://x', { method: 'POST', body: 'nope{' }), ingest)
     assert.equal(badJson.status, 400)
     const badVersion = await handleA2aIngestPost(new Request('http://x', {
@@ -504,7 +504,7 @@ test('inbound reply envelope (peer POSTed at us): envelope sender wins; absent s
       messageId: 'a2a-relay-late',
       sender: { machine: 'dev3', agent: 'cd33x1' },
     })
-    assert.deepEqual(out, { outcome: 'injected', messageId: 'a2a-relay-late', conversationId: 'abc123', sessionId: 'session-init-1' })
+    assert.deepEqual(out, { outcome: 'delivered', messageId: 'a2a-relay-late', conversationId: 'abc123', sessionId: 'session-init-1' })
     assert.equal(delivery.delivered.length, 1)
     assert.match(delivery.delivered[0].message.content[0].text, /a late reply/)
     assert.equal(delivery.delivered[0].message.source.conversationId, 'abc123')
@@ -525,7 +525,7 @@ test('inbound reply envelope (peer POSTed at us): envelope sender wins; absent s
       text: 'an older reply',
       messageId: 'a2a-relay-legacy',
     })
-    assert.deepEqual(out2, { outcome: 'injected', messageId: 'a2a-relay-legacy', conversationId: 'xyz789', sessionId: 'session-init-1' })
+    assert.deepEqual(out2, { outcome: 'delivered', messageId: 'a2a-relay-legacy', conversationId: 'xyz789', sessionId: 'session-init-1' })
     assert.equal(delivery.delivered.length, 2)
     assert.equal(delivery.delivered[1].message.source.senderMachine, 'dev3')
     assert.equal(delivery.delivered[1].message.source.senderAgent, 'cd33x1')
@@ -540,7 +540,7 @@ test('inbound reply envelope (peer POSTed at us): envelope sender wins; absent s
       messageId: 'a2a-relay-late',
       sender: { machine: 'dev3', agent: 'cd33x1' },
     })
-    assert.deepEqual(out3, { outcome: 'injected', messageId: 'a2a-relay-late', conversationId: 'abc123', sessionId: 'session-init-1' })
+    assert.deepEqual(out3, { outcome: 'delivered', messageId: 'a2a-relay-late', conversationId: 'abc123', sessionId: 'session-init-1' })
     assert.equal(delivery.delivered.length, 2) // unchanged — the duplicate was dropped
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
@@ -590,7 +590,7 @@ test('peer write-back: message envelope hitting an INITIATOR row delivers into i
       from: { machine: 'dev3', agent: 'cd33x1', sessionId: 'session-at-dev3-side' },
       messageId: 'a2a-pwb-1',
     })
-    assert.deepEqual(out, { outcome: 'injected', messageId: 'a2a-pwb-1', conversationId: 'ini777', sessionId: 'session-init-1' })
+    assert.deepEqual(out, { outcome: 'delivered', messageId: 'a2a-pwb-1', conversationId: 'ini777', sessionId: 'session-init-1' })
     // delivered into the initiator's session with PEER attribution
     assert.equal(delivery.delivered.length, 1)
     const hit = delivery.delivered[0]
@@ -624,7 +624,7 @@ test('peer write-back: initiator not live → bounded unread buffer; initiatorSe
       from: { machine: 'dev3', agent: 'cd33x1', sessionId: 'session-at-dev3-side' },
       messageId: 'a2a-pwb-2',
     })
-    assert.deepEqual(buffered, { outcome: 'injected', messageId: 'a2a-pwb-2', conversationId: 'ini888', sessionId: 'session-gone-away' })
+    assert.deepEqual(buffered, { outcome: 'delivered', messageId: 'a2a-pwb-2', conversationId: 'ini888', sessionId: 'session-gone-away' })
     assert.equal(delivery.buffered.length, 1)
     assert.equal(delivery.buffered[0].initiatorSessionId, 'session-gone-away')
     assert.equal(delivery.buffered[0].message.conversationId, 'ini888')
@@ -822,7 +822,7 @@ test('D20: self-route write-back — the hosted peer sends (from=hostAgent) → 
       from: { machine: self.id, agent: 'q7m2xp', sessionId: 'sess-host-9' },
       messageId: 'a2a-wb-1',
     })
-    assert.deepEqual(out, { outcome: 'injected', messageId: 'a2a-wb-1', conversationId: 'wb005', sessionId: 'session-init-9' })
+    assert.deepEqual(out, { outcome: 'delivered', messageId: 'a2a-wb-1', conversationId: 'wb005', sessionId: 'session-init-9' })
     assert.equal(gw.rpcs(WIRE.promptSubmit).length, 0, 'write-back NEVER injects into the peer\'s own session')
     assert.equal(gw.streams(WIRE.streamOpen).length, 0)
     const hit = delivery.delivered[0]
@@ -865,7 +865,7 @@ test('operational journal: the ingest lifecycle emits one greppable line per mac
     const done = find('ingest.done')
     assert.ok(done, 'ingest.done present')
     assert.equal(done.fields.kind, 'message')
-    assert.equal(done.fields.outcome, 'injected')
+    assert.equal(done.fields.outcome, 'delivered')
     assert.equal(done.fields.conversation, 'abc123')
     assert.equal(done.level, 'info')
     // completion watch: armed before the artifact, latch branch → notice
