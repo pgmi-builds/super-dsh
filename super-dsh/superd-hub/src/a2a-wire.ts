@@ -139,7 +139,7 @@ export interface A2aReplyEnvelope {
  * wearing one sentence). 'peer' = an account minted by the PEER hub and
  * relayed in; absent wire reason (older peer) falls back to 'peer'.
  */
-export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop' | 'aborted' | 'peer'
+export type A2aNoticeReason = 'send-failed' | 'stream-dead' | 'stop' | 'aborted' | 'peer' | 'delivered' | 'undelivered'
 
 export interface A2aNoticeEnvelope {
   kind: 'notice'
@@ -252,7 +252,7 @@ function nonEmptyString(v: unknown): v is string {
 }
 
 /** R2 (0.1.7-i): the wire notice reason vocabulary — mirror of the type union. */
-const NOTICE_REASONS: ReadonlySet<string> = new Set(['send-failed', 'stream-dead', 'stop', 'aborted', 'peer'])
+const NOTICE_REASONS: ReadonlySet<string> = new Set(['send-failed', 'stream-dead', 'stop', 'aborted', 'peer', 'delivered', 'undelivered'])
 
 function isNoticeReason(v: unknown): v is A2aNoticeReason {
   return typeof v === 'string' && NOTICE_REASONS.has(v)

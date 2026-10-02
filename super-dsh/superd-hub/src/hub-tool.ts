@@ -338,7 +338,7 @@ const DESCRIPTION =
   'Call shapes:\n' +
   '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
   '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime, lastOutput?, lastOutputAt?}]}. lastOutput (the peer\'s last delivered output) rides ONLY when you are that conversation\'s initiator.\n' +
-  '  {action:"send", agent?, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN (then agent = the recipient, REQUIRED; title optional; message is the first turn); pass conversationId to RESUME (agent optional — the hub derives the route; a wrong agent is refused). Receipt {outcome: delivered|failed, messageId, conversationId, sessionId, created, error?}.\n' +
+  '  {action:"send", agent?, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN (then agent = the recipient, REQUIRED; title optional; message is the first turn); pass conversationId to RESUME (agent optional — the hub derives the route; a wrong agent is refused). Receipt {outcome: delivered|accepted|failed, messageId, conversationId, sessionId, created, error?, note?}: `delivered` = end-to-end complete; `accepted` = the hub took it and the SAME in-flight request keeps running (its `delivered`/`undelivered` outcome arrives as a notice — do not resend); `failed` = immediate rejection.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", conversationId, agent?, scope?} → cancel the conversation\'s active turn (the session owner is derived from the conversation id; agent is optional). Answers stopped:false with a note when no turn was active.\n' +
   '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}; cwd sets its working directory. mode "pty": a PERSISTENT shell per (your session, machine) — the shell OWNS its cwd and env and they SURVIVE across dispatches (cd once inside the command, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. cwd is oneshot-only: passing it with mode "pty" is refused (use `cd <dir> && …` inside the command). Prefer oneshot for independent commands; pty when shell state matters.\n' +
@@ -421,7 +421,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           created: { type: 'boolean', description: "send receipt: true when conversationId was omitted (this send OPENED the conversation); absent/false on resume" },
           agent: { type: 'string' },
           machine: { type: 'string' },
-          outcome: { type: 'string', description: "send receipt: 'delivered' | 'failed'; exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
+          outcome: { type: 'string', description: "send receipt: 'delivered' (end-to-end complete) | 'accepted' (hub took it; the same in-flight request keeps running and the outcome arrives as a notice) | 'failed' (immediate rejection); exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
           output: { type: 'json', description: 'exec pty: the session output, tail-windowed (a truncation banner carries the exact counts)' },
           cwd: { type: 'json', description: 'exec pty: the session working directory after the command (null when unknown)' },
           mode: { type: 'string', description: "exec pty: present with value 'pty' — the result is a persistent-shell dispatch (absent on oneshot). 0.1.7-h D1: the harness output validator rejects undeclared fields, so this MUST stay declared in lockstep with the pty result shape." },
@@ -493,7 +493,9 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             ...(receipt.error === undefined ? {} : { error: receipt.error as unknown as import('@deepseek-ai/dsh-util-values').JsonValue }),
             ...(receipt.outcome === 'delivered'
               ? { note: 'reply auto-delivers as a new message in this conversation — never poll; read only sweeps buffered leftovers' }
-              : {}),
+              : receipt.outcome === 'accepted' && receipt.note !== undefined
+                ? { note: receipt.note }
+                : {}),
           }
         }
 

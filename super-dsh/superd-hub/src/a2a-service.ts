@@ -323,6 +323,11 @@ export function renderA2aEnvelope(fields: {
 /** Bounded unread buffer size per initiator session. */
 export const A2A_BUFFER_MAX = 32
 
+/** D28: the sender's synchronous receipt window. If the end-to-end wire has not settled by then the hub answers `accepted` and lets the SAME in-flight request finish in the background. */
+export const A2A_SYNC_RECEIPT_MS = 10_000
+/** D28: the background wire budget after an `accepted` receipt (the peer may spend this long bringing the runtime up — spawn OR resume, indistinguishable at the process level). */
+export const A2A_ASYNC_WIRE_TIMEOUT_MS = 60_000
+
 /** stop('session') degradation notice — the session plane has no close RPC upstream. */
 export const A2A_NO_SESSION_CLOSE_REASON = 'no session-close endpoint upstream'
 
@@ -353,7 +358,7 @@ export type A2aDelivery = 'queue' | 'steer'
  * (end-to-end delivery complete); 'failed' carries an executable error body.
  * ('accepted' / 'spawn-failed' land with the 0.1.8 poll mechanism, T5.)
  */
-export type A2aReceiptOutcome = 'delivered' | 'failed'
+export type A2aReceiptOutcome = 'delivered' | 'accepted' | 'failed'
 
 /** One failed-send error body, verbatim from the gateway (wire error shape). */
 export interface A2aReceiptError {
@@ -373,6 +378,8 @@ export interface A2aReceipt {
   sessionId: string
   /** Present iff outcome === 'failed'. */
   error?: A2aReceiptError
+  /** Model-facing guidance riding a non-terminal receipt (D28: an `accepted` receipt explains that the same in-flight request keeps running). */
+  note?: string
 }
 
 /** One send request (spec §7.2): no conversationId ≡ new conversation. */
@@ -483,6 +490,8 @@ export interface A2aServiceDeps {
   /** Operational journal (0.1.7-b): one greppable line per machine event; the cordis host wires it onto ctx.logger, tests inject a collector. */
   log?: A2aLogFn
   now?(): number
+  /** D28: override the synchronous receipt window (tests run it small; production uses A2A_SYNC_RECEIPT_MS). */
+  syncReceiptMs?: number
 }
 
 export interface A2aService {
@@ -885,7 +894,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
    * protocol-identical by construction); a paired remote → wire POST with
    * its cookie riding along. Unpaired → the typed unknown-machine failure.
    */
-  const routeEnvelope = async (envelope: A2aEnvelope): Promise<IngestAnswer> => {
+  const routeEnvelope = async (envelope: A2aEnvelope, timeoutMs?: number): Promise<IngestAnswer> => {
     const target = a2aAddressOf(envelope)
     if (target.machine === selfM4()) {
       const ingest = deps.ingest?.()
@@ -901,6 +910,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
     return postA2aEnvelope(machine.origin, envelope, {
       cookie: cookieOf(machine.id, deps.home),
       fetchImpl: deps.fetchImpl,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
     })
   }
 
@@ -1044,16 +1054,67 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         }
       }
 
+      // D28/T5: hub-to-hub is a SYNCHRONOUS POST whose response IS the
+      // completion notification — there is no poll surface. We only keep the
+      // SENDER's receipt synchronous within A2A_SYNC_RECEIPT_MS; if the wire has
+      // not settled by then answer `accepted` and let the SAME in-flight request
+      // finish in the background, delivering `delivered`/`undelivered` as a
+      // notice.
+      let syncTimer: ReturnType<typeof setTimeout> | undefined
+      const wire = routeEnvelope(envelope, A2A_ASYNC_WIRE_TIMEOUT_MS).then(
+        (a) => ({ ok: true as const, a }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      const raced = await Promise.race([
+        wire,
+        new Promise<'sync-timeout'>((resolve) => { syncTimer = setTimeout(() => resolve('sync-timeout'), deps.syncReceiptMs ?? A2A_SYNC_RECEIPT_MS) }),
+      ])
+      if (syncTimer !== undefined) clearTimeout(syncTimer)
+      if (raced === 'sync-timeout') {
+        const conversationId = envelope.conversationId
+        void wire.then((settled) => {
+          const a = settled.ok ? (settled.a as { outcome?: string; sessionId?: string; conversationId?: string; error?: { message?: string } }) : undefined
+          const delivered = a?.outcome === 'delivered'
+          if (delivered && row === undefined && a?.sessionId !== undefined && a.sessionId !== '' && a.conversationId !== undefined && a.conversationId !== '') {
+            recordInitiatorRow(a.conversationId, to, a.sessionId, normalizeA2aTitle(req.title), initiator)
+          }
+          const peerMsg = a?.error?.message
+          const detail = delivered
+            ? 'the message reached the peer'
+            : peerMsg ?? (settled.ok ? 'the peer hub rejected the envelope' : receiptErrorOf(settled.error).message)
+          const raw = `conversation ${conversationId}: ${delivered ? 'delivered' : 'undelivered'} — ${detail}`
+          const notice: A2aNoticeEnvelope = {
+            kind: 'notice',
+            to: { machine: initiator.machine, agent: initiator.agent, sessionId: initiator.sessionId },
+            conversation: conversationId,
+            summary: raw.length > A2A_NOTICE_SUMMARY_MAX ? raw.slice(0, A2A_NOTICE_SUMMARY_MAX - 1) + '…' : raw,
+            messageId: `a2a-notice-${randomUUID()}`,
+            sender: { machine: to.machine, agent: to.id },
+            reason: delivered ? 'delivered' : 'undelivered',
+          }
+          alog?.('info', 'send.settled', { conversation: conversationId, outcome: delivered ? 'delivered' : 'undelivered' })
+          void routeEnvelope(notice).catch((error: unknown) => {
+            alog?.('warn', 'send.settled-notice-fail', { conversation: conversationId, error: messageOf(error) })
+          })
+        })
+        alog?.('info', 'send.accepted', { conversation: conversationId, message: messageId })
+        return {
+          outcome: 'accepted',
+          messageId,
+          conversationId,
+          sessionId: '',
+          note: `the peer hub has not confirmed end-to-end delivery within ${A2A_SYNC_RECEIPT_MS / 1000}s — the SAME in-flight request keeps running (up to ${A2A_ASYNC_WIRE_TIMEOUT_MS / 1000}s) and its outcome arrives as a notice; do not resend`,
+        }
+      }
       let answer: IngestAnswer
-      try {
-        answer = await routeEnvelope(envelope)
-      } catch (error) {
+      if (!raced.ok) {
         // D7 layering preserved: typed address failures (unknown-machine,
         // unreachable transport) and wire faults land as failed receipts —
         // send never throws.
-        const body = error instanceof A2aAddressError ? addressErrorBody(error) : receiptErrorOf(error)
+        const body = raced.error instanceof A2aAddressError ? addressErrorBody(raced.error) : receiptErrorOf(raced.error)
         return fail(body, row?.sessionId ?? '', row?.shortId)
       }
+      answer = raced.a
       if (!('outcome' in answer)) {
         return fail({ code: 'a2a/bad-result', message: 'a2a: envelope routed but the answer was not a send receipt' }, row?.sessionId ?? '', row?.shortId ?? envelope.conversationId)
       }

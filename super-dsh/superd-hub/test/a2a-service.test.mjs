@@ -213,6 +213,59 @@ test('send create-path: title lands in the registry (no rename); prompt still go
 
 // ---------------------------------------------------------------- send
 
+// T5/D28: hub-to-hub is a synchronous POST — no poll surface. The sender gets a
+// receipt within the sync window; if the wire has not settled by then it answers
+// `accepted` and the SAME in-flight request finishes into a delivered/undelivered
+// notice.
+test('T5/D28: a wire missing the sync window returns accepted, then settles into a delivered notice', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  const notices = []
+  try {
+    upsertRemote(home, { id: 'k3f9', name: 'k3f9', label: 'k3f9', origin: 'http://k3f9:4999', cookie: 'dsh-auth-k3f9=1', enabled: true, addedAt: 1 })
+    const fetchImpl = async (_url, init) => {
+      const body = JSON.parse(init.body)
+      await new Promise((r) => setTimeout(r, 40))
+      return new Response(JSON.stringify({ outcome: 'delivered', messageId: body.envelope.messageId, conversationId: body.envelope.conversationId, sessionId: 'sess-slow-1' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const ingestRef = { ingest: async (env) => { notices.push(env); return { outcome: 'delivered', messageId: env.messageId, conversationId: env.conversation, sessionId: 'sess-self-1' } } }
+    const svc = createA2aService({ home, gatewayFor: () => gw.face, ingest: () => ingestRef, fetchImpl, now: () => 5, syncReceiptMs: 5 })
+    const r = await svc.send({ to: ADDR, message: 'slow one' }, localInitiator(selfM4))
+    assert.equal(r.outcome, 'accepted')
+    assert.match(r.conversationId, /^[a-z0-9]{6}$/)
+    assert.match(r.note, /keeps running/)
+    await until(() => notices.length > 0)
+    const n = notices[0]
+    assert.equal(n.kind, 'notice')
+    assert.equal(n.reason, 'delivered')
+    assert.equal(n.conversation, r.conversationId)
+    assert.match(n.summary, /delivered/)
+    assert.deepEqual(n.to, { machine: selfM4, agent: INITIATOR.agent, sessionId: INITIATOR.sessionId })
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('T5/D28: a wire that FAILS after the sync window settles into an undelivered notice', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  const notices = []
+  try {
+    upsertRemote(home, { id: 'k3f9', name: 'k3f9', label: 'k3f9', origin: 'http://k3f9:4999', cookie: 'dsh-auth-k3f9=1', enabled: true, addedAt: 1 })
+    const fetchImpl = async () => {
+      await new Promise((r) => setTimeout(r, 40))
+      return new Response('nope', { status: 500 })
+    }
+    const ingestRef = { ingest: async (env) => { notices.push(env); return { outcome: 'delivered', messageId: env.messageId, conversationId: env.conversation, sessionId: 'sess-self-1' } } }
+    const svc = createA2aService({ home, gatewayFor: () => gw.face, ingest: () => ingestRef, fetchImpl, now: () => 5, syncReceiptMs: 5 })
+    const r = await svc.send({ to: ADDR, message: 'doomed' }, localInitiator(selfM4))
+    assert.equal(r.outcome, 'accepted')
+    await until(() => notices.length > 0)
+    assert.equal(notices[0].reason, 'undelivered')
+    assert.match(notices[0].summary, /undelivered/)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
 test('send without conversationId: create path — create(+rename) then prompt; injected receipt; row persisted', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-dddddddd-4444' } } }) // create

@@ -218,13 +218,15 @@ export function renderA2aRelayText(meta: A2aReplyMeta, content: string): string 
 
 /** R2: the three model-facing cause values — one wire fact maps to exactly one
  * model value, so the notice line and its summary can never disagree. */
-export type A2aModelNoticeReason = 'peer-silent' | 'peer-error' | 'stopped-by-initiator'
+export type A2aModelNoticeReason = 'peer-silent' | 'peer-error' | 'stopped-by-initiator' | 'delivered' | 'undelivered'
 
 /** Map the wire cause taxonomy onto the model-facing one. */
 export function modelNoticeReason(reason: A2aNoticeReason): A2aModelNoticeReason {
   switch (reason) {
     case 'stop': return 'stopped-by-initiator'
     case 'peer': return 'peer-silent'
+    case 'delivered': return 'delivered'
+    case 'undelivered': return 'undelivered'
     default: return 'peer-error' // send-failed / stream-dead / aborted — the peer side ended abnormally
   }
 }
