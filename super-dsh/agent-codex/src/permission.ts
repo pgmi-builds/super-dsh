@@ -1,18 +1,29 @@
 /**
- * Dash permission preset ↔ Codex launch approval mapping.
+ * Dash permission preset ↔ Codex approval/sandbox mapping (app-server line,
+ * 2026-10-03).
  *
- * Codex has no runtime approval control either: the approval policy is a
- * LAUNCH-only fact (`--approval-mode` → ThreadOptions.approvalPolicy; the SDK
- * exposes no RPC to change it mid-session), so Dash's 3-way permission preset
- * is resolved once, when the Codex client is constructed, and mapped
- * explicitly (plan Task 7 3:3 mapping):
+ * The SDK line could only pin these at LAUNCH (`--approval-mode` →
+ * `ThreadOptions.approvalPolicy`; no RPC changed them mid-session), which is
+ * why this module used to be a one-shot mapping and why `/permission` was
+ * shadowed with a refusal. The app-server line accepts `approvalPolicy` and
+ * `sandboxPolicy` on EVERY `turn/start` ("Override the approval policy for this
+ * turn and subsequent turns"), so the mapping is now folded from the DSH
+ * session log once per turn and is therefore LIVE.
  *
- *   danger-full-access → sandbox danger-full-access + approvalPolicy never
- *   workspace-write    → sandbox workspace-write    + approvalPolicy on-request
- *   read-only          → sandbox read-only          + approvalPolicy never
+ * Two independent folds, each with its own fallback (a session may carry only
+ * one of the two events):
+ *
+ *   approvalPolicy  ← approval/policy {policy:'ask'|'never'}       (else preset)
+ *                   ← CODEX_APPROVAL_MODE env override             (always wins)
+ *   sandboxPolicy   ← sandbox/mode {mode:…}                       (else preset)
+ *
+ * The Dash preset table (mirrors the base bundle's permission plugin config):
+ *
+ *   danger-full-access → sandbox dangerFullAccess + approval never
+ *   workspace-write    → sandbox workspaceWrite    + approval on-request
+ *   read-only          → sandbox readOnly          + approval never
  *   no explicit preset → never (the profile pins danger-full-access; the
- *                        sandbox itself remains the constraint — codex has no
- *                        precise counterpart to omp's always-ask)
+ *                        sandbox itself remains the constraint)
  *
  * `CODEX_APPROVAL_MODE` (a valid codex approval policy) overrides the mapping
  * — headless test runs pin the flag without composing a preset default. An
@@ -20,15 +31,18 @@
  *
  * The preset is a Dash-side session fact Codex never records. It lives in the
  * session log (the `permission/preset` / `sandbox/mode` / `approval/policy`
- * events {@link permissionEventsFor} stamps); unlike the omp bridge there is
- * no centralized index and no webui.json legacy — the rollout stays Codex's
+ * events {@link permissionEventsFor} stamps); the rollout stays Codex's
  * transcript of record and is never written.
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import type { ApprovalPolicy, SandboxPolicy } from "./app-server-client.js";
 
 /** The approval policies Codex actually implements (unknown values are ignored). */
 const APPROVAL_POLICIES = ["never", "on-request", "on-failure", "untrusted"] as const;
+
+/** Dash sandbox modes as they appear in the `sandbox/mode` session event. */
+export type SandboxModeName = "read-only" | "workspace-write" | "danger-full-access";
 
 /** The Dash preset table (mirrors the base bundle's permission plugin config). */
 const PRESETS = {
@@ -38,7 +52,7 @@ const PRESETS = {
 } as const;
 
 /**
- * The two permission event keys this module reads/synthesizes that the
+ * The permission event keys this module reads/synthesizes that the
  * locally-resolved dsh-session build does not know (upstream declares them
  * in dsh-permission-presets / dsh-sandbox-policy, whose types this project
  * does not reference). Mirrored verbatim so `SessionEvent` narrows.
@@ -46,7 +60,7 @@ const PRESETS = {
 declare module "@deepseek-ai/dsh-session/types" {
   interface SessionEventMap {
     "permission/preset": { preset: string };
-    "sandbox/mode": { mode: "read-only" | "workspace-write" | "danger-full-access"; source?: "delegation" };
+    "sandbox/mode": { mode: SandboxModeName; source?: "delegation" };
   }
 }
 
@@ -55,6 +69,11 @@ type PresetName = keyof typeof PRESETS;
 /** Narrow an untrusted value to a known preset name. */
 export function isPresetName(raw: unknown): raw is PresetName {
   return typeof raw === "string" && Object.hasOwn(PRESETS, raw);
+}
+
+/** Narrow an untrusted value to a known sandbox mode. */
+export function isSandboxMode(raw: unknown): raw is SandboxModeName {
+  return raw === "read-only" || raw === "workspace-write" || raw === "danger-full-access";
 }
 
 /**
@@ -67,14 +86,45 @@ export function envApprovalMode(): string | undefined {
 }
 
 /**
- * Map a preset onto Codex's `--approval-mode` value; no preset → never.
+ * Map a preset onto Codex's launch approval policy; no preset → never.
  * A value that is ALREADY a codex approval policy (the env override rides
  * through the same folded call) passes through untouched; unknown preset
  * names degrade to never.
+ *
+ * Still used at create/resume for `thread/start|resume.approvalPolicy` — the
+ * thread's initial posture before the first per-turn fold lands.
  */
 export function codexApprovalMode(preset: string | undefined): string {
   if (preset !== undefined && (APPROVAL_POLICIES as readonly string[]).includes(preset)) return preset;
   return isPresetName(preset) ? PRESETS[preset].codexPolicy : "never";
+}
+
+/** The codex approval policy a Dash `approval/policy` value maps onto. */
+export function approvalPolicyForDashPolicy(policy: "ask" | "never"): ApprovalPolicy {
+  return policy === "ask" ? "on-request" : "never";
+}
+
+/** The structured codex sandbox policy for one Dash sandbox mode. */
+export function sandboxPolicyFor(mode: SandboxModeName, cwd: string): SandboxPolicy {
+  switch (mode) {
+    case "danger-full-access":
+      return { type: "dangerFullAccess" };
+    case "read-only":
+      return { type: "readOnly", networkAccess: false };
+    case "workspace-write":
+      return {
+        type: "workspaceWrite",
+        writableRoots: [cwd],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
+  }
+}
+
+/** The Dash sandbox mode a preset pins (unknown/absent → danger-full-access, matching the profile pin). */
+export function sandboxModeForPreset(preset: string | undefined): SandboxModeName {
+  return isPresetName(preset) ? (PRESETS[preset].sandbox as SandboxModeName) : "danger-full-access";
 }
 
 /** The slice of `ctx.permissionPresets` the provider reads. */
@@ -106,6 +156,56 @@ export function presetFromEvents(events: readonly SessionEvent[]): string | unde
     if (event.type === "permission/preset" && isPresetName(event.data?.preset)) return event.data.preset;
   }
   return undefined;
+}
+
+/** The session's effective sandbox mode: the last `sandbox/mode` event. */
+export function sandboxModeFromEvents(events: readonly SessionEvent[]): SandboxModeName | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === "sandbox/mode" && isSandboxMode(event.data?.mode)) return event.data.mode;
+  }
+  return undefined;
+}
+
+/** The session's effective approval policy: the last `approval/policy` event. */
+export function approvalPolicyFromEvents(events: readonly SessionEvent[]): ApprovalPolicy | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === "approval/policy") {
+      const policy = event.data?.policy;
+      if (policy === "ask" || policy === "never") return approvalPolicyForDashPolicy(policy);
+    }
+  }
+  return undefined;
+}
+
+/** The per-turn codex overrides folded from the session log. */
+export interface CodexTurnPolicy {
+  readonly approvalPolicy: ApprovalPolicy;
+  readonly sandbox: SandboxPolicy;
+}
+
+/**
+ * Fold the session's live permission state into the codex overrides for the
+ * NEXT `turn/start`. Never throws; every unknown value degrades to the
+ * fallback preset, and the env override wins for the approval half.
+ *
+ * @param events - the session log (or any suffix ending at the current state).
+ * @param fallbackPreset - the preset to use when the log carries no event
+ *   (the recorded preset from the identity map, else the service default).
+ * @param cwd - the session workspace, used for `workspaceWrite.writableRoots`.
+ */
+export function turnPolicyFromEvents(events: readonly SessionEvent[], fallbackPreset: string | undefined, cwd: string): CodexTurnPolicy {
+  const preset = isPresetName(fallbackPreset) ? fallbackPreset : undefined;
+  const presetSpec = preset === undefined ? undefined : PRESETS[preset];
+  const sandboxMode = sandboxModeFromEvents(events) ?? (presetSpec?.sandbox as SandboxModeName | undefined) ?? "danger-full-access";
+  const fromEvents = approvalPolicyFromEvents(events);
+  const envMode = envApprovalMode();
+  const approvalPolicy: ApprovalPolicy =
+    envMode === "never" || envMode === "on-request" || envMode === "untrusted"
+      ? envMode
+      : fromEvents ?? (codexApprovalMode(preset) as ApprovalPolicy);
+  return { approvalPolicy, sandbox: sandboxPolicyFor(sandboxMode, cwd) };
 }
 
 /**

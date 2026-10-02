@@ -1,9 +1,9 @@
 /**
  * agent-codex provider — Codex provider plugin for DeepSeek Harness
- * (Super D, SDK line).
+ * (Super D, app-server line).
  *
  * Replaces the built-in agent loop with an `AgentFactory` that drives
- * `@openai/codex-sdk` threads (one `CodexSdkClient` per session) and bridges
+ * `codex app-server` threads (one `CodexAppServerClient` per session) and bridges
  * the projected wire stream into the Dash Agent/Session contracts. Mirrors
  * `@deepseek-ai/dsh-agent-loop`'s creation transaction (prepare → owned
  * storage handle → setup → publish) so the session + agent publish as one
@@ -42,14 +42,14 @@ import {
   type SessionId,
 } from "@deepseek-ai/dsh-session";
 import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session-persistence";
-import { CodexSdkClient } from "./codex-client.js";
+import { CodexAppServerClient, type ApprovalPolicy } from "./app-server-client.js";
 import { CodexAgent, type CodexAgentRuntimeInfo } from "./agent.js";
 import { CodexLlmAdapter, CODEX_PROVIDER_ID } from "./adapter.js";
 import { registerCodexPreset } from "./agent-preset-codex.js";
 import { readRolloutHead, resolveCodexHome } from "./codex-store.js";
 import { CodexResumeError, sessionRecord, upsertSession, type CodexSessionRecord } from "./session-map.js";
 import { readCodexModelCatalog, CODEX_DEFAULT_MODEL_PLACEHOLDER } from "./models.js";
-import { codexApprovalMode, defaultPermissionPreset, envApprovalMode, presetFromEvents } from "./permission.js";
+import { codexApprovalMode, defaultPermissionPreset, envApprovalMode, presetFromEvents, sandboxModeForPreset } from "./permission.js";
 
 /** Realpath of a recorded cwd, accepted only when it names an existing directory. */
 function validatedCwd(cwd: string | undefined): string | undefined {
@@ -194,7 +194,7 @@ export class CodexProvider extends Service implements AgentFactory {
    * the effective route metadata (selected codex model, else the catalog
    * default, plus the catalog's context window).
    */
-  private agentRuntime(client: CodexSdkClient, id: SessionId): CodexAgentRuntimeInfo {
+  private agentRuntime(client: CodexAppServerClient, id: SessionId, cwd: string): CodexAgentRuntimeInfo {
     const codexHome = resolveCodexHome();
     return {
       systemPrompt: (): string | undefined => {
@@ -220,6 +220,9 @@ export class CodexProvider extends Service implements AgentFactory {
       // RC-4: turn-time native rejections mark the map so the next resume
       // fails fast (CodexResumeError NATIVE_REJECTED) instead of burning
       // another turn on a dead thread.
+      // The session workspace: the per-turn permission fold needs it for
+      // `workspaceWrite.writableRoots` (never a home — the user's workspace).
+      cwd: (): string | undefined => cwd,
       markNotResumable: (): void => {
         try {
           upsertSession(this.home, String(id), { resumable: false });
@@ -327,23 +330,25 @@ export class CodexProvider extends Service implements AgentFactory {
     // nothing, so require it up front.
     const persistence = this.requirePersistence("create");
 
-    // Approval policy is pinned at Codex thread construction and the Dash
-    // session does not exist yet at this point (it is prepared + announced —
-    // which is what stamps `permission/preset` via pinInitialPermission —
-    // only inside setupAndPublish, AFTER this spawn), so the effective
-    // preset cannot come from session events: the env override
-    // (CODEX_APPROVAL_MODE, headless runs) wins, else the permission
-    // service's default, mapped onto the launch policy.
+    // App-server line (2026-10-03): the thread's LAUNCH posture still needs a
+    // decision here — the Dash session does not exist yet (it is prepared +
+    // announced, which is what stamps `permission/preset` via
+    // pinInitialPermission, only inside setupAndPublish AFTER this call) — so
+    // the env override (CODEX_APPROVAL_MODE, headless runs) wins, else the
+    // permission service's default. From the first turn on, `agent.ts` folds
+    // the LIVE session log per turn (`turnPolicyFromEvents`) and overrides both
+    // fields on every `turn/start`, which is what makes `/permission` real.
     const preset = envApprovalMode() ?? defaultPermissionPreset(loopCtx);
-    const approvalPolicy = codexApprovalMode(preset);
+    const approvalPolicy = codexApprovalMode(preset) as ApprovalPolicy;
+    const sandboxMode = sandboxModeForPreset(preset);
     const spawnCwd = validatedCwd(cwd) ?? process.cwd();
-    trace(`create id=${id} preset=${preset ?? "none"} approval=${approvalPolicy} spawnCwd=${spawnCwd}${envApprovalMode() === undefined ? "" : " (env override)"}`);
+    trace(`create id=${id} preset=${preset ?? "none"} approval=${approvalPolicy} sandbox=${sandboxMode} spawnCwd=${spawnCwd}${envApprovalMode() === undefined ? "" : " (env override)"}`);
 
-    // Backend takes ZERO part in the UI's browser-local new-session draft
-    // beyond the (zero-IO) thread construction: no rollout, no session
-    // events — the session announces blank. The thread materializes on the
-    // first prompt.
-    const client = await CodexSdkClient.spawn(["--approval-mode", approvalPolicy], spawnCwd);
+    // Backend takes ZERO part in the UI's browser-local new-session draft: the
+    // app-server child is NOT spawned here (lazy-spawn gate, rules §14-i) —
+    // create() is pure construction, and the process materializes on the first
+    // real prompt.
+    const client = CodexAppServerClient.create({ cwd: spawnCwd, approvalPolicy, sandboxMode });
     // Deterministic per-session route (user wiring directive 2026-09-15): the
     // factory owns the model — the catalog's real default rides the first
     // turn; the placeholder (unreadable catalog) is OMITTED so the codex
@@ -384,7 +389,7 @@ export class CodexProvider extends Service implements AgentFactory {
         "startup",
         { enterSession: true, preparation },
         stored,
-        this.agentRuntime(client, id),
+        this.agentRuntime(client, id, spawnCwd),
       );
     } catch (error) {
       trace(`create ${id} THREW: ${String(error)}`);
@@ -452,10 +457,10 @@ export class CodexProvider extends Service implements AgentFactory {
     }
 
 
-    // Approval policy for the re-attached thread: launch-only, so it is
-    // decided BEFORE the spawn from the recorded preset, else the persisted
-    // session log, else the permission service's default. CODEX_APPROVAL_MODE
-    // (headless runs) overrides; no preset → never.
+    // Approval policy / sandbox mode for the re-attached thread: the LAUNCH
+    // posture, decided from the recorded preset, else the persisted session log,
+    // else the permission service's default. CODEX_APPROVAL_MODE (headless
+    // runs) overrides. The per-turn fold in agent.ts takes over from turn one.
     const envMode = envApprovalMode();
     const preset =
       envMode !== undefined
@@ -463,16 +468,19 @@ export class CodexProvider extends Service implements AgentFactory {
         : record.preset ??
         presetFromEvents(await readStoredEvents(persistence, id, options.signal)) ??
         defaultPermissionPreset(loopCtx);
-    const approvalPolicy = codexApprovalMode(preset);
-    trace(`resume id=${id} spawnCwd=${spawnCwd} preset=${preset ?? "none"} approval=${approvalPolicy}`);
+    const approvalPolicy = codexApprovalMode(preset) as ApprovalPolicy;
+    const sandboxMode = sandboxModeForPreset(preset);
+    trace(`resume id=${id} spawnCwd=${spawnCwd} preset=${preset ?? "none"} approval=${approvalPolicy} sandbox=${sandboxMode}`);
 
-    // Re-attach to the Codex thread by its id (Codex owns the live agent
-    // context and keeps generating it from here on; the model context is
-    // restored by Codex itself from its rollout).
-    const client = await CodexSdkClient.spawn(
-      ["--approval-mode", approvalPolicy, "--resume-thread", record.threadId],
-      spawnCwd,
-    );
+    // Re-attach to the Codex thread by its id on the first real prompt (Codex
+    // owns the live agent context and restores the model context from its
+    // rollout). No process is spawned here — lazy-spawn gate, rules §14-i.
+    const client = CodexAppServerClient.create({
+      cwd: spawnCwd,
+      resumeThreadId: record.threadId,
+      approvalPolicy,
+      sandboxMode,
+    });
 
     let handle: SessionHandle | undefined;
     let stored: StoredSession | undefined;
@@ -510,7 +518,7 @@ export class CodexProvider extends Service implements AgentFactory {
         "resume",
         { enterSession: true, preparation },
         stored,
-        this.agentRuntime(client, id),
+        this.agentRuntime(client, id, spawnCwd),
       );
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)} | stack=${error instanceof Error ? error.stack?.slice(0, 400) : "n/a"}`);
@@ -532,14 +540,15 @@ export class CodexProvider extends Service implements AgentFactory {
    * is module-level). A persistence failure here is logged, never thrown into
    * the client's event stream.
    */
-  private readonly followThreadId = (id: SessionId, client: CodexSdkClient): void => {
-    // RE-ARMING observer (plan C6): newSession() swaps threads mid-session, so
-    // the pairing must be re-upserted whenever the client's thread id CHANGES,
-    // not just once. Unsubscribing after the first capture would leave the map
-    // pointing at the discarded thread, and the next resume would re-attach to
-    // a thread the session no longer runs on.
+  private readonly followThreadId = (id: SessionId, client: CodexAppServerClient): void => {
+    // RE-ARMING observer: newSession() swaps threads mid-session, so the pairing
+    // must be re-upserted whenever the client ATTACHES a new thread, not just
+    // once. Unsubscribing after the first capture would leave the map pointing
+    // at the discarded thread, and the next resume would re-attach to a thread
+    // the session no longer runs on.
     let lastRecorded: string | null = client.threadId;
     const observe = (threadId: string): void => {
+      if (threadId === lastRecorded) return;
       lastRecorded = threadId;
       try {
         upsertSession(this.home, String(id), { threadId });
@@ -548,12 +557,9 @@ export class CodexProvider extends Service implements AgentFactory {
         this.runtime.ctx.logger.warn(`codex-provider: failed to persist the Codex thread id for ${String(id)}: ${String(error)}`);
       }
     };
-    if (lastRecorded !== null) observe(lastRecorded);
-    client.on(() => {
-      const observed = client.threadId;
-      if (observed === null || observed === lastRecorded) return;
-      observe(observed);
-    });
+    // App-server line: the thread attaches lazily (first prompt), and
+    // `onThreadAttached` fires synchronously when one already exists.
+    client.onThreadAttached(observe);
   };
 }
 
@@ -584,7 +590,7 @@ async function setupAndPublish(
   agentOptions: AgentOptions,
   setup: AgentSetup | undefined,
   session: Session,
-  client: CodexSdkClient,
+  client: CodexAppServerClient,
   parentAgent: Agent | undefined,
   source: "startup" | "resume",
   opts: { enterSession: boolean; preparation?: SessionPreparation },

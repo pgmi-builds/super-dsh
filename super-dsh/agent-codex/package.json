@@ -1,7 +1,7 @@
 {
   "name": "@pgmi-builds/agent-codex",
   "version": "0.1.0",
-  "description": "Codex provider for DeepSeek Harness (dsh) — an AgentFactory that embeds Codex CLI via the @openai/codex-sdk and bridges Codex's session surface into Dash Agent/Session contracts .",
+  "description": "Codex provider for DeepSeek Harness (dsh) — an AgentFactory that drives a `codex app-server` child process (stdio JSONL JSON-RPC) per session and bridges its thread/turn surface, approvals and permission policy into Dash Agent/Session contracts.",
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
@@ -23,7 +23,6 @@
   },
   "dependencies": {
     "@openai/codex": "0.154.0",
-    "@openai/codex-sdk": "0.154.0",
     "zod": "4.4.3"
   },
   "peerDependencies": {
