@@ -308,4 +308,5 @@ export function turnPolicyFromEvents(events): { approvalPolicy: "never"|"on-requ
 | T10 | 文档（README / patch 注释 / rules §7 §9.4 / 主 pack description） | ✅ |
 | T11 | build + 全测绿 | ✅ **107 pass / 0 fail** |
 | T12 | live 验收（测试 `CODEX_HOME` + 真 codex 0.154.0 + 真模型 + 真审批回路） | ✅ 见 `docs/test-reports/2026-10-03-agent-codex-app-server-migration.md` |
-| T13 | **交付形态验收**：4999 pack 线 + dev3 实装 | ⏳ 未做（下一道闸门，根 AGENTS §〇.0.a） |
+| T13 | **交付形态验收**：pack 线（tarball → fresh profile → repo build 启动） | ✅ 通过（4988，含 codex 世界 create+prompt+resume 与内容级证据） |
+| T14 | dev3 目标机实装 | ⏳ 未做（需 user 单独放行） |

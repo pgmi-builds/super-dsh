@@ -123,3 +123,81 @@ LIVE ACCEPTANCE PASSED — 67 wire events, 1 approvals
    但 stdio MCP 后代若自行 `setsid` 仍可能逃离（与 Hermes 研究的已知坑一致）。
 8. 顺带：`super-dsh/superd-hub/package-lock.json` 的 peer 列表与 `package.json` 不同步
    （缺 `dsh-home-paths` / `dsh-tools`），本工作树的 `npm install` 顺带修正——单独一个 chore commit。
+
+---
+
+## 六、交付形态验收（2026-10-03 补充，user 放行后执行）
+
+形态：`node super-dsh/scripts/pack.mjs`（263 文件 / 651.9 kB tarball）→
+`SUPERD_PORT=4988 bash super-dsh/test/start-4999.sh`（tarball 经 `corepack pnpm@10.33.2 add file:`
+装进**全新** profile，repo build 的 dsh CLI 启动）。
+
+> 端口选择：**刻意用 4988 而非 4999**——4999 上跑着 user 在役的 `superd-4999-test`，
+> 本次验收不接管、不打断它（§三端口无主化允许接管，但非必要不动）。
+
+### 6.1 boot 级
+
+| 探针 | 结果 |
+|---|---|
+| 无 cookie GET `/` | **401** `dsh web authentication required` |
+| token URL（新 home，首铸 cookie） | **303 → 200** |
+| 认证后 GET `/` | **200** |
+| `GET /hub`（无参） | **404**（foreign-only 语义，与既有报告同形） |
+| 日志 `world failed` 计数 | **0** |
+| boot 日志 | 仅 1 条既有告警 `superd-hermes: warning: 1 entry did not activate`（与本次 codex 改动无关，未深究） |
+
+### 6.2 每 runtime 会话面（`/hub/api/<method>?agent=<label>` envelope）
+
+六个可见 world 的 `session/list` 全部 `ok:true`：claude / omp / **codex** / pi / hermes / agy
+（`agy-sdk` 按 pack 设计 `disabled: true`，不在 roster 内）。
+
+**codex 世界：create + prompt + resume 三件套，含内容级证据**
+
+```
+POST /hub/api/session/create?agent=codex   → ok {"sessionId":"session-0f6d61b8-…","agentPreset":"codex"}
+POST /hub/api/session/prompt?agent=codex   → accepted（turn 1）
+POST /hub/api/session/prompt?agent=codex   → accepted（turn 2 = 同 sessionId，即 resume）
+
+session/list → running:false, blank:false, agentAvailable:true
+  tokenUsage {uncachedInputTokens:39248, outputTokens:19, cacheReadTokens:28416, cacheWriteTokens:0}
+  sessionStats {turns:2, steps:2, llmMs:1796, toolMs:0, ttftMs:1707, ttftSteps:2, decodeTokens:19}
+  turnOutline  turn 1 prompt→ "SUPERD-WORLD-OK"
+               turn 2 prompt→ "SUPERD-RESUMED-OK"      ← resume 后线程记忆仍在（thread/resume 生效）
+```
+
+DSH 会话日志按预期落盘：
+`.tests/superd/agents/codex/sessions/--…codex-app-server--/session-0f6d61b8-…/session.v4.jsonl.zstd`。
+
+**交付形态的二进制解析链实证**（本次最该验的一条）：
+```
+<profile>/node_modules/.pnpm/@openai+codex@0.154.0/node_modules/@openai/codex/bin/codex.js app-server
+  └─ <…>@openai+codex@0.154.0-linux-x64/…/bin/codex app-server
+```
+即 app-server 子进程由 **tarball 安装进 profile 的 pin 版本包**解析而来（不是 PATH 上的 codex、
+不是 repo 的 node_modules）——`resolveCodexCommand()` 的 `createRequire.resolve` 在消费者布局下成立。
+
+### 6.3 本次验收的环境注入（显式登记）
+
+本机原生 `~/.codex` 的 cc-switch provider 对 `/responses` 返 404（§2.1），codex 世界默认跑不出真 turn。
+为使 codex 世界的会话面拿到**真实模型回合**，验收期间经运行时自己的 env knob 注入：
+
+```bash
+systemctl --user set-environment CODEX_HOME=<wt>/.tests/codex-live-home   # 测试专用 home，指向 DeepSeek
+systemctl --user restart superd-4988-test
+# …探针…
+systemctl --user unset-environment CODEX_HOME                            # 已恢复
+```
+
+- 这是 **§5 明确允许的测试隔离方式**（`CODEX_HOME` 是 runtime 自己的 knob），生产代码路径零重定向。
+- 凭据来源：launcher 拷进线 home 的 prod `.env` 快照（`DEEPSEEK_API_KEY`）——已实证 codex 子进程
+  环境里确有该变量；`HOME=/home/u1` 未改（证明原生 home 没有被顶掉）。
+- 原生 `~/.codex` 只被 **codex 自己**追加了一条 `[projects."/tmp/codex-probe-cwd"] trust_level`
+  （我的 recon 在 /tmp 跑过 codex），adapter 代码零写入。
+- **遗留状态**：4988 这个测试 rig 进程内仍持有 `CODEX_HOME`（manager 层已 unset，但已启动的进程无法改）。
+  它继续作为「带可用 provider 的 codex 世界」给 user 手测；要恢复原生 home 行为就在
+  `systemctl --user restart superd-4988-test`（unit 定义不含该变量，重启即回到原生 home）。
+
+### 6.4 交付形态验收结论
+
+**通过**（§〇.0.a 的第一条：本地交付形态实测）。仍未做：**dev3 目标机实装**（本次 user 只放行了 4999；
+dev3 需要另一次放行），以及任何 `npm publish`（未请求、未执行）。
