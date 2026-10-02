@@ -161,22 +161,25 @@ export interface HubToolDeps {
 /** agent-roster.ts's LOCAL_MACHINE literal ('local') — local rows' grouping key, not a real m4. */
 const LOCAL_MACHINE = 'local'
 
+/** `<m4>-<a6>`: exactly 4 then 6 chars over the mint alphabet (machines.ts `ID_ALPHABET`). */
+const AGENT_ADDRESS_PATTERN = /^[a-z0-9]{4}-[a-z0-9]{6}$/
+
 /**
  * Parse the `agent` parameter: `<m4>-<a6>`. Both halves are minted over
- * `[a-z0-9]` (machines.ts `ID_ALPHABET`), so the FIRST hyphen is the
- * unambiguous split — an id alphabet that ever grows hyphens keeps m4 intact.
+ * `[a-z0-9]` (machines.ts `ID_ALPHABET`) at fixed lengths (m4 = 4, a6 = 6), so
+ * a malformed address is refused HERE (0.1.8 T4) instead of being mis-split
+ * into a bogus machine and reported downstream as "unknown machine" — the
+ * `no-such-agent-zzz` → machine `no` is not paired trap the 0.1.7 surface
+ * analysis flagged.
  * @param agent - the raw `agent` parameter.
  * @returns the address the service consumes.
- * @throws `[E_BAD_ADDRESS]` when the value is not a `<m4>-<a6>` address.
+ * @throws `[E_BAD_ADDRESS]` when the value is not a well-formed `<m4>-<a6>`.
  */
 export function parseAgentAddress(agent: unknown): A2aAddress {
-  if (typeof agent !== 'string' || agent === '') {
-    throw new Error(`[E_BAD_ADDRESS] superd-hub: agent must be a "<m4>-<a6>" address — call the agents action to list valid ids (got ${JSON.stringify(agent)})`)
+  if (typeof agent !== 'string' || !AGENT_ADDRESS_PATTERN.test(agent)) {
+    throw new Error(`[E_BAD_ADDRESS] superd-hub: agent must be a "<m4>-<a6>" address — 4 chars, a hyphen, 6 chars, all [a-z0-9] (got ${JSON.stringify(agent)}); call the agents action to list the valid ids`)
   }
   const dash = agent.indexOf('-')
-  if (dash <= 0 || dash === agent.length - 1) {
-    throw new Error(`[E_BAD_ADDRESS] superd-hub: agent must be a "<m4>-<a6>" address — call the agents action to list valid ids (got ${JSON.stringify(agent)})`)
-  }
   return { machine: agent.slice(0, dash), id: agent.slice(dash + 1) }
 }
 

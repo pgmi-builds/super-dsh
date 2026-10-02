@@ -445,13 +445,21 @@ test('fail-loud gates: bad address / missing fields / no agent session', async (
   )
 })
 
-test('parseAgentAddress: first-dash split, both halves required', () => {
+test('parseAgentAddress: strict <m4>-<a6> shape (T4) — malformed refused at parse, never mis-split', () => {
   assert.deepEqual(parseAgentAddress('m1ab-na1ive'), { machine: 'm1ab', id: 'na1ive' })
   assert.deepEqual(parseAgentAddress('w2cd-cd33x1'), { machine: 'w2cd', id: 'cd33x1' })
   assert.throws(() => parseAgentAddress('nodash'), /E_BAD_ADDRESS/)
   assert.throws(() => parseAgentAddress('-leading'), /E_BAD_ADDRESS/)
   assert.throws(() => parseAgentAddress('trailing-'), /E_BAD_ADDRESS/)
   assert.throws(() => parseAgentAddress(''), /E_BAD_ADDRESS/)
+  // 0.1.7 surface analysis: a typo must NOT parse as machine 'no' and surface
+  // downstream as "unknown machine" — strict shape refuses it here.
+  assert.throws(() => parseAgentAddress('no-such-agent-zzz'), /E_BAD_ADDRESS/)
+  assert.throws(() => parseAgentAddress('ab-cdefgh'), /E_BAD_ADDRESS/) // machine too short
+  assert.throws(() => parseAgentAddress('abcd-cdef'), /E_BAD_ADDRESS/) // agent too short
+  assert.throws(() => parseAgentAddress('abcd-cdefghi'), /E_BAD_ADDRESS/) // agent too long
+  assert.throws(() => parseAgentAddress('ABCD-cdefgh'), /E_BAD_ADDRESS/) // uppercase not in the alphabet
+  assert.throws(() => parseAgentAddress('abcd-cdefg!'), /E_BAD_ADDRESS/) // non-alphabet char
 })
 
 // ---------------------------------------------------------------- output contract
