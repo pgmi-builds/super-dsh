@@ -55,7 +55,9 @@ OMP 从此走用户本机 `omp`，插件不再自带第二份。
 2. 新建会话 → 发一轮 prompt（例如「只回复 OK」）→ 看到流式输出；
 3. 同一会话再 resume 发第二轮；
 4. 期间可 `pgrep -af 'omp --mode rpc'` 应看到子进程；`pgrep -af bun` 应为空。
+5. **额外一条（最终审查建议）**：这一轮请顺带确认 OMP 会话的 resume 采用路径真的成立——即 `get_state` 返回 `sessionFile` / `sessionId`，`adoptSpawnedChild` 据此把 DSH session 映射到 OMP session。这是全链唯一没有单测覆盖的一环（mock 的 `get_state` 不带 `sessionFile`），也是最可能在真机上暴露协议漂移的地方。观察到第二轮能重新挂上同一 OMP 会话即算通过。
 
+这条过了，Task 6 才算完成；我会把结果补进本报告。
 这条过了，Task 6 才算完成；我会把结果补进本报告并跑最终整支审查。
 
 ## 4. 已知 gap / 遗留（不阻塞）
