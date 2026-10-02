@@ -1,18 +1,18 @@
 /**
  * dsh-omp-provider — OMP provider plugin for DeepSeek Harness.
  *
- * Replaces the built-in agent loop with an `AgentFactory` that drives an
- * in-process OMP SDK sidecar (`bun run sidecar/main.ts`, spawned by
- * `OmpSdkClient`) and bridges its event stream into the Dash Agent/Session
- * contracts. There is no `omp --mode rpc` fallback: the legacy RPC client was
- * retired with the SDK migration. Mirrors `@deepseek-ai/dsh-agent-loop`'s creation transaction
+ * Replaces the built-in agent loop with an `AgentFactory` that spawns
+ * `omp --mode rpc` per session (RPC transport: `LazyOmpRpc` → `OmpRpcClient`)
+ * and bridges its event stream into the Dash Agent/Session contracts. The OMP
+ * runtime is the operator's own `omp` binary — the adapter bundles no OMP copy.
+ * Mirrors `@deepseek-ai/dsh-agent-loop`'s creation transaction
  * (prepare → setup → publish) so the session + agent publish as one ordered
  * lifecycle.
  *
  * Phase 3 adds resume:
  *   - `createAgent` records the Dash→OMP session identity in `OmpSessionIndex`
  *     (OMP owns the transcript, Dash owns the live identity).
- *   - `resume` re-attaches the OMP app-home session file through the SDK and restores
+ *   - `resume` re-attaches the OMP session file through the RPC child (`--resume`) and restores
  *     the persisted Dash session log (`sessionPersistence.prepare`), so the
  *     Web UI's cold listing/history/follow-up path (`session.list`,
  *     `session.history`, `session.prompt` → `agents.resume`) reopens the
@@ -35,8 +35,8 @@ import type {
 import type { LlmRuntime } from "@deepseek-ai/dsh-llm";
 import { SessionPreparation, SessionLogOffset, type Session, type SessionEvent, type SessionHeader, type SessionId } from "@deepseek-ai/dsh-session";
 import type { SessionHandle } from "@deepseek-ai/dsh-session-persistence";
-import { OmpSdkClient } from "./sdk-client.js";
 import { LazyOmpRpc, type OmpAgentRpc } from "./lazy-rpc.js";
+import type { OmpRpcClient } from "./rpc-client.js";
 import { OmpAgent } from "./agent.js";
 import { OmpLlmAdapter } from "./adapter.js";
 import { registerOmpPreset } from "./agent-preset-omp.js";
@@ -66,6 +66,24 @@ function validatedCwd(cwd: string | undefined): string | undefined {
 const trace = (...parts: unknown[]): void => {
   if (process.env.OMP_TRACE === "1") process.stderr.write(`[omp-provider ${Date.now() % 1_000_000}] ${parts.join(" ")}\n`);
 };
+
+/**
+ * Whether any live OMP session currently holds an `omp --mode rpc` child.
+ *
+ * The reconcile tick used to read the catalog through the shared sidecar's
+ * live gate; with the RPC transport the equivalent fact is "a session's
+ * transport child exists". `refreshOmpModelsCli()` is a real
+ * `omp models --json` subprocess, so this gate is load-bearing (AGENTS.md
+ * §五·五: the periodic tick never materializes an `omp`). Sessions count only
+ * once they actually spawned — a draft session holds a `LazyOmpRpc` with no
+ * child yet, and an idle daemon's tick must pull ZERO children.
+ */
+function liveOmpSessionExists(sessions: Iterable<OmpAgentRpc>): boolean {
+  for (const rpc of sessions) {
+    if (rpc.spawned) return true;
+  }
+  return false;
+}
 
 /**
  * The slice of `ctx.sessionPersistence` (dsh-session-persistence v2) resume
@@ -117,6 +135,12 @@ export class OmpProvider extends Service implements AgentFactory {
   /** Live RPC-backed agents by dash id, for avoidance hand-off. */
   private readonly heldAgents = new Map<string, AgentHandle>();
   /**
+   * Live RPC wrappers by dash id — the reconcile tick's liveness gate (AGENTS.md
+   * §五·五): the catalog refresh runs only while one of these holds an
+   * `omp --mode rpc` child (`spawned`). Entries are dropped with the handle.
+   */
+  private readonly liveSessions = new Set<OmpAgentRpc>();
+  /**
    * Persist the default selection into the settings section.
    *
    * `ctx.agentDefaultModel.saveSelection()` cannot do it: the harness service
@@ -148,9 +172,10 @@ export class OmpProvider extends Service implements AgentFactory {
     super(ctx, "ompProvider");
     this.runtime = { ctx };
     ctx.effect(() => ctx.agents.setFactory(this), "ompProvider.setFactory()");
-    // Native-home ruling (2026-09-17): the sidecar/SDK runs on the operator's
-    // native OMP home (`~/.omp`; $OMP_HOME overrides in tests) — no app-home
-    // bootstrap, no config seeding. The world DSH home only holds DSH state.
+    // Native-home ruling (2026-09-17): the spawned `omp` child runs on the
+    // operator's native OMP home (`~/.omp`; $OMP_HOME overrides in tests) — no
+    // app-home bootstrap, no config seeding. The world DSH home only holds DSH
+    // state.
     this.#registerModelCatalog();
     // Boot the centralized index BEFORE any service reads session state: warm
     // pass + migration, so the first landing sees real titles/models (D5.1).
@@ -191,9 +216,9 @@ export class OmpProvider extends Service implements AgentFactory {
           saveSelection?: (selection: { provider: string; model: string }) => Promise<unknown>;
         }
       | undefined;
-    // Source of truth is OMP's config.yml ON DISK, never the sidecar: the
-    // sidecar is cold at boot and this tick must publish OMP's default to
-    // `ctx.agentDefaultModel` immediately (archived default-model contract).
+    // Source of truth is OMP's config.yml ON DISK, never the live transport:
+    // the `omp` child is cold at boot and this tick must publish OMP's default
+    // to `ctx.agentDefaultModel` immediately (archived default-model contract).
     const ompParsed = readOmpDefaultModelFromConfig();
     const ompKey = ompParsed === undefined ? undefined : `${ompParsed.provider}/${ompParsed.model}`;
     const dsh = service?.currentSelection?.();
@@ -259,7 +284,11 @@ export class OmpProvider extends Service implements AgentFactory {
         const store = getBridgeStore();
         if (store !== undefined) prepareIndex(store);
         void this.#syncModelDefaultTick();
-        void refreshOmpModelsCli();
+        // AGENTS.md §五·五 "tick 永不 spawn": the catalog refresh runs a real
+        // `omp models --json` subprocess, so it may only fire while an OMP
+        // session is live. An idle daemon's tick pulls ZERO children; the
+        // on-disk model cache (models.ts) keeps serving the boot catalog.
+        if (liveOmpSessionExists(this.liveSessions)) void refreshOmpModelsCli();
         void this.#attachScannedSessions(registry);
       };
       run();
@@ -389,7 +418,7 @@ export class OmpProvider extends Service implements AgentFactory {
     // transaction below unwinds its own half-published state on failure — its
     // catch calls rpc.close(), a no-op until the first prompt spawns.
     const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "startup", { enterSession: true, preparation, stored });
-    return this.registerHeld(id, "", handle);
+    return this.registerHeld(id, "", handle, rpc);
   }
 
   async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
@@ -441,7 +470,7 @@ export class OmpProvider extends Service implements AgentFactory {
     const approvalMode = envMode ?? ompApprovalMode(preset);
     trace(`resume id=${id} preset=${preset ?? "none"} approval-mode=${approvalMode}${envMode === undefined ? "" : " (env override)"}${freshOmp ? " fresh-omp" : ""}`);
 
-    // OMP live runtime — ALWAYS LAZY (sidecar-decoupling ruling, both branches).
+    // OMP live runtime — ALWAYS LAZY (lazy-transport ruling, both branches).
     // Opening/replaying a persisted session in the WebUI promotes it through
     // history.follow → resume; a read-only visit must NOT materialize the OMP
     // child. `LazyOmpRpc` spawns on the FIRST dispatch (prompt/followUp/steer/
@@ -473,7 +502,7 @@ export class OmpProvider extends Service implements AgentFactory {
       );
       trace(`resume id=${id} seeded from dsh session log (${coldRead.events.length} events)`);
       const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "resume", { enterSession: true, preparation, stored: { handle: stored, written: coldRead.events.length } });
-      return this.registerHeld(id, ompFile ?? "", handle);
+      return this.registerHeld(id, ompFile ?? "", handle, rpc);
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)} | stack=${error instanceof Error ? error.stack?.slice(0, 400) : "n/a"}`);
       await stored.close().catch(() => {});
@@ -482,16 +511,18 @@ export class OmpProvider extends Service implements AgentFactory {
     }
   }
   /**
-   * Track a published RPC-backed agent and hand the session to the supervisor
-   * as held. Arrow FIELD (not a `#` method): the provider is exposed through
-   * a Cordis tracing proxy, and hard-private methods fail their brand check
-   * on the proxy receiver (the same reason setupAndPublish is module-level).
+   * Track a published RPC-backed agent, register its transport wrapper with the
+   * tick's liveness gate, and hand the session to the supervisor as held. Arrow
+   * FIELD (not a `#` method): the provider is exposed through a Cordis tracing
+   * proxy, and hard-private methods fail their brand check on the proxy receiver
+   * (the same reason setupAndPublish is module-level).
    */
-  private readonly registerHeld = (id: SessionId, file: string, handle: AgentHandle): AgentHandle => {
+  private readonly registerHeld = (id: SessionId, file: string, handle: AgentHandle, rpc: OmpAgentRpc): AgentHandle => {
     const wrapped: AgentHandle = {
       agent: handle.agent,
       dispose: async () => {
         this.heldAgents.delete(String(id));
+        this.liveSessions.delete(rpc);
         await handle.dispose();
       },
     };
@@ -521,7 +552,7 @@ export class OmpProvider extends Service implements AgentFactory {
 async function adoptSpawnedChild(
   id: SessionId,
   header: SessionHeader,
-  client: OmpSdkClient,
+  client: OmpRpcClient,
   preset: string | undefined,
 ): Promise<void> {
   try {

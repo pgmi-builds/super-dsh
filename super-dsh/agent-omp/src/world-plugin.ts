@@ -16,13 +16,14 @@
  *      per-label `/<label>/api` + `/<label>/api/remote.mux` mounts retired
  *      in T-C, `mountWorld` deleted in T-D).
  */
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { join } from 'node:path'
 import {
   spawnWorld, registerAgent, setReady, registerForeignTarget,
   registerHostMount, worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
 } from '../../superd-hub/dist/index.js'
+import { resolveOmpExecutable } from './rpc-client.js'
 
 export const name = 'agent-omp'
 
@@ -38,7 +39,28 @@ interface HostContext {
   get(name: string): unknown
 }
 
+/**
+ * Startup diagnostic (spec §3.5): the OMP world runs the operator's own `omp`
+ * binary over `omp --mode rpc` — the adapter bundles no OMP copy, so a missing
+ * binary fails at the FIRST PROMPT, not at boot. Probe the resolution order
+ * once and say so explicitly instead of mounting silently; readiness semantics
+ * are unchanged (they follow the world mount, not this probe).
+ */
+function diagnoseOmpBinary(): void {
+  const executable = resolveOmpExecutable()
+  // A bare name is what the resolver yields for BOTH a PATH hit and "nothing
+  // installed" — walk PATH to tell those apart. A slashed candidate is already
+  // a concrete path and is checked directly.
+  const present = executable.includes('/')
+    ? existsSync(executable)
+    : (process.env.PATH ?? '').split(':').filter(Boolean).some((dir) => existsSync(join(dir, executable)))
+  if (!present) {
+    console.error('[super-dsh] omp binary not found (checked $OMP_EXECUTABLE, PATH, ~/.local/bin/omp) — the OMP world will fail at first prompt')
+  }
+}
+
 export function apply(ctx: HostContext): void {
+  diagnoseOmpBinary()
   registerAgent({ key: KEY, label: 'OMP', ready: false })
   // Harness resolver (env → ~/.dsh): a consumer install has no DSH_HOME and
   // no cwd contract — deriving the world root from cwd spawns worlds into a
