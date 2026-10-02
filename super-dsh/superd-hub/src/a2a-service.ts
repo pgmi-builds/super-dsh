@@ -325,8 +325,8 @@ export const A2A_BUFFER_MAX = 32
 
 /** D28: the sender's synchronous receipt window. If the end-to-end wire has not settled by then the hub answers `accepted` and lets the SAME in-flight request finish in the background. */
 export const A2A_SYNC_RECEIPT_MS = 10_000
-/** D28: the background wire budget after an `accepted` receipt (the peer may spend this long bringing the runtime up — spawn OR resume, indistinguishable at the process level). */
-export const A2A_ASYNC_WIRE_TIMEOUT_MS = 60_000
+/** D28: the TOTAL wire budget for one send (120s). The POST timeout is set from the request start, so after the 10s synchronous window the SAME in-flight request still has ~110s left to settle; the peer may spend it bringing the runtime up (spawn OR resume — indistinguishable at the process level). */
+export const A2A_WIRE_TOTAL_BUDGET_MS = 120_000
 
 /** stop('session') degradation notice — the session plane has no close RPC upstream. */
 export const A2A_NO_SESSION_CLOSE_REASON = 'no session-close endpoint upstream'
@@ -1061,7 +1061,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       // finish in the background, delivering `delivered`/`undelivered` as a
       // notice.
       let syncTimer: ReturnType<typeof setTimeout> | undefined
-      const wire = routeEnvelope(envelope, A2A_ASYNC_WIRE_TIMEOUT_MS).then(
+      const wire = routeEnvelope(envelope, A2A_WIRE_TOTAL_BUDGET_MS).then(
         (a) => ({ ok: true as const, a }),
         (error: unknown) => ({ ok: false as const, error }),
       )
@@ -1103,7 +1103,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
           messageId,
           conversationId,
           sessionId: '',
-          note: `the peer hub has not confirmed end-to-end delivery within ${A2A_SYNC_RECEIPT_MS / 1000}s — the SAME in-flight request keeps running (up to ${A2A_ASYNC_WIRE_TIMEOUT_MS / 1000}s) and its outcome arrives as a notice; do not resend`,
+          note: `the peer hub has not confirmed end-to-end delivery within ${A2A_SYNC_RECEIPT_MS / 1000}s — the SAME in-flight request keeps running (${(A2A_WIRE_TOTAL_BUDGET_MS - A2A_SYNC_RECEIPT_MS) / 1000}s left of a ${A2A_WIRE_TOTAL_BUDGET_MS / 1000}s total budget) and its outcome arrives as a notice; do not resend`,
         }
       }
       let answer: IngestAnswer
