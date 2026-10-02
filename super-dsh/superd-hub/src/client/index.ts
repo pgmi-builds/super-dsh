@@ -24,7 +24,6 @@ import { HubPanelIcon } from './HubPanelIcon.js'
 import {
   bindSwitchAgent,
   type SwitchConnection,
-  type SwitchLocale,
   type SwitchSessions,
   type SwitchUiWorkspace,
   type SwitchWorkspaces,
@@ -66,21 +65,19 @@ export function apply(ctx: ClientContext): void {
     )), 'superd-hub: hub sidebar row')
   })
   // Native UI fusion Task 4 (+ T-A, T-F): bind the switchAgent orchestration
-  // once the connection, uiWorkspace, workspaces, sessions and locale
-  // services exist (structural faces; the stock client tree always has all
-  // five — upstream's ui-workspace injects the same set itself). T-F: the
-  // landing resolves against the sessions projection and mirrors the
-  // default-workspace boot path, hence `sessions` + `locale`. Without a
-  // binding the Hub surfaces' fusion branch degrades to swallowed clicks —
-  // never navigation away from the fused page (the seatClickDecision
-  // contract).
-  ctx.inject(['connection', 'uiWorkspace', 'workspaces', 'sessions', 'locale'], (raw) => {
+  // once the connection, uiWorkspace, workspaces and sessions services exist
+  // (structural faces; the stock client tree always has all four — upstream's
+  // ui-workspace injects the same set itself). T-F: the landing resolves
+  // against the sessions projection and mirrors the default-workspace boot
+  // path, hence `sessions`. Without a binding the Hub surfaces' fusion branch
+  // degrades to swallowed clicks — never navigation away from the fused page
+  // (the seatClickDecision contract).
+  ctx.inject(['connection', 'uiWorkspace', 'workspaces', 'sessions'], (raw) => {
     const services = raw as unknown as {
       connection: SwitchConnection
       uiWorkspace: SwitchUiWorkspace
       workspaces: SwitchWorkspaces
       sessions: SwitchSessions
-      locale: SwitchLocale
     }
     bindSwitchAgent(services)
   })

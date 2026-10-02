@@ -25,10 +25,10 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 //#endregion
 let react = require("react");
 react = __toESM(react);
-let react_jsx_runtime = require("react/jsx-runtime");
-react_jsx_runtime = __toESM(react_jsx_runtime);
 let __deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 __deepseek_ai_dsh_client_ui_primitives = __toESM(__deepseek_ai_dsh_client_ui_primitives);
+let react_jsx_runtime = require("react/jsx-runtime");
+react_jsx_runtime = __toESM(react_jsx_runtime);
 
 //#region src/client/glyph.tsx
 /**
@@ -1446,14 +1446,43 @@ function reportMachineDown(label, row) {
 		clearTimeout: (handle) => globalThis.clearTimeout(handle)
 	});
 }
+/**
+* Build the `SwitchHost.openDefaultWorkspace` action.
+*
+* dsh 0.2.0-rc.2 removed the request object from the Host's
+* `workspaces.initializeDefault` Remote: the first-use directory and stored
+* title are fixed and language-neutral (`default-workspace` under
+* `<Documents>/deepseek-harness`), so the caller passes only its own lifetime
+* signal. This module shipped the pre-0.2 `{ directoryName, title }` shape for
+* a release cycle; the Host then received a plain object where it feeds
+* `AbortSignal.any(...)`, EVERY empty-plane landing rejected, and the browser
+* surfaced "Unable to create default workspace". Root-caused 2026-10-02 on
+* the Hermes world — the only world whose registry was still empty after the
+* 0.2.0-rc.2 upgrade, hence the only one that took the default-workspace
+* branch. Exported so the call shape is unit-testable without the
+* module-level single-bind guard.
+*
+* @param deps - the workspace projection and the navigation face.
+* @param toast - the feedback sink; a refusal is feedback, never a revert.
+* @returns the host action.
+*/
+function openDefaultWorkspaceFor(deps, toast) {
+	return () => {
+		deps.workspaces.initializeDefault().then((prepared) => {
+			if (prepared !== void 0) deps.uiWorkspace.openWorkspace(prepared.workspaceId);
+		}).catch(() => {
+			toast("Super D: unable to create the default workspace.");
+		});
+	};
+}
 /** The bound `switchAgent`, or `undefined` until the entry binds it. */
 let bound;
 /**
 * Bind the page's switch agent from the client services. Idempotent; a no-op
 * without the page atom (a non-fusion page never has one).
-* @param deps - the `connection`, `uiWorkspace`, `workspaces`, `sessions`
-*   and `locale` services (structural; the stock client tree always has all
-*   five — upstream's ui-workspace injects the same set).
+* @param deps - the `connection`, `uiWorkspace`, `workspaces` and `sessions`
+*   services (structural; the stock client tree always has all four —
+*   upstream's ui-workspace injects the same set).
 */
 function bindSwitchAgent(deps) {
 	if (bound !== void 0) return;
@@ -1474,19 +1503,6 @@ function bindSwitchAgent(deps) {
 			}
 		};
 	};
-	const openDefaultWorkspace = () => {
-		const language = deps.locale.getSnapshot().active.toLowerCase().split("-")[0];
-		const title = language === "zh" ? "默认工作区" : "Default workspace";
-		const directoryName = language === "zh" || language === "en" ? title : "default-workspace";
-		deps.workspaces.initializeDefault({
-			directoryName,
-			title
-		}).then((prepared) => {
-			if (prepared !== void 0) deps.uiWorkspace.openWorkspace(prepared.workspaceId);
-		}).catch(() => {
-			showToast("Super D: unable to create the default workspace.");
-		});
-	};
 	const controller = createSwitchController({
 		setAgent(label) {
 			state.setAgent(label);
@@ -1501,7 +1517,7 @@ function bindSwitchAgent(deps) {
 		startSession(workspaceId) {
 			deps.uiWorkspace.startSession(workspaceId);
 		},
-		openDefaultWorkspace,
+		openDefaultWorkspace: openDefaultWorkspaceFor(deps, showToast),
 		readRestoreCaches,
 		onCachesRefreshed(listener, gate) {
 			return observeCachesRefreshed(deps.workspaces.list, {
@@ -1620,15 +1636,153 @@ function attemptSwitch(label) {
 }
 
 //#endregion
+//#region src/client/agent-settings.ts
+const SETTINGS_PANELS = { agy: { namespace: "agyAuth" } };
+/** The panel spec for a runtime, or `undefined` when it has none yet. */
+function settingsPanelFor(agentKey) {
+	return SETTINGS_PANELS[agentKey];
+}
+/**
+* Accordion transition: at most one row open. Clicking the open row closes it;
+* clicking another moves the panel there in one click.
+*/
+function toggleExpanded(current$1, key) {
+	return current$1 === key ? null : key;
+}
+function str(value) {
+	return typeof value === "string" && value !== "" ? value : void 0;
+}
+function methodOption(raw) {
+	if (typeof raw !== "object" || raw === null) return void 0;
+	const record = raw;
+	const key = str(record.key);
+	const label = str(record.label);
+	if (key === void 0 || label === void 0) return void 0;
+	return {
+		key,
+		label,
+		available: record.available === true,
+		placeholder: record.placeholder === true,
+		hint: str(record.hint) ?? ""
+	};
+}
+/**
+* Defensive parse of the RPC answer. Returns `undefined` for anything that is
+* not a usable view (no methods, wrong shape, adapter absent) so the panel can
+* render an explicit failure instead of an empty list that looks like success.
+*/
+function parseAuthView(raw) {
+	if (typeof raw !== "object" || raw === null) return void 0;
+	const record = raw;
+	if (!Array.isArray(record.methods)) return void 0;
+	const methods = record.methods.map(methodOption).filter((m) => m !== void 0);
+	if (methods.length === 0) return void 0;
+	const settingsPath = str(record.settingsPath);
+	const note = str(record.note);
+	return {
+		methods,
+		selected: str(record.selected) ?? null,
+		effective: str(record.effective) ?? null,
+		...settingsPath === void 0 ? {} : { settingsPath },
+		...note === void 0 ? {} : { note }
+	};
+}
+/**
+* The option the panel marks as in force: the effective one when the adapter
+* named it, else the explicit selection. `undefined` when neither is known —
+* the panel then marks nothing rather than guessing.
+*/
+function activeMethod(view) {
+	const wanted = view.effective ?? view.selected;
+	if (wanted === null) return void 0;
+	return view.methods.find((method) => method.key === wanted);
+}
+/** Whether an option may be picked (placeholders are rendered, never selected). */
+function selectable(option) {
+	return !option.placeholder;
+}
+
+//#endregion
+//#region src/client/runtime-settings-api.ts
+/** One rpcId for request/response correlation. `randomUUID` needs a secure context. */
+function mintRpcId() {
+	const webCrypto = globalThis.crypto;
+	if (webCrypto !== void 0 && typeof webCrypto.randomUUID === "function") return webCrypto.randomUUID();
+	if (webCrypto !== void 0 && typeof webCrypto.getRandomValues === "function") return [...webCrypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+	return `rpc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+/** Build the envelope for one panel call (exported so tests pin the exact wire shape). */
+function settingsEnvelope(namespace, op, args) {
+	return {
+		type: "client-request",
+		rpcId: mintRpcId(),
+		method: `${namespace}/${op}`,
+		payload: { args }
+	};
+}
+/** What a caller can do with a failed panel call — kept structural for the tests. */
+function messageOf(error) {
+	if (error !== null && typeof error === "object" && typeof error.message === "string") return error.message;
+	return String(error);
+}
+/**
+* One unary call at a runtime's world, unwrapped to the RPC's value.
+*
+* Every failure mode is reported as a thrown `Error` carrying the adapter's own
+* message where one exists: a transport failure, a malformed answer, and the
+* gateway's business error (`{ok:false,error}`) must not look alike to the panel.
+*
+* @param agentKey - roster key addressing the world (`?agent=`).
+* @param namespace - the adapter's Remote namespace (`agyAuth`).
+* @param op - the Remote method.
+* @param args - exact named wire arguments.
+* @param doFetch - fetch implementation (tests inject).
+* @returns the raw RPC value.
+* @throws {Error} on transport, framing, or gateway failure.
+*/
+async function callRuntimeSettings(agentKey, namespace, op, args, doFetch) {
+	const send = doFetch ?? ((input, init) => fetch(input, init));
+	const envelope = settingsEnvelope(namespace, op, args);
+	const response = await send(`/hub/api?agent=${encodeURIComponent(agentKey)}`, {
+		method: "POST",
+		credentials: "same-origin",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(envelope)
+	});
+	const text = await response.text();
+	let body;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		throw new Error(`settings ${envelope.method}: unreadable answer (HTTP ${response.status})`);
+	}
+	const result = body?.result;
+	if (result === null || typeof result !== "object") throw new Error(`settings ${envelope.method}: malformed answer (HTTP ${response.status})`);
+	const record = result;
+	if (record.ok === true) return record.value;
+	const error = record.error;
+	if (error !== void 0 && typeof error.message === "string") throw new Error(error.message);
+	throw new Error(`settings ${envelope.method}: failed (HTTP ${response.status})`);
+}
+/** Read one runtime's panel state, parsed. */
+async function fetchAuthView(agentKey, namespace, doFetch) {
+	const view = parseAuthView(await callRuntimeSettings(agentKey, namespace, "get", {}, doFetch));
+	if (view === void 0) throw new Error("settings: the runtime returned no usable auth options");
+	return view;
+}
+/** Adopt one auth form (`null` clears the explicit choice). */
+async function setAuthMode(agentKey, namespace, mode, doFetch) {
+	const view = parseAuthView(await callRuntimeSettings(agentKey, namespace, "set", { request: { mode } }, doFetch));
+	if (view === void 0) throw new Error("settings: the runtime returned no usable auth options");
+	return view;
+}
+
+//#endregion
 //#region src/client/HubPage.tsx
 const EMPTY_DRAFT = {
 	name: "",
 	tokenUrl: ""
 };
-/** Chip text: drop the trailing slash for concision ('/claude/' → '/claude'). */
-function displayPath(path) {
-	return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
-}
 /** Shared chip look (status pills, path tags). */
 const chip = {
 	fontSize: 10,
@@ -1679,16 +1833,28 @@ const originStyle = {
 	fontSize: 12,
 	color: "var(--dsw-alias-label-secondary)"
 };
-/** The quiet text action (reprobe) — the switch link's look. */
-const textActionStyle = {
+/**
+* The row's switch control (P3: the `switch` word is a real BUTTON now — the
+* row body toggles the settings panel instead, so the switch needs its own
+* hit target that stops propagation).
+*/
+const switchButtonStyle = {
 	border: "none",
 	background: "transparent",
 	padding: 0,
 	font: "inherit",
 	fontSize: 12.5,
 	color: "var(--dsw-alias-label-secondary)",
-	cursor: "pointer",
 	whiteSpace: "nowrap"
+};
+/** The inline settings panel a row body expands into (P3 accordion). */
+const panelStyle = {
+	listStyle: "none",
+	margin: "0 -8px 4px",
+	padding: "10px 12px 12px 42px",
+	borderRadius: 12,
+	background: "var(--dsw-alias-interactive-bg-hover)",
+	fontSize: 12.5
 };
 /** The icon action (remove ✕) seat. */
 const iconActionStyle = {
@@ -1703,6 +1869,39 @@ const iconActionStyle = {
 	color: "var(--dsw-alias-label-caption)",
 	font: "inherit",
 	cursor: "pointer"
+};
+/** The quiet text action (reprobe) — the switch/row-action look. */
+const textActionStyle = {
+	border: "none",
+	background: "transparent",
+	padding: 0,
+	font: "inherit",
+	fontSize: 12.5,
+	color: "var(--dsw-alias-label-secondary)",
+	cursor: "pointer",
+	whiteSpace: "nowrap"
+};
+/** The row's settings panel heading. */
+const panelHeadStyle = {
+	margin: "0 0 6px",
+	fontSize: 12,
+	fontWeight: 500,
+	color: "var(--dsw-alias-label-secondary)"
+};
+/** One auth-method option's row in the panel. */
+const optionStyle = {
+	display: "flex",
+	alignItems: "baseline",
+	gap: 8,
+	width: "100%",
+	textAlign: "left",
+	border: "none",
+	background: "transparent",
+	padding: "5px 6px",
+	borderRadius: 8,
+	font: "inherit",
+	fontSize: 12.5,
+	color: "var(--dsw-alias-label-primary)"
 };
 /** The status dot's color: reachable green, pending grey, unreachable amber, auth-expired red. */
 function statusDotColor(status) {
@@ -1775,11 +1974,18 @@ const sectionHeadStyle = {
 	whiteSpace: "nowrap",
 	listStyle: "none"
 };
-/** A row that lights its surface on hover (inline styles have no :hover). */
-function HoverRow({ children, onClick, clickable }) {
+/**
+* A row that lights its surface on hover (inline styles have no :hover).
+*
+* P3: the row BODY is the settings-panel toggle, not the switch — `expanded`
+* keeps the surface lit while its panel is open, so the open row stays
+* identifiable after the pointer leaves. The switch lives in the row's button.
+*/
+function HoverRow({ children, onClick, clickable, expanded }) {
 	const [hover, setHover] = react.useState(false);
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
 		onClick,
+		"aria-expanded": expanded,
 		onMouseEnter: () => {
 			setHover(true);
 		},
@@ -1794,7 +2000,7 @@ function HoverRow({ children, onClick, clickable }) {
 			padding: "9px 8px",
 			borderRadius: 12,
 			listStyle: "none",
-			background: hover ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+			background: hover || expanded ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
 			cursor: clickable ? "pointer" : void 0
 		},
 		children
@@ -1831,6 +2037,176 @@ function GroupHead({ title, count, action }) {
 		]
 	});
 }
+/**
+* One runtime's settings, rendered inside its expanded row (P3).
+*
+* The adapter owns the config, so this component owns no auth knowledge: it
+* asks the adapter's Remote for the option list and renders what comes back.
+* The round trip after a change is authoritative — the adapter re-probes and
+* answers with the new state, which is why nothing is optimistically patched
+* here (a selection can fall through the ladder, and the UI must show that).
+*
+* Mounted only while its row is open, so expanding always re-reads the
+* machine rather than replaying a stale first read.
+*/
+function RuntimeSettingsPanel({ agent }) {
+	const namespace = settingsPanelFor(agent.key)?.namespace;
+	const [view, setView] = react.useState(void 0);
+	const [error, setError] = react.useState(null);
+	const [busy, setBusy] = react.useState(null);
+	const [loading, setLoading] = react.useState(namespace !== void 0);
+	react.useEffect(() => {
+		if (namespace === void 0) return void 0;
+		let live = true;
+		setLoading(true);
+		fetchAuthView(agent.key, namespace).then((next) => {
+			if (live) {
+				setView(next);
+				setError(null);
+			}
+		}).catch((err) => {
+			if (live) {
+				setView(void 0);
+				setError(messageOf(err));
+			}
+		}).finally(() => {
+			if (live) setLoading(false);
+		});
+		return () => {
+			live = false;
+		};
+	}, [agent.key, namespace]);
+	const choose = (mode) => {
+		if (namespace === void 0 || busy !== null) return;
+		setBusy(mode);
+		setAuthMode(agent.key, namespace, mode).then((next) => {
+			setView(next);
+			setError(null);
+		}).catch((err) => {
+			setError(messageOf(err));
+		}).finally(() => {
+			setBusy(null);
+		});
+	};
+	if (namespace === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+		style: {
+			margin: 0,
+			color: "var(--dsw-alias-label-tertiary)"
+		},
+		children: "No settings for this runtime yet."
+	});
+	if (loading) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+		style: {
+			margin: 0,
+			color: "var(--dsw-alias-label-tertiary)"
+		},
+		children: "Loading settings…"
+	});
+	if (view === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+		style: {
+			margin: 0,
+			color: "var(--dsw-alias-state-warn-label, var(--dsw-alias-label-secondary))"
+		},
+		children: error ?? "Settings are unavailable for this runtime."
+	});
+	const current$1 = activeMethod(view);
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+		style: {
+			display: "flex",
+			flexDirection: "column",
+			gap: 4
+		},
+		children: [
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				style: panelHeadStyle,
+				children: "Sign-in method"
+			}),
+			view.methods.map((option) => {
+				const isCurrent = current$1?.key === option.key;
+				const disabled = !selectable(option) || busy !== null;
+				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+					type: "button",
+					role: "radio",
+					"aria-checked": isCurrent,
+					disabled,
+					onClick: () => {
+						choose(option.key);
+					},
+					style: {
+						...optionStyle,
+						color: disabled ? "var(--dsw-alias-label-tertiary)" : "var(--dsw-alias-label-primary)",
+						cursor: disabled ? "default" : "pointer",
+						background: isCurrent ? "var(--dsw-alias-bg-elevated, transparent)" : "transparent"
+					},
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							"aria-hidden": true,
+							style: {
+								width: 12,
+								flex: "0 0 12px"
+							},
+							children: isCurrent ? "●" : "○"
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: {
+								fontWeight: 500,
+								whiteSpace: "nowrap"
+							},
+							children: option.label
+						}),
+						isCurrent && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: chipSelf,
+							children: "in force"
+						}),
+						!option.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: chip,
+							children: "not detected"
+						}),
+						option.placeholder && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: chip,
+							children: "placeholder"
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: {
+								flex: 1,
+								minWidth: 0,
+								color: "var(--dsw-alias-label-tertiary)"
+							},
+							children: option.hint
+						}),
+						busy === option.key && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: chip,
+							children: "applying…"
+						})
+					]
+				}, option.key);
+			}),
+			view.note !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				style: {
+					margin: "2px 0 0",
+					color: "var(--dsw-alias-label-tertiary)"
+				},
+				children: view.note
+			}),
+			error !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				style: {
+					margin: "2px 0 0",
+					color: "var(--dsw-alias-state-error-primary)"
+				},
+				children: error
+			}),
+			view.settingsPath !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: {
+					margin: "4px 0 0",
+					color: "var(--dsw-alias-label-caption)",
+					fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+					fontSize: 11
+				},
+				children: ["writes ", view.settingsPath]
+			})
+		]
+	});
+}
 function HubPage() {
 	const [mesh, setMesh] = react.useState({ machines: [] });
 	const [meshLoaded, setMeshLoaded] = react.useState(false);
@@ -1845,6 +2221,11 @@ function HubPage() {
 	const fusion = fusionPage();
 	const switchUi = switchAffordance(fusion);
 	const [activeKey, setActiveKey] = react.useState(() => fusion ? uiState()?.activeAgent : void 0);
+	/**
+	* The open settings panel (P3 accordion): one runtime key at a time, or
+	* `null` when every row is collapsed. `toggleExpanded` owns the transition.
+	*/
+	const [expandedKey, setExpandedKey] = react.useState(null);
 	react.useEffect(() => {
 		let cancelled = false;
 		fetchRoster().then((list) => {
@@ -1917,66 +2298,71 @@ function HubPage() {
 	/**
 	* One Agent Runtimes row — the SAME row in both shapes; `showMachine`
 	* keeps the flat fallback's per-row machine text (the grouped shape moves
-	* it onto the section head). The click contract is untouched: every row
-	* still runs the `seatClickDecision` table.
+	* it onto the section head).
+	*
+	* P3 interaction (2026-10-02 user ruling): the ROW BODY expands this
+	* runtime's OWN settings inline (accordion — one panel at a time), and the
+	* right-hand `switch` is the row's ONLY switch, now a real button. The two
+	* are separate controls on purpose: expanding is navigation of config, the
+	* button performs `seatClickDecision` (intercept + in-place switchAgent).
 	*/
-	const renderRow = (agent, showMachine) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, {
-		clickable: switchUi.available,
-		onClick: switchUi.available ? (event) => {
-			rowDecision(agent, event);
-		} : void 0,
-		children: [
-			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
-				agentKey: agent.key,
-				size: 20
-			}),
-			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-				style: {
-					fontWeight: 500,
-					whiteSpace: "nowrap"
-				},
-				children: agent.label
-			}),
-			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-				style: {
-					flex: 1,
-					minWidth: 0,
-					overflow: "hidden",
-					textOverflow: "ellipsis",
-					whiteSpace: "nowrap",
-					fontSize: 12.5,
-					color: "var(--dsw-alias-label-tertiary)"
-				},
-				children: showMachine ? agent.machine : null
-			}),
-			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-				style: {
-					...chip,
-					fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-					fontSize: 10.5
-				},
-				children: displayPath(agent.path)
-			}),
-			isActive(agent) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-				style: chipSelf,
-				children: "current"
-			}),
-			switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
-				"aria-current": isActive(agent) ? "page" : void 0,
-				style: {
-					fontSize: 12.5,
-					color: "var(--dsh-alias-label-secondary)",
-					textDecoration: "none",
-					cursor: "pointer"
-				},
-				onClick: (event) => {
-					event.stopPropagation();
-					rowDecision(agent, event);
-				},
-				children: "switch"
-			})
-		]
-	}, agent.key);
+	const renderRow = (agent, showMachine) => {
+		const expanded = expandedKey === agent.key;
+		return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, {
+			clickable: true,
+			expanded,
+			onClick: () => {
+				setExpandedKey((current$1) => toggleExpanded(current$1, agent.key));
+			},
+			children: [
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeMark, {
+					agentKey: agent.key,
+					size: 20
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+					style: {
+						fontWeight: 500,
+						whiteSpace: "nowrap"
+					},
+					children: agent.label
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+					style: {
+						flex: 1,
+						minWidth: 0,
+						overflow: "hidden",
+						textOverflow: "ellipsis",
+						whiteSpace: "nowrap",
+						fontSize: 12.5,
+						color: "var(--dsw-alias-label-tertiary)"
+					},
+					children: showMachine ? agent.machine : null
+				}),
+				isActive(agent) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+					style: chipSelf,
+					children: "current"
+				}),
+				switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+					type: "button",
+					"aria-current": isActive(agent) ? "page" : void 0,
+					"aria-label": isActive(agent) ? `${agent.label} is current` : `Switch to ${agent.label}`,
+					style: {
+						...switchButtonStyle,
+						color: isActive(agent) ? "var(--dsw-alias-label-tertiary)" : "var(--dsw-alias-label-secondary)",
+						cursor: "pointer"
+					},
+					onClick: (event) => {
+						event.stopPropagation();
+						rowDecision(agent, event);
+					},
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconPlayOutlineRegular, { size: 16 })
+				})
+			]
+		}), expanded && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+			style: panelStyle,
+			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(RuntimeSettingsPanel, { agent })
+		})] }, agent.key);
+	};
 	/** Bump the reload sequence — every mutating op refreshes through the API. */
 	const reloadMachines = () => {
 		setMeshReloads((n) => n + 1);
@@ -2738,8 +3124,7 @@ function apply(ctx) {
 		"connection",
 		"uiWorkspace",
 		"workspaces",
-		"sessions",
-		"locale"
+		"sessions"
 	], (raw) => {
 		bindSwitchAgent(raw);
 	});

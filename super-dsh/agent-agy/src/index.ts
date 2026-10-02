@@ -1,21 +1,23 @@
 /**
- * agent-agy provider — Google Antigravity (Gemini) provider plugin for DeepSeek
- * Harness (Super D, consumer-first line, 2026-09-18).
+ * agent-agy provider — Google Antigravity provider plugin for DeepSeek Harness
+ * (Super D, consumer-first line, 2026-09-18).
  *
- * An `AgentFactory` that drives an `AgyBridgeClient` (the Python google-
- * antigravity SDK bridge child — localharness materializes inside it on the
- * FIRST prompt, so create/resume spawn nothing). Auth is consumer-first:
- * a Gemini API key persisted in the adapter's world-home state, or ADC via the
- * environment (the SDK picks it up; we never touch the agy CLI — dev-rules §16a).
+ * An `AgentFactory` that drives an `AgyCliClient` — the user's OWN Antigravity
+ * CLI in headless stream-json mode. 2026-10-02 ruling 「拥抱用户自己的使用环境」:
+ * the adapter shares the user's real `~/.gemini` (native settings.json), their
+ * ADC (`~/.config/gcloud`), and their keyring, instead of isolating a HOME the
+ * CLI never had. The SDK/bridge transport lives in its own opt-in package,
+ * `@pgmi-builds/agent-agy-sdk`.
  *
  * Session identity ("mapping only"): the DSH session id is the authority,
- * supplied by the harness. The SDK conversation id materializes after the
+ * supplied by the harness. The CLI conversation id materializes after the
  * first turn, so the pairing is persisted in `<worldHome>/dsh-sessions.json`
  * (agy-sessions.ts). Resume resolves that record and fails CLOSED
  * (CONVERSATION_NOT_FOUND) when no conversation is recorded. The DSH session
  * log is the transcript authority, written through the upstream
  * `sessionPersistence` service (hermes create/resume transaction shape).
  */
+
 import { realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { Context, Service } from "@deepseek-ai/cordis";
@@ -39,15 +41,16 @@ import {
   type SessionId,
 } from "@deepseek-ai/dsh-session";
 import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session-persistence";
-import { AgyBridgeClient } from "./agy-client.js";
 import { AgyCliClient } from "./agy-cli-client.js";
+import { hasSigninCredential, resolveAuthMode, type AgyAuthAvailability, type AgyAuthMode } from "./agy-auth.js";
+import { AgyAuthGateway } from "./agy-auth-gateway.js";
 import { registerAntigravityPreset } from "./agent-preset-agy.js";
 import type { LiveAgyClient } from "./agent.js";
-import { readAdapterState, writeAdapterState, readNativeDefaultModel, hasAdcEvidence, readGcloudProject } from "./agy-store.js";
+import { readAdapterState, writeAdapterState, readNativeDefaultModel, hasAdcEvidence } from "./agy-store.js";
 import { AgyLlmAdapter, AGY_PROVIDER_ID } from "./adapter.js";
 import { AgyAgent, type AgyAgentRuntimeInfo } from "./agent.js";
 import { sessionRecord, upsertSession } from "./agy-sessions.js";
-import { AGY_MODEL_CATALOG, CLI_DEFAULT_MODEL, parseModelId, toModelSlug } from "./models.js";
+import { AGY_MODEL_CATALOG, CLI_DEFAULT_MODEL, parseModelId, resolveEffort, toModelSlug } from "./models.js";
 
 /** Realpath of a recorded cwd, accepted only when it names an existing directory. */
 /** Extract the session-selected model id (string form) from agent options. */
@@ -79,24 +82,23 @@ interface StoredSession {
 
 /** Test/override knobs for the bridge child (prod: all unset). */
 export interface AgyProviderOptions {
-  bridgePath?: string;
-  pythonBin?: string;
   spawnAttempts?: number;
   /** Native home override for tests (prod: ~/.gemini, read-only). */
   nativeHome?: string;
-  /** Vertex project/location override (ADC mode). Default: gcloud CLI config. */
-  project?: string;
-  location?: string;
-  /** Tool-approval posture surfaced to every session's bridge start frame. */
-  approvalMode?: "allow" | "ask";
   /** danger-full-access → CLI --dangerously-skip-permissions (default: true, patch default preset). */
   skipPermissions?: boolean;
   /** agy binary override (CLI path tests). */
   agyBin?: string;
   /** Forward proxy for the geo-fenced Gemini API (CLI path; dev3 gost). */
   proxy?: string;
-  /** HOME override for the CLI child (isolated key-mode home; dev knob). */
-  cliHome?: string;
+  /**
+   * The USER's real home (default `$HOME`). The CLI always runs against it —
+   * 2026-10-02 ruling: the adapter shares the user's own Antigravity
+   * configuration (settings.json, ADC, keyring) instead of isolating it. The
+   * old isolated-HOME knob was removed with that ruling: it both hid the
+   * settings.json we maintain and silently destroyed ADC + the keyring.
+   */
+  realHome?: string;
 }
 
 /** Blank-session doctrine (§14 i): conversation content = turns actually ran. */
@@ -152,6 +154,32 @@ export class AgyProvider extends Service implements AgentFactory {
     registerAntigravityPreset(ctx);
     this.registerModelCatalog();
     this.registerDefaultModel();
+    // The Hub settings panel's data plane (P3): an adapter-owned Typert Remote
+    // (`agyAuth/get` | `agyAuth/set`) on this world's context. The hub's
+    // carrier forwards `envelope.method` verbatim, so the panel reaches it
+    // through the existing `/hub/api?agent=agy` family — no new hub route, and
+    // no config knowledge leaks out of the adapter (dev-rules §12). Cordis
+    // keeps the instance alive as this context's `agyAuth` service.
+    new AgyAuthGateway(
+      ctx,
+      this.home,
+      () => this.opts.realHome ?? process.env.HOME ?? "",
+      () => this.authAvailability(),
+    );
+  }
+
+  /** Which auth forms are present on this machine right now (probe, not choice). */
+  private authAvailability(): AgyAuthAvailability {
+    return {
+      apiKey: this.resolveApiKey() !== undefined,
+      // The CLI's OWN Google sign-in (Agent Platform) — measured 2026-10-02 as
+      // the plane headless actually uses, and the one that WORKS on this
+      // machine. Hardcoding it to `false` (the old "OAuth is a placeholder"
+      // note) forced the ladder onto ADC, whose project has cloudcode-pa
+      // disabled, so no turn could start.
+      oauth: hasSigninCredential(this.opts.realHome ?? process.env.HOME ?? ""),
+      adc: hasAdcEvidence(process.env, process.env.HOME ?? ""),
+    };
   }
 
   /** The world's DSH home: boot-provided dshHomePath first, env last. */
@@ -205,7 +233,7 @@ export class AgyProvider extends Service implements AgentFactory {
 
   /** Static route: provider `agy` + the resolved default (or the explicit ask).
    *  The selected model id (`slug` or `slug@level`) rides in `options.model`
-   *  so clientOptions can forward slug+thinkingLevel to the bridge start frame. */
+   *  so cliOptions can forward slug+thinkingLevel to the CLI child. */
   private sessionAgentOptions(requested: AgentOptions | undefined): AgentOptions {
     const requestedModel = typeof requested?.model === "string" ? requested.model : undefined;
     const explicit = requestedModel !== undefined && parseModelId(requestedModel) !== undefined
@@ -424,17 +452,29 @@ export class AgyProvider extends Service implements AgentFactory {
   }
 
   /**
-   * Live transport routing (2026-09-18 user ruling): gemini-api-key > oauth >
-   * adc. Key present → CLI stream (richest surface). ADC-only → SDK bridge.
-   * Neither → CLI as well (auth fails at first prompt; the §17 onboarding
-   * branch answers locally before any spawn).
+   * Live transport: CLI-ONLY (2026-10-02 user ruling).
+   *
+   * The SDK/bridge route moved to its own package
+   * (`@pgmi-builds/agent-agy-sdk`, delivered disabled by default): the product
+   * case is that the user ALREADY runs Antigravity, so the CLI reuses that
+   * environment for free while the SDK is an opt-in extra. Auth-form selection
+   * still rides the agy-auth ladder.
    */
   private createLiveClient(cwd: string, modelId?: string, reasoningEffort?: string): LiveAgyClient {
-    const apiKey = this.resolveApiKey();
-    if (apiKey === undefined && hasAdcEvidence(process.env, process.env.HOME ?? "")) {
-      return new AgyBridgeClient(this.clientOptions(cwd, modelId, reasoningEffort));
-    }
     return new AgyCliClient(this.cliOptions(cwd, modelId, reasoningEffort));
+  }
+
+  /**
+   * The auth form this machine should use: an explicitly selected, actually
+   * available form wins; otherwise the ladder Gemini API key → OAuth → ADC
+   * (user ruling 2026-10-02). OAuth is a placeholder this round — no eligible
+   * account exists to characterise which native fields a real sign-in stores —
+   * so nothing reports it present and it can never win. Falls back to `apiKey`
+   * so an unconfigured machine still reaches the §17 onboarding path.
+   */
+  private effectiveAuthMode(): AgyAuthMode {
+    const selected = readAdapterState(this.home).authMode;
+    return resolveAuthMode(this.authAvailability(), selected) ?? "apiKey";
   }
 
   /**
@@ -459,11 +499,31 @@ export class AgyProvider extends Service implements AgentFactory {
     const parsed = parseModelId(modelId ?? this.resolveDefaultModelId());
     const slug = parsed?.slug ?? CLI_DEFAULT_MODEL.slug;
     // Effort precedence: explicit session reasoningEffort (WebUI Effort
-    // selector → AgentOptions) > legacy @level id suffix > CLI cheap default.
-    const level = reasoningEffort ?? parsed?.thinkingLevel ?? CLI_DEFAULT_MODEL.thinkingLevel;
+    // selector → AgentOptions.reasoningEffort) > legacy `slug@level` id suffix >
+    // THIS model's own declared default.
+    //
+    // The last arm used to read CLI_DEFAULT_MODEL.thinkingLevel, which is the
+    // 3.6-flash cheap-pair constant ("low") — so every model inherited it and
+    // the CLI got `--effort low` while the UI showed the model's own default
+    // (observed 2026-10-02: 3.7 Flash + UI "medium" → `--effort "low"`).
+    // defaultEffortFor() is the per-model answer and existed unused.
+    const level = resolveEffort(slug, reasoningEffort, parsed?.thinkingLevel);
+    // The ID ENCODING IS PLANE-DEPENDENT (measured 2026-10-02):
+    //   OAuth / Agent Platform — `agy models` lists ONLY effort-suffixed ids
+    //     (`gemini-3.7-flash-medium`) and the bare id is not a model at all:
+    //     `--model gemini-3.7-flash --effort medium` → "--effort is not
+    //     supported for model …". The suffixed id starts a turn, and a
+    //     redundant `--effort` alongside it is tolerated.
+    //   apiKey — the bare slug PLUS `--effort` (dev3); the suffixed id is not a
+    //     model on that plane.
+    // The UI catalog therefore stays four base models with an effort slot (no
+    // list explosion) and the transport folds the level into the id when the
+    // active plane wants it that way.
+    const mode = this.effectiveAuthMode();
+    const model = mode === "oauth" && level !== undefined ? `${slug}-${level}` : slug;
     return {
       apiKey: () => this.resolveApiKey(),
-      model: slug,
+      model,
       ...(level === undefined ? {} : { effort: level }),
       cwd,
       proxy: this.opts.proxy ?? process.env.AGY_PROXY,
@@ -473,43 +533,16 @@ export class AgyProvider extends Service implements AgentFactory {
       // tighter presets keep the CLI's request-review (soft-deny, honest).
       skipPermissions: (this.opts.skipPermissions ?? (this.currentPermissionPreset() === "danger-full-access")),
       agyBin: this.opts.agyBin,
-      nativeCliHome: this.opts.nativeHome,
-      home: this.opts.cliHome ?? process.env.AGY_CLI_HOME,
+      authMode: mode,
+      // The USER's real home — hard-coded relative to the current user, as the
+      // 2026-10-02 ruling requires: the CLI, `~/.config/gcloud` (ADC), the
+      // keyring, and the native settings we maintain all resolve against it, so
+      // the adapter and the user's own TUI share one configuration.
+      realHome: this.opts.realHome ?? process.env.HOME ?? "",
       spawnAttempts: this.opts.spawnAttempts,
     };
   }
 
-  /** Bridge child options: world cwd + overrides; the api key rides the start config. */
-  private clientOptions(cwd: string, modelId?: string, reasoningEffort?: string): ConstructorParameters<typeof AgyBridgeClient>[0] {
-    // Auth plane (§16a): API key when present; otherwise the SDK's Vertex
-    // endpoint over ADC — which needs an explicit project, read from the
-    // gcloud CLI default. Without either, sessions gate into §17 onboarding.
-    const apiKey = this.resolveApiKey();
-    let project = this.opts.project;
-    let location = this.opts.location;
-    if (apiKey === undefined && project === undefined && hasAdcEvidence(process.env, process.env.HOME ?? "")) {
-      project = readGcloudProject(process.env.HOME ?? "");
-      location = location ?? "global";
-    }
-    // Session-selected model id wins over the provider default (previously a
-    // split-brain: the session showed one model, the bridge started another).
-    // `slug@level` decodes into model + thinking_level for the start frame.
-    const parsed = parseModelId(modelId ?? this.resolveDefaultModelId());
-    return {
-      apiKey,
-      project,
-      location,
-      model: parsed?.slug ?? this.resolveDefaultModelId(),
-      // TUI parity: the native default ships (Medium); without an explicit
-      // level the bridge sends none and thinking blocks rarely stream.
-      thinkingLevel: parsed?.thinkingLevel ?? "medium",
-      approvalMode: this.opts.approvalMode ?? "allow",
-      workspaces: [cwd],
-      bridgePath: this.opts.bridgePath,
-      pythonBin: this.opts.pythonBin,
-      spawnAttempts: this.opts.spawnAttempts,
-    };
-  }
 
   private async createStoredSession(
     persistence: SessionPersistence,

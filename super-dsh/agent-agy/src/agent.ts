@@ -1,26 +1,27 @@
 /**
- * AgyAgent — the Dash `Agent` shim over one `AgyBridgeClient` (the Python SDK
- * bridge child; localharness materializes inside it on the first prompt).
+ * AgyAgent — the Dash `Agent` shim over one `AgyCliClient` (the user's own
+ * Antigravity CLI in headless stream-json mode; the child spawns lazily on the
+ * first real prompt).
  *
- * Projection (bridge → Dash session events):
+ * Projection (CLI stream → Dash session events):
  *   (prompt delivery)   → turn/start + user/message
  *   chunk (streamed)    → assistant stream frames (v2 protocol) accumulated
  *                         as durable records; the FULL text commits once as
  *                         assistant/message at `done`
- *   tool                → (V1: bridge supplies name only — omitted from the
+ *   tool                → (V1: CLI supplies name only — omitted from the
  *                         log rather than fabricated; event-stream honesty)
  *   done                → assistant/message + step/end + turn/end {completed}
  *   error               → turn/end {error} with a stable code
  *
- * Bridge gaps registered explicitly (never fabricated):
- * - token usage: the bridge `done` event carries none → no usage field.
+ * CLI-stream gaps registered explicitly (never fabricated):
+ * - token usage: the CLI `done` event carries none → no usage field.
  * - tool fidelity: only a tool name arrives (no call id / args / result) → no
  *   tool/call or tool/result events in V1.
- * - steer/cancel: the bridge has no in-turn interrupt; `steer` degrades to a
+ * - steer/cancel: the CLI has no in-turn interrupt; `steer` degrades to a
  *   parked follow-up, `cancel` records the cause (applied at the terminal).
  *
  * Onboarding (§17 minimal, consumer-first): when no Gemini API key is known,
- * the first user turn never touches the bridge — the turn is answered locally
+ * the first user turn never touches the CLI — the turn is answered locally
  * with a system/message asking for the key; a pasted key is persisted through
  * `onApiKey` (adapter state, world home only) and confirmed in the same turn.
  */
@@ -39,15 +40,14 @@ import type { AgentCancelCause, Session, SessionId, SessionSeq, TurnEndReason, U
 import type { AssistantMessage, AssistantStreamRecord, ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { LlmAttemptId, ToolCallId, createAssistantMessage, createSystemMessage, createToolResultMessage } from "@deepseek-ai/dsh-llm";
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
-import type { AgyBridgeClient } from "./agy-client.js";
 import type { AgyCliClient } from "./agy-cli-client.js";
 import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
-
-/** Structural union of the two live transports (SDK bridge | CLI stream). */
+/** The CLI stream transport the agent drives (SDK bridge moved to agent-agy-sdk). */
 export type LiveAgyClient = Pick<
-  AgyBridgeClient,
+  AgyCliClient,
   "conversationId" | "lastUsage" | "onThinkingDelta" | "onToolEvent" | "setApprovalHandler" | "turn" | "close"
 > & { setSystemMessageHandler?(handler: (text: string) => void): void };
+
 
 /** v2 live assistant-stream publication (same frame protocol as hermes). */
 class AssistantStreamBridge {

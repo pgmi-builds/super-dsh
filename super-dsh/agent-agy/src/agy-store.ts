@@ -13,11 +13,20 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { AgyAuthMode } from "./agy-auth.js";
+
 export interface AgyAdapterState {
   /** Gemini API key the user pasted through the onboarding session. */
   apiKey?: string;
   /** Cached default model slug (from native settings or catalog head). */
   defaultModel?: string;
+  /**
+   * The user's explicit auth-form choice for the CLI transport (the Hub's
+   * single-select). Absent ⇒ the agy-auth ladder decides. A stale choice (the
+   * form is gone from the machine) deliberately falls through to the ladder
+   * rather than wedging the adapter.
+   */
+  authMode?: AgyAuthMode;
 }
 
 export function adapterStatePath(worldHome: string): string {

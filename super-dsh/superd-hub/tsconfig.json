@@ -14,13 +14,12 @@
   // The client half is tsdown territory (lib/client) — EXCEPT the node-safe
   // pure seams that dual-emit to dist/client/ for node --test: mesh-api.ts
   // (test/client-mesh-view.test.mjs), roster.ts + mesh-groups.ts
-  // (test/client-mesh-groups.test.mjs; no DOM globals, no react, no
+  // (test/client-mesh-groups.test.mjs), switch.ts (test/client-switch.test.mjs;
   // @deepseek-ai imports — fetch only inside functions). New client .ts
   // files default to the tsdown lane: list them here unless they are
   // node-safe test seams too.
   "exclude": [
     "src/client/index.ts",
-    "src/client/switch.ts",
     "src/client/toast.ts"
   ]
 }

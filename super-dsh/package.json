@@ -18,6 +18,7 @@
     "./agents/pi": "./agent-pi/dist/world-plugin.js",
     "./agents/hermes": "./agent-hermes/dist/world-plugin.js",
     "./agents/agy": "./agent-agy/dist/world-plugin.js",
+    "./agents/agy-sdk": "./agent-agy-sdk/dist/world-plugin.js",
     "./client": "./client/index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
@@ -52,7 +53,10 @@
     "agent-agy/dist",
     "agent-agy/package.json",
     "agent-agy/cordis.patch.yml",
-    "agent-agy/bridge"
+    "agent-agy-sdk/dist",
+    "agent-agy-sdk/package.json",
+    "agent-agy-sdk/cordis.patch.yml",
+    "agent-agy-sdk/bridge"
   ],
   "dsh": {
     "bundle": {

@@ -5,6 +5,8 @@
  * Discipline (agent-adapter-dev-rules §14-i / §16a):
  * - LAZY: no python child until the first real prompt. `start` config is
  *   buffered and flushed with the first `prompt` (one round trip).
+ * - LAZY VENV (2026-10-02 ruling): the durable Python venv is fetched on that
+ *   same first use, into the world home — never at install time (sdk-venv.ts).
  * - Transient spawn failures retry in-place up to AGY_SPAWN_ATTEMPTS (3);
  *   prompt-level errors are surfaced, never auto-retried.
  * - The agy CLI is never invoked; auth is transparent (api_key param or ADC
@@ -12,9 +14,11 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { ensureSdkVenv, resolveSdkPython } from "./sdk-venv.js";
 
 const BRIDGE_RELATIVE = join("bridge", "agy_bridge.py");
 
@@ -31,8 +35,17 @@ export interface AgyClientOptions {
   location?: string;
   workspaces?: string[];
   saveDir?: string;
-  /** Python interpreter (test knob; prod resolves via PATH). */
+  /**
+   * Python interpreter override. Set → the durable venv is NOT fetched
+   * (tests point this at `process.execPath` for the mock bridge; an operator
+   * can point it at an interpreter that already has the SDK).
+   */
   pythonBin?: string;
+  /**
+   * World home anchoring the durable SDK venv (`<worldHome>/sdk-venv`). Absent
+   * ⇒ the venv root falls back to `$DSH_HOME/agents/agy-sdk`.
+   */
+  worldHome?: string;
   /** Bridge script override (tests point this at a mock). */
   bridgePath?: string;
   spawnAttempts?: number;
@@ -81,6 +94,8 @@ export class AgyBridgeClient {
 
   private dead = false;
   private startedSent = false;
+  /** In-flight first-use bootstrap (venv fetch + spawn); cleared when it settles. */
+  private spawnPromise: Promise<void> | undefined;
   private lastUsageValue: AgyTurnUsage | undefined = undefined;
 
   /** Per-turn token usage from the bridge (undefined when the bridge skipped it). */
@@ -114,24 +129,44 @@ export class AgyBridgeClient {
     throw new Error(`agy bridge script not found (${BRIDGE_RELATIVE})`);
   }
 
-  /** Durable venv created by scripts/setup-venv.sh (pkg-root/.venv). */
-  private resolvePackagedVenvPython(): string | undefined {
+  /** The world home anchoring the durable venv (default `$DSH_HOME/agents/agy-sdk`). */
+  private worldHome(): string {
+    if (this.opts.worldHome) return this.opts.worldHome;
+    const dshHome = process.env.DSH_HOME;
+    if (typeof dshHome === "string" && dshHome !== "") return join(dshHome, "agents", "agy-sdk");
+    return join(process.env.HOME ?? "", ".dsh", "agents", "agy-sdk");
+  }
+
+  /**
+   * Resolve the interpreter and spawn the child, once.
+   *
+   * Interpreter precedence: explicit `pythonBin` (tests / operator override) →
+   * `AGY_PYTHON` → the durable world-home venv, fetched on this first use.
+   * Concurrent first turns share one in-flight bootstrap.
+   */
+  private ensureChild(): Promise<void> {
+    if (this.child || this.dead) return Promise.resolve();
+    this.spawnPromise ??= this.spawnOnce();
+    return this.spawnPromise;
+  }
+
+  private async spawnOnce(): Promise<void> {
     try {
-      const pkgRoot = join(dirname(this.resolveBridgePath()), "..");
-      const venv = join(pkgRoot, ".venv", "bin", "python");
-      return existsSync(venv) ? venv : undefined;
-    } catch {
-      return undefined;
+      const worldHome = this.worldHome();
+      const pythonBin = this.opts.pythonBin
+        ?? process.env.AGY_PYTHON
+        ?? resolveSdkPython(worldHome)
+        ?? await ensureSdkVenv(worldHome, {
+          ...(this.opts.trace === undefined ? {} : { trace: this.opts.trace }),
+        });
+      if (!this.child && !this.dead) this.spawnWith(pythonBin);
+    } finally {
+      this.spawnPromise = undefined;
     }
   }
 
-  private spawnBridge(): void {
-    if (this.child || this.dead) return;
+  private spawnWith(pythonBin: string): void {
     const attempts = this.opts.spawnAttempts ?? 3;
-    const pythonBin = this.opts.pythonBin
-      ?? this.resolvePackagedVenvPython()
-      ?? process.env.AGY_PYTHON
-      ?? "python3";
     const bridgePath = this.resolveBridgePath();
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
@@ -155,6 +190,7 @@ export class AgyBridgeClient {
       this.dispatch({ event: "error", error: `bridge exited code=${code}`, recoverable: !this.dead });
     });
   }
+
 
   private consume(data: string): void {
     this.buffer += data;
@@ -201,7 +237,7 @@ export class AgyBridgeClient {
 
   /** Ping round trip (spawns the bridge if needed — use for liveness probes). */
   async ping(): Promise<void> {
-    this.spawnBridge();
+    await this.ensureChild();
     this.send({ op: "ping" });
     await this.expect("pong");
   }
@@ -212,7 +248,7 @@ export class AgyBridgeClient {
    * Yields streamed text chunks; resolves with the full turn text.
    */
   async *turn(text: string): AsyncGenerator<string, string, void> {
-    this.spawnBridge();
+    await this.ensureChild();
     if (!this.startedSent) {
       this.send({
         op: "start",
@@ -281,12 +317,4 @@ export class AgyBridgeClient {
     });
     this.child = undefined;
   }
-}
-
-/** Convenience: read the venv python path recorded by scripts/setup-venv.sh. */
-export function resolveVenvPython(worldHome: string): string | undefined {
-  const p = join(worldHome, "agy-venv-python.txt");
-  if (!existsSync(p)) return undefined;
-  const v = readFileSync(p, "utf8").trim();
-  return v || undefined;
 }

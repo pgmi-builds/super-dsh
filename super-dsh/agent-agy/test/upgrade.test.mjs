@@ -135,11 +135,17 @@ test("model ids are plain slugs; @level legacy ids still parse", () => {
   assert.deepEqual(parseModelId("gemini-3.7-flash@high"), { slug: "gemini-3.7-flash", thinkingLevel: "high" });
   assert.equal(parseModelId("not-a-model"), undefined);
   assert.equal(parseModelId(undefined), undefined);
-  assert.equal(modelIds().length, 5, "five endpoint-verified slugs");
+  assert.equal(modelIds().length, 4, "four slugs the CLI actually serves");
   for (const id of modelIds()) assert.ok(parseModelId(id) !== undefined, `round-trip ${id}`);
-  // effort metadata present for the 3.x flash family, absent for 2.5
+  // Per-model vocabularies exactly as the CLI reports them (dev3 2026-10-02):
+  // the flash family takes medium, 3.1-pro does NOT — which is precisely why
+  // the adapter stopped transmitting an invented default.
   assert.deepEqual(effortsFor("gemini-3.6-flash"), ["low", "medium", "high"]);
-  assert.equal(effortsFor("gemini-2.5-flash"), undefined);
+  assert.deepEqual(effortsFor("gemini-3.1-pro"), ["low", "high"]);
+  assert.equal(effortsFor("gemini-3.1-pro").includes("medium"), false, "3.1-pro rejects medium");
+  // Retired ids are absent from the catalog rather than offered and refused.
+  assert.equal(parseModelId("gemini-2.5-flash"), undefined);
+  assert.equal(parseModelId("gemini-3.5-flash"), undefined);
 });
 
 test("provider display name is Google; list uses variant ids/labels", async () => {
@@ -147,11 +153,11 @@ test("provider display name is Google; list uses variant ids/labels", async () =
   assert.equal(adapter.providerInfo(AGY_PROVIDER_ID).name, "Google");
   const models = await adapter.listModels(AGY_PROVIDER_ID);
   assert.ok(models.some((m) => m.id === "gemini-3.7-flash" && m.name === "Gemini 3.7 Flash"));
-  assert.ok(models.some((m) => m.id === "gemini-2.5-pro" && m.name === "Gemini 2.5 Pro"));
-  const resolved = await adapter.resolveModel(AGY_PROVIDER_ID, "gemini-3.5-flash");
-  assert.equal(resolved.id, "gemini-3.5-flash");
-  assert.equal(resolved.reasoning.defaultEffort, "gemini-3.5-flash" && "medium");
-  const pro = await adapter.resolveModel(AGY_PROVIDER_ID, "gemini-2.5-pro");
-  assert.equal(pro.reasoning, undefined, "2.5 takes no effort parameter");
+  assert.ok(models.some((m) => m.id === "gemini-3.8-flash" && m.name === "Gemini 3.8 Flash"));
+  // The pro model carries a NARROWER vocabulary than the flash family.
+  const pro = await adapter.resolveModel(AGY_PROVIDER_ID, "gemini-3.1-pro");
+  assert.equal(pro.reasoning.defaultEffort, "low");
+  assert.deepEqual(pro.reasoning.efforts.map((e) => e.id), ["low", "high"]);
+  await assert.rejects(() => adapter.resolveModel(AGY_PROVIDER_ID, "gemini-2.5-pro"), /does not serve/);
   await assert.rejects(() => adapter.resolveModel(AGY_PROVIDER_ID, "bogus"), /MODEL_NOT_FOUND|does not serve/);
 });

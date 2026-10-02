@@ -1,0 +1,64 @@
+{
+  "name": "@pgmi-builds/agent-agy-sdk",
+  "version": "0.1.0",
+  "description": "Google Antigravity (Gemini) provider for DeepSeek Harness (dsh) — the OPT-IN SDK transport: drives the google-antigravity Python SDK through a JSONL stdio bridge (bridge/agy_bridge.py, localharness embedded). Auth: adapter-side/GEMINI_API_KEY key, else Vertex over ADC. The agy CLI is never invoked — that is @pgmi-builds/agent-agy. Delivered DISABLED by default (roster key `agy-sdk`): the CLI adapter is the primary path because it reuses the user's existing Antigravity environment. No Python dependency is declared anywhere and there is no postinstall/allow-scripts hook — the durable venv is fetched into the world home on first real use (src/sdk-venv.ts, `npm run fetch-venv`).",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./world": "./dist/world-plugin.js"
+  },
+  "files": [
+    "dist",
+    "bridge",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "fetch-venv": "node scripts/fetch-venv.mjs"
+  },
+  "dependencies": {
+    "zod": "3.25.76"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-scope": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session-persistence": ">=0.1.5-0 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-scope": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-persistence": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "dist/index.js"
+}

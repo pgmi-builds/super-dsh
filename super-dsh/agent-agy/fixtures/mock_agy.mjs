@@ -8,13 +8,27 @@
 import { appendFileSync } from "node:fs";
 
 if (process.env.AGY_MOCK_TRACE) {
-  appendFileSync(process.env.AGY_MOCK_TRACE, JSON.stringify({ argv: process.argv.slice(2) }) + "\n");
+  // Record the AUTH-RELEVANT env beside argv: the spawn-env contract (which
+  // ladder form reached the child, and whether HOME was tampered with) is the
+  // 2026-10-02 regression surface — it cannot be asserted from argv.
+  appendFileSync(process.env.AGY_MOCK_TRACE, JSON.stringify({
+    argv: process.argv.slice(2),
+    env: {
+      HOME: process.env.HOME ?? null,
+      AGY_ADC_AUTH: process.env.AGY_ADC_AUTH ?? null,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY ?? null,
+      AGY_CLI_DISABLE_AUTO_UPDATE: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null,
+    },
+  }) + "\n");
 }
 
 const traceFile = process.env.AGY_MOCK_TRACE;
 const script = JSON.parse(process.env.AGY_MOCK_SCRIPT ?? "[]");
 
 function emitStep(step) {
+  // `stderr`: the real CLI reports refusals here and then exits non-zero
+  // ("--effort is not supported for model …", "Eligibility check failed: …").
+  if (step.stderr !== undefined) process.stderr.write(String(step.stderr));
   for (const out of step.lines ?? []) {
     process.stdout.write((typeof out === "string" ? out : JSON.stringify(out)) + "\n");
   }

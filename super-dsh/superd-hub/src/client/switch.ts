@@ -21,9 +21,6 @@
  *     are what upstream `restoreSelection` resolves the pointer against,
  *     navigation.ts:324; watching `workspaces.list` alone was the T-A gap
  *     that broke native's own last-visited restore);
- *   - `ctx.locale` (T-F: the active language for the default-workspace
- *     title, the one input upstream's `initializeDefaultWorkspace` derives
- *     from the context, navigation.ts:350-351);
  *   - the control-plane roster fetch (`/api/agent-runtime`, never rewritten)
  *     as the probe: the target must still be a live roster entry;
  *   - a minimal self-owned toast overlay for the revert feedback (upstream
@@ -95,10 +92,7 @@ export interface SwitchWorkspaces {
     getSnapshot(): { items: readonly RestoreWorkspaceView[]; phase: unknown }
     subscribe(listener: () => void): () => void
   }
-  initializeDefault(request: {
-    directoryName: string
-    title: string
-  }): Promise<{ workspaceId: string } | undefined>
+  initializeDefault(signal?: AbortSignal): Promise<{ workspaceId: string } | undefined>
 }
 
 /** Structural slice of one `ctx.sessions.list` `byId` row the landing reads. */
@@ -127,11 +121,6 @@ export interface SwitchSessions {
     }
     subscribe(listener: () => void): () => void
   }
-}
-
-/** Structural face of `ctx.locale` — the active-language read. */
-export interface SwitchLocale {
-  getSnapshot(): { active: string }
 }
 
 /** Whether this page is a fusion page: the baked flag global is present. */
@@ -177,22 +166,54 @@ function reportMachineDown(label: string, row: PreFlightRow & { label?: string }
   })
 }
 
+/**
+ * Build the `SwitchHost.openDefaultWorkspace` action.
+ *
+ * dsh 0.2.0-rc.2 removed the request object from the Host's
+ * `workspaces.initializeDefault` Remote: the first-use directory and stored
+ * title are fixed and language-neutral (`default-workspace` under
+ * `<Documents>/deepseek-harness`), so the caller passes only its own lifetime
+ * signal. This module shipped the pre-0.2 `{ directoryName, title }` shape for
+ * a release cycle; the Host then received a plain object where it feeds
+ * `AbortSignal.any(...)`, EVERY empty-plane landing rejected, and the browser
+ * surfaced "Unable to create default workspace". Root-caused 2026-10-02 on
+ * the Hermes world — the only world whose registry was still empty after the
+ * 0.2.0-rc.2 upgrade, hence the only one that took the default-workspace
+ * branch. Exported so the call shape is unit-testable without the
+ * module-level single-bind guard.
+ *
+ * @param deps - the workspace projection and the navigation face.
+ * @param toast - the feedback sink; a refusal is feedback, never a revert.
+ * @returns the host action.
+ */
+export function openDefaultWorkspaceFor(
+  deps: { workspaces: SwitchWorkspaces; uiWorkspace: SwitchUiWorkspace },
+  toast: (message: string) => void,
+): () => void {
+  return () => {
+    void deps.workspaces.initializeDefault()
+      .then((prepared) => {
+        if (prepared !== undefined) deps.uiWorkspace.openWorkspace(prepared.workspaceId)
+      })
+      .catch(() => { toast('Super D: unable to create the default workspace.') })
+  }
+}
+
 /** The bound `switchAgent`, or `undefined` until the entry binds it. */
 let bound: ((label: string) => Promise<void>) | undefined
 
 /**
  * Bind the page's switch agent from the client services. Idempotent; a no-op
  * without the page atom (a non-fusion page never has one).
- * @param deps - the `connection`, `uiWorkspace`, `workspaces`, `sessions`
- *   and `locale` services (structural; the stock client tree always has all
- *   five — upstream's ui-workspace injects the same set).
+ * @param deps - the `connection`, `uiWorkspace`, `workspaces` and `sessions`
+ *   services (structural; the stock client tree always has all four —
+ *   upstream's ui-workspace injects the same set).
  */
 export function bindSwitchAgent(deps: {
   connection: SwitchConnection
   uiWorkspace: SwitchUiWorkspace
   workspaces: SwitchWorkspaces
   sessions: SwitchSessions
-  locale: SwitchLocale
 }): void {
   if (bound !== undefined) return
   const state = uiState()
@@ -206,28 +227,16 @@ export function bindSwitchAgent(deps: {
     }
   }
   // Upstream `initializeDefaultWorkspace` (navigation.ts:349-361) mirrored
-  // through the public faces: the same language branch, the same request
-  // payload, then `openWorkspace` instead of the private `connectWorkspace`
-  // (both funnel into `reuseOrCreateBlank`). A refusal is feedback (the
-  // upstream notice's meaning), never a revert; `undefined` (first-use
-  // initialization ineligible) leaves the view as it is, like upstream.
-  const openDefaultWorkspace = (): void => {
-    const language = deps.locale.getSnapshot().active.toLowerCase().split('-')[0]
-    const title = language === 'zh' ? '默认工作区' : 'Default workspace'
-    const directoryName = language === 'zh' || language === 'en' ? title : 'default-workspace'
-    void deps.workspaces.initializeDefault({ directoryName, title })
-      .then((prepared) => {
-        if (prepared !== undefined) deps.uiWorkspace.openWorkspace(prepared.workspaceId)
-      })
-      .catch(() => { showToast('Super D: unable to create the default workspace.') })
-  }
+  // through the public faces; the call contract and its 2026-10-02 regression
+  // live in `openDefaultWorkspaceFor`.
+  const openDefaultWorkspace = openDefaultWorkspaceFor(deps, showToast)
   const host: SwitchHost = {
     setAgent(label) { state.setAgent(label) },
     readPersistedSelection() {
       // The Task-3 storage patch prefixes the ACTIVE label's namespace at
       // call time — the landing reads long after setAgent, so this read
       // lands in the target world's `'<label>:dsh.sessions.current'`.
-      const storage = (globalThis as { localStorage?: Storage }).localStorage
+      const storage = (globalThis as { localStorage?: { getItem(key: string): string | null } }).localStorage
       return storage === undefined ? null : storage.getItem(SESSIONS_CURRENT_KEY)
     },
     openSession(target) { deps.uiWorkspace.openSession(target) },

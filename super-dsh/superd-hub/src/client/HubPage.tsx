@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { IconPlayOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { HubGlyph } from './glyph.js'
 import { RuntimeMark } from './runtime-icons.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
@@ -17,6 +18,14 @@ import { AUTO_REFRESH_NOTE, lastFetchLabel } from './mesh-api.js'
 import { groupByMachine, machineLabelsFrom } from './mesh-groups.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
+import {
+  activeMethod,
+  selectable,
+  settingsPanelFor,
+  toggleExpanded,
+  type RuntimeAuthView,
+} from './agent-settings.js'
+import { fetchAuthView, setAuthMode, settingsErrorText } from './runtime-settings-api.js'
 
 /**
  * The Hub main panel (`main`, key `hub`): the hub-functionality home page.
@@ -114,16 +123,29 @@ const originStyle: React.CSSProperties = {
   color: 'var(--dsw-alias-label-secondary)',
 }
 
-/** The quiet text action (reprobe) — the switch link's look. */
-const textActionStyle: React.CSSProperties = {
+/**
+ * The row's switch control (P3: the `switch` word is a real BUTTON now — the
+ * row body toggles the settings panel instead, so the switch needs its own
+ * hit target that stops propagation).
+ */
+const switchButtonStyle: React.CSSProperties = {
   border: 'none',
   background: 'transparent',
   padding: 0,
   font: 'inherit',
   fontSize: 12.5,
   color: 'var(--dsw-alias-label-secondary)',
-  cursor: 'pointer',
   whiteSpace: 'nowrap',
+}
+
+/** The inline settings panel a row body expands into (P3 accordion). */
+const panelStyle: React.CSSProperties = {
+  listStyle: 'none',
+  margin: '0 -8px 4px',
+  padding: '10px 12px 12px 42px',
+  borderRadius: 12,
+  background: 'var(--dsw-alias-interactive-bg-hover)',
+  fontSize: 12.5,
 }
 
 /** The icon action (remove ✕) seat. */
@@ -140,7 +162,40 @@ const iconActionStyle: React.CSSProperties = {
   font: 'inherit',
   cursor: 'pointer',
 }
+/** The quiet text action (reprobe) — the switch/row-action look. */
+const textActionStyle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  padding: 0,
+  font: 'inherit',
+  fontSize: 12.5,
+  color: 'var(--dsw-alias-label-secondary)',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+/** The row's settings panel heading. */
+const panelHeadStyle: React.CSSProperties = {
+  margin: '0 0 6px',
+  fontSize: 12,
+  fontWeight: 500,
+  color: 'var(--dsw-alias-label-secondary)',
+}
 
+/** One auth-method option's row in the panel. */
+const optionStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 8,
+  width: '100%',
+  textAlign: 'left',
+  border: 'none',
+  background: 'transparent',
+  padding: '5px 6px',
+  borderRadius: 8,
+  font: 'inherit',
+  fontSize: 12.5,
+  color: 'var(--dsw-alias-label-primary)',
+}
 /** The status dot's color: reachable green, pending grey, unreachable amber, auth-expired red. */
 function statusDotColor(status: MeshMachineStatus): string {
   if (status === 'reachable') return 'var(--dsw-alias-state-success-primary)'
@@ -208,18 +263,27 @@ const sectionHeadStyle: React.CSSProperties = {
   listStyle: 'none',
 }
 
-/** A row that lights its surface on hover (inline styles have no :hover). */
-function HoverRow({ children, onClick, clickable }: {
+/**
+ * A row that lights its surface on hover (inline styles have no :hover).
+ *
+ * P3: the row BODY is the settings-panel toggle, not the switch — `expanded`
+ * keeps the surface lit while its panel is open, so the open row stays
+ * identifiable after the pointer leaves. The switch lives in the row's button.
+ */
+function HoverRow({ children, onClick, clickable, expanded }: {
   children: React.ReactNode
-  /** Row-level click handler (the fusion switch wiring; absent on world pages). */
+  /** Row-body click handler (P3: the settings accordion toggle). */
   onClick?: (event: React.MouseEvent) => void
-  /** Pointer cursor while the row is a switch target. */
+  /** Pointer cursor while the row body is interactive. */
   clickable?: boolean
+  /** The row's settings panel is open. */
+  expanded?: boolean
 }): React.JSX.Element {
   const [hover, setHover] = React.useState(false)
   return (
     <li
       onClick={onClick}
+      aria-expanded={expanded}
       onMouseEnter={() => { setHover(true) }}
       onMouseLeave={() => { setHover(false) }}
       style={{
@@ -230,7 +294,7 @@ function HoverRow({ children, onClick, clickable }: {
         padding: '9px 8px',
         borderRadius: 12,
         listStyle: 'none',
-        background: hover ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
+        background: hover || expanded ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
         cursor: clickable ? 'pointer' : undefined,
       }}
     >
@@ -251,6 +315,114 @@ function GroupHead({ title, count, action }: { title: string; count: number; act
   )
 }
 
+/**
+ * One runtime's settings, rendered inside its expanded row (P3).
+ *
+ * The adapter owns the config, so this component owns no auth knowledge: it
+ * asks the adapter's Remote for the option list and renders what comes back.
+ * The round trip after a change is authoritative — the adapter re-probes and
+ * answers with the new state, which is why nothing is optimistically patched
+ * here (a selection can fall through the ladder, and the UI must show that).
+ *
+ * Mounted only while its row is open, so expanding always re-reads the
+ * machine rather than replaying a stale first read.
+ */
+function RuntimeSettingsPanel({ agent }: { agent: AgentLink }): React.JSX.Element {
+  const panel = settingsPanelFor(agent.key)
+  const namespace = panel?.namespace
+  const [view, setView] = React.useState<RuntimeAuthView | undefined>(undefined)
+  const [error, setError] = React.useState<string | null>(null)
+  const [busy, setBusy] = React.useState<string | null>(null)
+  const [loading, setLoading] = React.useState(namespace !== undefined)
+
+  React.useEffect(() => {
+    if (namespace === undefined) return undefined
+    let live = true
+    setLoading(true)
+    fetchAuthView(agent.key, namespace)
+      .then((next) => { if (live) { setView(next); setError(null) } })
+      .catch((err: unknown) => { if (live) { setView(undefined); setError(settingsErrorText(err)) } })
+      .finally(() => { if (live) setLoading(false) })
+    return () => { live = false }
+  }, [agent.key, namespace])
+
+  const choose = (mode: string): void => {
+    if (namespace === undefined || busy !== null) return
+    setBusy(mode)
+    setAuthMode(agent.key, namespace, mode)
+      .then((next) => { setView(next); setError(null) })
+      .catch((err: unknown) => { setError(settingsErrorText(err)) })
+      .finally(() => { setBusy(null) })
+  }
+
+  if (namespace === undefined) {
+    return (
+      <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>
+        No settings for this runtime yet.
+      </p>
+    )
+  }
+
+  if (loading) {
+    return <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>Loading settings…</p>
+  }
+
+  if (view === undefined) {
+    return (
+      <p style={{ margin: 0, color: 'var(--dsw-alias-state-warn-label, var(--dsw-alias-label-secondary))' }}>
+        {error ?? 'Settings are unavailable for this runtime.'}
+      </p>
+    )
+  }
+
+  const current = activeMethod(view)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <p style={panelHeadStyle}>Sign-in method</p>
+      {view.methods.map((option) => {
+        const isCurrent = current?.key === option.key
+        const disabled = !selectable(option) || busy !== null
+        return (
+          <button
+            key={option.key}
+            type="button"
+            role="radio"
+            aria-checked={isCurrent}
+            disabled={disabled}
+            onClick={() => { choose(option.key) }}
+            style={{
+              ...optionStyle,
+              color: disabled ? 'var(--dsw-alias-label-tertiary)' : 'var(--dsw-alias-label-primary)',
+              cursor: disabled ? 'default' : 'pointer',
+              background: isCurrent ? 'var(--dsw-alias-bg-elevated, transparent)' : 'transparent',
+            }}
+          >
+            <span aria-hidden style={{ width: 12, flex: '0 0 12px' }}>
+              {isCurrent ? '\u25CF' : '\u25CB'}
+            </span>
+            <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{option.label}</span>
+            {isCurrent && <span style={chipSelf}>in force</span>}
+            {!option.available && <span style={chip}>not detected</span>}
+            {option.placeholder && <span style={chip}>placeholder</span>}
+            <span style={{ flex: 1, minWidth: 0, color: 'var(--dsw-alias-label-tertiary)' }}>{option.hint}</span>
+            {busy === option.key && <span style={chip}>applying…</span>}
+          </button>
+        )
+      })}
+      {view.note !== undefined && (
+        <p style={{ margin: '2px 0 0', color: 'var(--dsw-alias-label-tertiary)' }}>{view.note}</p>
+      )}
+      {error !== null && (
+        <p style={{ margin: '2px 0 0', color: 'var(--dsw-alias-state-error-primary)' }}>{error}</p>
+      )}
+      {view.settingsPath !== undefined && (
+        <p style={{ margin: '4px 0 0', color: 'var(--dsw-alias-label-caption)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11 }}>
+          writes {view.settingsPath}
+        </p>
+      )}
+    </div>
+  )
+}
 export function HubPage(): React.JSX.Element {
   const [mesh, setMesh] = React.useState<MeshList>({ machines: [] })
   const [meshLoaded, setMeshLoaded] = React.useState(false)
@@ -276,6 +448,11 @@ export function HubPage(): React.JSX.Element {
   const [activeKey, setActiveKey] = React.useState<string | undefined>(
     () => (fusion ? uiState()?.activeAgent : undefined),
   )
+  /**
+   * The open settings panel (P3 accordion): one runtime key at a time, or
+   * `null` when every row is collapsed. `toggleExpanded` owns the transition.
+   */
+  const [expandedKey, setExpandedKey] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     let cancelled = false
@@ -349,60 +526,86 @@ export function HubPage(): React.JSX.Element {
   /**
    * One Agent Runtimes row — the SAME row in both shapes; `showMachine`
    * keeps the flat fallback's per-row machine text (the grouped shape moves
-   * it onto the section head). The click contract is untouched: every row
-   * still runs the `seatClickDecision` table.
+   * it onto the section head).
+   *
+   * P3 interaction (2026-10-02 user ruling): the ROW BODY expands this
+   * runtime's OWN settings inline (accordion — one panel at a time), and the
+   * right-hand `switch` is the row's ONLY switch, now a real button. The two
+   * are separate controls on purpose: expanding is navigation of config, the
+   * button performs `seatClickDecision` (intercept + in-place switchAgent).
    */
-  const renderRow = (agent: AgentLink, showMachine: boolean): React.JSX.Element => (
-    <HoverRow
-      key={agent.key}
-      clickable={switchUi.available}
-      onClick={switchUi.available ? (event) => { rowDecision(agent, event) } : undefined}
-    >
-      <RuntimeMark agentKey={agent.key} size={20} />
-      <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{agent.label}</span>
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          fontSize: 12.5,
-          color: 'var(--dsw-alias-label-tertiary)',
-        }}
-      >
-        {showMachine ? agent.machine : null}
-      </span>
-      <span
-        style={{
-          ...chip,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-          fontSize: 10.5,
-        }}
-      >
-        {displayPath(agent.path)}
-      </span>
-      {isActive(agent) && <span style={chipSelf}>current</span>}
-      {/* Switch affordance (T-C switch-only; T-E flag-off shape): fusion
-          page: the `switch` action, no href — every click runs the
-          seatClickDecision table (intercept + in-place switch; the handler
-          stops propagation so the row-level handler does not double-run the
-          attempt — one click, one decision). Flag off: nothing renders per
-          row. */}
-      {switchUi.available && (
-        <a
-          aria-current={isActive(agent) ? 'page' : undefined}
-          style={{ fontSize: 12.5, color: 'var(--dsh-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer' }}
-          onClick={(event) => {
-            event.stopPropagation()
-            rowDecision(agent, event)
-          }}
+  const renderRow = (agent: AgentLink, showMachine: boolean): React.JSX.Element => {
+    const expanded = expandedKey === agent.key
+    return (
+      <React.Fragment key={agent.key}>
+        <HoverRow
+          clickable
+          expanded={expanded}
+          onClick={() => { setExpandedKey((current) => toggleExpanded(current, agent.key)) }}
         >
-          switch
-        </a>
-      )}
-    </HoverRow>
-  )
+          {/* The runtime's own mark (runtime-icons.tsx), NOT the disclosure
+              chevron: the arrow was removed because the whole row is the
+              expand target, but this glyph is the runtime's identity and was
+              never part of that affordance. */}
+          <RuntimeMark agentKey={agent.key} size={20} />
+          <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{agent.label}</span>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontSize: 12.5,
+              color: 'var(--dsw-alias-label-tertiary)',
+            }}
+          >
+            {showMachine ? agent.machine : null}
+          </span>
+          {isActive(agent) && <span style={chipSelf}>current</span>}
+          {/* The row's ONLY switch (T-C switch-only; T-E flag-off shape).
+              A real button: it runs the same `seatClickDecision` table as
+              before and stops propagation so the row-body expand does not also
+              fire — one click, one effect.
+
+              Deliberately NOT `disabled`: a runtime that is already current was
+              rendered with a disabled button, which reads as inert plain text
+              and (reported 2026-10-02) looked like the control had broken after
+              a row was expanded. The current row keeps a live button whose
+              decision table is simply a no-op — `seatClickDecision` already
+              knows an active entry is not worth attempting. */}
+          {switchUi.available && (
+            <button
+              type="button"
+              aria-current={isActive(agent) ? 'page' : undefined}
+              aria-label={isActive(agent) ? `${agent.label} is current` : `Switch to ${agent.label}`}
+              style={{
+                ...switchButtonStyle,
+                color: isActive(agent)
+                  ? 'var(--dsw-alias-label-tertiary)'
+                  : 'var(--dsw-alias-label-secondary)',
+                cursor: 'pointer',
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+                rowDecision(agent, event)
+              }}
+            >
+              {/* Official DSH primitive, not a bespoke glyph (2026-10-02 user
+                  ruling): the launch/play mark the rest of the UI already uses,
+                  so this control speaks the same visual language. */}
+              <IconPlayOutlineRegular size={16} />
+            </button>
+          )}
+        </HoverRow>
+        {expanded && (
+          <li style={panelStyle}>
+            <RuntimeSettingsPanel agent={agent} />
+          </li>
+        )}
+      </React.Fragment>
+    )
+  }
 
   /** Bump the reload sequence — every mutating op refreshes through the API. */
   const reloadMachines = (): void => { setMeshReloads((n) => n + 1) }

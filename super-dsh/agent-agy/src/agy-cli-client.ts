@@ -20,6 +20,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import {
+  authChildEnv,
+  authSettingsMutation,
+  nativeSettingsPath,
+  type AgyAuthMode,
+  type AgySettingsMutation,
+} from "./agy-auth.js";
+
 export interface AgyCliOptions {
   /** Key or a resolver (onboarding-saved keys become visible at first spawn). */
   apiKey: string | (() => string | undefined);
@@ -39,14 +47,18 @@ export interface AgyCliOptions {
   skipPermissions?: boolean;
   /** agy binary override (tests point at a mock). */
   agyBin?: string;
-  /** Native CLI settings dir override (tests; prod: ~/.gemini). */
-  nativeCliHome?: string;
   /**
-   * HOME override for the spawned agy. The account-OAuth/gcp token in the
-   * real home triggers the region-eligibility gate; an isolated home with
-   * only settings.json + GEMINI_API_KEY runs the pure API-key path.
+   * The USER's real home. The CLI always runs against it (never an isolated
+   * override), and this is where the native Antigravity settings we maintain
+   * live — see the module header for the 2026-10-02 「拥抱用户自己的使用环境」
+   * ruling.
    */
-  home?: string;
+  realHome?: string;
+  /**
+   * The resolved auth form (agy-auth.ts). Absent defaults to `apiKey`, so an
+   * unconfigured machine still reaches the §17 onboarding path.
+   */
+  authMode?: AgyAuthMode;
   spawnAttempts?: number;
   trace?: (...parts: unknown[]) => void;
 }
@@ -61,11 +73,22 @@ export type CliEvent =
   | { event: "done"; conversation_id: string; turn_ms: number }
   | { event: "error"; error: string; recoverable: boolean };
 
-/** Merge `modelProvider: "gemini"` into the CLI's own settings (single key). */
-export function ensureCliKeyMode(nativeCliHome: string): void {
-  const dir = join(nativeCliHome, "antigravity-cli");
-  mkdirSync(dir, { recursive: true });
-  const p = join(dir, "settings.json");
+/**
+ * Apply one auth form's mutation to the user's LOCAL Antigravity settings.
+ *
+ * user ruling 2026-10-02 (「拥抱用户自己的使用环境」): this adapter is
+ * deliberately the configuration surface for the user's own Antigravity, so it
+ * really does rewrite their `~/.gemini/antigravity-cli/settings.json` — pick
+ * Gemini API key here and their TUI runs on the Gemini API key too; pick ADC or
+ * OAuth and the `modelProvider` pin is REMOVED so the TUI falls back to the
+ * default backend. Idempotent, and a no-op when the file already matches.
+ *
+ * @param realHome - the user's real `$HOME` (never an isolated override).
+ * @param mutation - keys to set and keys to remove.
+ * @returns `true` when the file changed on disk.
+ */
+export function applyAgySettings(realHome: string, mutation: AgySettingsMutation): boolean {
+  const p = nativeSettingsPath(realHome);
   let settings: Record<string, unknown> = {};
   if (existsSync(p)) {
     try {
@@ -74,9 +97,13 @@ export function ensureCliKeyMode(nativeCliHome: string): void {
       settings = {};
     }
   }
-  if (settings.modelProvider === "gemini") return;
-  settings.modelProvider = "gemini";
+  const before = JSON.stringify(settings);
+  for (const key of mutation.remove) delete settings[key];
+  Object.assign(settings, mutation.set);
+  if (JSON.stringify(settings) === before) return false;
+  mkdirSync(join(p, ".."), { recursive: true });
   writeFileSync(p, JSON.stringify(settings, null, 2) + "\n");
+  return true;
 }
 
 interface StepUpdate {
@@ -123,13 +150,21 @@ export class AgyCliClient {
   }
   private lastUsageValue: { input_tokens: number; output_tokens: number; thinking_tokens: number; total_tokens: number } | undefined;
 
-  private nativeCliHome(): string {
-    return this.opts.nativeCliHome ?? join(process.env.HOME ?? "", ".gemini");
+  /** The user's real home (the CLI and the settings we maintain both live here). */
+  private realHome(): string {
+    return this.opts.realHome ?? process.env.HOME ?? "";
   }
 
   private spawnCli(): void {
     if (this.child || this.dead) return;
-    ensureCliKeyMode(this.nativeCliHome());
+    const mode: AgyAuthMode = this.opts.authMode ?? "apiKey";
+    // Only key mode patches settings (`modelProvider: "gemini"`); ADC and OAuth
+    // need the DEFAULT backend, where that key must be ABSENT — the binary
+    // documents the flip: "To switch back to signing in, remove modelProvider
+    // from settings.json and restart the CLI". Per the 2026-10-02 ruling this
+    // lands in the USER's real native settings, so their TUI behaves the same
+    // way afterwards (「拥抱用户自己的使用环境」).
+    applyAgySettings(this.realHome(), authSettingsMutation(mode));
     const attempts = this.opts.spawnAttempts ?? 3;
     const agyBin = this.opts.agyBin ?? "agy";
     // Order matters: --print swallows the next token as a prompt value
@@ -149,9 +184,15 @@ export class AgyCliClient {
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         const key = typeof this.opts.apiKey === "function" ? this.opts.apiKey() : this.opts.apiKey;
-        if (!key) throw new Error("agy cli: no GEMINI_API_KEY resolved");
-        const env: NodeJS.ProcessEnv = { ...process.env, GEMINI_API_KEY: key, NO_PROXY: "127.0.0.1,localhost" };
-        if (this.opts.home) env.HOME = this.opts.home;
+        if (mode === "apiKey" && !key) throw new Error("agy cli: no GEMINI_API_KEY resolved");
+        // The auth ladder rides the child env (agy-auth.ts): AGY_ADC_AUTH for
+        // ADC, the key for key mode, and the auto-update pin on EVERY mode.
+        // NO_PROXY keeps the dev3 loopback bridge reachable.
+        const env: NodeJS.ProcessEnv = { ...process.env, NO_PROXY: "127.0.0.1,localhost", ...authChildEnv(mode, key) };
+        // No HOME override, ever: the settings we just maintained live at
+        // `$HOME/.gemini`, ADC at `$HOME/.config/gcloud`, and the sign-in token
+        // in the keyring — isolating HOME destroys all three. That was the
+        // 2026-10-02 bug behind "the CLI cannot use ADC".
         if (this.opts.proxy) { env.HTTPS_PROXY = this.opts.proxy; env.HTTPS_PROXY = this.opts.proxy; }
         this.child = spawn(agyBin, args, { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
         break;
@@ -165,13 +206,46 @@ export class AgyCliClient {
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (d: string) => this.consume(d));
     child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (d: string) => this.opts.trace?.("[agy stderr]", d.trimEnd()));
+    child.stderr.on("data", (d: string) => {
+      this.opts.trace?.("[agy stderr]", d.trimEnd());
+      this.noteDiagnostic(d);
+    });
     child.on("exit", (code) => {
       this.child = undefined;
-      this.dispatch({ event: "error", error: `agy exited code=${code}`, recoverable: !this.dead });
+      // The CLI reports its refusals on stderr / as non-JSON stdout lines and
+      // then exits non-zero. Those lines ARE the diagnosis ("--effort is not
+      // supported for model …", "Eligibility check failed: …"), so the exit
+      // error carries them: an opaque "exited code=1" leaves the user with a
+      // dead turn and nothing to act on.
+      this.dispatch({ event: "error", error: this.withDiagnostics(`agy exited code=${code}`), recoverable: !this.dead });
     });
   }
 
+  /**
+   * Bounded tail of what the CLI said OUTSIDE its structured stream: stderr,
+   * plus stdout lines that were not JSONL frames. The CLI announces refusals
+   * this way and then exits (or reports a failed result), so dropping these
+   * lines is what turns every failure into "unknown error".
+   */
+  private diagnostics: string[] = [];
+
+  /** Record one diagnostic line, keeping only a short tail. */
+  private noteDiagnostic(chunk: string): void {
+    for (const raw of chunk.split("\n")) {
+      const line = raw.trim();
+      if (line === "") continue;
+      this.diagnostics.push(line);
+    }
+    // A chatty child must not grow this without bound mid-turn.
+    if (this.diagnostics.length > 12) this.diagnostics = this.diagnostics.slice(-12);
+  }
+
+  /** Append the recorded CLI diagnostics to a failure message, once. */
+  private withDiagnostics(message: string): string {
+    const tail = this.diagnostics.join(" | ");
+    this.diagnostics = [];
+    return tail === "" ? message : `${message}: ${tail}`;
+  }
   private consume(data: string): void {
     this.buffer += data;
     let idx: number;
@@ -183,6 +257,7 @@ export class AgyCliClient {
       try {
         parsed = JSON.parse(line) as Record<string, unknown>;
       } catch (err) {
+        this.noteDiagnostic(line);
         this.opts.trace?.("bad agy json:", line.slice(0, 120), err);
         continue;
       }
@@ -196,7 +271,7 @@ export class AgyCliClient {
         const r = parsed.result as { conversation_id?: string; status?: string; error?: string } | undefined;
         if (r?.conversation_id) this.conversationIdValue = r.conversation_id;
         if (r?.status !== "SUCCESS") {
-          this.dispatch({ event: "error", error: r?.error ?? `agy result status=${r?.status}`, recoverable: false });
+          this.dispatch({ event: "error", error: this.withDiagnostics(r?.error ?? `agy result status=${r?.status}`), recoverable: false });
         } else {
           this.dispatch({ event: "done", conversation_id: this.conversationIdValue, turn_ms: 0 });
         }

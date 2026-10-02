@@ -27,7 +27,10 @@ const run = (cmd, cwd) => execSync(cmd, {
 // modules) would ship silently in the next release. Clean every generated
 // directory first; `super-dsh/client/index.js` is deliberately tracked and is
 // rewritten by build-superd-client.mjs below.
-const AGENTS = ['agent-omp', 'agent-codex', 'agent-claude', 'agent-pi', 'agent-hermes', 'agent-agy']
+const AGENTS = ['agent-omp', 'agent-codex', 'agent-claude', 'agent-pi', 'agent-hermes', 'agent-agy',
+  // The opt-in SDK half of the Antigravity split (world key `agy-sdk`). Built
+  // and packed like every other adapter — its composite row is `disabled: true`.
+  'agent-agy-sdk']
 const GENERATED = [
   join(LINE, 'superd-hub', 'dist'),
   join(LINE, 'superd-hub', 'lib'),

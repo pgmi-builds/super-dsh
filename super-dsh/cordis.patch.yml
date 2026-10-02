@@ -71,6 +71,24 @@
       name: 'super-dsh/agents/hermes'
     - id: agent-agy
       name: 'super-dsh/agents/agy'
+    # Opt-IN SDK half of the Antigravity split (2026-10-02 user ruling). The
+    # CLI row above is the PRIMARY path: the user already runs Antigravity, so
+    # the CLI reuses that environment (their ~/.gemini, ADC and keyring) for
+    # free, while this row drives the Python `google-antigravity` SDK instead.
+    #
+    # DISABLED BY DEFAULT — turning the row on IS the switch
+    # (`plugin-presence IS the roster`): no env var, no config key. It runs as
+    # world key `agy-sdk` (roster label "Antigravity (SDK)", world home
+    # `agents/agy-sdk`), deliberately distinct from `agy` because the hub's
+    # registerAgent hard-throws on a duplicate key and this row ships beside
+    # the CLI row — the two can therefore both be enabled harmlessly.
+    #
+    # No Python is installed at `dsh plugin add` time and this package declares
+    # no SDK dependency: the durable venv is fetched into that world home on
+    # first real use (agent-agy-sdk/src/sdk-venv.ts).
+    - id: agent-agy-sdk
+      name: 'super-dsh/agents/agy-sdk'
+      disabled: true
     # R2 (2026-09-16): the claude adapter ships STANDALONE only — its /world
     # entry is inert. The HUB side joins it: one generic joiner row with the
     # key; spawn/roster/mount wiring lives in super-dsh/join.

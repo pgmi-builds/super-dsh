@@ -43,6 +43,7 @@ import {
   MACHINE_DOWN_ENRICH_MS,
 } from '../dist/switch-core.js'
 import { FUSION_FLAG_GLOBAL, apply as applyFusion, renderFusionTransport } from '../dist/fusion-transport.js'
+import { openDefaultWorkspaceFor } from '../dist/client/switch.js'
 
 // ---- NS key computation -------------------------------------------------
 
@@ -1202,4 +1203,58 @@ test('machine-down feedback: a rejected reprobe is swallowed (fire-and-forget, n
   await Promise.resolve().catch(() => {})
   assert.equal(faces.calls.toasts.length, 1, 'the toast happened; the rejected probe never rejects the branch')
   assert.equal(faces.calls.reprobes.length, 1)
+})
+
+// ---- openDefaultWorkspaceFor: the Host `initializeDefault` call contract ----
+// Regression pin (root-caused 2026-10-02). dsh 0.2.0-rc.2 dropped the request
+// object from the Host's `workspaces.initializeDefault` Remote. This module kept
+// sending `{ directoryName, title }`; the Host fed that object straight into
+// `AbortSignal.any(...)`, so EVERY empty-plane landing rejected and the browser
+// toasted "Unable to create default workspace" — seen on the Hermes world, the
+// only world still empty after the 0.2.0-rc.2 upgrade. The first assertion
+// below is the one that would have caught it: the Remote takes NO argument.
+
+function defaultWorkspaceFaces() {
+  const calls = { initializeDefault: [], openWorkspace: [], toasts: [] }
+  return {
+    calls,
+    deps: {
+      workspaces: {
+        initializeDefault(...args) {
+          calls.initializeDefault.push(args)
+          return Promise.resolve({ workspaceId: 'ws-default' })
+        },
+      },
+      uiWorkspace: { openWorkspace: (id) => { calls.openWorkspace.push(id) } },
+    },
+    toast: (message) => { calls.toasts.push(message) },
+  }
+}
+
+test('default workspace: initializeDefault carries NO request object (0.2.0-rc.2 contract)', async () => {
+  const fx = defaultWorkspaceFaces()
+  openDefaultWorkspaceFor(fx.deps, fx.toast)()
+  await settle()
+  assert.equal(fx.calls.initializeDefault.length, 1, 'the Host Remote ran once')
+  assert.deepEqual(fx.calls.initializeDefault[0], [], 'no `{ directoryName, title }` — the pre-0.2 shape is gone upstream')
+  assert.deepEqual(fx.calls.openWorkspace, ['ws-default'], 'the prepared workspace opens through the public navigation face')
+  assert.deepEqual(fx.calls.toasts, [], 'a success is silent')
+})
+
+test('default workspace: ineligible first use (undefined) leaves the view alone and stays silent', async () => {
+  const fx = defaultWorkspaceFaces()
+  fx.deps.workspaces.initializeDefault = () => Promise.resolve(undefined)
+  openDefaultWorkspaceFor(fx.deps, fx.toast)()
+  await settle()
+  assert.deepEqual(fx.calls.openWorkspace, [], 'nothing to open')
+  assert.deepEqual(fx.calls.toasts, [], 'ineligible is not a failure — upstream leaves the view as it is')
+})
+
+test('default workspace: a rejected preparation toasts and never rejects the caller', async () => {
+  const fx = defaultWorkspaceFaces()
+  fx.deps.workspaces.initializeDefault = () => Promise.reject(new Error('gateway/bad-request'))
+  openDefaultWorkspaceFor(fx.deps, fx.toast)()
+  await settle()
+  assert.deepEqual(fx.calls.openWorkspace, [])
+  assert.deepEqual(fx.calls.toasts, ['Super D: unable to create the default workspace.'])
 })
