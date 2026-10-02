@@ -298,6 +298,14 @@ test('send without conversationId/title omits them; delivery defaults are not fo
   assert.equal(req.message, 'hello')
 })
 
+test('O2: a failed send reports created:false (created is a WORLD fact, not a request-shape echo)', async () => {
+  const { tool, service } = makeTool()
+  service.state.sendReceipt = { outcome: 'failed', messageId: 'a2a-m-f', sessionId: '', error: { code: 'a2a/unknown-machine', message: 'nope' } }
+  const value = await tool.execute({ action: 'send', agent: 'm1ab-na1ive', message: 'x' }, fakeExec())
+  assert.equal(value.outcome, 'failed')
+  assert.equal(value.created, false)
+})
+
 test('send failed receipt: error echoed, no completion watch, no note', async () => {
   const { tool, service, watches } = makeTool()
   service.state.sendReceipt = {

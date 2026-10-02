@@ -870,6 +870,57 @@ test('D20: self-route write-back — the hosted peer sends (from=hostAgent) → 
 
 // ------------------------------------------------------- operational journal (0.1.7-b)
 
+test('F3 (0.1.8-b): a CHANNEL write-back records the peer output as lastOutput too', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    saveConversations(home, { conversations: [{
+      shortId: 'f3chan', machine: self.id, agent: 'nativ1', sessionId: 'sess-host-f3', title: 'f3',
+      hostAgent: 'q7m2xp', initiatorSession: 'session-init-f3', createdAt: 1, lastActivityAt: 1,
+    }] })
+    const { ingest } = assembly(home, gw, { liveSession: 'session-init-f3' })
+    await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'nativ1' },
+      conversationId: 'f3chan',
+      message: 'CHANNEL-LAST-OUTPUT',
+      from: { machine: self.id, agent: 'q7m2xp', sessionId: 'sess-host-f3' },
+      messageId: 'a2a-f3-1',
+    })
+    const row = loadConversations(home).conversations.find((r) => r.shortId === 'f3chan')
+    assert.equal(row.lastOutput, 'CHANNEL-LAST-OUTPUT') // pre-fix: dead for channel-using peers
+    assert.equal(typeof row.lastOutputAt, 'number')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('F2 (0.1.8-b): a self-addressed continuation is INJECTED, not echoed back as a peer write-back', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    // the conversation target IS the caller's own address: row.agent === from.agent,
+    // but from.sessionId is the INITIATOR's, not the hosted session's
+    saveConversations(home, { conversations: [{
+      shortId: 'self02', machine: self.id, agent: 'aa11bb', sessionId: 'sess-host-self', title: 'self',
+      hostAgent: 'aa11bb', initiatorSession: 'sess-init-self', createdAt: 1, lastActivityAt: 1,
+    }] })
+    const { ingest, delivery } = assembly(home, gw, { liveSession: 'sess-init-self' })
+    const out = await ingest.ingest({
+      kind: 'message',
+      to: { machine: self.id, id: 'aa11bb' },
+      conversationId: 'self02',
+      message: 'my own continuation',
+      from: { machine: self.id, agent: 'aa11bb', sessionId: 'sess-init-self' },
+      messageId: 'a2a-self-1',
+    })
+    assert.equal(out.outcome, 'delivered')
+    assert.equal(out.sessionId, 'sess-host-self', 'injected into the HOSTED session')
+    assert.equal(delivery.delivered.length, 0, 'NOT echoed back to the initiator')
+    assert.equal(gw.rpcs(WIRE.promptSubmit).length, 1, 'a real injection happened')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
 test('operational journal: the ingest lifecycle emits one greppable line per machine event', async () => {
   const gw = fakeGateway()
   const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))

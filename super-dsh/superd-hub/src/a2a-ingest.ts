@@ -365,14 +365,20 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // Hallucinated/irrelevant content is content-layer business —
         // transcribe verbatim and let the sender judge.
         const fresh = mirrorRowOf(row.shortId)
+        // F4 (0.1.8-b): the CHANNEL-SEND-WINDOW check comes FIRST. If the peer
+        // already sent through the channel inside this turn, that send IS the
+        // turn's artifact — a stop stamped afterwards (the initiator stopping a
+        // turn that already answered) must not add a second one. The old order
+        // let the stop notice override the quiet rule, yielding two artifacts
+        // for one turn.
+        if ((fresh?.lastSentAt ?? 0) > armedSentAt) {
+          alog?.('info', 'completion.quiet', { conversation: row.shortId, reason: 'channel-send-in-window' })
+          return
+        }
         if ((fresh?.stoppedAt ?? 0) > armedSentAt) {
           alog?.('info', 'completion.stopped', { conversation: row.shortId })
           const stopped = noticeOf(`conversation ${row.shortId}: turn stopped by initiator request`, 'stop')
           void routeReturn(stopped, { responderAgent: env.to.id, noticeReason: 'stop' }).catch(() => parkInOutbox(stopped))
-          return
-        }
-        if ((fresh?.lastSentAt ?? 0) > armedSentAt) {
-          alog?.('info', 'completion.quiet', { conversation: row.shortId, reason: 'channel-send-in-window' })
           return
         }
         const envelope: A2aReplyEnvelope | A2aNoticeEnvelope = fresh?.channelUsed === undefined && completion.text !== ''
@@ -440,7 +446,14 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
       // session with peer attribution, NEVER inject (the row's session is the
       // SENDER's own; injecting would loop the message back to its author).
       //
-      if (row.hostAgent !== undefined && env.from.machine === selfId() && env.from.agent === row.hostAgent) {
+      // F2 (0.1.8-b): the discriminator is the SENDER'S SESSION, not the
+      // address. When the conversation's target IS the caller's own address
+      // (self-addressed), `from.agent === row.hostAgent` also holds for the
+      // INITIATOR's outbound continuation, so the old address test classified
+      // it as the peer's write-back and echoed the initiator's own text back
+      // as a "peer reply". The hosted peer's write-back origin carries
+      // sessionId === row.sessionId; the initiator's carries its own.
+      if (row.hostAgent !== undefined && env.from.machine === selfId() && env.from.sessionId === row.sessionId) {
         if (env.to.machine !== selfId()) {
           return fail({
             code: 'a2a/conversation-machine-mismatch',
@@ -464,6 +477,10 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           messageId: env.messageId,
           title: row.title,
         })
+        // D30 (0.1.8-b): the peer's channel reply IS its last output — persist it
+        // here too (the transcript path records it in deliverLocal; the write-back
+        // branches bypassed that, leaving lastOutput dead for channel-using peers).
+        if (env.message !== '') recordLastOutput(row.shortId, env.message)
         alog?.('info', 'deliver.writeback', { conversation: row.shortId, from: `${env.from.machine}-${env.from.agent}`, via: 'self-route', outcome: writeBackOutcome.delivered })
         // v1 send-receipt shape (exactly-once wrapper contract)
         return { outcome: 'delivered', messageId: env.messageId, conversationId: row.shortId, sessionId: row.initiatorSession }
@@ -509,6 +526,8 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
           messageId: env.messageId,
           title: row.title,
         })
+        // D30 (0.1.8-b): persist the peer's channel reply as the conversation's last output
+        if (env.message !== '') recordLastOutput(row.shortId, env.message)
         // v1 send-receipt shape (double-delivery fix): a {delivered:…} body
         // fails the sender's receipt guard → park → sweep re-POST → the
         // write-back would deliver twice.

@@ -486,7 +486,9 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             messageId: receipt.messageId,
             ...(receipt.conversationId === undefined ? {} : { conversationId: receipt.conversationId }),
             sessionId: receipt.sessionId,
-            created: args.conversationId === undefined,
+            // O2 (0.1.8-b): `created` is a WORLD fact (did a conversation come into
+            // being), not a request-shape echo — a failed send created nothing.
+            created: receipt.outcome !== 'failed' && args.conversationId === undefined,
             // A2aReceiptError carries details?: unknown (T2's verbatim wire body);
             // the body crossed an envelope, so it is JSON by construction —
             // one boundary cast onto the schema's json-typed field.

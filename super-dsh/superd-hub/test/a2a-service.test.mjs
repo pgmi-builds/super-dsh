@@ -213,6 +213,21 @@ test('send create-path: title lands in the registry (no rename); prompt still go
 
 // ---------------------------------------------------------------- send
 
+test('F1/D28 rollout tolerance: a legacy `injected` receipt from an older peer is accepted as delivered', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  try {
+    const remote = mkRemote(home, { receipt: { outcome: 'injected', messageId: 'x', conversationId: 'leg001', sessionId: 'sess-old-peer' } })
+    const svc = createA2aService({ home, gatewayFor: () => gw.face, fetchImpl: remote.fetchImpl, now: () => 5 })
+    const r = await svc.send({ to: ADDR, title: 'legacy', message: 'hi' }, localInitiator(selfM4))
+    assert.equal(r.outcome, 'delivered') // the legacy word normalizes — no throw, no false `failed`
+    assert.equal(r.conversationId, 'leg001')
+    // and the initiator row IS recorded (the pre-fix failure dropped the peer's reply)
+    assert.ok(loadConversations(home).conversations.some((row) => row.shortId === 'leg001'))
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
 // T5/D28: hub-to-hub is a synchronous POST — no poll surface. The sender gets a
 // receipt within the sync window; if the wire has not settled by then it answers
 // `accepted` and the SAME in-flight request finishes into a delivered/undelivered

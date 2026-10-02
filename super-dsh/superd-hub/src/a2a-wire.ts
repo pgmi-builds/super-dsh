@@ -348,6 +348,24 @@ export function normalizeA2aTitle(title: string | undefined): string {
 
 // ---------------------------------------------------------------- receipts (guards)
 
+/**
+ * D28 rollout tolerance (0.1.8-b): the pre-0.1.8 packed `injected` names the
+ * SAME fact as `delivered`. A mesh always has mixed-version windows during a
+ * rollout, so an unknown-but-legible outcome must DEGRADE, never throw. The
+ * guard accepts both; the boundary normalizes the legacy word.
+ */
+const LEGACY_RECEIPT_OUTCOMES: ReadonlySet<string> = new Set(['injected'])
+
+function isReceiptOutcome(v: unknown): boolean {
+  return v === 'delivered' || v === 'failed' || (typeof v === 'string' && LEGACY_RECEIPT_OUTCOMES.has(v))
+}
+
+/** Rewrite a legacy receipt outcome in place (the parsed body is ours after the guard). */
+function normalizeReceiptOutcome(body: A2aSendReceipt): void {
+  const raw = (body as { outcome: unknown }).outcome
+  if (typeof raw === 'string' && LEGACY_RECEIPT_OUTCOMES.has(raw)) (body as { outcome: string }).outcome = 'delivered'
+}
+
 function isWireError(v: unknown): v is WireError {
   return isRecord(v) && nonEmptyString(v['code']) && nonEmptyString(v['message'])
 }
@@ -355,7 +373,7 @@ function isWireError(v: unknown): v is WireError {
 function isSendReceipt(v: unknown): v is A2aSendReceipt {
   if (!isRecord(v)) return false
   if (!hasExactKeys(v, ['outcome', 'messageId', 'sessionId'], ['conversationId', 'error'])) return false
-  if (v['outcome'] !== 'delivered' && v['outcome'] !== 'failed') return false
+  if (!isReceiptOutcome(v['outcome'])) return false
   if (!nonEmptyString(v['messageId'])) return false
   if (typeof v['sessionId'] !== 'string') return false
   if ('conversationId' in v && !nonEmptyString(v['conversationId'])) return false
@@ -423,7 +441,8 @@ export async function postA2aEnvelope(origin: string, envelope: A2aEnvelope, opt
   } catch (err) {
     throw new Error(`a2a-wire: ingest receipt from ${origin} is not JSON — ${errMsg(err)}`)
   }
-  if (isSendReceipt(body) || isStopReceipt(body)) return body
+  if (isSendReceipt(body)) { normalizeReceiptOutcome(body); return body }
+  if (isStopReceipt(body)) return body
   throw new Error(`a2a-wire: ingest receipt from ${origin} is not a v1 receipt shape — ${JSON.stringify(body)}`)
 }
 
