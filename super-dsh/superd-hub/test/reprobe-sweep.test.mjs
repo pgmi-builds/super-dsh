@@ -133,6 +133,29 @@ test('startReprobeSweep：默认 5min、下限 60s、句柄 unref、无重叠、
   }
 })
 
+test('startReprobeSweep：immediate:true 启动即先跑一次（O1：免去重启后一个周期的 roster 空窗）', async () => {
+  resetMachineStatus()
+  const h = home()
+  upsertRemote(h, row('aaaa', 'http://ok1'))
+  const seen = { intervals: [], log: [] }
+  const setIntervalFn = (fn, ms) => { seen.intervals.push(ms); return { unref: () => {} } }
+  const clearIntervalFn = () => {}
+  const fetchImpl = sweepFetch(seen.log, { defer: true })
+  const dispose = startReprobeSweep({ home: h, fetchImpl, setIntervalFn, clearIntervalFn, immediate: true })
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)) }
+  try {
+    await settle()
+    assert.equal(seen.log.length, 1, 'the boot tick probed the paired machine WITHOUT waiting a full period')
+    fetchImpl.release()
+    await settle()
+    assert.equal(machineStatus().get('aaaa').status, 'reachable', 'the roster is filled at boot')
+  } finally {
+    dispose()
+    rmSync(h, { recursive: true, force: true })
+    resetMachineStatus()
+  }
+})
+
 test('startReprobeSweep：intervalSec 低于下限被钳到 60s（配置兜底，双层保险）', () => {
   const seen = { intervals: [], cleared: [], unrefs: 0 }
   const dispose = startReprobeSweep({

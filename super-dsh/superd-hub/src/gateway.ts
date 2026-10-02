@@ -116,7 +116,7 @@ export function apply(ctx: Context, config?: HubConfig): void {
     // disposer IS the sweep disposer — the timer dies with the row
     // (unref'd, overlap-skipping, per-machine errors swallowed; mesh-link).
     ctx.effect(
-      () => startReprobeSweep({ home, intervalSec: config?.reprobeIntervalSec }),
+      () => startReprobeSweep({ home, intervalSec: config?.reprobeIntervalSec, immediate: true }),
       'superd-hub: mesh reprobe sweep',
     )
     const dispose = registerHubRoute({

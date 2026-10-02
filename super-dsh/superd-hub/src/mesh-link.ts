@@ -495,6 +495,15 @@ export interface ReprobeSweepDeps {
   collectors?: SweepCollectors
   setIntervalFn?: (fn: () => void, ms: number) => SweepTimerHandle
   clearIntervalFn?: (handle: SweepTimerHandle) => void
+  /**
+   * O1 (0.1.8-c): run ONE sweep immediately at startup, then on the interval.
+   * Without it the first tick is a full period away, so after a hub restart the
+   * roster is empty and `/api/superd/machines` reads "pending" for up to
+   * `intervalSec` — even though the peers are reachable (a direct one-shot
+   * `exec` proves it). The probe is per-machine and cheap; opt-in so timer
+   * tests keep their deterministic tick-only clock.
+   */
+  immediate?: boolean
 }
 
 /**
@@ -522,6 +531,8 @@ export function startReprobeSweep(deps: ReprobeSweepDeps): () => void {
   }
   const handle = setInt(tick, seconds * 1_000)
   handle.unref?.()
+  // O1 (0.1.8-c): fill the roster at BOOT, not one full period later.
+  if (deps.immediate === true) tick()
   return () => {
     if (disposed) return
     disposed = true
