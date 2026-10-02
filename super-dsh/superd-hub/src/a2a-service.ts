@@ -958,9 +958,18 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         // omits `agent`, derive the route from the row kind + the caller's
         // session (the model never states the owner/peer). When it still
         // passes `agent`, that value is a checked assertion below.
+        // D24/T3 + F2 (0.1.8-c): the route AND the write-back decision are
+        // SESSION facts. `hosted` = this row's session lives HERE at hostAgent;
+        // `callerIsHost` = the caller IS that hosted session (the peer replying
+        // through its own channel). Deriving the write-back from ADDRESS
+        // equality breaks the self-addressed case (row.agent === row.hostAgent),
+        // where the initiator's own continuation looks identical to the host's
+        // and got mis-classified as a peer write-back (echoing the initiator's
+        // own words back at it while the responder received nothing).
+        const hosted = row.hostAgent !== undefined
+        const callerIsHost = hosted && initiator.sessionId === row.sessionId
         if (to === undefined) {
-          const hosted = row.hostAgent !== undefined
-          if (hosted && initiator.sessionId === row.sessionId) {
+          if (callerIsHost) {
             // the hosted peer itself replies → write-back to the initiator
             to = { machine: row.machine, id: row.agent }
           } else if (hosted && row.initiatorSession !== undefined && row.initiatorSession !== '' && initiator.sessionId === row.initiatorSession) {
@@ -985,11 +994,12 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         // channel — the teaching envelope's reply clause. It routes to the
         // initiator's hub (write-back delivery there), and it SETS THE LATCH:
         // from this send on, the completion watch never transcribes again.
-        const expected = row.hostAgent !== undefined
-          ? { machine: selfM4(), id: row.hostAgent }
+        const expected = hosted
+          ? { machine: selfM4(), id: row.hostAgent! }
           : { machine: row.machine, id: row.agent }
-        writeBack = row.hostAgent !== undefined &&
-          to.machine === row.machine && to.id === row.agent
+        // F2: the write-back is decided by SESSION (only the hosted session
+        // replies), never re-derived from address equality.
+        writeBack = callerIsHost
         if (!writeBack && (to.machine !== expected.machine || to.id !== expected.id)) {
           return fail({
             code: 'a2a/conversation-machine-mismatch',

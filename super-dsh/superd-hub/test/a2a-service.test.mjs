@@ -1090,6 +1090,31 @@ test('T3/D24: a continuation with NO `agent` derives the route from the row + ca
 
 // ------------------------------------------------------- D20/D21 reply semantics v3
 
+test('F2 (0.1.8-c): a self-addressed continuation does NOT take the write-back branch', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  const seen = []
+  try {
+    // self-addressed mirror row: row.agent === row.hostAgent (the target IS the caller)
+    saveConversations(home, { conversations: [{
+      shortId: 'selfsr', machine: selfM4, agent: 'aa11bb', sessionId: 'sess-host-self',
+      hostAgent: 'aa11bb', initiatorSession: 'sess-init-self', createdAt: 1, lastActivityAt: 1,
+    }] })
+    const svc = createA2aService({
+      home,
+      gatewayFor: () => gw.face,
+      ingest: () => ({ ingest: async (env) => { seen.push(env); return { outcome: 'delivered', messageId: env.messageId, conversationId: env.conversationId, sessionId: 'sess-host-self' } } }),
+      now: () => 5,
+    })
+    const r = await svc.send({ conversationId: 'selfsr', message: 'my continuation' }, { machine: selfM4, agent: 'aa11bb', sessionId: 'sess-init-self' })
+    assert.equal(r.outcome, 'delivered')
+    assert.equal(seen.length, 1, 'self-routed into OUR ingest (the hosted session)')
+    assert.deepEqual(seen[0].to, { machine: selfM4, id: 'aa11bb' })
+    assert.equal(loadConversations(home).conversations[0].channelUsed, undefined, 'the initiator is NOT the peer — no latch')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
 test('D20 write-back send leg: mirror row + addressing the initiator → envelope to the peer hub + latch set', async () => {
   const gw = fakeGateway()
   const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
@@ -1246,7 +1271,9 @@ test('0.1.7-h R2: a FAILED write-back notifies the original initiator (send-fail
   try {
     const receipt = await svc.send(
       { to: { machine: 'w3ef', id: 'na1ive' }, conversationId: 'sf1red', message: 'the reply text' },
-      { machine: selfM4, agent: 'h0stag', sessionId: 'session-h0st-1' },
+      // the caller IS the hosted session (the protocol invariant the F2 fix keys on:
+      // the hosted peer's own session id is the row's sessionId)
+      { machine: selfM4, agent: 'h0stag', sessionId: 'session-eeeeeeee-9999' },
     )
     assert.equal(receipt.outcome, 'failed')
     assert.equal(receipt.error.code, 'a2a/conversation-not-found')
