@@ -38,7 +38,13 @@ for (const root of roots) {
       let pkgName
       try { pkgName = JSON.parse(readFileSync(manifest, 'utf8')).name } catch { continue }
       if (typeof pkgName !== 'string' || !pkgName.startsWith('@deepseek-ai/')) continue
-      wanted.set(pkgName.slice('@deepseek-ai/'.length), pkgDir)
+      // PHYSICAL path, not `join(CHECKOUT, …)`: a checkout reached through a
+      // symlink (dev worktrees symlink `upstream/` into the main tree) would
+      // otherwise bake a worktree-specific prefix into every link — deleting
+      // that worktree then dangles the whole farm and the next tsc fails with
+      // "Cannot find module '@deepseek-ai/*'" (2026-10-02: 325 links went dead
+      // when `.worktrees/mesh-p1` was removed).
+      wanted.set(pkgName.slice('@deepseek-ai/'.length), realpathSync(pkgDir))
     }
   }
 }

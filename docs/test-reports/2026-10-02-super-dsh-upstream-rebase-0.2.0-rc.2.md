@@ -92,12 +92,11 @@ session-controller (@deepseek-ai/dsh-api-session-controller): pending (waiting f
 5. **dev3 上 better-dsh 0.2.5 的两行 import 失败**、dev3 Codex world 无 session plane —— 均为既有问题（见 0.1.9 发版报告残留节），与本次 rebase 无关。
 
 ## 7. 结论
-
 - 本仓 dev base 已是 **`dsh-v0.2.0-rc.2`**（源码轨）；实机轨结论（dev3，0.2.0-rc.2 实装 12/12 绿）继续有效。
 - super-dsh **0.1.9 = 本阶段版本号**：源码在 0.2.0-rc.2 上编译零错、全测 948/0、产物与 registry 逐字节相同、新 base 上实机 boot 零新增警告。
-- 本轮**未发版、未改 super-dsh 版本**；仓内改动 = `AGENTS.md`（台账/对齐程序）、`super-dsh/scripts/pack.mjs`（前置 dist 清理）、`super-dsh/test/start-4999.sh`（`SUPERD_PACK_FROM=registry` 旋钮）、`super-dsh/AGENTS.md`（旋钮说明）与本报告。
+- 本轮**未发版、未改 super-dsh 版本**；仓内改动 = `AGENTS.md`（台账/对齐程序）、`super-dsh/scripts/pack.mjs`（前置 dist 清理）、`super-dsh/scripts/sync-dsh-farm.mjs`（link 写物理路径）与本报告。**三者都不进交付物**（`files` = 27 项，registry tarball 里 `scripts/` 条目数 = 0）→ 不产生 artifact diff，除 push 外无需任何发版动作。`start-4999.sh` 的 registry 旋钮与 `super-dsh/AGENTS.md` 的对应说明**已撤回**。
 
-## 8. 收尾：消费者切到 registry + worktree handoff（2026-10-02 同日追加）
+## 8. 收尾（2026-10-02 同日追加）
 
 ### 8.1 0.1.9 相对 0.1.8-e：功能零差异
 
@@ -109,12 +108,25 @@ session-controller (@deepseek-ai/dsh-api-session-controller): pending (waiting f
 
 ### 8.3 4996 线（本机）
 
-`start-4999.sh` 新增 `SUPERD_PACK_FROM=registry`：跳过本地 pack，profile 写 `"super-dsh": "<version>"` 并 `pnpm add super-dsh@<version>`；默认仍走本地 tarball（两条路本轮都实跑过）。当前 4996 线**从主 checkout 启动、吃 registry 0.1.9**：profile `{"super-dsh": "0.1.9"}`、装出来的 227 个包文件 sha256 清单 = `bf9f1e5e…`（与 registry、与 dev3 三方同源）；探针 = mint 200 / 无 cookie 401 / `hub.version 0.1.9` / 7/7 agent ready / dev3 `reachable`。
+**本机线一律本地 build + tarball（2026-10-02 user 裁决）**：上游用仓库本地 checkout，被测 target = 本地 `pack.mjs` 出的 tarball——本地开发/测试与 registry 无关，不能靠 publish→fetch 来做本机测试（registry 只属于 dev3 那种“消费者实装”场景）。因此 4996 线维持默认路径：`pack.mjs` 本地构建 → `pnpm add file:<tarball>` → repo build 启动；曾经短暂加过的 `SUPERD_PACK_FROM=registry` 旋钮**已撤回**（连同 `super-dsh/AGENTS.md` 里那行说明）。当前 profile 依赖 = `{"super-dsh": "file:…/.scratch/superd-pack/super-dsh-0.1.9.tgz"}`；探针 = mint 200 / 无 cookie 401 / `hub.version 0.1.9` / 7/7 agent ready / dev3 `reachable`。
 
 ### 8.4 worktree
 
 `.worktrees/mesh-p1` **已移除**（`git worktree remove --force`，移除前先手工 unlink 了它指向共享树的 `.tests`/`upstream` 两个 symlink，共享 home 与 upstream checkout 均未受影响；`.scratch` 日志与本地 tarball 归档到 `.scratch/mesh-p1-archive/`）。分支 `mesh-p1` 保留并与 master 同点 —— P1 的成果全在 master 上，worktree 本身零 unique commit，所以移除不丢信息；P2 从当时 master 新开 worktree 即可。
 
-现场（保持运行，等 user 亲手验收）：
+### 8.5 事故与修复：farm link 里烘进了 worktree 前缀（dev 工具，已修）
+
+删掉 `mesh-p1` 之后第一次跑 pack 直接 **tsc 全红**：`src/*.ts error TS2307: Cannot find module '@deepseek-ai/dsh-tools' …`（325 个 farm link 全是 dangling）。根因：`sync-dsh-farm.mjs` 用 `join(CHECKOUT, …)`（**未经 realpath**）做 link 目标，而 dev worktree 的 `upstream/` 是指回主树的 symlink —— 于是从 worktree 跑一次同步，就把该 worktree 的路径写进了共享 farm；worktree 一删，整片 farm 悬空（主树与 worktree 的 `super-dsh/node_modules` 是同一份物理目录，两边会互相覆写）。
+
+修复：harvest 时存 **`realpathSync(pkgDir)`** → link 一律指向物理 checkout，worktree 前缀不可能再进去；比较逻辑（`realpathSync(link) === target`）随之成为物理路径比较，天然幂等。验证：造一个 `upstream` 为 symlink 的临时 worktree，旧脚本写出 `.scratch/farmtest/upstream/…`（复现），补丁后写出 `/home/u1/workspaces/superd/upstream/…`（物理路径），二次运行 `kept=325 relinked=0`；临时 worktree 已删，主 farm 完好。主树 farm 重同步后 pack 恢复正常。
+
+> 典型「dev 脚手架遮丑」：本地能跑只因为恰好没删过那个 worktree。绝对路径烘进 link 的写法要按物理路径固化。
+## 9. 已登记、留给下一轮的问题（housekeeping review）
+
+1. **`agent-agy` 的 spawn 没有 `error` 监听 → 缺 `agy` 二进制会把整个宿主打死（dev3 实证）**：`super-dsh/agent-agy/src/agy-cli-client.ts:156` 与 `agy-client.ts:138` 直接 `spawn(...)` 且全仓 `src/` 内无 `.on('error')`。dev3 17:19:37 有一次 agy 会话启动（`agy` 不在 PATH；`which agy` 空），Node 抛 uncaught `spawn agy ENOENT` → `dsh.service` 整体退出、systemd 重启 1 次（当前实例正常）。正确形态应是「该 agent 标 failed / 报 typed 错误」，而不是进程级死亡。**未在本轮修**（属产品代码改动，要按 gate 走）。
+2. dev3 上 `dashr-failover` / `dashr-compaction-tuning` 两条 import 失败**已消失**（属 better-dsh，非 super-dsh；14:23–15:16 的旧 boot 有、现役 boot 无，profile 里 better-dsh 已是 `0.2.5-a`）。现役 boot 只剩 `superd-{codex,hermes}: 1 entry did not activate`（`session-controller … pending (waiting for service: fileUploads)`，既有）。
+3. dev3 Codex world 无 session plane、0.2.0 上 client/UI 半边只做过静态验证、pnpm ≥11 消费者需裸包名 `minimumReleaseAgeExclude` —— 既有残留，未动。
+
+## 10. 现场（保持运行，等 user 亲手验收）：
 `http://127.0.0.1:4996/?token=<redacted>`
 `http://192.0.2.130:4996/?token=<redacted>`

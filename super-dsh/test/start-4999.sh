@@ -27,9 +27,6 @@ set -euo pipefail
 #   SUPERD_PORT=4997 SUPERD_HOME_DIR=$PWD/.tests/superd-clean \
 #     bash super-dsh/test/start-4999.sh
 # (delete that home afterwards; see docs/07-cordis-dsh-dev-test-guides.md §3).
-#   SUPERD_PORT=4999 SUPERD_PACK_FROM=registry bash super-dsh/test/start-4999.sh
-#     → skip the local pack and install the PUBLISHED super-dsh@<version> from
-#       npm instead (consumer-channel parity; default is the local tarball).
 PORT="${SUPERD_PORT:-4999}"
 UNIT="superd-${PORT}-test"
 # The line's repo root = wherever THIS script lives (main checkout or a dev
@@ -89,22 +86,11 @@ if ss -tln | grep -q ":${PORT} "; then
 fi
 WATERMARK=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 
-# ---- 1. the delivery artifact: locally packed tarball (default) or the
-# registry release (SUPERD_PACK_FROM=registry — consumer-channel parity: the
-# exact published version is what the line runs, no local build involved).
-VERSION="$("$NODE_BIN" -p "require('$LINE/package.json').version")"
-TARBALL="$REPO/.scratch/superd-pack/super-dsh-${VERSION}.tgz"
-if [ "${SUPERD_PACK_FROM:-tarball}" = "registry" ]; then
-  DEP_VALUE="$VERSION"                 # manifest spec: exact published version
-  DEP_ADD="super-dsh@$VERSION"         # pnpm arg: name@version from the registry
-  echo "--- source = registry: installing $DEP_ADD (local pack skipped)"
-else
-  DEP_VALUE="file:$TARBALL"
-  DEP_ADD="file:$TARBALL"
-  "$NODE_BIN" "$LINE/scripts/pack.mjs"
-fi
+# ---- 1. build + pack the delivery artifact ----
+"$NODE_BIN" "$LINE/scripts/pack.mjs"
+TARBALL="$REPO/.scratch/superd-pack/super-dsh-$("$NODE_BIN" -p "require('$LINE/package.json').version").tgz"
 
-# ---- 2. fresh profile consuming the artifact (consumer manifest shape) ----
+# ---- 2. fresh profile consuming the tarball (consumer manifest shape) ----
 PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
 rm -rf "$PROFILE_DIR"
 mkdir -p "$PROFILE_DIR"
@@ -113,7 +99,7 @@ cat > "$PROFILE_DIR/package.json" <<EOF
   "name": "superd-pub-profile",
   "private": true,
   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "super-dsh"] } },
-  "dependencies": { "super-dsh": "$DEP_VALUE" }
+  "dependencies": { "super-dsh": "file:$TARBALL" }
 }
 EOF
 cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
@@ -132,7 +118,7 @@ onlyBuiltDependencies:
   - bun
 YAML
 echo "--- pnpm install (first run downloads the runtime SDKs into the store; later runs reuse it)"
-(cd "$PROFILE_DIR" && $PNPM add "$DEP_ADD" --config.store-dir="$PNPM_STORE" --prefer-offline)
+(cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" --config.store-dir="$PNPM_STORE" --prefer-offline)
 # pnpm ordering quirk: bun's postinstall runs before @oven/bun-linux-x64
 # links, so bun/bin keeps launcher stubs. Idempotent manual backfill (resolve
 # THROUGH the super-dsh package — pnpm isolated layout keeps bun off the top
