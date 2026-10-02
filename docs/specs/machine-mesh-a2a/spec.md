@@ -181,6 +181,8 @@ CTX0 hub
 ### 6.3 健康与降级
 
 - 探测时机：add-machine 时、手动 reprobe、switch 预检可触发轻探、周期兜底（默认 5min，可配）。
+- **启动即扫（O1，0.1.8-c）**：hub 重启后立即跑一次 sweep，roster / machine status 秒级可用，不再空等一个周期；但启动那一跳**不跑本地采集腿（O1b，0.1.8-e）**——本地 session plane 此刻仍在挂载，采到的必然是一次 all-error 结果。
+- **缓存只被成功采集替换（O1b）**：某机/某 agent 的 session-list 腿全数失败时，记为 machine 级失败、保留上一份快照 + error 注记，绝不写成一份新的空窗口——"采不到" 永不冒充 "没有 session"。`agent_status` 因此带 `note` 说明空窗口的来由（采集失败 / 尚未采集）。
 - 机器不可达 → 该机全部 agent 行降级 `unreachable`（roster 保留，orchestra
   reachability 语义）；switch 预检 toast 报机器错误。
 - 远端 roster 变更（agent 增删）在下一次探测收敛；不做推送（open question：常驻 WS 控制通道）。
@@ -213,9 +215,9 @@ CTX0 hub
   `(untitled) [hub A2A]`——`[undefined]` 永不进人眼。替换是**纯呈现层 overlay**——落盘 session persistence 里
   hub 发起与原生发起同构（D17 不 write-through）。数据源：本地 agent =
   进程内 session plane；远端 agent = 呈现车道直查对端 session list（unified
-  数据面，零新信封——D16 呈现豁免内，与 Web UI 浏览远端会话同一车道）。
+  数据面，零新信封——D16 呈现豁免内，与 Web UI 浏览远端会话同一车道）。**空窗口必须解释自己（O1b，0.1.8-e）**：`sessions: []` 只在「确实采到、且该 agent 没有 session」时成立；采集失败（agent 级或 machine 级）与「尚未采集」各由 `note` 说明——空窗口永不冒充「没有 session」。
 - **`send`** `{agent?, conversationId?, title?, message, delivery?: 'queue'|'steer'}`：`agent` 仅 create 必填（选收件人），带 `conversationId` 时由 Hub 内部解析（registry row + caller session 决定路由，模型只认 `conversationId`）：
-  单一门（D24：`new_conversation` 已并入，surface 无独立 open 动作）。**`conversationId` 是唯一 create/continue 判据**——缺省 = new conversation（`title` 可选、空 title 合法；**`message` 恒必填** = 第一句话），带 = resume（`title` 忽略 + `warning`）。投递：信封投给目标机器 a2a ingest（本地 = 进程内短路；远端 = wire）→ **对端本机**建会话 + 注入教学信封（D21：opening 与正文合成**一个**注入 turn）→ 即时返 receipt `{outcome: 'delivered'|'accepted'|'failed', messageId, conversationId, sessionId, created}`（D28：10s 内走完端到端 = `delivered`；走不完 = `accepted` + 1s×50s 轮询补 `delivered`/`spawn-failed`）。发起方零 session-plane 调用（D16）。title 只写双方 registry 行（D17：immutable、`[undefined]` 占位，不 write-through 上游 session title）。教学信封 v3 单一合并文本（D20，措辞见 §7.3）——inline、有界、条件句交模型自评。
+  单一门（D24：`new_conversation` 已并入，surface 无独立 open 动作）。**`conversationId` 是唯一 create/continue 判据**——缺省 = new conversation（`title` 可选、空 title 合法；**`message` 恒必填** = 第一句话），带 = resume（`title` 忽略 + `warning`）。投递：信封投给目标机器 a2a ingest（本地 = 进程内短路；远端 = wire）→ **对端本机**建会话 + 注入教学信封（D21：opening 与正文合成**一个**注入 turn）→ 即时返 receipt `{outcome: 'delivered'|'accepted'|'failed', messageId, conversationId, sessionId, created}`（D28：10s 同步窗内走完端到端 = `delivered`；走不完 = `accepted`，同一 in-flight POST 在后台续跑（总预算 120s），settle 补最终态、到点未成 = `undelivered`；**无轮询面**）。发起方零 session-plane 调用（D16）。title 只写双方 registry 行（D17：immutable、`[undefined]` 占位，不 write-through 上游 session title）。教学信封 v3 单一合并文本（D20，措辞见 §7.3）——inline、有界、条件句交模型自评。
 - **`read`** `{conversationId?}`：未读清扫兜底（auto-delivery 为主通道，
   工具描述明示 NEVER poll）。
 - **`stop`** `{agent, conversationId, scope: 'turn'|'session'}`：turn 级 = cancel

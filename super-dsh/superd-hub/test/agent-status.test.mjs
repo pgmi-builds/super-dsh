@@ -170,6 +170,37 @@ test('collectLocalMachine: every local a6 through its in-process face, cached un
   } finally { rmSync(h, { recursive: true, force: true }) }
 })
 
+test('collectLocalMachine：全员失败的采集记为 machine 失败，绝不落成新的空窗口（O1b）', async () => {
+  const h = home()
+  const self = ensureSelf(h, 'local')
+  try {
+    const { ensureAgentId } = await import('../dist/agent-ids.js')
+    const nativeA6 = ensureAgentId(h, 'native')
+    // 重启前留下的真实快照（warm home 本来就带着一个）
+    const prior = [{ sessionId: 'session-real', mtime: 7, status: 'idle', agentAvailable: true }]
+    recordMachineCollection(h, self.id, [{ a6: nativeA6, rows: prior }], () => 4242)
+    // 观察到的启动形态：本地 session plane 还没挂上，每个 face 都拒
+    const gatewayFor = () => { throw new Error('typert gateway: session/list: active Service "sessionController" is unavailable') }
+    await collectLocalMachine(h, gatewayFor)
+    const bucket = loadAgentStatus(h).machines[self.id]
+    assert.equal(bucket.collectedAt, 4242, '前一份快照与它的 age 都活下来（失败不替换 rows）')
+    assert.deepEqual(bucket.agents, [{ a6: nativeA6, rows: prior }])
+    assert.match(bucket.error, /collection failed for every agent \(1\)/)
+    assert.match(bucket.error, /sessionController/)
+    // 冷 home 的同一个失败：读作「尚未采集」，绝不读作「没有 session」
+    const cold = home()
+    try {
+      const coldSelf = ensureSelf(cold, 'local')
+      ensureAgentId(cold, 'native')
+      await collectLocalMachine(cold, gatewayFor)
+      const coldBucket = loadAgentStatus(cold).machines[coldSelf.id]
+      assert.equal(coldBucket.collectedAt, 0)
+      assert.deepEqual(coldBucket.agents, [])
+      assert.match(coldBucket.error, /collection failed for every agent \(1\)/)
+    } finally { rmSync(cold, { recursive: true, force: true }) }
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
 // ---------------------------------------------------------------- outbox pull
 
 test('pullOutboxFor: claims with cookie + selfId, delivers in order through the ingest, per-envelope degrade', async () => {

@@ -764,6 +764,44 @@ test('agent_status window: alive-first then mtime desc, ≤5; missing cache/buck
   )
 })
 
+test('agent_status：空窗口必须解释自己——agent 级失败 / machine 级失败各带 note（O1b）', async () => {
+  // agent 级采集失败：rows 空 + error（O1b 观察到的本地启动形态）
+  const agentErr = statusFileOf({
+    m1ab: {
+      collectedAt: 0,
+      agents: [{ a6: 'na1ive', rows: [], error: 'typert gateway: session/list: active Service "sessionController" is unavailable' }],
+      error: 'collection failed for every agent (1) — typert gateway: session/list: active Service "sessionController" is unavailable',
+    },
+  })
+  const one = makeTool({ deps: { status: () => agentErr } })
+  const failed = await one.tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
+  assert.deepEqual(failed.sessions, [])
+  assert.equal(failed.collectedAt, 0)
+  assert.match(failed.note, /collection failed for this agent/)
+  assert.match(failed.note, /sessionController/)
+
+  // machine 级失败但快照仍在（失败保留上一份）：rows 照给，note 说清最新一次没成
+  const machineErr = statusFileOf({
+    m1ab: {
+      collectedAt: 99,
+      agents: [{ a6: 'na1ive', rows: [{ sessionId: 'session-old', mtime: 5, status: 'idle', agentAvailable: true }] }],
+      error: 'collection failed for every agent (1) — probe did not carry a roster',
+    },
+  })
+  const two = makeTool({ deps: { status: () => machineErr } })
+  const stale = await two.tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
+  assert.equal(stale.collectedAt, 99, 'the retained snapshot keeps its own age')
+  assert.equal(stale.sessions.length, 1)
+  assert.match(stale.note, /collection failed for machine "m1ab"/)
+
+  // 成功采集（无 error）绝不无中生有地加 note
+  const clean = statusFileOf({ m1ab: { collectedAt: 5, agents: [{ a6: 'na1ive', rows: [] }] } })
+  const three = makeTool({ deps: { status: () => clean } })
+  const ok = await three.tool.execute({ action: 'agent_status', agent: 'm1ab-na1ive' }, fakeExec('sess-1'))
+  assert.deepEqual(ok.sessions, [])
+  assert.equal(ok.note, undefined)
+})
+
 test('description and schema carry the agent_status leg and the thin-roster wording', () => {
   const { tool } = makeTool()
   assert.ok(tool.description.includes('agent_status'))

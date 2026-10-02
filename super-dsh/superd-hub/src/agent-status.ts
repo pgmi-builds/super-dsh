@@ -302,6 +302,28 @@ export function federatedFaceOf(a6: string): A2aGateway | undefined {
 }
 
 /**
+ * Record a collection's outcome under the ONE rule this cache already states
+ * for machines: only a SUCCESSFUL collection replaces rows.
+ *
+ * `sessionListFailures` counts the agents whose SESSION LIST leg died (no face,
+ * or the list call rejected) — the leg the rows come from.
+ * `AgentStatusAgent.error` alone cannot carry that verdict: a failed WORKSPACE
+ * (title) leg sets it too while the rows are perfectly fresh. So a collection
+ * in which the session list died for EVERY agent is recorded as a machine-level
+ * FAILURE (O1b, 0.1.8-e): writing it as fresh `rows: []` would let "could not
+ * collect" masquerade as "this agent has no sessions", and would wipe a prior
+ * snapshot that was real. An empty-but-collected machine IS a success.
+ */
+function recordCollection(home: string, machine: string, agents: AgentStatusAgent[], sessionListFailures: number): void {
+  if (agents.length > 0 && sessionListFailures === agents.length) {
+    const why = agents.find((a) => a.error !== undefined)?.error ?? 'unknown error'
+    recordMachineFailure(home, machine, `collection failed for every agent (${agents.length}) — ${why}`)
+    return
+  }
+  recordMachineCollection(home, machine, agents)
+}
+
+/**
  * Collect one REACHABLE machine's session lists over the presentation lane.
  * Never throws: a machine-level failure records the error and keeps the
  * previous snapshot; a per-agent failure (no face, rejected list) marks that
@@ -321,20 +343,25 @@ export async function collectRemoteMachine(
     return
   }
   const agents: AgentStatusAgent[] = []
+  let sessionListFailures = 0
   for (const agent of probe.agents) {
     if (typeof agent?.id !== 'string' || agent.id === '') continue
     try {
       const face = faceOf(agent.id)
       if (face === undefined) {
         agents.push({ a6: agent.id, rows: [], error: 'no gateway face for the session list' })
+        sessionListFailures += 1
         continue
       }
       agents.push(await collectAgent(face, agent.id))
     } catch (error) {
       agents.push({ a6: agent.id, rows: [], error: errMsg(error) })
+      sessionListFailures += 1
     }
   }
-  recordMachineCollection(home, remote.id, agents)
+  // only the SESSION LIST leg counts here: a dead workspace (title) leg keeps
+  // the fresh rows and must not demote the whole collection to a failure
+  recordCollection(home, remote.id, agents, sessionListFailures)
 }
 
 /**
@@ -347,15 +374,17 @@ export async function collectLocalMachine(
 ): Promise<void> {
   const self = ensureSelf(home, 'local')
   const agents: AgentStatusAgent[] = []
+  let sessionListFailures = 0
   for (const [, a6] of Object.entries(agentIdMap(home))) {
     try {
       const face = gatewayFor({ machine: self.id, id: a6 })
       agents.push(await collectAgent(face, a6))
     } catch (error) {
       agents.push({ a6, rows: [], error: errMsg(error) })
+      sessionListFailures += 1
     }
   }
-  recordMachineCollection(home, self.id, agents)
+  recordCollection(home, self.id, agents, sessionListFailures)
 }
 
 // ---------------------------------------------------------------- outbox pull

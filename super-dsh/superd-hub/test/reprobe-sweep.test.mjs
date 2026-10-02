@@ -171,3 +171,62 @@ test('startReprobeSweep：intervalSec 低于下限被钳到 60s（配置兜底�
     dispose()
   }
 })
+
+test('startReprobeSweep：boot tick 不跑本地采集腿（O1b：本地 session plane 尚未挂载，采了就是一次 all-error 缓存）', async () => {
+  resetMachineStatus()
+  const h = home()
+  upsertRemote(h, row('aaaa', 'http://ok1'))
+  const calls = { local: 0, remote: 0 }
+  const collectors = {
+    onLocalCollect: async () => { calls.local += 1 },
+    onRemoteProbed: async () => { calls.remote += 1 },
+  }
+  const seen = { log: [] }
+  let intervalTick
+  const dispose = startReprobeSweep({
+    home: h,
+    fetchImpl: sweepFetch(seen.log),
+    collectors,
+    setIntervalFn: (fn) => { intervalTick = fn; return { unref: () => {} } },
+    clearIntervalFn: () => {},
+    immediate: true,
+  })
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)) }
+  try {
+    await settle()
+    assert.equal(calls.remote, 1, 'the boot tick still probes the paired machine (O1 keeps its win)')
+    assert.equal(calls.local, 0, 'the boot tick does NOT sample the local plane before it is mounted (O1b)')
+    intervalTick()
+    await settle()
+    assert.equal(calls.local, 1, 'the first regular tick runs the local leg')
+  } finally {
+    dispose()
+    rmSync(h, { recursive: true, force: true })
+    resetMachineStatus()
+  }
+})
+
+test('runReprobeSweep：localCollect:false 只跳过本地腿，远端照测（直调契约）', async () => {
+  resetMachineStatus()
+  const h = home()
+  upsertRemote(h, row('aaaa', 'http://ok1'))
+  const calls = { local: 0, remote: 0 }
+  const log = []
+  try {
+    await runReprobeSweep({
+      home: h,
+      fetchImpl: sweepFetch(log),
+      collectors: {
+        onLocalCollect: async () => { calls.local += 1 },
+        onRemoteProbed: async () => { calls.remote += 1 },
+      },
+      localCollect: false,
+    })
+    assert.equal(calls.local, 0, 'the local leg is skipped on request')
+    assert.equal(calls.remote, 1, 'remote probing is unaffected')
+    assert.equal(machineStatus().get('aaaa').status, 'reachable')
+  } finally {
+    rmSync(h, { recursive: true, force: true })
+    resetMachineStatus()
+  }
+})

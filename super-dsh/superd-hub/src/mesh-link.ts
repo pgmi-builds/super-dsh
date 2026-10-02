@@ -456,10 +456,14 @@ export function setSweepCollectors(collectors: SweepCollectors | undefined): voi
  * federation via the existing event hook; failure degrades — no second
  * probing path), and swallows every per-machine rejection so one dead peer
  * (or a row deleted mid-sweep → unknown-id throw) never rejects the sweep.
- * Since R5 the collectors run inside the same swallow discipline. */
-export async function runReprobeSweep(deps: { home: string; fetchImpl?: typeof fetch; collectors?: SweepCollectors }): Promise<void> {
+ * Since R5 the collectors run inside the same swallow discipline.
+ * `localCollect: false` (O1b, 0.1.8-e) skips ONLY the local leg: the boot tick
+ * uses it because the local session plane is not mounted yet the moment the
+ * hub's rows come up — sampling there yields an all-error collection that
+ * would then read as a fresh, empty window (see `startReprobeSweep`). */
+export async function runReprobeSweep(deps: { home: string; fetchImpl?: typeof fetch; collectors?: SweepCollectors; localCollect?: boolean }): Promise<void> {
   const collectors = deps.collectors ?? registeredCollectors
-  if (collectors.onLocalCollect !== undefined) {
+  if (deps.localCollect !== false && collectors.onLocalCollect !== undefined) {
     try {
       await collectors.onLocalCollect()
     } catch {
@@ -493,6 +497,15 @@ export interface ReprobeSweepDeps {
   fetchImpl?: typeof fetch
   /** R5: the dual-responsibility legs; defaults to the process-level registry (see setSweepCollectors). */
   collectors?: SweepCollectors
+  /**
+   * O1b (0.1.8-e): run the R5 LOCAL collector on this tick (default true).
+   * The BOOT tick passes false — the local session plane is not mounted yet
+   * when the hub's rows come up, so an early sample is an all-error
+   * collection, not a fact. Remotes are untouched (a probe is a direct HTTP
+   * call that needs no local plane); the local leg simply waits for the first
+   * regular tick.
+   */
+  localCollect?: boolean
   setIntervalFn?: (fn: () => void, ms: number) => SweepTimerHandle
   clearIntervalFn?: (handle: SweepTimerHandle) => void
   /**
@@ -502,6 +515,9 @@ export interface ReprobeSweepDeps {
    * `intervalSec` — even though the peers are reachable (a direct one-shot
    * `exec` proves it). The probe is per-machine and cheap; opt-in so timer
    * tests keep their deterministic tick-only clock.
+   * The boot tick runs WITHOUT the local collector (O1b, 0.1.8-e): the local
+   * plane is still mounting at that instant, and caching that failure would
+   * cost a whole interval of truthful-looking emptiness.
    */
   immediate?: boolean
 }
@@ -515,8 +531,8 @@ export interface ReprobeSweepDeps {
  *   - the returned disposer clears the timer AND kills any late tick — the
  *     hub host wiring registers it as a ctx effect, so the sweep dies with
  *     the row (dispose-clean); the disposer is idempotent.
- * The FIRST sweep runs after one full period (a boot-time probe remains the
- *     mesh UI's explicit reprobe — pairing itself already probes).
+ * The first sweep runs after one full period, except when `immediate` asks
+ *     for one at boot (the mesh UI's own reprobe stays available too).
  */
 export function startReprobeSweep(deps: ReprobeSweepDeps): () => void {
   const seconds = Math.max(REPROBE_SWEEP_MIN_SEC, deps.intervalSec ?? REPROBE_SWEEP_DEFAULT_SEC)
@@ -524,15 +540,24 @@ export function startReprobeSweep(deps: ReprobeSweepDeps): () => void {
   const clearInt = deps.clearIntervalFn ?? ((handle: SweepTimerHandle) => globalThis.clearInterval(handle as Parameters<typeof globalThis.clearInterval>[0]))
   let inFlight = false
   let disposed = false
-  const tick = (): void => {
+  /** One tick. The boot tick passes `localCollect=false` (O1b, 0.1.8-e). */
+  const tick = (localCollect: boolean): void => {
     if (disposed || inFlight) return
     inFlight = true
-    void runReprobeSweep(deps).finally(() => { inFlight = false })
+    void runReprobeSweep({
+      home: deps.home,
+      ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }),
+      ...(deps.collectors === undefined ? {} : { collectors: deps.collectors }),
+      ...(localCollect ? {} : { localCollect: false }),
+    }).finally(() => { inFlight = false })
   }
-  const handle = setInt(tick, seconds * 1_000)
+  const handle = setInt(() => tick(true), seconds * 1_000)
   handle.unref?.()
   // O1 (0.1.8-c): fill the roster at BOOT, not one full period later.
-  if (deps.immediate === true) tick()
+  // O1b (0.1.8-e): the local leg is deferred to the first regular tick — the
+  // local session plane is still mounting and an early sample would be cached
+  // as an empty window for a full interval.
+  if (deps.immediate === true) tick(false)
   return () => {
     if (disposed) return
     disposed = true

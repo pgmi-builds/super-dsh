@@ -337,12 +337,12 @@ const DESCRIPTION =
   'Lifecycle: OPEN once (send with no conversationId) → then only `send` with its conversationId → replies auto-deliver; sweep `read` at wake boundaries → `stop` only when a turn is off track. Families: facility/status (`agents`, `agent_status`), messaging (`send`, `read`, `stop`), shell (`exec`).\n' +
   'Call shapes:\n' +
   '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
-  '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime, lastOutput?, lastOutputAt?}]}. lastOutput (the peer\'s last delivered output) rides ONLY when you are that conversation\'s initiator.\n' +
+  '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime, lastOutput?, lastOutputAt?}], note?}. lastOutput (the peer\'s last delivered output) rides ONLY when you are that conversation\'s initiator; `note` says why the window is empty when empty is not a fact (the last collection failed, or none has happened yet).\n' +
   '  {action:"send", agent?, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN (then agent = the recipient, REQUIRED; title optional; message is the first turn); pass conversationId to RESUME (agent optional — the hub derives the route; a wrong agent is refused). Receipt {outcome: delivered|accepted|failed, messageId, conversationId, sessionId, created, error?, note?}: `delivered` = end-to-end complete; `accepted` = the hub took it and the SAME in-flight request keeps running (its `delivered`/`undelivered` outcome arrives as a notice — do not resend); `failed` = immediate rejection.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", conversationId, agent?, scope?} → cancel the conversation\'s ACTIVE turn (the session owner is derived from the conversation id; agent is optional). `stopped:true` means this call cancelled a live turn; a turn that finished on its own is IDLE, never `stopped` — so stop answers stopped:false with a note when nothing was running.\n' +
   '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}; cwd sets its working directory. mode "pty": a PERSISTENT shell per (your session, machine) — the shell OWNS its cwd and env and they SURVIVE across dispatches (cd once inside the command, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. cwd is oneshot-only: passing it with mode "pty" is refused (use `cd <dir> && …` inside the command). Prefer oneshot for independent commands; pty when shell state matters.\n' +
-  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) is injected into the peer\'s session as a waking turn — it never interrupts an active turn, it queues behind it; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead, form=transcript); a turn that ends with no channel artifact yields one notice whose reason= distinguishes peer-silent (ended, said nothing) / peer-error (stream died or turn aborted) / stopped-by-initiator (you stopped it). read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing. MESSAGING HAS NO STATUS QUERY: to check whether a peer is idle or running, call agent_status (a 5-minute cache — never a delivery receipt); if that is not enough and you cannot wait, send another message.'
+  'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) is injected into the peer\'s session as a waking turn — it never interrupts an active turn, it queues behind it; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead, form=transcript); a turn that ends with no channel artifact yields one notice whose reason= distinguishes peer-silent (ended, said nothing) / peer-error (stream died or turn aborted) / stopped-by-initiator (you stopped it). read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing; a `note` says why when the window has no collection behind it (the last collection failed, or none has happened yet). MESSAGING HAS NO STATUS QUERY: to check whether a peer is idle or running, call agent_status (a 5-minute cache — never a delivery receipt); if that is not enough and you cannot wait, send another message.'
 
 /**
  * Build the one SuperD Hub tool.
@@ -428,7 +428,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           reconnected: { type: 'boolean', description: 'exec pty: the transport died since the last dispatch and a fresh shell answered' },
           messageId: { type: 'string' },
           error: { type: 'json', description: 'wire error body {code, message, details?} on failed sends' },
-          note: { type: 'string', description: 'model-facing reminder riding successful sends' },
+          note: { type: 'string', description: "model-facing note explaining what a result cannot say in its fields: stop's idle answer (nothing was running), send's reply guidance, and agent_status's reason for an empty window (the collection failed, or none has happened yet) — an empty window is never a guess" },
           stopped: { type: 'boolean' },
           scope: { type: 'string' },
           reason: { type: 'string', description: 'the turn-only degradation note on session-scope stops' },
@@ -540,6 +540,17 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           const bucket = file.machines[addr.machine]
           const entry = bucket?.agents.find((a) => a.a6 === addr.id)
           const sessions = entry === undefined ? [] : shapeAgentStatusWindow(entry, deps.service.listConversations(), initiator.sessionId)
+          // O1b (0.1.8-e): an empty window must never be passed off as "no
+          // sessions" — a per-agent collection failure, a machine-level one,
+          // and a collection that has not happened yet each say so here.
+          let note: string | undefined
+          if (entry !== undefined && entry.error !== undefined) {
+            note = `collection failed for this agent — ${entry.error}`
+          } else if (bucket !== undefined && bucket.error !== undefined) {
+            note = `collection failed for machine "${addr.machine}" — ${bucket.error}`
+          } else if (entry === undefined) {
+            note = 'no collected status for this agent yet — the 5-minute sweep fills the cache; call agents for the roster'
+          }
           return {
             action,
             agent: addr.id,
@@ -548,9 +559,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             // the rows crossed no envelope, so they are JSON by construction —
             // one boundary cast onto the schema's json-typed field (the error leg's pattern)
             sessions: sessions as unknown as import('@deepseek-ai/dsh-util-values').JsonValue,
-            ...(bucket === undefined || entry === undefined
-              ? { note: 'no collected status for this agent yet — the 5-minute sweep fills the cache; call agents for the roster' }
-              : {}),
+            ...(note === undefined ? {} : { note }),
           }
         }
 
