@@ -6,7 +6,7 @@
 // The dev 4999 line and the npm release consume the SAME artifact from here;
 // nothing else may hand-assemble super-dsh dists or tarballs.
 import { execSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,12 +21,27 @@ const run = (cmd, cwd) => execSync(cmd, {
   env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim() },
 })
 
+// Stale-output hygiene: the packed `files` list names whole `dist`/`lib`
+// directories, so any file left behind by a renamed or deleted source (the
+// 0.1.7-retired `agent-preset-projection`, the old `spike`/`app-home`/`labels`
+// modules) would ship silently in the next release. Clean every generated
+// directory first; `super-dsh/client/index.js` is deliberately tracked and is
+// rewritten by build-superd-client.mjs below.
+const AGENTS = ['agent-omp', 'agent-codex', 'agent-claude', 'agent-pi', 'agent-hermes', 'agent-agy']
+const GENERATED = [
+  join(LINE, 'superd-hub', 'dist'),
+  join(LINE, 'superd-hub', 'lib'),
+  ...AGENTS.map((pkg) => join(LINE, pkg, 'dist')),
+]
+for (const dir of GENERATED) rmSync(dir, { recursive: true, force: true })
+console.log(`[pack] cleaned ${GENERATED.length} generated dir(s)`)
+
 console.log('[pack] building superd-hub (tsc + client halves)')
 run('npm run build', join(LINE, 'superd-hub'))
 run('npm run build-client', join(LINE, 'superd-hub'))
 run('node scripts/build-superd-client.mjs', join(LINE, 'superd-hub'))
 
-for (const pkg of ['agent-omp', 'agent-codex', 'agent-claude', 'agent-pi', 'agent-hermes', 'agent-agy']) {
+for (const pkg of AGENTS) {
   console.log(`[pack] building ${pkg} (tsc)`)
   run('npm run build', join(LINE, pkg))
 }

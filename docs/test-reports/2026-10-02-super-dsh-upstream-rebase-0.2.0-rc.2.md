@@ -85,17 +85,35 @@ session-controller (@deepseek-ai/dsh-api-session-controller): pending (waiting f
 
 ## 6. 发现与残留
 
-1. **`pack.mjs` 不清理 `dist/` → stale 产物会被打进 tarball（已发现并处理）**：主 worktree 的 `agent-*/dist`、`superd-hub/dist` 里残留 16 个早已删除源码的旧文件（`agent-preset-projection.*`、`app-home.js`、`spike.js`、`client-shim.*`、`index-pass.*`、`labels.*`，mtime 09-16~09-26），`files` 字段列的是 `agent-*/dist` **目录**，所以它们被本次主 worktree 的 pack 收进了 tarball（243 files / 603,105 B）。已按「无同名 src + 旧 mtime」逐个核实后删除这 16 个文件，重编回到 227 files。**registry 上的 0.1.9 本来就是干净的**（那次 pack 在 mesh-p1 worktree 跑的，dist 干净），本次没有重新发布。→ 建议后续给 `pack.mjs` 加一步 dist 清理（未在本轮改动，留给下次发版前处理）。
+1. **`pack.mjs` 不清理 `dist/` → stale 产物会被打进 tarball（本轮已修）**：主 worktree 的 `agent-*/dist`、`superd-hub/dist` 里残留 16 个早已删除源码的旧文件（`agent-preset-projection.*`、`app-home.js`、`spike.js`、`client-shim.*`、`index-pass.*`、`labels.*`，mtime 09-16~09-26），`files` 字段列的是 `agent-*/dist` **目录**，所以它们被主 worktree 的一次 pack 收进了 tarball（243 files / 603,105 B）。处置分两步：① 按「无同名 src + 旧 mtime」逐个核实后删掉这 16 个文件；② **`pack.mjs` 已加前置清理**——构建前 `rmSync` 掉 8 个生成目录（`superd-hub/{dist,lib}` + 6× `agent-*/dist`；`super-dsh/client/index.js` 是刻意入库的产物，由 `build-superd-client.mjs` 重写，不在清理之列）。修复后实测：`[pack] cleaned 8 generated dir(s)` → 227 files，内容与 registry 0.1.9 逐字节相同。**registry 上的 0.1.9 本来就是干净的**（那次 pack 在 dist 干净的 worktree 跑的），本轮没有重新发布。
 2. **tarball 不是逐字节可复现**：内容是逐字节相同，容器（gzip framing）不同 → 校验 artifact 身份要用「解包 diff」或 registry 的 `dist.integrity`，不要用本地 tarball 的 sha256 去比 registry。
 3. **`0.1.9` 在 registry 上的状态未变**：`latest=0.1.9`（`next=0.1.5-a`），`dist.integrity sha512-LHVp1g…MNjQ==`、`shasum ded9f2a9…`，回下载 sha256 `46a0c562…e0ca`（本轮再次复验通过）。归档：`.scratch/superd-pack/registry-super-dsh-0.1.9.tgz`。
-4. **残留分支（历史，非本轮遗留）**：`.scratch/{aw-codex,echo-agent-loop,p1}`、`.worktrees/p0-api-wrap` 挂着的实验分支（`aw-codex-adapter` 09-16、`echo-agent-loop` 09-09、`p1-minimal-cordis-host` 09-08、`p0-api-wrap-probe` 09-26；分别 ahead 79/34/22/1、behind 181~213），以及本地 `legacy/pre-github`、`m0-multi-agent-registry`。`mesh-p1` 与 master 同点（`2d896a9`），无待合并内容。
+4. **残留分支/目录（历史，非本轮遗留）**：`.scratch/{echo-agent-loop,p1}`、`.worktrees/p0-api-wrap`（分支 `p0-api-wrap-probe` 09-26，1 unique commit）挂着的实验分支（`echo-agent-loop` 09-09、`p1-minimal-cordis-host` 09-08，ahead 34/22、behind 213），本地 `legacy/pre-github`、`m0-multi-agent-registry`，以及 `.scratch/aw-codex` 的**陈旧 worktree 注册**（目录已不存在，本轮 `git worktree prune` 清掉了注册元数据）。**另注**：`.worktrees/dsh-browser-engine-fix`（2.3G）是**上游 checkout 的另一个 worktree**（gitdir 在 `upstream/deepseek-harness/.git` 下），不属于本阶段、未动。`mesh-p1` 与 master 同点、零 unique commit，worktree 已移除（见 §8）。
 5. **dev3 上 better-dsh 0.2.5 的两行 import 失败**、dev3 Codex world 无 session plane —— 均为既有问题（见 0.1.9 发版报告残留节），与本次 rebase 无关。
 
 ## 7. 结论
 
 - 本仓 dev base 已是 **`dsh-v0.2.0-rc.2`**（源码轨）；实机轨结论（dev3，0.2.0-rc.2 实装 12/12 绿）继续有效。
 - super-dsh **0.1.9 = 本阶段版本号**：源码在 0.2.0-rc.2 上编译零错、全测 948/0、产物与 registry 逐字节相同、新 base 上实机 boot 零新增警告。
-- 本轮**未发版、未改 super-dsh 版本**；`upstream/` 之外的仓内改动仅 `AGENTS.md`（台账/对齐程序）与本报告。
+- 本轮**未发版、未改 super-dsh 版本**；仓内改动 = `AGENTS.md`（台账/对齐程序）、`super-dsh/scripts/pack.mjs`（前置 dist 清理）、`super-dsh/test/start-4999.sh`（`SUPERD_PACK_FROM=registry` 旋钮）、`super-dsh/AGENTS.md`（旋钮说明）与本报告。
+
+## 8. 收尾：消费者切到 registry + worktree handoff（2026-10-02 同日追加）
+
+### 8.1 0.1.9 相对 0.1.8-e：功能零差异
+
+`git diff 916cd71(0.1.8-e) 449a72e(0.1.9 release)` = **`super-dsh/package.json` 一行版本号（0.1.8-e → 0.1.9）+ 3 份 docs/报告**。源码零改动 → dev3 换到 0.1.9 后**行为与 0.1.8-e 完全相同**，唯一的“新东西”是 housekeeping/版本号本身。
+
+### 8.2 dev3（`~/.dsh/profiles/web`）
+
+已是 registry 精确版：manifest `"super-dsh": "0.1.9"`，lockfile `specifier: 0.1.9 / version: 0.1.9`，`node_modules/super-dsh` 逐文件 sha256 清单与 registry tarball **完全一致**（`bf9f1e5e…`）；`dsh.service` 17:19:41 启动，`world failed` = 0。→ 这一步**无需再动**。
+
+### 8.3 4996 线（本机）
+
+`start-4999.sh` 新增 `SUPERD_PACK_FROM=registry`：跳过本地 pack，profile 写 `"super-dsh": "<version>"` 并 `pnpm add super-dsh@<version>`；默认仍走本地 tarball（两条路本轮都实跑过）。当前 4996 线**从主 checkout 启动、吃 registry 0.1.9**：profile `{"super-dsh": "0.1.9"}`、装出来的 227 个包文件 sha256 清单 = `bf9f1e5e…`（与 registry、与 dev3 三方同源）；探针 = mint 200 / 无 cookie 401 / `hub.version 0.1.9` / 7/7 agent ready / dev3 `reachable`。
+
+### 8.4 worktree
+
+`.worktrees/mesh-p1` **已移除**（`git worktree remove --force`，移除前先手工 unlink 了它指向共享树的 `.tests`/`upstream` 两个 symlink，共享 home 与 upstream checkout 均未受影响；`.scratch` 日志与本地 tarball 归档到 `.scratch/mesh-p1-archive/`）。分支 `mesh-p1` 保留并与 master 同点 —— P1 的成果全在 master 上，worktree 本身零 unique commit，所以移除不丢信息；P2 从当时 master 新开 worktree 即可。
 
 现场（保持运行，等 user 亲手验收）：
 `http://127.0.0.1:4996/?token=<redacted>`
