@@ -785,6 +785,9 @@ test('0.1.8 T3: agent is optional on continuation (route derived); D24 the singl
   assert.match(tool.description, /agent optional — the hub derives the route/)
   assert.match(tool.description, /open-or-resume/)
   assert.match(tool.description, /created/)
+  // T7/D29: lifecycle narrative + messaging-has-no-status guidance
+  assert.match(tool.description, /Lifecycle: OPEN once/)
+  assert.match(tool.description, /MESSAGING HAS NO STATUS QUERY/)
   assert.match(tool.description, /cwd is oneshot-only/)
   assert.match(tool.parameters.properties.cwd.description, /Not accepted with mode "pty"/)
 })
