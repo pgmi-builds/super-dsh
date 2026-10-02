@@ -220,30 +220,20 @@ test('{action:"agents"} is the explicit spelling of the default', async () => {
 
 // ---------------------------------------------------------------- new_conversation
 
-test('new_conversation: address parsed, service called, receipt shape', async () => {
+test('send without conversationId opens a new conversation (created:true, D24)', async () => {
   const { tool, service } = makeTool()
   const value = await tool.execute(
-    { action: 'new_conversation', agent: 'w2cd-cd33x1', title: 'mesh sync' },
+    { action: 'send', agent: 'w2cd-cd33x1', title: 'mesh sync', message: 'hello' },
     fakeExec(),
   )
-  assert.deepEqual(value, {
-    action: 'new_conversation',
-    conversationId: 'conv0001',
-    sessionId: 'sess-tgt-1',
-    agent: 'cd33x1',
-    machine: 'w2cd',
-  })
-  assert.deepEqual(service.state.calls.newConversation, [
-    { addr: { machine: 'w2cd', id: 'cd33x1' }, title: 'mesh sync' },
-  ])
-})
-
-test('new_conversation without a title passes undefined', async () => {
-  const { tool, service } = makeTool()
-  await tool.execute({ action: 'new_conversation', agent: 'm1ab-na1ive' }, fakeExec())
-  assert.deepEqual(service.state.calls.newConversation, [
-    { addr: { machine: 'm1ab', id: 'na1ive' }, title: undefined },
-  ])
+  assert.equal(value.action, 'send')
+  assert.equal(value.created, true)
+  assert.equal(value.conversationId, 'conv0001')
+  const { req } = service.state.calls.send[0]
+  assert.deepEqual(req.to, { machine: 'w2cd', id: 'cd33x1' })
+  assert.equal(req.conversationId, undefined)
+  assert.equal(req.title, 'mesh sync')
+  assert.equal(req.message, 'hello')
 })
 
 // ---------------------------------------------------------------- send
@@ -470,7 +460,6 @@ test('render is one JSON text block; every action value passes the declared outp
   const { tool, service } = makeTool()
   const values = [
     await tool.execute({}, fakeExec()),
-    await tool.execute({ action: 'new_conversation', agent: 'm1ab-na1ive' }, fakeExec()),
     await tool.execute({ action: 'send', agent: 'm1ab-na1ive', message: 'hi' }, fakeExec()),
     await tool.execute({ action: 'read' }, fakeExec()),
     await tool.execute({ action: 'stop', agent: 'm1ab-na1ive', conversationId: 'conv0001' }, fakeExec()),
@@ -756,12 +745,13 @@ test('0.1.7-n F1: cwd on the pty leg is refused loudly (no silent parameter no-o
   assert.equal(seen[0].cwd, '/etc')
 })
 
-test('0.1.7-n O3/O4: the description states the owner-address rule and the message-less open cost', () => {
+test('0.1.7-n O3: the description states the owner-address rule; D24 the single send door', () => {
   const { tool } = makeTool()
-  // O3 lives on the agent parameter; O4 and the cwd asymmetry on the tool description
+  // O3 lives on the agent parameter; the cwd asymmetry on the tool description
   assert.match(tool.parameters.properties.agent.description, /OWNER address/)
   assert.match(tool.parameters.properties.agent.description, /a peer opened with you it is YOUR OWN address/)
-  assert.match(tool.description, /Omitting message is NOT silent/)
+  assert.match(tool.description, /open-or-resume/)
+  assert.match(tool.description, /created/)
   assert.match(tool.description, /cwd is oneshot-only/)
   assert.match(tool.parameters.properties.cwd.description, /Not accepted with mode "pty"/)
 })

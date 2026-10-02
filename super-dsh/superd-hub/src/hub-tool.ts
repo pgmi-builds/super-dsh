@@ -320,8 +320,7 @@ const DESCRIPTION =
   'SuperD Hub — agent-to-agent messaging across the Super D machine mesh. Call shapes:\n' +
   '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
   '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime}]}.\n' +
-  '  {action:"new_conversation", agent, title?, message?} → open a conversation (message, when given, IS the first turn — opening and content land as ONE injected turn) → {conversationId, sessionId, agent, machine}. Omitting message is NOT silent: the peer still receives one waking turn carrying "(conversation opened)" — pass a message unless you want exactly that.\n' +
-  '  {action:"send", agent, conversationId?, title?, message, delivery?} → inject one user turn (omit conversationId to open a new conversation). Receipt {outcome, messageId, conversationId, sessionId, error?}.\n' +
+  '  {action:"send", agent, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN a new conversation (title optional, message is the first turn); pass conversationId to RESUME. Receipt {outcome: delivered|failed, messageId, conversationId, sessionId, created, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", agent, conversationId, scope?} → cancel the active turn of the conversation\'s owner (agent = the owner address, see the agent field; answers stopped:false with a note when no turn was active).\n' +
   '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}; cwd sets its working directory. mode "pty": a PERSISTENT shell per (your session, machine) — the shell OWNS its cwd and env and they SURVIVE across dispatches (cd once inside the command, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. cwd is oneshot-only: passing it with mode "pty" is refused (use `cd <dir> && …` inside the command). Prefer oneshot for independent commands; pty when shell state matters.\n' +
@@ -339,12 +338,12 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
     parameters: {
       action: {
         type: 'string',
-        enum: ['agents', 'new_conversation', 'send', 'read', 'stop', 'agent_status', 'exec'],
+        enum: ['agents', 'send', 'read', 'stop', 'agent_status', 'exec'],
         description: 'Omitted/\"agents\" → the roster. The other legs are self-describing call shapes.',
       },
       agent: {
         type: 'string',
-        description: 'Address "<m4>-<a6>". new_conversation: the target agent to open with. send/stop/agent_status: the conversation\'s OWNER address — for a conversation you opened that is the peer; for one a peer opened with you it is YOUR OWN address (a mismatch is refused with the correct address). Call agents first to list valid ids.',
+        description: 'Address "<m4>-<a6>". send (create): the target agent to open with. send (resume)/stop/agent_status: the conversation\'s OWNER address — for a conversation you opened that is the peer; for one a peer opened with you it is YOUR OWN address (a mismatch is refused with the correct address). Call agents first to list valid ids.',
       },
       conversationId: {
         type: 'string',
@@ -356,7 +355,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       },
       message: {
         type: 'string',
-        description: 'Message body injected as one user turn (the A2A reply-address envelope is added automatically). For new_conversation: optional — when given, opening + content land as ONE turn.'
+        description: 'Message body injected as one user turn (the A2A reply-address envelope is added automatically). Required: it is the first turn when opening a new conversation, the follow-up turn when resuming.'
       },
       delivery: {
         type: 'string',
@@ -401,6 +400,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           sessions: { type: 'json', description: 'agent_status: window rows {conversationId?, sessionId (truncated), title, status, agentAvailable, mtime}' },
           conversationId: { type: 'string' },
           sessionId: { type: 'string' },
+          created: { type: 'boolean', description: "send receipt: true when conversationId was omitted (this send OPENED the conversation); absent/false on resume" },
           agent: { type: 'string' },
           machine: { type: 'string' },
           outcome: { type: 'string', description: "send receipt: 'delivered' | 'failed'; exec: why the process ended — 'exited' | 'signaled' | 'timeout' | 'spawn-error' (diagnostic rides stderr on spawn-error)" },
@@ -436,24 +436,6 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
         case 'agents':
           return agentsListing(deps)
 
-        case 'new_conversation': {
-          if (args.agent === undefined || args.agent === '') {
-            throw new Error('[E_MISSING_AGENT] superd-hub: new_conversation requires agent ("<m4>-<a6>")')
-          }
-          const addr = parseAgentAddress(args.agent)
-          const created = await deps.service.newConversation(addr, args.title, args.message, initiator)
-          return {
-            action,
-            conversationId: created.shortId,
-            sessionId: created.sessionId,
-            agent: addr.id,
-            machine: addr.machine,
-            // D1 hardening: a rejected title must not hide the created
-            // conversation — the warning rides along with its ids.
-            ...(created.warning === undefined ? {} : { warning: created.warning }),
-          }
-        }
-
         case 'send': {
           if (args.agent === undefined || args.agent === '') {
             throw new Error('[E_MISSING_AGENT] superd-hub: send requires agent ("<m4>-<a6>")')
@@ -484,6 +466,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             messageId: receipt.messageId,
             ...(receipt.conversationId === undefined ? {} : { conversationId: receipt.conversationId }),
             sessionId: receipt.sessionId,
+            created: args.conversationId === undefined,
             // A2aReceiptError carries details?: unknown (T2's verbatim wire body);
             // the body crossed an envelope, so it is JSON by construction —
             // one boundary cast onto the schema's json-typed field.
