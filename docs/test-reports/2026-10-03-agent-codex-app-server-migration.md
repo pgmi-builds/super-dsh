@@ -240,3 +240,49 @@ per-boot launch token**，且 4988 的 home 与 user 浏览器已有 cookie 的 
   即 user 本机的 Codex CLI 自身此刻也发不出 turn，与本迁移无关。
 - **已知代价**：我用 curl 换过两次 Cookie，**该 per-boot launch token 已烧掉**；
   因 seed 复用，user 的既有 cookie 不受影响，新客户端需重启 rig 才拿到新 token。
+
+---
+
+## 八、原生 codex provider 修复 + codex 世界真 turn（2026-10-03，user 指令）
+
+user 指令：「update the local codex settings to use deepseek/deepseek-flash」。
+
+**动机**：codex 世界此前 `llmMs=0, response=""`，根因是原生 `~/.codex/config.toml` 的
+custom provider 指 z.ai，而该端点对 `/responses` 返 404（§2.1）——`codex exec` 逐字同样失败。
+
+**改动（user 明确指令，非 adapter 代码；adapter 依然零写入 native home）**：
+
+1. `~/.codex/config.toml`（备份 `config.toml.bak-superd-1790980351`）：provider 由
+   `custom`(z.ai) 改为 `deepseek`；`model = "deepseek-flash"`；保留 `disable_response_storage`
+   与既有 `[projects.*]` trust 段；新增
+   `[model_providers.deepseek] base_url="https://api.deepseek.com/v1" wire_api="responses" env_key="DEEPSEEK_API_KEY"`。
+   `wire_api` 只能是 `responses`（codex 0.154 移除了 `chat`）。
+2. `~/.codex/cc-switch-model-catalog.json`（备份 `….bak-superd-<ts>`）：补一条 `deepseek-flash`
+   描述条目（克隆既有条目形状，`context_window = 1048576`）——消除 codex 的
+   "Model metadata not found" 警告，并让本 adapter 的模型选择器拿到真实条目。
+
+**验证链**：
+
+| 步 | 证据 |
+|---|---|
+| 模型存在 | `GET /v1/models` 列出 `deepseek-flash`（DeepSeek-V4.1-Flash，1M ctx）；`POST /v1/responses` → **200** |
+| 原生 CLI | `codex exec "Reply with exactly: NATIVE-OK"` → `NATIVE-OK`（10,125 tokens）；补 catalog 后 **警告消失**，`model: deepseek-flash` |
+| 世界（首次重跑仍失败） | 报错变成 `The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed glm-5.2` ⇒ **provider 已通**，只是 rig 在改配置**之前**就 boot 了，`agent-default-model` 落盘仍是 `glm-5.2`（`model/selection` 证据） |
+| 重启 rig 后 | `model/selection → deepseek-flash`；`contextWindow: 1048576` |
+
+**codex 世界 create + prompt + resume（交付形态、真模型、内容级）**：
+
+```
+session-c635d3e7-f062-4131-9092-b9aeca03f457   running:false  agentAvailable:true
+tokens {"uncachedInputTokens":40485,"outputTokens":86,"cacheReadTokens":20096,"cacheWriteTokens":0}
+stats  {turns:2, llmMs:2168, ttftMs:2118}
+ctx    {pressureTokens:40387, contextWindow:1048576}
+turn 1 -> "SUPERD-WORLD-OK"
+turn 2 -> "SUPERD-RESUMED-OK"        （同 sessionId，thread/resume 生效）
+```
+
+**顺带纠正 §七 的 seed 结论**：本机其实有**两个** seed——
+`d88527e5…`（`superd/.tests/superd` = `dashr/.test/home`）与 `cf4486e6…`（`~/.dsh` = `dashr/.test/home/compat`）。
+我 §七 复用的是前者；被接管的 dashr rig 跑的是裸 `dsh web`（无 `--profile`），其 home 已无从取证，
+所以 user 的浏览器 cookie 可能出自后者。**这是「复用了错的 seed」，不是 cookie 被谁改写。**
+（user 最终选择直接用新 token，不再追这条。）
