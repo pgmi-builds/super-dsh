@@ -201,3 +201,42 @@ systemctl --user unset-environment CODEX_HOME                            # 已�
 
 **通过**（§〇.0.a 的第一条：本地交付形态实测）。仍未做：**dev3 目标机实装**（本次 user 只放行了 4999；
 dev3 需要另一次放行），以及任何 `npm publish`（未请求、未执行）。
+
+---
+
+## 七、4999 接管复验（2026-10-03，user 指令）
+
+§6 我图省事用了 4988 + 自带新 home，结果 user 拿到的是 401（**根因是我自己先用 curl 烧掉了那个
+per-boot launch token**，且 4988 的 home 与 user 浏览器已有 cookie 的 seed 不同）。user 指令：
+停掉在役 4999、占用它、**复用同一个 credential seed**。
+
+- **在役占用者**：`dsh-4999-test123.service` + `test123-lan-4999-relay.service`——
+  **dashr 姊妹仓**的 rig（`.../dashr/upstream/.../bin.js web --no-open --port 4999`），
+  属 §三「测试口无主化」明确可接管的测试基建。已 stop。我的 4988 rig + relay 同时 stop。
+- **seed 复用**：`cp` 主线 `~/.tests/superd/.credentials.yaml`（内容含
+  `client-connection/browser-session.payload.secret`）→ 工作树 home，再 boot。boot 后
+  `cmp` **逐字节相同**（server 未重铸 seed）；launcher 也打印
+  「auth seed persisted — existing browser cookies stay valid」。
+- **签名级实证**（不依赖任何口说）：把 rig 自己 `Set-Cookie` 的 body 用
+  seed 文件的 secret 重算 HMAC-SHA256 → **与 server signature 逐字符相同**：
+  ```
+  cookie name : dsh-auth-Bro74PAZVv…        （= sha256(authority) 派生，与本地复算一致）
+  seed-derived: SFQ2lQQP-o5Yv7DdJNm5fJb0cseM-rmHTZfiFuBECrU
+  server      : SFQ2lQQP-o5Yv7DdJNm5fJb0cseM-rmHTZfiFuBECrU   → MATCH
+  ```
+  ⇒ user 浏览器既有的 `test.pc.internal.test` cookie（同一 seed 铸出）在本 rig 直接有效，
+  **无需 token URL**。（我的离线铸造脚本最初 401，根因是 payload 时间戳用了秒而非毫秒——
+  修好后同一 cookie 得 200，反证 seed 结论。）
+- **本 rig 现状**：`superd-4999-test`（工作树 tarball 装入 profile）+ `superd-lan-4999-relay`
+  （4999 本不在 launcher 的 relay 名单内；按前占用者的同款配方补上，只绑 LAN IP）。
+  `test.pc.internal.test`（Caddy → 127.0.0.1:4999）与 `192.0.2.130:4999` 两路皆可用。
+- **`/hub` 面在 4999 全绿**：`session/create` → `session-5527aece-…`，两次 `session/prompt` 均 accepted。
+- **codex 世界的模型腿 = 环境阻塞（非本迁移缺陷）**：本 rig 跑**干净**形态（原生 `~/.codex`，
+  无 CODEX_HOME 注入）。app-server 子进程照常 lazy 物化（实证 pid：
+  `…/profiles/superd-pub/node_modules/.pnpm/@openai+codex@0.154.0/…/bin/codex app-server`），
+  `initialize` + `thread/start` 成功、`contextBreakdown`/`contextWindow` 已投影；但两轮
+  `llmMs=0`、response 为空 —— 因为原生 provider 是 z.ai `wire_api="responses"`，而该端点
+  对 `/responses` 返 **404**（§2.1）。**同一个失败在 `codex exec` 上逐字复现**，
+  即 user 本机的 Codex CLI 自身此刻也发不出 turn，与本迁移无关。
+- **已知代价**：我用 curl 换过两次 Cookie，**该 per-boot launch token 已烧掉**；
+  因 seed 复用，user 的既有 cookie 不受影响，新客户端需重启 rig 才拿到新 token。
