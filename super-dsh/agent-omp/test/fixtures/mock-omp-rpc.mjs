@@ -1,22 +1,23 @@
 #!/usr/bin/env node
 // Mock `omp --mode rpc` for transport tests. Speaks protocol v1 only.
 //
-// The `ready` frame carries an extra unknown key (`futureField`) plus a frame
-// type this client does not model (`future_event`): the spec mandates the
-// handshake be *recorded, not validated*, so tests must be able to prove an
-// unrecognised payload key survives and that an unknown event still reaches
-// ordinary listeners.
+// `ready` carries extra unknown keys (`futureField`, `futureUint8`): the spec
+// mandates the handshake be *recorded, not validated*, so a client that
+// whitelists the documented keys must still complete the handshake.
+//
+// The unsolicited frame set (a known frame carrying extra fields, an unknown
+// frame type, and title frames with a real and an empty title) is emitted in
+// response to the first `get_state`, NOT in the spawn burst: `OmpRpcClient.spawn()`
+// resolves on `ready`, so frames written into the same stdout chunk can be
+// dispatched before a test has registered a listener. Emitting them on a
+// command makes the observation deterministic without weakening assertions.
 process.stdout.write(JSON.stringify({
   type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2],
   maxFrameBytes: 1048576, maxReassembledFrameBytes: 67108864,
   futureField: "ignored", futureUint8: [1, 2, 3],
 }) + "\n");
-process.stdout.write(JSON.stringify({ type: "future_event", note: "unknown frame type" }) + "\n");
-process.stdout.write(JSON.stringify({ type: "extension_ui_request", id: "u1", method: "notify", message: "hi" }) + "\n");
-// Unprompted title frame (OMP emits this when the child runs with PI_RPC_EMIT_TITLE=1).
-process.stdout.write(JSON.stringify({ type: "setTitle", title: "mock set title" }) + "\n");
-// An empty title must be ignored by the client (guard: record.title !== "").
-process.stdout.write(JSON.stringify({ type: "setTitle", title: "" }) + "\n");
+
+let unsolicitedSent = false;
 
 let buf = "";
 process.stdin.setEncoding("utf8");
@@ -37,6 +38,16 @@ process.stdin.on("data", (chunk) => {
         else ok({ protocolVersion: 2 });
         break;
       case "get_state":
+        // One-time unsolicited frame set, written before the response so that
+        // `await client.getState()` guarantees the frames were already dispatched.
+        if (!unsolicitedSent) {
+          unsolicitedSent = true;
+          process.stdout.write(JSON.stringify({ type: "extension_ui_request", id: "u1", method: "notify", message: "hi" }) + "\n");
+          process.stdout.write(JSON.stringify({ type: "future_event", note: "unknown frame type" }) + "\n");
+          process.stdout.write(JSON.stringify({ type: "setTitle", title: "mock set title" }) + "\n");
+          // An empty title must be ignored by the client (guard: record.title !== "").
+          process.stdout.write(JSON.stringify({ type: "setTitle", title: "" }) + "\n");
+        }
         ok({ isStreaming: false, sessionId: "s1", systemPrompt: "SP", contextUsage: { tokens: 7, percent: 1 } });
         break;
       case "get_messages": ok({ messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] }); break;
