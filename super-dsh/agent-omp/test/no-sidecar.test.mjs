@@ -7,12 +7,21 @@ import { fileURLToPath } from "node:url";
 /**
  * Guards for the RPC-transport cutover (2026-10-03): the bundled bun sidecar +
  * `@oh-my-pi/pi-coding-agent` SDK line is gone and the adapter drives the
- * operator's own `omp --mode rpc` child. All assertions are source-level on
- * purpose: the deleted surface was a set of files + an import graph, and a
- * source check catches exactly that class of edit without booting a ~200 MB bun
- * sidecar (the `sidecar-singleton.test.mjs` precedent).
+ * operator's own `omp --mode rpc` child. The deletion assertions are
+ * source-level on purpose: the removed surface was a set of files + an import
+ * graph, and a source check catches exactly that class of edit without booting
+ * a ~200 MB bun sidecar (the `sidecar-singleton.test.mjs` precedent).
+ *
+ * The tick gate is pinned BOTH ways: a source assertion that the liveness set
+ * is populated on the publish path, AND a behavioural truth table over the
+ * compiled gate — a shape regex alone once certified a gate whose input set was
+ * permanently empty (the refresh was dead code but everything matched).
  */
 const pkg = fileURLToPath(new URL("..", import.meta.url));
+
+// Imported for the truth-table check below; `dist/index.js` is the shipped
+// plugin entry, so this exercises the gate that actually runs in the daemon.
+const { liveOmpSessionExists } = await import("../dist/index.js");
 
 test("the SDK sidecar surface is gone", () => {
   for (const p of ["src/sdk-client.ts", "src/sidecar-client.ts", "src/protocol.ts", "sidecar"]) {
@@ -54,6 +63,25 @@ test("source: the periodic catalog refresh is gated on a live OMP session (tick 
   const end = index.indexOf("\n}", start);
   assert.notStrictEqual(end, -1, "liveOmpSessionExists() must close at column 0");
   assert.match(index.slice(start, end + 2), /\.spawned/, "the gate must consult LazyOmpRpc.spawned");
+  // ...AND that the gate's input set is actually populated on publish: without
+  // `liveSessions.add(rpc)` the set is permanently empty (constant false) and
+  // the tick's refresh is dead code even though every shape assertion above
+  // still matches. Both halves are load-bearing (idle → no spawn; live → fresh).
+  const heldStart = index.indexOf("private readonly registerHeld =");
+  assert.notStrictEqual(heldStart, -1, "index.ts must still declare registerHeld()");
+  const heldEnd = index.indexOf("\n  };", heldStart);
+  assert.notStrictEqual(heldEnd, -1, "registerHeld() must close at column 2");
+  const published = index.slice(heldStart, heldEnd);
+  assert.match(published, /this\.liveSessions\.add\(rpc\)/, "the publish path must register the wrapper with the gate");
+  assert.match(published, /this\.liveSessions\.delete\(rpc\)/, "the handle's dispose must drop it again");
+});
+
+test("the live-session gate answers its truth table (a fake spawned child opens it)", () => {
+  assert.equal(typeof liveOmpSessionExists, "function", "the compiled gate must be importable");
+  assert.equal(liveOmpSessionExists([]), false, "no sessions → no refresh");
+  assert.equal(liveOmpSessionExists([{ spawned: false }]), false, "a draft session holds no child → no refresh");
+  assert.equal(liveOmpSessionExists([{ spawned: false }, { spawned: true }]), true, "any spawned child → refresh");
+  assert.equal(liveOmpSessionExists(new Set([{ spawned: true }])), true, "the provider's input is a Set");
 });
 
 test("apply() diagnoses a missing omp binary instead of failing silently", () => {

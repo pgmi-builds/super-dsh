@@ -77,8 +77,12 @@ const trace = (...parts: unknown[]): void => {
  * §五·五: the periodic tick never materializes an `omp`). Sessions count only
  * once they actually spawned — a draft session holds a `LazyOmpRpc` with no
  * child yet, and an idle daemon's tick must pull ZERO children.
+ *
+ * Exported beside the plugin (the cordis surface itself is unchanged) so the
+ * no-sidecar guard can pin this gate's truth table behaviourally — a shape
+ * regex alone cannot see an empty input set.
  */
-function liveOmpSessionExists(sessions: Iterable<OmpAgentRpc>): boolean {
+export function liveOmpSessionExists(sessions: Iterable<OmpAgentRpc>): boolean {
   for (const rpc of sessions) {
     if (rpc.spawned) return true;
   }
@@ -527,6 +531,9 @@ export class OmpProvider extends Service implements AgentFactory {
       },
     };
     this.heldAgents.set(String(id), wrapped);
+    // Populate the tick's liveness gate: without this the gate is a constant
+    // false and the catalog refresh never runs (dead-input regression).
+    this.liveSessions.add(rpc);
     return wrapped;
   };
 
