@@ -129,6 +129,15 @@ export interface ConversationRow {
   createdAt: number
   /** Epoch ms of the last successful send. */
   lastActivityAt: number
+  /**
+   * D30 (2026-09-30): the peer's last output delivered into this conversation
+   * (a channel reply or a turn-end transcript), recorded when this hub
+   * RECEIVES it. Queryable through agent_status by the conversation's
+   * INITIATOR only (the ownership gate). Additive optional; no migration.
+   */
+  lastOutput?: string
+  /** Epoch ms of lastOutput. */
+  lastOutputAt?: number
 }
 /** The whole registry file. */
 export interface ConversationsFile {
@@ -152,6 +161,8 @@ function isConversationRow(v: unknown): v is ConversationRow {
     (r.initiatorSession === undefined || typeof r.initiatorSession === 'string') &&
     (r.channelUsed === undefined || r.channelUsed === true) &&
     (r.lastSentAt === undefined || typeof r.lastSentAt === 'number') &&
+    (r.lastOutput === undefined || typeof r.lastOutput === 'string') &&
+    (r.lastOutputAt === undefined || typeof r.lastOutputAt === 'number') &&
     typeof r.createdAt === 'number' && typeof r.lastActivityAt === 'number'
   )
 }

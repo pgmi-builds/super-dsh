@@ -486,6 +486,41 @@ test('GET /api/superd/a2a/outbox handler: ?machine= claim → {v:1, envelopes}; 
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
+test('D30: an inbound reply records the peer output on the conversation row (agent_status source)', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))
+  const self = ensureSelf(home, 'local')
+  try {
+    const { ingest } = assembly(home, gw)
+    saveConversations(home, { conversations: [
+      { shortId: 'd30aaa', machine: 'dev3', agent: 'cd33x1', sessionId: 'sess-at-dev3', title: 't', initiatorSession: 'session-init-1', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    await ingest.ingest({
+      kind: 'reply',
+      to: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
+      conversation: 'd30aaa',
+      text: 'D30 last output',
+      messageId: 'a2a-relay-d30',
+      sender: { machine: 'dev3', agent: 'cd33x1' },
+    })
+    const rows = JSON.parse(readFileSync(join(home, 'superd', 'a2a-conversations.json'), 'utf8')).conversations
+    const rec = rows.find((r) => r.shortId === 'd30aaa')
+    assert.equal(rec.lastOutput, 'D30 last output')
+    assert.equal(typeof rec.lastOutputAt, 'number')
+    // a notice carries no output — the row's lastOutput must not be invented
+    await ingest.ingest({
+      kind: 'notice',
+      to: { machine: self.id, agent: 'f4g5h6', sessionId: 'session-init-1' },
+      conversation: 'd30aaa',
+      summary: 'turn ended, no reply',
+      messageId: 'a2a-notice-d30',
+      sender: { machine: 'dev3', agent: 'cd33x1' },
+    })
+    const after = JSON.parse(readFileSync(join(home, 'superd', 'a2a-conversations.json'), 'utf8')).conversations.find((r) => r.shortId === 'd30aaa')
+    assert.equal(after.lastOutput, 'D30 last output')
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
 test('inbound reply envelope (peer POSTed at us): envelope sender wins; absent sender falls back to the registry row', async () => {
   const gw = fakeGateway()
   const home = mkdtempSync(join(tmpdir(), 'superd-ingest-'))

@@ -251,6 +251,15 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
     saveConversations(deps.home, { conversations: rows })
   }
 
+  /** D30: record the peer's last delivered output on the conversation row (agent_status reads it, ownership-gated). */
+  const recordLastOutput = (conversationId: string, text: string): void => {
+    const rows = loadConversations(deps.home).conversations
+    const idx = rows.findIndex((r) => r.shortId === conversationId || r.sessionId === conversationId)
+    if (idx === -1) return
+    rows[idx] = { ...rows[idx], lastOutput: text, lastOutputAt: now() }
+    saveConversations(deps.home, { conversations: rows })
+  }
+
   // ---------------- return routing
 
   /** Deliver one return envelope into the LOCAL initiator session (self-routed or inbound). */
@@ -269,6 +278,9 @@ export function createA2aIngest(deps: A2aIngestDeps): A2aIngest {
         // it; absent = the peer chose to send this through the channel.
         transcribed: envelope.transcribed === true,
       })
+      // D30: the peer's output arrived here — remember it on the row (the
+      // initiator can later read it through agent_status; ownership-gated).
+      if (envelope.text !== '') recordLastOutput(envelope.conversation, envelope.text)
       alog?.('info', 'deliver.local', { conversation: envelope.conversation, kind: envelope.kind, outcome: outcome.delivered, from: `${sender.machine}-${sender.agent}` })
       return outcome
     }

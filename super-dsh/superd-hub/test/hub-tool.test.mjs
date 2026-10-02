@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createSuperdHubTool, parseAgentAddress, RECENT_CONVERSATIONS_MAX } from '../dist/hub-tool.js'
+import { createSuperdHubTool, parseAgentAddress, shapeAgentStatusWindow, RECENT_CONVERSATIONS_MAX } from '../dist/hub-tool.js'
 import { wireHubToolRow, name as rowName } from '../dist/a2a-row.js'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 
@@ -661,6 +661,22 @@ test('row: registers the tool; send → bridged canonical stream → auto-buffer
 
 /** One cache file fixture. */
 const statusFileOf = (machines) => ({ machines })
+
+test('D30 ownership gate: shapeAgentStatusWindow surfaces lastOutput ONLY to the conversation initiator', () => {
+  const entry = { rows: [{ sessionId: 'sess-1', mtime: 5, status: 'idle', agentAvailable: true }] }
+  const conversations = [{ shortId: 'c1', sessionId: 'sess-1', title: 'T', initiatorSession: 'sess-owner', lastOutput: 'the peer said hi', lastOutputAt: 42 }]
+  const mine = shapeAgentStatusWindow(entry, conversations, 'sess-owner')
+  assert.equal(mine[0].lastOutput, 'the peer said hi')
+  assert.equal(mine[0].lastOutputAt, 42)
+  const other = shapeAgentStatusWindow(entry, conversations, 'sess-other')
+  assert.equal(other[0].lastOutput, undefined)
+  assert.equal(other[0].lastOutputAt, undefined)
+  const noCaller = shapeAgentStatusWindow(entry, conversations)
+  assert.equal(noCaller[0].lastOutput, undefined)
+  // a row with no recorded output never invents one
+  const noOutput = shapeAgentStatusWindow(entry, [{ shortId: 'c1', sessionId: 'sess-1', initiatorSession: 'sess-owner' }], 'sess-owner')
+  assert.equal(noOutput[0].lastOutput, undefined)
+})
 
 test('agent_status: registry join → shortId + "{title} [hub A2A]"; workspace fallback; unhosted; truncation; collectedAt passthrough', async () => {
   const cache = statusFileOf({

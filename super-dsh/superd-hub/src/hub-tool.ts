@@ -249,6 +249,10 @@ export interface AgentStatusEntryRow {
   status: 'busy' | 'idle' | 'unknown'
   agentAvailable: boolean
   mtime: number
+  /** D30: the peer's last delivered output — present ONLY when the caller is this conversation's initiator (ownership gate). */
+  lastOutput?: string
+  /** D30: epoch ms of lastOutput. */
+  lastOutputAt?: number
 }
 
 /**
@@ -260,9 +264,11 @@ export interface AgentStatusEntryRow {
  */
 export function shapeAgentStatusWindow(
   entry: { rows: AgentStatusEntrySrcRow[]; workspaces?: Array<{ title: string; sessionIds: string[] }> },
-  conversations: ReadonlyArray<{ shortId: string; sessionId: string; title?: string }>,
+  conversations: ReadonlyArray<{ shortId: string; sessionId: string; title?: string; initiatorSession?: string; lastOutput?: string; lastOutputAt?: number }>,
+  /** D30 ownership gate: the caller's session — lastOutput is surfaced only to the conversation's initiator. */
+  callerSessionId?: string,
 ): AgentStatusEntryRow[] {
-  const bySession = new Map<string, { shortId: string; title?: string }>()
+  const bySession = new Map<string, { shortId: string; title?: string; initiatorSession?: string; lastOutput?: string; lastOutputAt?: number }>()
   for (const row of conversations) bySession.set(row.sessionId, row)
   const workspaceTitleOf = new Map<string, string>()
   for (const workspace of entry.workspaces ?? []) {
@@ -283,6 +289,12 @@ export function shapeAgentStatusWindow(
     const title = conversation !== undefined
       ? `${displayTitle} ${HUB_A2A_TITLE_MARKER}`
       : workspaceTitleOf.get(row.sessionId) ?? UNHOSTED_TITLE
+    // D30: the peer's last output is the conversation's private business —
+    // only its INITIATOR may read it through this facility.
+    const ownedOutput = conversation !== undefined && callerSessionId !== undefined &&
+      conversation.initiatorSession === callerSessionId && conversation.lastOutput !== undefined
+      ? { lastOutput: conversation.lastOutput, ...(conversation.lastOutputAt === undefined ? {} : { lastOutputAt: conversation.lastOutputAt }) }
+      : {}
     return {
       ...(conversation === undefined ? {} : { conversationId: conversation.shortId }),
       sessionId: displaySessionId(row.sessionId),
@@ -290,6 +302,7 @@ export function shapeAgentStatusWindow(
       status: row.status,
       agentAvailable: row.agentAvailable,
       mtime: row.mtime,
+      ...ownedOutput,
     }
   })
 }
@@ -324,7 +337,7 @@ const DESCRIPTION =
   'Lifecycle: OPEN once (send with no conversationId) → then only `send` with its conversationId → replies auto-deliver; sweep `read` at wake boundaries → `stop` only when a turn is off track. Families: facility/status (`agents`, `agent_status`), messaging (`send`, `read`, `stop`), shell (`exec`).\n' +
   'Call shapes:\n' +
   '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
-  '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime}]}.\n' +
+  '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime, lastOutput?, lastOutputAt?}]}. lastOutput (the peer\'s last delivered output) rides ONLY when you are that conversation\'s initiator.\n' +
   '  {action:"send", agent?, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN (then agent = the recipient, REQUIRED; title optional; message is the first turn); pass conversationId to RESUME (agent optional — the hub derives the route; a wrong agent is refused). Receipt {outcome: delivered|failed, messageId, conversationId, sessionId, created, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", conversationId, agent?, scope?} → cancel the conversation\'s active turn (the session owner is derived from the conversation id; agent is optional). Answers stopped:false with a note when no turn was active.\n' +
@@ -402,7 +415,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           action: { type: 'string', required: true },
           machines: { type: 'json', description: 'agents listing: machines → agents (thin rows — no conversations; use agent_status)' },
           collectedAt: { type: 'integer', description: 'agent_status: when the machine bucket was last collected (epoch ms; 0 = never)' },
-          sessions: { type: 'json', description: 'agent_status: window rows {conversationId?, sessionId (truncated), title, status, agentAvailable, mtime}' },
+          sessions: { type: 'json', description: 'agent_status: window rows {conversationId?, sessionId (truncated), title, status, agentAvailable, mtime, lastOutput?, lastOutputAt?} — lastOutput rides ONLY when you are that conversation\'s initiator (D30 ownership gate)' },
           conversationId: { type: 'string' },
           sessionId: { type: 'string' },
           created: { type: 'boolean', description: "send receipt: true when conversationId was omitted (this send OPENED the conversation); absent/false on resume" },
@@ -522,7 +535,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           const file = deps.status?.() ?? { machines: {} }
           const bucket = file.machines[addr.machine]
           const entry = bucket?.agents.find((a) => a.a6 === addr.id)
-          const sessions = entry === undefined ? [] : shapeAgentStatusWindow(entry, deps.service.listConversations())
+          const sessions = entry === undefined ? [] : shapeAgentStatusWindow(entry, deps.service.listConversations(), initiator.sessionId)
           return {
             action,
             agent: addr.id,
