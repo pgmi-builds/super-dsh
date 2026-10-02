@@ -36,19 +36,14 @@ function fakeExec(sessionId = 'sess-777') {
 /** Fake T2/T3 service face: records every call, scripted responses. */
 function fakeService() {
   const state = {
-    calls: { newConversation: [], send: [], subscriptions: [], stop: [], read: [] },
+    calls: { send: [], subscriptions: [], stop: [], read: [] },
     conversations: [],
-    newConversationResult: { shortId: 'conv0001', sessionId: 'sess-tgt-1' },
     sendReceipt: { outcome: 'delivered', messageId: 'a2a-m-1', conversationId: 'conv0001', sessionId: 'sess-tgt-1' },
     stopResult: { scope: 'turn', cancelled: true },
     unread: [],
   }
   const svc = {
     state,
-    async newConversation(addr, title) {
-      state.calls.newConversation.push({ addr, title })
-      return { ...state.newConversationResult }
-    },
     async send(req, initiator) {
       state.calls.send.push({ req, initiator })
       return { ...state.sendReceipt }

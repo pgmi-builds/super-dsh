@@ -74,7 +74,7 @@ import { A2A_TITLE_PLACEHOLDER } from './a2a-wire.js'
 /** The service face the tool consumes (structural subset of T2/T3's A2aService). */
 export type HubToolService = Pick<
   A2aService,
-  'newConversation' | 'send' | 'subscribeCompletion' | 'stop' | 'read' | 'listConversations'
+  'send' | 'subscribeCompletion' | 'stop' | 'read' | 'listConversations'
 >
 
 /** Per-agent recent-conversation bound (spec §7.2: alive-first, ≤5). */

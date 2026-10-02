@@ -31,7 +31,7 @@
     "build": "tsc -p .",
     "typecheck:client": "tsc -p tsconfig.client.json",
     "build-client": "npm run typecheck:client && node scripts/build-client.mjs",
-    "test": "node --test --test-force-exit test/*.test.mjs"
+    "test": "node --test --test-reporter=spec --test-concurrency=8 --test-force-exit test/*.test.mjs"
   },
   "dependencies": {
     "js-yaml": "^4.3.2",

@@ -86,7 +86,6 @@ export {
   A2A_BUFFER_MAX,
   A2A_NO_SESSION_CLOSE_REASON,
   A2A_NO_TURN_ACTIVE_NOTE,
-  A2A_OPENING_MESSAGE,
   renderA2aEnvelope,
   loadConversations,
   saveConversations,

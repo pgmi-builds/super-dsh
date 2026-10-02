@@ -326,13 +326,6 @@ export const A2A_BUFFER_MAX = 32
 /** stop('session') degradation notice — the session plane has no close RPC upstream. */
 export const A2A_NO_SESSION_CLOSE_REASON = 'no session-close endpoint upstream'
 
-/**
- * R4: the fixed opening line a message-less newConversation carries on its
- * envelope — the wire envelope requires a message, and the peer's teaching
- * envelope (which wraps this) IS the conversation opener the spec describes.
- */
-export const A2A_OPENING_MESSAGE = '(conversation opened)'
-
 // ---------------------------------------------------------------- service types
 
 /** Target address: machine id (m4) + agent id (a6) — the `gatewayFor` key. */
@@ -493,8 +486,6 @@ export interface A2aServiceDeps {
 }
 
 export interface A2aService {
-  /** Create a conversation on the target (session/create ONLY — D17/R2: no session/rename write-through); title is hub-owned registry state (stored normalized, immutable). Typed errors on 401/unreachable/business rejection. The vestigial `warning?` return field stays for signature stability and is never set. */
-  newConversation(addr: A2aAddress, title?: string, message?: string, initiator?: A2aInitiator): Promise<{ shortId: string; sessionId: string; warning?: string }>
   /** Create-or-resume + inject one user turn; receipt semantics (never throws — failures are 'failed' receipts). */
   send(req: A2aSendRequest, initiator: A2aInitiator): Promise<A2aReceipt>
   /** Subscribe turn completions of one conversation over session/follow; returns the dispose fn. */
@@ -928,50 +919,6 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
 
 
   const service: A2aService = {
-    async newConversation(addr, title, message, initiator) {
-      // R4: an envelope IS the unit — a message-less create carries the fixed
-      // opening line (the teaching envelope wraps it on the peer's session).
-      // D21: a message-bearing create folds opening + content into ONE turn
-      // (the bare-opening turn that peers burned steps investigating is gone).
-      if (initiator === undefined) {
-        throw a2aError('a2a/no-initiator', 'a2a: newConversation needs the initiator identity to address the envelope (postoffice R4)')
-      }
-      const messageId = `a2a-${randomUUID()}`
-      const envelope: A2aNewConversationEnvelope = {
-        kind: 'new-conversation',
-        to: { machine: addr.machine, id: addr.id },
-        conversationId: mintConversationId(),
-        title: normalizeA2aTitle(title),
-        message: message === undefined || message === '' ? A2A_OPENING_MESSAGE : message,
-        from: originOf(initiator),
-        messageId,
-      }
-      let answer: IngestAnswer
-      try {
-        answer = await routeEnvelope(envelope)
-      } catch (error) {
-        if (error instanceof EnvelopeError) throw error
-        if (error instanceof A2aAddressError) {
-          const body = addressErrorBody(error)
-          throw a2aError(body.code, body.message)
-        }
-        throw a2aError('gateway/uncaught', messageOf(error))
-      }
-      if (!('outcome' in answer)) {
-        throw a2aError('a2a/bad-result', 'a2a: new-conversation envelope answered a non-receipt')
-      }
-      if (answer.outcome !== 'delivered') {
-        const err = answer.error ?? { code: 'a2a/remote-failed', message: 'a2a: the peer ingest rejected the envelope without an error body' }
-        throw a2aError(err.code, err.message, err.details)
-      }
-      const shortId = answer.conversationId ?? envelope.conversationId
-      // D17: title stored normalized at mint, immutable; zero rename calls
-      // (the write-through is gone). The vestigial `warning` stays for
-      // signature stability and is never set.
-      recordInitiatorRow(shortId, addr, answer.sessionId, normalizeA2aTitle(title), initiator)
-      alog?.('info', 'conversation.new', { conversation: shortId, session: answer.sessionId, peer: `${addr.machine}-${addr.id}`, initiator: `${initiator.machine}-${initiator.agent}` })
-      return { shortId, sessionId: answer.sessionId }
-    },
 
     async send(req, initiator) {
       const messageId = `a2a-${randomUUID()}`
@@ -1164,6 +1111,9 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         // SELF-hosted creates already adopted the mirror row on our ingest —
         // recordInitiatorRow never duplicates; remote creates record ours.
         recordInitiatorRow(conversationId, to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
+        // (kept from the retired newConversation: a create leaves a distinct
+        // initiator-side journal line, not just send.ok)
+        alog?.('info', 'conversation.new', { conversation: conversationId, session: answer.sessionId, peer: `${to.machine}-${to.id}`, initiator: `${initiator.machine}-${initiator.agent}` })
       } else {
         touchRow(row, row.hostAgent === undefined ? initiator.sessionId : undefined)
       }

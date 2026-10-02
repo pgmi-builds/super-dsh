@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createA2aService, A2A_MESSAGE_TEMPLATE, A2A_OPENING_MESSAGE, renderA2aEnvelope, A2A_BUFFER_MAX, loadConversations, saveConversations, shortIdFor, isDegenerateShortId, A2aAddressError } from '../dist/a2a-service.js'
+import { createA2aService, A2A_MESSAGE_TEMPLATE, renderA2aEnvelope, A2A_BUFFER_MAX, loadConversations, saveConversations, shortIdFor, isDegenerateShortId, A2aAddressError } from '../dist/a2a-service.js'
 import { createA2aIngest } from '../dist/a2a-ingest.js'
 import { ensureSelf, upsertRemote } from '../dist/machines.js'
 import { WIRE } from '../dist/wire-endpoints.js'
@@ -127,31 +127,31 @@ const mkRestartedService = (home, gw) => {
   return svc
 }
 
-// ---------------------------------------------------------------- newConversation
+// ---------------------------------------------------------------- send (the single A2A door: create-or-resume)
 
-test('newConversation (local): envelope via the shared ingest; create payload byte-exact; title stored verbatim, ZERO rename calls; MIRROR row persisted 0600', async () => {
+test('send create-path (self-hosted): byte-exact prompt + MIRROR row 0600; title verbatim, ZERO rename calls', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaa-1111' } } }) // create
-  gw.rpc({ result: { ok: true, value: { accepted: true } } })                       // prompt (the opening line)
+  gw.rpc({ result: { ok: true, value: { accepted: true } } })                   // prompt
   const { home, svc, selfM4 } = mkService(gw)
   try {
-    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Bug triage', undefined, localInitiator(selfM4))
-    assert.match(out.shortId, /^[a-z0-9]{6}$/, 'initiator-minted random 6')
+    const out = await svc.send({ to: { machine: selfM4, id: 'q7m2xp' }, title: 'Bug triage', message: 'do the triage' }, localInitiator(selfM4))
+    assert.equal(out.outcome, 'delivered')
+    assert.match(out.conversationId, /^[a-z0-9]{6}$/, 'initiator-minted random 6')
     assert.equal(out.sessionId, 'sess-aaaaaaaa-1111')
-    assert.equal(out.warning, undefined)
     assert.deepEqual(gw.rpcs(WIRE.sessionCreate).map((c) => c.payload), [{ args: { request: {} } }])
     // D17 (postoffice R2): the title is hub-owned registry state — the A2A
     // path NEVER writes through to the upstream runtime session title.
     assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
-    // the envelope's opening turn is the teaching envelope (from = initiator)
+    // the opening turn is the teaching envelope wrapping the first message
     const prompt = gw.rpcs(WIRE.promptSubmit)[0].payload.args.request
     assert.equal(prompt.sessionId, 'sess-aaaaaaaa-1111')
-    assert.deepEqual(prompt.content, [{ type: 'text', text: teaching(localInitiator(selfM4), 'Bug triage', out.shortId, A2A_OPENING_MESSAGE) }])
+    assert.deepEqual(prompt.content, [{ type: 'text', text: teaching(localInitiator(selfM4), 'Bug triage', out.conversationId, 'do the triage') }])
     // MIRROR row (self-hosted): points at the initiator, carries hostAgent
     const rows = loadConversations(home).conversations
     assert.equal(rows.length, 1)
     assert.deepEqual(rows[0], {
-      shortId: out.shortId, machine: selfM4, agent: INITIATOR.agent,
+      shortId: out.conversationId, machine: selfM4, agent: INITIATOR.agent,
       sessionId: 'sess-aaaaaaaa-1111', title: 'Bug triage', hostAgent: 'q7m2xp',
       // D20: self-route mirror rows backfill the initiator session (the
       // hosted peer's write-back delivery address)
@@ -162,57 +162,35 @@ test('newConversation (local): envelope via the shared ingest; create payload by
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('newConversation: no title → [undefined] placeholder; unpaired machine → typed unknown-machine; a title NEVER renames upstream (D17)', async () => {
+test('send create-path: no title → [undefined] placeholder; unpaired machine → typed unknown-machine; a title NEVER renames upstream (D17)', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-bbbbbbbb-2222' } } }) // create
   gw.rpc({ result: { ok: true, value: { accepted: true } } })                    // prompt
   const { home, svc, selfM4 } = mkService(gw)
+  const local = { machine: selfM4, id: 'q7m2xp' }
   try {
-    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, undefined, undefined, localInitiator(selfM4))
-    assert.match(out.shortId, /^[a-z0-9]{6}$/)
-    assert.equal(out.warning, undefined)
+    const out = await svc.send({ to: local, message: 'no title here' }, localInitiator(selfM4))
+    assert.equal(out.outcome, 'delivered')
+    assert.match(out.conversationId, /^[a-z0-9]{6}$/)
     // D17: unspecified → the '[undefined]' placeholder, stored at mint
     assert.equal(loadConversations(home).conversations[0].title, '[undefined]')
     assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
-    // R4: an UNPAIRED machine is the router's typed failure (unknown-machine)
-    await assert.rejects(
-      () => svc.newConversation({ machine: 'nowhere', id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
-      (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-machine',
-    )
-    // a specified title lands in the registry verbatim — still zero rename
-    // calls (the old write-through + warning path is deleted, D17/R2)
-    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } }) // create
-    gw.rpc({ result: { ok: true, value: { accepted: true } } })                  // prompt
-    const titled = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'x', undefined, localInitiator(selfM4))
-    assert.match(titled.shortId, /^[a-z0-9]{6}$/)
+    // R4: an UNPAIRED machine is a typed failure receipt (send never throws)
+    const bad = await svc.send({ to: { machine: 'nowhere', id: 'zzzzzz' }, message: 'x' }, localInitiator(selfM4))
+    assert.equal(bad.outcome, 'failed')
+    assert.equal(bad.error.code, 'a2a/unknown-machine')
+    // a specified title lands in the registry verbatim — still zero rename calls
+    gw.rpc({ result: { ok: true, value: { sessionId: 'sess-cccccccc-3333' } } })
+    gw.rpc({ result: { ok: true, value: { accepted: true } } })
+    const titled = await svc.send({ to: local, title: 'x', message: 'y' }, localInitiator(selfM4))
     assert.equal(titled.sessionId, 'sess-cccccccc-3333')
-    assert.equal(titled.warning, undefined)
-    const rows = loadConversations(home).conversations
-    assert.equal(rows.find((r) => r.sessionId === 'sess-cccccccc-3333').title, 'x')
+    assert.equal(loadConversations(home).conversations.find((r) => r.sessionId === 'sess-cccccccc-3333').title, 'x')
     assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
     // fresh mints never collide (the registry is the taken-set)
-    assert.notEqual(out.shortId, titled.shortId)
+    assert.notEqual(out.conversationId, titled.conversationId)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('newConversation: title is registry-only — the whole A2A path makes zero session/rename calls (D17 hard line)', async () => {
-  const gw = fakeGateway()
-  gw.rpc({ result: { ok: true, value: { sessionId: 'sess-eeeeeeee-5555' } } })
-  const { home, svc, selfM4 } = mkService(gw)
-  const local = { machine: selfM4, id: 'q7m2xp' }
-  try {
-    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Rename probe A', undefined, localInitiator(selfM4))
-    assert.match(out.shortId, /^[a-z0-9]{6}$/)
-    assert.equal(out.sessionId, 'sess-eeeeeeee-5555')
-    assert.equal(out.warning, undefined)
-    const rows = loadConversations(home).conversations
-    assert.equal(rows.length, 1)
-    assert.equal(rows[0].sessionId, 'sess-eeeeeeee-5555')
-    assert.equal(rows[0].title, 'Rename probe A')
-    // the rename write-through is GONE — not retried, not warned about, never dialed
-    assert.equal(gw.rpcs(WIRE.sessionTitle).length, 0)
-  } finally { rmSync(home, { recursive: true, force: true }) }
-})
 
 test('send create-path: title lands in the registry (no rename); prompt still goes out; injected receipt', async () => {
   const gw = fakeGateway()
@@ -604,16 +582,16 @@ test('registry: mint never collides with the taken-set; corrupt file reads empty
   try {
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaa-0001' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const a = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
-    assert.match(a.shortId, /^[a-z0-9]{6}$/)
+    const a = await svc.send({ to: local, message: 'seed' }, localInitiator(selfM4))
+    assert.match(a.conversationId, /^[a-z0-9]{6}$/)
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-aaaaaaaab002' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const b = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
+    const b = await svc.send({ to: local, message: 'seed' }, localInitiator(selfM4))
     // R4: the initiator mints RANDOM ids — the registry is the taken-set, so
     // fresh mints never collide (the session-derived lengthening moved to
     // shortIdFor's unit surface; the wire mint is random by design)
-    assert.match(b.shortId, /^[a-z0-9]{6}$/)
-    assert.notEqual(a.shortId, b.shortId)
+    assert.match(b.conversationId, /^[a-z0-9]{6}$/)
+    assert.notEqual(a.conversationId, b.conversationId)
     // corrupt file → empty shape, never throws
     writeFileSync(join(home, 'superd', 'a2a-conversations.json'), '{corrupt', 'utf8')
     assert.deepEqual(loadConversations(home), { conversations: [] })
@@ -621,9 +599,9 @@ test('registry: mint never collides with the taken-set; corrupt file reads empty
     // and the service keeps working (fresh write replaces the corruption)
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-zzzzzzzz-0003' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const c = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
+    const c = await svc.send({ to: local, message: 'seed' }, localInitiator(selfM4))
     assert.equal(loadConversations(home).conversations.length, 1)
-    assert.match(c.shortId, /^[a-z0-9]{6}$/)
+    assert.match(c.conversationId, /^[a-z0-9]{6}$/)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -673,10 +651,10 @@ test('registry (D2): legacy rows untouched and load verbatim; fresh mints keep c
     // R4: new conversations mint RANDOM ids; legacy rows are never reminted
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-fresh001-0001' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const fresh = await svc.newConversation(local, undefined, undefined, localInitiator(selfM4))
-    assert.match(fresh.shortId, /^[a-z0-9]{6}$/)
-    assert.notEqual(fresh.shortId, '4ce3e1')
-    assert.notEqual(fresh.shortId, 'zzz999')
+    const fresh = await svc.send({ to: local, message: 'seed' }, localInitiator(selfM4))
+    assert.match(fresh.conversationId, /^[a-z0-9]{6}$/)
+    assert.notEqual(fresh.conversationId, '4ce3e1')
+    assert.notEqual(fresh.conversationId, 'zzz999')
     // the legacy rows are untouched
     const rows = loadConversations(home).conversations
     assert.deepEqual(
@@ -748,18 +726,14 @@ test('gateway misses (D7): unknown-agent / unknown-machine / unreachable — typ
   try {
     // unknown-agent: the INGEST's resolver throws; the failed receipt carries it back
     missFor.set('zzzzzz', 'unknown-agent')
-    await assert.rejects(
-      () => svc.newConversation({ machine: selfM4, id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
-      (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-agent'
-        && e.wire.message === `a2a: unknown-agent ${selfM4}-zzzzzz (no such agent on machine ${selfM4})`,
-    )
+    const ua = await svc.send({ to: { machine: selfM4, id: 'zzzzzz' }, message: 'x' }, localInitiator(selfM4))
+    assert.equal(ua.outcome, 'failed')
+    assert.deepEqual(ua.error, { code: 'a2a/unknown-agent', message: `a2a: unknown-agent ${selfM4}-zzzzzz (no such agent on machine ${selfM4})` })
     // unknown-machine: the ROUTER owns it now — an unpaired remote machine
     missFor.set('zzzzzz', 'unknown-machine')
-    await assert.rejects(
-      () => svc.newConversation({ machine: 'k3f9', id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
-      (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/unknown-machine'
-        && e.wire.message === 'a2a: unknown-machine "k3f9" — address "k3f9-zzzzzz" is not a paired machine (addresses are "<m4>-<a6>")',
-    )
+    const um = await svc.send({ to: { machine: 'k3f9', id: 'zzzzzz' }, message: 'x' }, localInitiator(selfM4))
+    assert.equal(um.outcome, 'failed')
+    assert.deepEqual(um.error, { code: 'a2a/unknown-machine', message: 'a2a: unknown-machine "k3f9" — address "k3f9-zzzzzz" is not a paired machine (addresses are "<m4>-<a6>")' })
     // send: typed failures land as failed receipts (send never throws)
     missFor.set('zzzzzz', 'unknown-agent')
     const r = await svc.send({ to: { machine: selfM4, id: 'zzzzzz' }, message: 'x' }, localInitiator(selfM4))
@@ -767,11 +741,9 @@ test('gateway misses (D7): unknown-agent / unknown-machine / unreachable — typ
     assert.deepEqual(r.error, { code: 'a2a/unknown-agent', message: `a2a: unknown-agent ${selfM4}-zzzzzz (no such agent on machine ${selfM4})` })
     // unreachable keeps today's code and message
     missFor.set('zzzzzz', 'unreachable')
-    await assert.rejects(
-      () => svc.newConversation({ machine: selfM4, id: 'zzzzzz' }, undefined, undefined, localInitiator(selfM4)),
-      (e) => e instanceof EnvelopeError && e.wire.code === 'a2a/gateway-unavailable'
-        && e.wire.message === `a2a: no gateway for ${selfM4}-zzzzzz — machine unreachable or not paired`,
-    )
+    const ur = await svc.send({ to: { machine: selfM4, id: 'zzzzzz' }, message: 'x' }, localInitiator(selfM4))
+    assert.equal(ur.outcome, 'failed')
+    assert.deepEqual(ur.error, { code: 'a2a/gateway-unavailable', message: `a2a: no gateway for ${selfM4}-zzzzzz — machine unreachable or not paired` })
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
@@ -1094,28 +1066,28 @@ test('D20 write-back guard: a mirror-row send addressing the HOSTED agent still 
   const svc = createA2aService({ home, gatewayFor: () => gw.face, ingest: () => ingestRef, now: () => 5 })
   ingestRef = createA2aIngest({ home, gatewayFor: () => gw.face, delivery: { agents: { get: () => undefined }, buffer: () => {} }, now: () => 5 })
   try {
-    const created = await svc.newConversation(local, 'T', undefined, localInitiator(selfM4))
+    const created = await svc.send({ to: local, title: 'T', message: 'open' }, localInitiator(selfM4))
     // a third party continuing the conversation addresses the HOSTED agent — allowed, no latch
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const r = await svc.send({ to: local, conversationId: created.shortId, message: 'continue' }, localInitiator(selfM4))
+    const r = await svc.send({ to: local, conversationId: created.conversationId, message: 'continue' }, localInitiator(selfM4))
     assert.equal(r.outcome, 'delivered')
-    const row = loadConversations(home).conversations.find((x) => x.shortId === created.shortId)
+    const row = loadConversations(home).conversations.find((x) => x.shortId === created.conversationId)
     assert.equal(row.channelUsed, undefined, 'an initiator-side continuation is NOT a channel reply — no latch')
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
-test('D21: newConversation with message → opening + content land as ONE injected turn', async () => {
+test('D21: a message-bearing create folds opening + content into ONE injected turn', async () => {
   const gw = fakeGateway()
   gw.rpc({ result: { ok: true, value: { sessionId: 'sess-m1-1111' } } }) // create
   gw.rpc({ result: { ok: true, value: { accepted: true } } })           // prompt
   const { home, svc, selfM4 } = mkService(gw)
   try {
-    const out = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'Task', 'the actual task in the opening turn', localInitiator(selfM4))
+    const out = await svc.send({ to: { machine: selfM4, id: 'q7m2xp' }, title: 'Task', message: 'the actual task in the opening turn' }, localInitiator(selfM4))
     const prompts = gw.rpcs(WIRE.promptSubmit)
     assert.equal(prompts.length, 1, 'ONE turn — not a bare opening followed by the content')
     assert.deepEqual(prompts[0].payload.args.request.content, [{
       type: 'text',
-      text: teaching(localInitiator(selfM4), 'Task', out.shortId, 'the actual task in the opening turn'),
+      text: teaching(localInitiator(selfM4), 'Task', out.conversationId, 'the actual task in the opening turn'),
     }])
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
@@ -1156,12 +1128,12 @@ test('operational journal: new/send/write-back each leave one line (conversation
     // a local create: the initiator line plus the peer-side adoption line
     gw.rpc({ result: { ok: true, value: { sessionId: 'sess-jrnl-9' } } })
     gw.rpc({ result: { ok: true, value: { accepted: true } } })
-    const created = await svc.newConversation({ machine: selfM4, id: 'q7m2xp' }, 'J', 'opening', { machine: selfM4, agent: 'zz1y2', sessionId: 'sess-jrnl-init' })
-    const created_line = lines.find((l) => l.event === 'conversation.new' && l.fields.conversation === created.shortId)
+    const created = await svc.send({ to: { machine: selfM4, id: 'q7m2xp' }, title: 'J', message: 'opening' }, { machine: selfM4, agent: 'zz1y2', sessionId: 'sess-jrnl-init' })
+    const created_line = lines.find((l) => l.event === 'conversation.new' && l.fields.conversation === created.conversationId)
     assert.ok(created_line, 'conversation.new present')
     assert.equal(created_line.fields.peer, `${selfM4}-q7m2xp`)
     assert.equal(created_line.fields.initiator, `${selfM4}-zz1y2`)
-    const adopt = lines.find((l) => l.event === 'conversation.adopt' && l.fields.conversation === created.shortId)
+    const adopt = lines.find((l) => l.event === 'conversation.adopt' && l.fields.conversation === created.conversationId)
     assert.ok(adopt, 'conversation.adopt present (self-hosted create adopts the mirror row)')
     assert.equal(adopt.fields.hostAgent, 'q7m2xp')
   } finally { rmSync(home, { recursive: true, force: true }) }
