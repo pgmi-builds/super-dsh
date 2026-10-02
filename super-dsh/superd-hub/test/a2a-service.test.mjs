@@ -996,6 +996,58 @@ test('R4 continuation routing: mirror rows (hostAgent) → OWN ingest; initiator
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
 
+test('T3/D24: a continuation with NO `agent` derives the route from the row + caller session', async () => {
+  const gw = fakeGateway()
+  const home = mkdtempSync(join(tmpdir(), 'superd-a2a-'))
+  const selfM4 = ensureSelf(home, 'local').id
+  try {
+    upsertRemote(home, { id: 'k3f9', name: 'k3f9', label: 'k3f9', origin: 'http://k3f9:4999', cookie: 'dsh-auth-k3f9=1', enabled: true, addedAt: 1 })
+    const remote = mkRemote(home, { receipt: { outcome: 'delivered', messageId: 'w', conversationId: 'mir001', sessionId: 'sess-init-at-k3f9' } })
+    const seen = []
+    const svc = createA2aService({
+      home,
+      gatewayFor: () => gw.face,
+      ingest: () => ({ ingest: async (envelope) => {
+        seen.push(envelope)
+        return { outcome: 'delivered', messageId: envelope.messageId, conversationId: envelope.conversationId, sessionId: 'sess-local-hosted' }
+      } }),
+      fetchImpl: remote.fetchImpl,
+      now: () => 13,
+    })
+    const mirror = () => saveConversations(home, { conversations: [
+      { shortId: 'mir001', machine: 'k3f9', agent: 'a2b3c4', sessionId: 'sess-local-hosted', hostAgent: 'q7m2xp', initiatorSession: 'sess-opener', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    // (a) the HOSTED peer (caller == row.sessionId) replies with NO `agent` → write-back to the initiator over the wire + latch
+    mirror()
+    const wb = await svc.send({ conversationId: 'mir001', message: 'reply' }, { machine: selfM4, agent: 'q7m2xp', sessionId: 'sess-local-hosted' })
+    assert.equal(wb.outcome, 'delivered')
+    assert.equal(seen.length, 0)
+    assert.equal(remote.posts.length, 1)
+    assert.deepEqual(JSON.parse(remote.posts[0].init.body).envelope.to, { machine: 'k3f9', id: 'a2b3c4' })
+    assert.equal(loadConversations(home).conversations[0].channelUsed, true)
+    // (b) the OPENER (caller == row.initiatorSession) continues with NO `agent` → self-route into the hosted session
+    mirror()
+    const sr = await svc.send({ conversationId: 'mir001', message: 'continue' }, { machine: selfM4, agent: 'zzzzzz', sessionId: 'sess-opener' })
+    assert.equal(sr.outcome, 'delivered')
+    assert.equal(seen.length, 1)
+    assert.deepEqual(seen[0].to, { machine: selfM4, id: 'q7m2xp' })
+    // (c) a THIRD party (neither initiator nor host) with NO `agent` → refused
+    mirror()
+    const third = await svc.send({ conversationId: 'mir001', message: 'x' }, { machine: selfM4, agent: 'zzzzzz', sessionId: 'sess-other' })
+    assert.equal(third.outcome, 'failed')
+    assert.equal(third.error.code, 'a2a/not-a-party')
+    // (d) an INITIATOR row with NO `agent` → the peer machine
+    saveConversations(home, { conversations: [
+      ...loadConversations(home).conversations,
+      { shortId: 'init02', machine: 'k3f9', agent: 'a2b3c4', sessionId: 'sess-init-at-k3f9', createdAt: 1, lastActivityAt: 1 },
+    ] })
+    const toPeer = await svc.send({ conversationId: 'init02', message: 'peer' }, { machine: selfM4, agent: 'zzzzzz', sessionId: 'sess-init-1' })
+    assert.equal(toPeer.outcome, 'delivered')
+    assert.equal(remote.posts.length, 2)
+    assert.deepEqual(JSON.parse(remote.posts[1].init.body).envelope.to, { machine: 'k3f9', id: 'a2b3c4' })
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
 // ------------------------------------------------------- D20/D21 reply semantics v3
 
 test('D20 write-back send leg: mirror row + addressing the initiator → envelope to the peer hub + latch set', async () => {

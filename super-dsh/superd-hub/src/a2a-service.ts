@@ -373,7 +373,13 @@ export interface A2aReceipt {
 
 /** One send request (spec §7.2): no conversationId ≡ new conversation. */
 export interface A2aSendRequest {
-  to: A2aAddress
+  /**
+   * Target agent. REQUIRED to open a new conversation (no conversationId);
+   * on a continuation it may be omitted — the hub derives the route from the
+   * registry row + the caller's session (D24/T3). When supplied on a
+   * continuation it is a checked assertion: a mismatch is refused.
+   */
+  to?: A2aAddress
   conversationId?: string
   title?: string
   message: string
@@ -384,6 +390,13 @@ export interface A2aSendRequest {
 export interface A2aConversationRef {
   to: A2aAddress
   conversationId: string
+}
+
+/** One stop request (D24/T3): `to` is optional — the hub derives the session owner from the row. */
+export interface A2aStopRequest {
+  conversationId: string
+  /** The session owner's address; optional (derived from the row), checked when supplied. */
+  to?: A2aAddress
 }
 
 /** One captured turn completion. */
@@ -476,7 +489,7 @@ export interface A2aService {
   /** Subscribe turn completions of one conversation over session/follow; returns the dispose fn. */
   subscribeCompletion(conv: A2aConversationRef, cb: A2aCompletionCb, opts?: A2aSubscribeOptions): () => void
   /** Cancel the active turn; 'session' scope degrades to turn-only with the typed reason. cancelled:false + note is the honest idle answer (D5 — the cancel still fires; a pre-cancel snapshot read proved no turn was live). */
-  stop(conv: A2aConversationRef, scope: A2aStopScope): Promise<A2aStopResult>
+  stop(req: A2aStopRequest, scope: A2aStopScope): Promise<A2aStopResult>
   /** Buffer one undelivered message for an initiator (bounded A2A_BUFFER_MAX, oldest dropped). */
   buffer(initiatorSessionId: string, message: A2aBufferInput): void
   /** Sweep the unread buffer — one initiator, or all; swept entries are returned and cleared. */
@@ -963,6 +976,8 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       }
 
       let row: ConversationRow | undefined
+      let to = req.to
+      let writeBack = false
       if (req.conversationId !== undefined) {
         row = findRow(req.conversationId)
         if (row === undefined) {
@@ -970,6 +985,29 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
             code: 'a2a/conversation-not-found',
             message: `a2a: conversation "${req.conversationId}" is not in the registry — send without conversationId (creates one) or check the id`,
           })
+        }
+        // D24/T3: a continuation is addressed by id alone. When the model
+        // omits `agent`, derive the route from the row kind + the caller's
+        // session (the model never states the owner/peer). When it still
+        // passes `agent`, that value is a checked assertion below.
+        if (to === undefined) {
+          const hosted = row.hostAgent !== undefined
+          if (hosted && initiator.sessionId === row.sessionId) {
+            // the hosted peer itself replies → write-back to the initiator
+            to = { machine: row.machine, id: row.agent }
+          } else if (hosted && row.initiatorSession !== undefined && row.initiatorSession !== '' && initiator.sessionId === row.initiatorSession) {
+            // the opener continues → self-route into the hosted session
+            to = { machine: selfM4(), id: row.hostAgent! }
+          } else if (!hosted) {
+            // initiator row → the session lives at the peer
+            to = { machine: row.machine, id: row.agent }
+          } else {
+            return fail({
+              code: 'a2a/not-a-party',
+              message: `a2a: conversation "${row.shortId}" — this session is neither its initiator nor its host, so it cannot act on it`,
+            }, row.sessionId, row.shortId)
+          }
+          alog?.('info', 'send.route-derived', { conversation: row.shortId, to: `${to.machine}-${to.id}` })
         }
         // Address consistency by row kind (R4 continuation routing):
         // mirror rows (hostAgent) are hosted HERE and addressed as
@@ -982,12 +1020,12 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         const expected = row.hostAgent !== undefined
           ? { machine: selfM4(), id: row.hostAgent }
           : { machine: row.machine, id: row.agent }
-        const writeBack = row.hostAgent !== undefined &&
-          req.to.machine === row.machine && req.to.id === row.agent
-        if (!writeBack && (req.to.machine !== expected.machine || req.to.id !== expected.id)) {
+        writeBack = row.hostAgent !== undefined &&
+          to.machine === row.machine && to.id === row.agent
+        if (!writeBack && (to.machine !== expected.machine || to.id !== expected.id)) {
           return fail({
             code: 'a2a/conversation-machine-mismatch',
-            message: `a2a: conversation "${row.shortId}" belongs to ${expected.machine}-${expected.id}, not ${req.to.machine}-${req.to.id}`,
+            message: `a2a: conversation "${row.shortId}" belongs to ${expected.machine}-${expected.id}, not ${to.machine}-${to.id}`,
           }, row.sessionId, row.shortId)
         }
         if (writeBack) {
@@ -997,6 +1035,9 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
           markChannelUsed(row)
           alog?.('info', 'send.channel', { conversation: row.shortId, from: `${selfM4()}-${row.hostAgent}`, latch: true })
         }
+      }
+      if (to === undefined) {
+        return fail({ code: 'a2a/no-target', message: 'a2a: send needs `agent` to open a new conversation' })
       }
 
       // Build the envelope: create mints the conversation id (initiator-side,
@@ -1011,7 +1052,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (row === undefined) {
         envelope = {
           kind: 'new-conversation',
-          to: { machine: req.to.machine, id: req.to.id },
+          to: { machine: to.machine, id: to.id },
           conversationId: mintConversationId(),
           title: normalizeA2aTitle(req.title),
           message: req.message,
@@ -1020,8 +1061,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
           ...(req.delivery === undefined ? {} : { delivery: req.delivery }),
         }
       } else {
-        const writeBack = row.hostAgent !== undefined &&
-          req.to.machine === row.machine && req.to.id === row.agent
+        // (writeBack derives from the continuation block above)
         // D20: a write-back's `from` is the HOSTED PEER itself (its own
         // session on this row) — the initiator-side ingest attributes the
         // reply from this origin, and the self-route ingest recognizes the
@@ -1063,7 +1103,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
         // D1 hardening: a failed receipt that still carries the peer's session
         // and conversation ids keeps the row addressable — retries resume.
         if (row === undefined && answer.sessionId !== '' && answer.conversationId !== undefined && answer.conversationId !== '') {
-          recordInitiatorRow(answer.conversationId, req.to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
+          recordInitiatorRow(answer.conversationId, to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
         }
         alog?.('warn', 'send.fail', { code: (answer.error ?? { code: 'a2a/remote-failed' }).code, conversation: answer.conversationId ?? row?.shortId, message: messageId })
         // 0.1.7-h R2 live finding (r2e2eh probe): a FAILED write-back still
@@ -1112,7 +1152,7 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       if (row === undefined) {
         // SELF-hosted creates already adopted the mirror row on our ingest —
         // recordInitiatorRow never duplicates; remote creates record ours.
-        recordInitiatorRow(conversationId, req.to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
+        recordInitiatorRow(conversationId, to, answer.sessionId, normalizeA2aTitle(req.title), initiator)
       } else {
         touchRow(row, row.hostAgent === undefined ? initiator.sessionId : undefined)
       }
@@ -1155,16 +1195,18 @@ export function createA2aService(deps: A2aServiceDeps): A2aService {
       return subscribeSessionCompletion({ gateway, sessionId: row.sessionId, conversationId: row.shortId }, cb, opts)
     },
 
-    async stop(conv, scope) {
-      const row = findRow(conv.conversationId)
+    async stop(req, scope) {
+      const row = findRow(req.conversationId)
       if (row === undefined) {
-        throw a2aError('a2a/conversation-not-found', `a2a: conversation "${conv.conversationId}" is not in the registry`)
+        throw a2aError('a2a/conversation-not-found', `a2a: conversation "${req.conversationId}" is not in the registry`)
       }
       const expected = row.hostAgent !== undefined
         ? { machine: selfM4(), id: row.hostAgent }
         : { machine: row.machine, id: row.agent }
-      if (conv.to.machine !== expected.machine || conv.to.id !== expected.id) {
-        throw a2aError('a2a/conversation-machine-mismatch', `a2a: conversation "${row.shortId}" belongs to ${expected.machine}-${expected.id}, not ${conv.to.machine}-${conv.to.id}`)
+      // D24/T3: the session owner is derived from the row; `to` (the model's
+      // `agent`), when supplied, is only a checked assertion.
+      if (req.to !== undefined && (req.to.machine !== expected.machine || req.to.id !== expected.id)) {
+        throw a2aError('a2a/conversation-machine-mismatch', `a2a: conversation "${row.shortId}" belongs to ${expected.machine}-${expected.id}, not ${req.to.machine}-${req.to.id}`)
       }
       // R4: the cancel executes where the session lives — the D5 liveness
       // read, the cancel, and the session-scope degradation are all the

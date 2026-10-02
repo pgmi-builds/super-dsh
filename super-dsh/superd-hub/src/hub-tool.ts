@@ -323,9 +323,9 @@ const DESCRIPTION =
   'SuperD Hub — agent-to-agent messaging across the Super D machine mesh. Call shapes:\n' +
   '  {} | {action:"agents"} → the thin roster: machines → agents (id, label, address, ready).\n' +
   '  {action:"agent_status", agent} → that agent\'s session window from the sweep cache: {collectedAt, sessions:[{conversationId?, sessionId, title, status, mtime}]}.\n' +
-  '  {action:"send", agent, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN a new conversation (title optional, message is the first turn); pass conversationId to RESUME. Receipt {outcome: delivered|failed, messageId, conversationId, sessionId, created, error?}.\n' +
+  '  {action:"send", agent?, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN (then agent = the recipient, REQUIRED; title optional; message is the first turn); pass conversationId to RESUME (agent optional — the hub derives the route; a wrong agent is refused). Receipt {outcome: delivered|failed, messageId, conversationId, sessionId, created, error?}.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
-  '  {action:"stop", agent, conversationId, scope?} → cancel the active turn of the conversation\'s owner (agent = the owner address, see the agent field; answers stopped:false with a note when no turn was active).\n' +
+  '  {action:"stop", conversationId, agent?, scope?} → cancel the conversation\'s active turn (the session owner is derived from the conversation id; agent is optional). Answers stopped:false with a note when no turn was active.\n' +
   '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}; cwd sets its working directory. mode "pty": a PERSISTENT shell per (your session, machine) — the shell OWNS its cwd and env and they SURVIVE across dispatches (cd once inside the command, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. cwd is oneshot-only: passing it with mode "pty" is refused (use `cd <dir> && …` inside the command). Prefer oneshot for independent commands; pty when shell state matters.\n' +
   'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) is injected into the peer\'s session as a waking turn — it never interrupts an active turn, it queues behind it; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead, form=transcript); a turn that ends with no channel artifact yields one notice whose reason= distinguishes peer-silent (ended, said nothing) / peer-error (stream died or turn aborted) / stopped-by-initiator (you stopped it). read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing.'
 
@@ -346,7 +346,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       },
       agent: {
         type: 'string',
-        description: 'Address "<m4>-<a6>". send (create): the target agent to open with. send (resume)/stop/agent_status: the conversation\'s OWNER address — for a conversation you opened that is the peer; for one a peer opened with you it is YOUR OWN address (a mismatch is refused with the correct address). Call agents first to list valid ids.',
+        description: 'Address "<m4>-<a6>". REQUIRED on send only to OPEN a new conversation (the recipient). On a continuation (conversationId given) send/stop derive the route themselves — omit agent; if you do pass it, a mismatch with the derived route is refused. agent_status: the agent whose session window you want. Call agents first to list valid ids.',
       },
       conversationId: {
         type: 'string',
@@ -440,16 +440,18 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           return agentsListing(deps)
 
         case 'send': {
-          if (args.agent === undefined || args.agent === '') {
-            throw new Error('[E_MISSING_AGENT] superd-hub: send requires agent ("<m4>-<a6>")')
-          }
           if (typeof args.message !== 'string' || args.message === '') {
             throw new Error('[E_MISSING_MESSAGE] superd-hub: send requires a non-empty message')
           }
-          const addr = parseAgentAddress(args.agent)
+          // D24/T3: `agent` is required only to OPEN a conversation; on a
+          // continuation the hub derives the route from the conversation id.
+          if (args.conversationId === undefined && (args.agent === undefined || args.agent === '')) {
+            throw new Error('[E_MISSING_AGENT] superd-hub: send requires agent ("<m4>-<a6>") to open a new conversation')
+          }
+          const to = args.agent === undefined ? undefined : parseAgentAddress(args.agent)
           const receipt = await deps.service.send(
             {
-              to: addr,
+              ...(to === undefined ? {} : { to }),
               ...(args.conversationId === undefined ? {} : { conversationId: args.conversationId }),
               ...(args.title === undefined ? {} : { title: args.title }),
               message: args.message,
@@ -490,15 +492,14 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
         }
 
         case 'stop': {
-          if (args.agent === undefined || args.agent === '') {
-            throw new Error('[E_MISSING_AGENT] superd-hub: stop requires agent ("<m4>-<a6>")')
-          }
           if (args.conversationId === undefined || args.conversationId === '') {
             throw new Error('[E_MISSING_CONVERSATION] superd-hub: stop requires conversationId')
           }
-          const addr = parseAgentAddress(args.agent)
+          // D24/T3: the session owner is derived from the conversation id;
+          // `agent`, when supplied, is only a checked assertion.
+          const to = args.agent === undefined ? undefined : parseAgentAddress(args.agent)
           const result = await deps.service.stop(
-            { to: addr, conversationId: args.conversationId },
+            { conversationId: args.conversationId, ...(to === undefined ? {} : { to }) },
             args.scope ?? 'turn',
           )
           return {

@@ -236,6 +236,30 @@ test('send without conversationId opens a new conversation (created:true, D24)',
   assert.equal(req.message, 'hello')
 })
 
+test('T3: send with conversationId but no agent omits `to` (the hub derives the route)', async () => {
+  const { tool, service } = makeTool()
+  await tool.execute({ action: 'send', conversationId: 'conv0001', message: 'continue' }, fakeExec())
+  const { req } = service.state.calls.send[0]
+  assert.equal(req.to, undefined)
+  assert.equal(req.conversationId, 'conv0001')
+  assert.equal(req.message, 'continue')
+})
+
+test('T3: send without conversationId still requires agent (open needs a recipient)', async () => {
+  const { tool } = makeTool()
+  await assert.rejects(
+    () => tool.execute({ action: 'send', message: 'hi' }, fakeExec()),
+    /E_MISSING_AGENT/,
+  )
+})
+
+test('T3: stop without agent omits `to` (the session owner is derived from the row)', async () => {
+  const { tool, service } = makeTool()
+  await tool.execute({ action: 'stop', conversationId: 'conv0001' }, fakeExec())
+  assert.equal(service.state.calls.stop[0].conv.to, undefined)
+  assert.equal(service.state.calls.stop[0].conv.conversationId, 'conv0001')
+})
+
 // ---------------------------------------------------------------- send
 
 test('send: receipt echo, initiator threading, NO post-send watch (R4 — replies ride envelopes)', async () => {
@@ -753,11 +777,12 @@ test('0.1.7-n F1: cwd on the pty leg is refused loudly (no silent parameter no-o
   assert.equal(seen[0].cwd, '/etc')
 })
 
-test('0.1.7-n O3: the description states the owner-address rule; D24 the single send door', () => {
+test('0.1.8 T3: agent is optional on continuation (route derived); D24 the single send door', () => {
   const { tool } = makeTool()
-  // O3 lives on the agent parameter; the cwd asymmetry on the tool description
-  assert.match(tool.parameters.properties.agent.description, /OWNER address/)
-  assert.match(tool.parameters.properties.agent.description, /a peer opened with you it is YOUR OWN address/)
+  // T3 lives on the agent parameter: required only to OPEN, derived on resume
+  assert.match(tool.parameters.properties.agent.description, /REQUIRED on send only to OPEN/)
+  assert.match(tool.parameters.properties.agent.description, /omit agent/)
+  assert.match(tool.description, /agent optional — the hub derives the route/)
   assert.match(tool.description, /open-or-resume/)
   assert.match(tool.description, /created/)
   assert.match(tool.description, /cwd is oneshot-only/)
