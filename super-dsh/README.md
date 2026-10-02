@@ -26,7 +26,7 @@ home under `<DSH_HOME>/agents/<label>/` on first boot.
 
 | Label | Runtime | Integration |
 |---|---|---|
-| OMP | OMP (`~/.omp`) | in-process SDK sidecar, lazy per session |
+| OMP | OMP (`~/.omp`) | host `omp` binary over RPC (`omp --mode rpc`, NDJSON v1), lazy per session |
 | Codex | Codex CLI (`~/.codex`) | adapter world plugin |
 | Claude | Claude Code (`~/.claude`) | standalone adapter, joined by the hub |
 | Pi | pi coding agent (`~/.pi`) | in-process SDK |

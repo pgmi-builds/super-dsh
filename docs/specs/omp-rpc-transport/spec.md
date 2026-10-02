@@ -9,7 +9,7 @@
 
 > OMP 实在太重了，不得不退回以前的方案……OMP adapter 走回老路，直接用用户本地的 binary 走 RPC。
 
-现行 OMP adapter 通过 **Bun sidecar 内嵌 `@oh-my-pi/pi-coding-agent` SDK**（一会话一 handle，单 sidecar 多路复用）。
+〔改造前状态，历史记录〕OMP adapter 曾通过 **Bun sidecar 内嵌 `@oh-my-pi/pi-coding-agent` SDK**（一会话一 handle，单 sidecar 多路复用）。
 它把 762M 的 `@oh-my-pi` 树 + 76M 的 `bun` 二进制拖进**每一个** super-dsh 消费者的 profile：
 
 ```
@@ -116,9 +116,9 @@ binary 用同一个 `resolveOmpExecutable()`，cwd = `OMP_HOME`。
 ## 3. 不变量（违反即缺陷）
 
 1. `~/.omp` 仍是唯一 OMP app home，spawn **零重定向**（不喂 `OMP_HOME` 给子进程；`OMP_HOME` 只作测试 knob）。
-2. `LazyOmpRpc` 仍是唯一 spawn 点；**create/resume 都不得 eager spawn**（旧回归点，见 `sidecar-decouple.test.mjs`）。
+2. `LazyOmpRpc` 仍是唯一 spawn 点；**create/resume 都不得 eager spawn**（源级回归：`test/no-sidecar.test.mjs` —— `index.ts` 内不得出现 `OmpRpcClient.spawn(`，且必须 `new LazyOmpRpc(`）。
 3. DSH 会话日志仍是唯一 WebUI 读面，OMP 原生会话文件仍是 runtime 权威，双份存储照旧。
-4. `omp` 与用户 TUI **不得**在同一 session file 上并发写（旧的 L1/L2/L3 独占持锁段必须保留）。
+4. **本轮未接线（显式登记，非在效力不变量）**：L1/L2/L3 的 foreign-writer 独占语义目前只有 helper 形态——`omp-store.ts` 的 `scanForeignWriters` / `foreignWriterPid` 能判定「另一个进程正以写模式持有该 session file」，但 **`resume` 路径没有任何调用者**：桥不会因此拒绝接管用户 TUI 正在写的 transcript，两个 writer 仍可能在同一文件上交错 append。该暴露**先于本计划存在**（旧 RPC 线删除时随之失去接线），**本计划未改变它**。跟进项 = 在 `resume` 中对 `foreignWriterPid(<sessionFile>)` 做 fail-loud 校验；是否接线由操作员裁决。
 5. 插件不自带 OMP 代码副本：**用户机器上必须有 `omp`**。缺失时**不得静默回落**——readiness 语义照旧（= world mount 成功，与 hermes/claude 先例一致），但 adapter 在 `apply()` 做一次二进制的可解析性探测并打显式诊断，首轮 prompt 时以 spawn 错误 fail loud 冒到会话。
 
 ## 4. 已知 gap（登记，不阻塞）

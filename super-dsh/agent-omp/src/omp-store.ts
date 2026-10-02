@@ -456,9 +456,10 @@ function isDescendantOf(pid: number, ancestor: number): boolean {
  * OMP has no session-level exclusivity: neither the TUI nor `--mode rpc`
  * locks its transcript, so two live writers interleave appends silently
  * (verified: a TUI `omp` and a bridge `omp --mode rpc --resume` coexisted on
- * one file with plain `w` descriptors and no advisory locks). The bridge
- * therefore refuses to resume a transcript another process already writes —
- * the TUI case — closing the split-brain at the only layer that can see it.
+ * one file with plain `w` descriptors and no advisory locks). The intended
+ * enforcement is to refuse resuming a transcript another process already writes
+ * (the TUI case), closing the split-brain at the only layer that can see it —
+ * but see {@link foreignWriterPid}: that hold is NOT wired in this round.
  * Own descendants (a just-torn-down bridge child whose fds linger) are
  * exempt to keep teardown races from wedging re-resume.
  */
@@ -516,7 +517,14 @@ export function scanForeignWriters(): Map<string, number> {
 /**
  * Pid of a FOREIGN process holding `file` open for writing, if any.
  * Convenience wrapper over {@link scanForeignWriters} for the single-file
- * resume gate; the supervisor uses the shared collector directly per tick.
+ * resume gate.
+ *
+ * UNWIRED (2026-10-03): this helper has no caller — the `resume` path never
+ * invokes it, so nothing currently refuses a transcript another process (the
+ * TUI) is writing. Spec §3.4 of `docs/specs/omp-rpc-transport/spec.md`
+ * registers that accepted exposure and the planned follow-up: a fail-loud
+ * `foreignWriterPid(<sessionFile>)` check wired into `resume`, to be decided
+ * by the operator. Helper kept exported for that follow-up.
  */
 export function foreignWriterPid(file: string): number | undefined {
   let canonical: string;

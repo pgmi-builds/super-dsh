@@ -8,7 +8,7 @@
 
 ## 〇、一句话架构（dsh-shape-session-log 之后）
 
-OMP 进程内 SDK（sidecar）是 live runtime；**dsh 原生 session log 是 of record**；插件只做两件事：**当 producer**（把 SDK 事件翻译成 SessionEvent 并经宿主 `ctx.sessionPersistence` 落盘）与**当 bridge**（把 OMP 侧的 identity/模型面接进 dsh 契约）。读侧（list/page/replay/workspace）全部由 dsh 原生组件读 `<DSH_HOME>/sessions`；OMP 自己的 runtime 数据在 **插件的 OMP home**（`OMP_HOME = dshHomePath("agents","omp",".omp")` → `<DSH_HOME>/agents/omp/.omp`，OMP 格式），两者 1:1 但互不读。
+操作员本机的 `omp` binary（`omp --mode rpc` 子进程）是 live runtime；**dsh 原生 session log 是 of record**；插件只做两件事：**当 producer**（把 OMP RPC 事件翻译成 SessionEvent 并经宿主 `ctx.sessionPersistence` 落盘）与**当 bridge**（把 OMP 侧的 identity/模型面接进 dsh 契约）。读侧（list/page/replay/workspace）全部由 dsh 原生组件读 `<DSH_HOME>/sessions`；OMP 自己的 runtime 数据在 **`OMP_HOME`**（默认原生 `~/.omp`，`$OMP_HOME` 只作测试/隔离 knob，OMP 格式），两者 1:1 但互不读；`<DSH_HOME>/agents/omp/` 只是该 world 的 DSH home（sessions/storages/settings），**不是** OMP app home。
 
 ---
 
@@ -18,7 +18,7 @@ OMP 进程内 SDK（sidecar）是 live runtime；**dsh 原生 session log 是 of
 
 - UI 的 new-chat 是**浏览器本地**的：workspace / agent preset / model 都还没 frozen，用户可能切来切去再回来（浏览器端自己缓存 draft）。**这段期间 OMP 侧必须零动作。**
 - 实现入口 = `LazyOmpRpc`（`src/lazy-rpc.ts`）：构造时不 spawn，第一次 `prompt`/`followUp`/`steer` 才 spawn；`adoptSpawnedChild` 在那一刻写映射。
-- **三个路径都必须 lazy（2026-09-16 扩展）**：`createAgent`（create）、`resume` 的「无 OMP 映射」分支，以及 `resume` 的「有 OMP 映射」分支（`--resume <ompFile>` 同样走 `LazyOmpRpc`）。2026-09-15 曾在 resume 分支误用 `OmpSdkClient.spawn(...)`（eager），当场造出一个空 OMP session —— **这是已知复发点，回归测试必查**（`test/sidecar-decouple.test.mjs` 源级断言：`index.ts` 内不得出现 `OmpSdkClient.spawn`）。宿主对 cold session 的 follow-promote（打开即 resume）意味着：WebUI 只浏览/回放也绝不能拉起子进程。
+- **三个路径都必须 lazy（2026-09-16 扩展）**：`createAgent`（create）、`resume` 的「无 OMP 映射」分支，以及 `resume` 的「有 OMP 映射」分支（`--resume <ompFile>` 同样走 `LazyOmpRpc`）。2026-09-15 曾在 resume 分支误用 eager spawn（当时的 `OmpSdkClient.spawn`，该类已随 RPC 轮删除），当场造出一个空 OMP session —— **这是已知复发点，回归测试必查**（`test/no-sidecar.test.mjs` 源级断言：`index.ts` 内不得出现 `OmpRpcClient.spawn(`，且必须 `new LazyOmpRpc(`）。宿主对 cold session 的 follow-promote（打开即 resume）意味着：WebUI 只浏览/回放也绝不能拉起子进程。
 - 为什么不 eager：dsh 原生 session 的 cwd/preset 由 UI 在 prompt 时才定稿；先建 OMP session 会把错误的 workspace 冻进 OMP 侧，与 dsh 的持久化产生分歧。
 
 ### 为什么 resume 会被叫到（反直觉）
@@ -58,11 +58,11 @@ OMP 进程内 SDK（sidecar）是 live runtime；**dsh 原生 session log 是 of
   - 要钉 browse：`insert` **两个**包（backend 在前，surface 在后，顺序即依赖）+ `disabled: true` auto。**只挂 backend 会毁掉按钮。**
 - **标题归 OMP，而且是 OMP 真的会生成的**（2026-09-15 修正：此前记录「OMP 侧 title 恒为空」是错的——不是没能力，是我们从没触发它）：
   - OMP session 文件首行是 `{"type":"title","v":1,"title":…,"source":"auto"|"user","updatedAt":…,"pad":…}`：创建时**写空**，之后**原地重写**（`pad` 是预留宽度的填充）。
-  - 原生输入路径调用 **`AgentSession.maybeStartTitleGeneration(firstMessage)`**（SDK 公开方法）：它自会跳过 slash 命令 / 已有名字 / 噪声消息（`KPe`），并受 `PI_NO_TITLE` 门控——**OMP CLI 在 `--mode rpc|rpc-ui|acp` 时主动 `PI_NO_TITLE=1`**，所以「机器模式没有标题」是上游的刻意设计。
-  - 我们的接线（`sidecar/main.ts`）：首条 prompt 显式调 `maybeStartTitleGeneration(text)`（走 OMP 自己的 prompt/model/逻辑），并订阅 `sessionManager.onSessionNameChanged` + 每个事件后复查 `session.sessionName`（生成是**异步模型调用**，可能晚于本轮结束才落地）→ 发 `session:title` 帧 → `sdk-client.onTitle` → `agent.#applyOmpTitle` 写 `session/title`（`source:{kind:"provider",provider:"omp"}`）。
+  - 标题由 OMP 自己生成（受 `PI_NO_TITLE` 门控；`omp --mode rpc` 时上游主动 `PI_NO_TITLE=1`，但 RPC 面仍会发标题帧）；对桥而言标题**唯一到达面** = RPC 帧 `session_info_update.title`（另有 `setTitle`），见 `rpc-client.ts` 的 `onTitle`。
+  - 我们的接线（`rpc-client.ts` `onTitle` → `agent.ts` `#applyOmpTitle` / `#mirrorOmpTitle`）：标题帧到达即 mirror，并在每轮结束后用 `getState().title` 复查（生成是**异步模型调用**，可能晚于本轮结束才落地）→ 写 `session/title`（`source:{kind:"provider",provider:"omp"}`）。
   - **不要**启用 dsh 的 `session-title-llm`（那条会走 dsh 侧 LLM，属于擅自加功能），它现在保持 disabled。
   - 已知副作用：base `session-title` 的 **fallback**（首条 user message 文本、无 LLM）仍会先发一条 `session/title`，随后被 OMP 标题覆盖 —— UI 上可能有一瞬先 fallback 后 OMP 标题。是否停用 fallback 待裁决。
-- 另可复用：`AgentSession.generateTitle(firstMessage, customSystemPrompt?)`（同步返回标题串）、`setSessionName(name,"auto"|"user",trigger?)`。
+- 标题只能被动接收：`getState()` 的 `title` 键是标题帧之外的唯一复查面，没有主动索要标题的 RPC 命令。
 - `agent-loop` / `agent-presets` / `llm-deepseek` / `llm-pi-ai` disabled；`session-persistence-jsonl` **保持挂载**（唯一的 `sessionPersistence`）。
   - 副作用已知：`agent-presets` disabled ⇒ `pluginInventory/list` 报 `presets.compositionInventory is not a function`（插件清单页不可用），与运行无关。
 
@@ -72,24 +72,23 @@ OMP 进程内 SDK（sidecar）是 live runtime；**dsh 原生 session log 是 of
 
 | 名字 | 是什么 | 定义（`src/knobs.ts`） | 默认 |
 |---|---|---|---|
-| **`OMP_HOME`** | **插件自己的** OMP home = SDK runtime app home（`agentDir`）；`agent.db`/`models.db`/`sessions/` + config 副本落这里 | `process.env.OMP_HOME ?? dshHomePath("agents", "omp", ".omp")` | `<DSH_HOME>/agents/omp/.omp`（未设 `DSH_HOME` 时 `~/.dsh/agents/omp/.omp`）——与 codex 的 `<world>/.codex` 对称；2026-09-16 前 app 文件散落在 world 根，与 dsh 的 `sessions/`/`storages/`/`settings.yaml` 混放 |
+| **`OMP_HOME`** | **OMP runtime app home**（`agent.db`/`models.db`/`sessions/` 的写入目标；也是 `omp` 数据面子进程的 cwd） | `process.env.OMP_HOME ?? resolveOmpNativeHome()` | **原生 `~/.omp`**（2026-09-17 原生 home 裁决；旧的 `<DSH_HOME>/agents/omp/.omp` 派生已退役）——`$OMP_HOME` 仍是测试 / 适配器级隔离 knob，但**默认绝不指向 DSH 树** |
 | **`OMP_NATIVE_HOME`** | **操作员的原生 OMP** 安装（TUI/CLI）：`agent/config.yml`、`agent/models.yml`、原生 session store | `process.env.OMP_NATIVE_HOME ?? join(homedir(), ".omp")` | `~/.omp` |
 
-- **推导必须用 harness 的解析器，不能读 `process.env.DSH_HOME`**（2026-09-15 实测修）：harness 从不导出 `DSH_HOME`——launcher 不设它时，harness 内部按 `$DSH_HOME ?? ~/.dsh` 解析（`@deepseek-ai/dsh-home-paths` 的 `resolveDshHome()`），而裸读 `process.env.DSH_HOME` 得到 `undefined` → 插件回退到自己的 `~/.omp/omp-web` 兜底 → **app home 落到与 session log 完全不同的树**（实测：`~/.omp/omp-web/agents/omp`，而 dsh 在用 `~/.dsh`）。修法即上表的 `dshHomePath("agents","omp",".omp")`（同款 peer 依赖 + vendored type）。**冒烟必须覆盖「零 env 启动」这条**，本轮正是它暴露的。
-- **`OMP_HOME` 里那份「原生」的引用已全部改为 `OMP_NATIVE_HOME`**：config 副本的**来源**（`app-home.ts`）、模型目录的磁盘回落（`models.ts` 的 `OMP_AGENT_DIR`）、`modelRoles` 桥读写的 `agent/config.yml`（`omp-store.ts`）、`OMP_SESSIONS_ROOT`、以及 workspace 排除表（`index.ts`）。
+- 〔历史〕2026-09-15 曾把 app home 派生为 `dshHomePath("agents","omp",".omp")`，且当时裸读 `process.env.DSH_HOME` 得到 `undefined` → 实测落到 `~/.omp/omp-web/...`，而 dsh 在 `~/.dsh`（app home 与 session log 分家）。2026-09-17 原生 home 裁决后该派生整体退役：`OMP_HOME` 默认 = `OMP_NATIVE_HOME`（`~/.omp`），与 DSH_HOME 不再相干——裸读 `DSH_HOME` 的坑随之消失（历史教训保留在案）。
+- **原生读取面一律走 `OMP_NATIVE_HOME`**（不是 `OMP_HOME`）：模型目录的磁盘回落（`models.ts` 的 `OMP_AGENT_DIR`）、`OMP_SESSIONS_ROOT` 与 `agent/config.yml`（`omp-store.ts`）、commands/skills 扫描根（`omp-disk-discovery.ts`）、以及 workspace 排除表（`index.ts`）。`OMP_HOME` 只作 app 写入目标与 `omp` 子进程 cwd。
 - **绝不要把 `OMP_NATIVE_HOME` 指到 app home / 测试 home**：它是 config/models.yml 的**读取来源**，指到空目录 → 模型磁盘回落读空 → 适配器零 provider → `session/prompt` 报 `model-unavailable`（看着像代码 bug，其实是 env 配错；2026-09-15 真踩过）。反过来，`OMP_HOME` 是**写入目标**，别让它等于 `~/.omp`。
-- `sidecar/main.ts` 的 `agentDir` 现在读 `OMP_HOME`（由 `sdk-client.ts` 显式注入，不再叫 `OMP_APP_HOME`）；`sidecar-client.ts` 里那个从未被调用、且会把 `OMP_HOME` 注进 sidecar env 的 `ompHome` 选项已删（与新语义直接冲突）。
-- SDK 指认 home 用的是 **`agentDir`**（`createAgentSession({agentDir})` / `discoverAuthStorage(agentDir)` / `Settings.*({agentDir})`），**不是 `OMP_HOME`**（SDK 完全不读 `OMP_HOME`，dist 内 0 处）。配置由 `src/app-home.ts` 一次性从 `~/.omp/agent/` 复制（不覆盖已存在、fail-soft）。
-- config 桥（`modelRoles` 双向同步）**仍读写 `~/.omp/agent/config.yml`**（as-is 裁决）；两份 config 的漂移是已知债，留给 config 迁移 change。
+- `OMP_HOME` 是 OMP app 数据的**写入目标**（也是 `omp-cli.ts` 子进程的 cwd）；spawn `omp --mode rpc` 时**不显式注入 / 重定向 home**，子进程用操作员自己的原生 `~/.omp`。
+- config 桥（`modelRoles` 双向同步）**写走子进程**：`omp config set modelRoles --json`（`omp-cli.ts`，cwd = `OMP_HOME`；OMP 自己持久化 `modelRoles.default`），不再直接写 `agent/config.yml`；读侧 provider 排序首选磁盘 `agent/config.yml`、CLI 兜底。
 
 ---
 
-## 五·五、Sidecar 解耦（2026-09-16 裁决）：**tick 永不 spawn；sidecar 只活在会话窗口**
+## 五·五、零 spawn 窗口（原「Sidecar 解耦」，2026-09-16 裁决）：**tick 永不 spawn；`omp` 子进程只活在会话窗口**
 
-- **不变量**：`STORAGE_RECONCILE_INTERVAL_MS` 的 tick（workspace attach + default-model sync）绝不触碰 sidecar。周期性目录读取唯一入口 = `callSharedIfLive`（`sdk-client.ts`）：sidecar 不在 → 直接 `undefined`，**零进程**。`callShared`（允许 spawn）只许出现在「真实需要」路径：modelRoles get/set（DSH 侧默认变了才触发）与 `LazyOmpRpc` 首次派发。源级+运行时回归：`test/sidecar-decouple.test.mjs`（含 ps+environ 作用域化进程断言——全套并行跑时全局 `ps` 会看到别的测试文件的 sidecar，必须按 OMP_HOME 过滤）。
-- **boot 目录优先**：模型目录 boot 读 `models.db`∪`models.yml`（`loadOmpModels` 磁盘回落）；`ompAvailableModelsSync`/`ompModelRolesSync` 是 **memo-only**（warm 函数已删）；provider 排序的 modelRoles 读 `config.yml` 磁盘（`readOmpModelRolesFromConfig`，mini-YAML 扫描，零 YAML 依赖）。sidecar 活着时 tick 的 `refreshOmpModelsCli` 才搭便车换 memo。
+- **不变量**：`STORAGE_RECONCILE_INTERVAL_MS` 的 tick（workspace attach + default-model sync）绝不 spawn `omp`。周期性刷新的唯一入口 = `liveOmpSessionExists(this.liveSessions)`（`index.ts` 导出的 gate）：集合为空、或会话只是未 spawn 的 draft（`LazyOmpRpc`）→ 直接跳过，**零进程**；集合由 `registerHeld` 在会话真正 publish 时 `liveSessions.add(rpc)` 填充、dispose 时删除。回归 = `test/no-sidecar.test.mjs`：源级断言「tick 的 `refreshOmpModelsCli()` 必须挂在 `liveOmpSessionExists` 上」+ 对编译后 `dist/index.js` 跑行为真值表（gate 的输入集必须被 publish 路径填充，否则刷新是死代码）。**数据面另算**：`omp models --json` / `omp config get` 都是真实子进程，任何周期性调用都必须先过这道 gate。
+- **数据面真源**：模型目录第一源 = `omp models --json`（boot 走 `ompAvailableModelsSync`，失败才回落磁盘 `models.db` ∪ `models.yml` 并打 stderr）；provider 排序的 modelRoles 首选 `agent/config.yml` 磁盘读（`readOmpModelRolesFromConfig`，mini-YAML 扫描，零 YAML 依赖），`ompModelRolesSync` 兜底。tick 的 `refreshOmpModelsCli` 只在 live gate 为真时搭便车换 memo。
 - **skills + slash commands 全磁盘**：`discovery.ts` 不再 import sdk-client；`readSlashCommands`/`readSkills`（`omp-disk-discovery.ts`）扫 omp+claude 的 user/project 根。v1 保真度边界（已裁决接受）：无 embedded 内置命令、无 codex/opencode/cursor 等外来 provider、无 capability 语义（at-imports/managed skills）。命令 boot 挂一次 + `OMP_DISCOVERY_REFRESH_INTERVAL_MS`（knobs，默认 1h，0 禁用）重挂（dispose-then-register，先卸旧集再挂新集）。
-- ~~**已知环境坑**：`sdk-client.test.mjs` / `sidecar-smoke.test.mjs` 真 spawn sidecar~~（2026-09-24 关闭）：这两个真 sidecar spawn 测试已随 **per-agent 场景退役**删除；lazy 不变量仍由 `sidecar-{singleton,decouple}.test.mjs` 把守（fakes + 源级断言，零真 runtime）。
+- ~~**已知环境坑**：真 spawn sidecar 的测试~~（2026-09-24 场景退役 + 2026-10-03 RPC 轮）：SDK 线的 `sdk-client.test.mjs` / `sidecar-smoke.test.mjs`、以及 `sidecar-*.test.mjs` 全部已删；现行 lazy / 零 spawn 不变量由 `test/lazy-rpc.test.mjs` 与 `test/no-sidecar.test.mjs` 把守（全 fakes + 源级断言，零真 runtime、零真 `omp`）。
 
 ---
 
@@ -97,4 +96,4 @@ OMP 进程内 SDK（sidecar）是 live runtime；**dsh 原生 session log 是 of
 
 **场景退役（user 裁决）**：本目录不再有 per-agent 场景 rig——standalone 线、真 sidecar spawn 测试（`sdk-client`/`sidecar-smoke` 已删）、下方旧冒烟清单一律退役；**整包验证只走 superd 的 4999 pack 线 + dev3 实装**（`super-dsh/AGENTS.md`）。原「冒烟九查」的覆盖面（fresh create 全事件落盘 / resume 含 blank draft / eager-spawn 禁令 / idle-exit / tick 零 spawn / 磁盘扫描菜单）由 **pack 线上的 per-runtime 会话面验收**承载（根 AGENTS §二.5 对齐验收程序）。
 
-保留的单元测试面（`npm test`，全 fakes、零真 runtime）：session log 生产者契约（`appendUnstoredSuffix`/v3 坐标）、bridge 映射（`bridge-store`）、模型面（`models`/`model-roles`）、`sidecar-{singleton,decouple}` lazy 不变量、store/discovery、mobile 纯函数。
+保留的单元测试面（`npm test`，全 fakes、源级断言，零真 runtime、零真 `omp`）：session log 生产者契约（`appendUnstoredSuffix`/v3 坐标）、bridge 映射（`store`）、模型面与 home（`omp-store`/`omp-model-roles-disk`）、lazy 与零 spawn 不变量（`lazy-rpc`/`no-sidecar`）、RPC 传输与 binary 解析（`rpc-client`/`resolve-executable`）、数据面（`omp-cli-rpc`）、菜单发现（`omp-disk-discovery`/`omp-discovery-mount`）、preset roster、mobile 纯函数、交付清单（`package-contract`）。

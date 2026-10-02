@@ -1,7 +1,7 @@
 {
   "name": "@pgmi-builds/agent-omp",
   "version": "0.1.0",
-  "description": "OMP Web: OMP provider for DeepSeek Harness (dsh) — an AgentFactory that embeds OMP via the @oh-my-pi/pi-coding-agent SDK (Bun sidecar) and bridges OMP's session surface into Dash Agent/Session contracts.",
+  "description": "OMP Web: OMP provider for DeepSeek Harness (dsh) — an AgentFactory that drives the operator's own omp binary as an `omp --mode rpc` child (NDJSON protocol v1 over stdio) and bridges OMP's session surface into Dash Agent/Session contracts.",
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
