@@ -6,7 +6,7 @@
  *   - constructing one spawns no OMP child, writes no transcript, no index
  *     row, and no session events — the session announces blank, exactly like
  *     the native agent-loop factory's in-process agent;
- *   - the shared-sidecar session materializes on the FIRST dispatch path
+ *   - the `omp --mode rpc` child materializes on the FIRST dispatch path
  *     (`prompt` / `followUp` / `steer` / `ensureStarted`);
  *   - passive queries (`getState` / `getSubagents` / `getSessionStats` /
  *     `getSystemPrompt` / `abort` / `sendRaw`) answer synthetically without
@@ -19,12 +19,12 @@
  * sync) is parked and applied right after the spawn, ahead of the prompt.
  */
 import type { OmpSessionStats, OmpState, RpcEvent } from "./rpc-types.js";
-import { OmpSdkClient } from "./sdk-client.js";
+import { OmpRpcClient } from "./rpc-client.js";
 
 /**
- * The client surface `OmpAgent` drives. `OmpSdkClient` satisfies this
- * structurally (plus `ensureStarted`/`spawned`, which are no-ops/trues there);
- * `LazyOmpRpc` implements it with deferred spawning.
+ * The client surface `OmpAgent` drives. `OmpRpcClient` satisfies this
+ * structurally (plus `ensureStarted`/`spawned`, which `LazyOmpRpc` implements
+ * itself); `LazyOmpRpc` implements it with deferred spawning.
  */
 export interface OmpAgentRpc {
   on(listener: (event: RpcEvent) => void): () => void;
@@ -55,14 +55,14 @@ const IDLE_STATE: OmpState = { isStreaming: false };
 export class LazyOmpRpc implements OmpAgentRpc {
   readonly #spawnArgs: string[];
   readonly #cwd: string | undefined;
-  #client: OmpSdkClient | undefined;
-  #spawn: Promise<OmpSdkClient> | undefined;
+  #client: OmpRpcClient | undefined;
+  #spawn: Promise<OmpRpcClient> | undefined;
   #closed = false;
   readonly #eventListeners = new Set<(event: RpcEvent) => void>();
   readonly #titleListeners = new Set<(title: string) => void>();
   readonly #failureListeners = new Set<(error: Error) => void>();
   #pendingModel: { provider: string; modelId: string } | undefined;
-  #onSpawned: ((client: OmpSdkClient) => void) | undefined;
+  #onSpawned: ((client: OmpRpcClient) => void) | undefined;
 
   constructor(spawnArgs: string[], cwd?: string) {
     this.#spawnArgs = spawnArgs;
@@ -75,7 +75,7 @@ export class LazyOmpRpc implements OmpAgentRpc {
    * were deliberately skipped). Registered before or after the spawn; both
    * orders fire exactly once.
    */
-  onSpawned(handler: (client: OmpSdkClient) => void): void {
+  onSpawned(handler: (client: OmpRpcClient) => void): void {
     this.#onSpawned = handler;
     if (this.#client !== undefined) handler(this.#client);
   }
@@ -85,10 +85,10 @@ export class LazyOmpRpc implements OmpAgentRpc {
   }
 
   /** Spawn once; concurrent and later callers share the same child. */
-  #ensure(): Promise<OmpSdkClient> {
+  #ensure(): Promise<OmpRpcClient> {
     if (this.#client !== undefined) return Promise.resolve(this.#client);
     if (this.#spawn === undefined) {
-      this.#spawn = OmpSdkClient.spawn(this.#spawnArgs, this.#cwd).then((client) => {
+      this.#spawn = OmpRpcClient.spawn(this.#spawnArgs, this.#cwd).then((client) => {
         // A close() that raced the in-flight spawn wins: dispose immediately.
         if (this.#closed) {
           client.close();
@@ -140,8 +140,8 @@ export class LazyOmpRpc implements OmpAgentRpc {
 
   async prompt(message: string): Promise<unknown> {
     const client = await this.#ensure();
-    // Apply a pre-spawn model selection now, ahead of the prompt (the sidecar
-    // records it as the session's model_change, like a pre-turn set_model).
+    // Apply a pre-spawn model selection now, ahead of the prompt (the child
+    // emits a config_update, like a pre-turn set_model).
     const pending = this.#pendingModel;
     if (pending !== undefined) {
       this.#pendingModel = undefined;
