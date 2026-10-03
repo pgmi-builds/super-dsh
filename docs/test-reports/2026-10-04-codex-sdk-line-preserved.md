@@ -133,7 +133,7 @@ Missing environment variable: `ZHIPU_API_KEY`
 
 user 现场反馈：不同 repo 的 rig 都抢 4999，而每个 home 自带一份 `.credentials.yaml`，secret 不同 ⇒ 浏览器 cookie 每次换 rig 都要重铸。
 
-本仓落法（`test/start-4999.sh`）：给 upstream `credentials` 行套 profile patch，把 `path` 指到**全机共用**的 `$(dirname $REPO)/.dsh-test-credentials.yaml`（`SUPERD_TEST_CREDENTIALS` 可覆盖）；文件不存在时先由本 home 旧文档播种，所以**采纳这个约定不会让用户手上那个 cookie 失效**（本仓 `.tests/superd` 与 dashr `.test/home` 本就是同一个 secret）。
+本仓落法（`test/start-4999.sh`）：给 upstream `credentials` 行套 profile patch，把 `path` 指到**全机共用**的 `$(dirname $REPO)/.dsh-test-credentials.yaml`（`DSH_TEST_CREDENTIALS` 可覆盖）；文件不存在时先由本 home 旧文档播种，所以**采纳这个约定不会让用户手上那个 cookie 失效**（本仓 `.tests/superd` 与 dashr `.test/home` 本就是同一个 secret）。
 
 ⚠ 实测 A/B（同一个 home、同一个 cookie，只换 seed 源）：
 

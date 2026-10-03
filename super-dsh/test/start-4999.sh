@@ -53,7 +53,7 @@ ANCHOR="$REPO/upstream/deepseek-harness/apps/cli/package.json"  # repo-line cont
 # own document (which the repo's main homes already share), so no existing
 # cookie is invalidated by adopting it. Other repos' launchers adopt the same
 # convention by pointing their `credentials` row at the same path.
-SHARED_CREDENTIALS="${SUPERD_TEST_CREDENTIALS:-$(dirname "$REPO")/.dsh-test-credentials.yaml}"
+SHARED_CREDENTIALS="${DSH_TEST_CREDENTIALS:-$(dirname "$REPO")/.dsh-test-credentials.yaml}"
 
 # ---- red line: home must be this repo's test tree ----
 case "$DSH_HOME_DIR" in
@@ -124,7 +124,8 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
     host: 127.0.0.1
     port: ${PORT}
 # One seed for every rig on this machine (see SHARED_CREDENTIALS above): the
-# upstream row defaults to `$DSH_HOME/.credentials.yaml`, which makes the
+# upstream row defaults to the credentials document under the harness home,
+# which makes the
 # browser cookie die every time a rig with another home takes the port. The
 # profile patch composes AFTER the bundle patch, so restating the id with an
 # explicit absolute path wins.
