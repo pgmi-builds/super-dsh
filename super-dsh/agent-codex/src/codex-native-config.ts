@@ -66,6 +66,8 @@ export interface NativeSelection {
   readonly model?: string;
   readonly baseUrl?: string;
   readonly protocol?: string;
+  /** How the in-force provider authenticates, as its own table declares it. */
+  readonly auth?: { readonly kind: "apiKey" | "env"; readonly name?: string };
 }
 
 /** One classified config line: where it sits decides whether it is ours. */
@@ -303,18 +305,28 @@ export function readNativeSelection(codexHome: string): NativeSelection {
   }
   let baseUrl: string | undefined;
   let protocol: string | undefined;
+  let envKey: string | undefined;
+  let openaiAuth = false;
   const wanted = `model_providers.${providerId}`;
   for (const line of lines) {
     if (line.table !== wanted || line.key === undefined) continue;
     const value = line.text.slice(line.text.indexOf("=") + 1).trim().replace(/^"(.*)"$/, "$1");
     if (line.key === "base_url") baseUrl = value;
     else if (line.key === "wire_api") protocol = value;
+    else if (line.key === "env_key") envKey = value;
+    else if (line.key === "requires_openai_auth") openaiAuth = value === "true";
   }
+  const auth: NativeSelection["auth"] = envKey !== undefined
+    ? { kind: "env", name: envKey }
+    : openaiAuth
+      ? { kind: "apiKey" }
+      : undefined;
   return {
     providerId,
     ...(model === undefined ? {} : { model }),
     ...(baseUrl === undefined ? {} : { baseUrl }),
     ...(protocol === undefined ? {} : { protocol }),
+    ...(auth === undefined ? {} : { auth }),
   };
 }
 
@@ -382,7 +394,12 @@ export function writeNativeSelection(
   for (const path of [configPath, authPath, catalogPath]) backupOnce(path, stamp);
 
   // Parse before any write: a refusal must not leave a half-applied switch.
-  const nextAuth = input.provider.auth.kind === "apiKey" ? mergeAuthJson(authText, input.provider.auth.value) : undefined;
+  // An apiKey provider with an EMPTY stored value means "the key is already in
+  // auth.json and Super D does not hold it" — the seeded shape. Writing then
+  // would be a no-op at best and a wipe at worst, so auth.json is left alone and
+  // the config still names `requires_openai_auth = true`.
+  const key = input.provider.auth.kind === "apiKey" ? input.provider.auth.value : undefined;
+  const nextAuth = key !== undefined && key !== "" ? mergeAuthJson(authText, key) : undefined;
   const nextConfig = applyProviderToConfigToml(configText ?? "", input);
   const nextCatalog = mergeModelCatalog(catalogText, absorbed, input.provider.models);
 

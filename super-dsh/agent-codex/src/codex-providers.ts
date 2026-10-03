@@ -109,8 +109,12 @@ function auth(value: unknown): CodexProviderAuth | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
   if (record["kind"] === "apiKey") {
-    const secret = str(record["value"]);
-    return secret === undefined ? undefined : { kind: "apiKey", value: secret };
+    // An EMPTY value is a real state, not a malformed entry: it means "this
+    // provider is keyed by auth.json and Super D does not hold a copy", which is
+    // how a provider seeded from the user's own config arrives. Refusing it would
+    // make the user's currently-working provider unrepresentable.
+    const secret = record["value"];
+    return typeof secret === "string" ? { kind: "apiKey", value: secret } : undefined;
   }
   if (record["kind"] === "env") {
     const name = str(record["name"]);

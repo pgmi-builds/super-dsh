@@ -219,6 +219,7 @@ test("readNativeSelection reports what is actually in force", () => {
     model: "glm-5.2",
     baseUrl: "https://api.z.ai/api/coding/paas/v4",
     protocol: "responses",
+    auth: { kind: "apiKey" },
   });
 });
 
@@ -238,7 +239,7 @@ test("writeNativeSelection writes three files, backs each up once, and is read b
   // and the backup really is the pre-write content
   assert.equal(readNativeSelection(home).model, "glm-5.2");
   assert.equal(JSON.parse(readFileSync(join(home, "auth.json"), "utf8")).OPENAI_API_KEY, "sk-secret", "an env provider leaves auth.json alone");
-  assert.deepEqual(readNativeSelection(home), { providerId: "deepseek", model: "glm-5.2", baseUrl: "https://api.deepseek.com/v1", protocol: "responses" });
+  assert.deepEqual(readNativeSelection(home), { providerId: "deepseek", model: "glm-5.2", baseUrl: "https://api.deepseek.com/v1", protocol: "responses", auth: { kind: "env", name: "DEEPSEEK_API_KEY" } });
 });
 
 test("writeNativeSelection absorbs the catalog currently named by model_catalog_json", () => {
