@@ -134,6 +134,27 @@ function authJsonHasKey(codexHome: string): boolean {
   }
 }
 
+/**
+ * Whether the runtime's own auth.json is signed in with a ChatGPT account.
+ *
+ * Measured 2026-10-03 on this machine: when `auth_mode` is `chatgpt`, codex's
+ * auth manager refreshes the OAuth token FIRST and never falls through to the
+ * `OPENAI_API_KEY` in the same file — so a `requires_openai_auth` provider is
+ * silently unusable behind a ChatGPT login (here the refresh is 403
+ * `unsupported_country_region_territory`; the `env_key` shape is unaffected
+ * because it never consults the auth manager at all). We cannot fix that from
+ * our side without evicting the user's login, which cc-switch has dedicated
+ * code to preserve — so we say it out loud instead.
+ */
+function chatgptAuthMode(codexHome: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(codexHome, "auth.json"), "utf8"));
+    return isRecord(parsed) && parsed["auth_mode"] === "chatgpt";
+  } catch {
+    return false;
+  }
+}
+
 /** Whether an entry's key is actually available right now. */
 function keyAvailable(codexHome: string, entry: CodexProviderEntry): boolean {
   if (entry.auth.kind === "apiKey") {
@@ -218,7 +239,13 @@ function viewOf(worldHome: string, codexHome: string, store: CodexProviderStore,
   const unlisted = native.providerId !== undefined && !store.providers.some((entry) => entry.id === native.providerId)
     ? `Codex is running "${native.providerId}", which was configured outside Super D and is not in this list.`
     : undefined;
-  const combined = [note, unlisted].filter((part): part is string => part !== undefined).join(" ");
+  // The measured footgun (2026-10-03): a keyed provider behind a ChatGPT login
+  // looks configured and cannot run. Say so on the panel rather than let the
+  // user discover it as a failed turn.
+  const shadowed = native.auth?.kind === "apiKey" && chatgptAuthMode(codexHome)
+    ? 'Codex is signed in with a ChatGPT account, which takes precedence over a saved API key — a keyed provider will not run until you sign out (`codex logout`) or switch this provider to an environment variable.'
+    : undefined;
+  const combined = [note, unlisted, shadowed].filter((part): part is string => part !== undefined).join(" ");
 
   return {
     providers: store.providers.map((entry) => project(codexHome, entry)),

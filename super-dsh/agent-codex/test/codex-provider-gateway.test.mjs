@@ -251,3 +251,25 @@ test("saving an existing id edits it in place and keeps its stored key when none
   assert.equal(view.providers.find((p) => p.id === "openrouter")?.hasKey, true, "the key survived the edit");
   assert.equal(readProviderStore(worldHome).providers.find((p) => p.id === "openrouter").auth.value, "sk-or-secret");
 });
+
+// ------------------------------------------------------------------ shadowed key
+
+// Measured 2026-10-03: with `auth_mode: chatgpt` in the runtime's auth.json,
+// codex refreshes the OAuth token first and never falls through to the
+// OPENAI_API_KEY in the same file — a `requires_openai_auth` provider looks
+// configured and cannot run. The panel must not stay silent about that.
+test("a keyed provider behind a ChatGPT login is called out", () => {
+  const { worldHome, codexHome } = seeded();
+  writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", OPENAI_API_KEY: "sk-x", tokens: {} }));
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    'model_provider = "keyed"\nmodel = "m"\n\n[model_providers.keyed]\nname = "K"\nbase_url = "https://api.deepseek.com/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n',
+  );
+  const view = readProvidersView(worldHome, codexHome);
+  assert.match(view.note ?? "", /ChatGPT account, which takes precedence/);
+
+  // An env-shaped provider is unaffected, so the note must not appear for one.
+  writeFileSync(join(codexHome, "config.toml"), NATIVE_CONFIG);
+  const envView = readProvidersView(tempHome("world-env"), codexHome);
+  assert.ok(!(envView.note ?? "").includes("takes precedence"));
+});
