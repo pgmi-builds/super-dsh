@@ -228,13 +228,13 @@ export class ClaudeProvider extends Service implements AgentFactory {
     // rule): the native home is re-resolved per call, so a test's
     // `CLAUDE_CONFIG_DIR` and an operator's override are both honored.
     //
-    // The onChange hook is a deliberate NO-OP — claude has no codex-style
-    // route SET to refresh: every provider is served under the ONE fixed
-    // `claude` route registered above (the adapter answers listModels/
-    // resolveModel live from the catalog), and the catalog itself is
-    // observed-only module state (models.ts); panel mutations land through
-    // the live store reads in sessionAgentOptions/defaultModelSelection.
-    new ClaudeProvidersGateway(ctx, this.home, () => resolveClaudeHome(), () => { });
+    // The onChange hook stays a deliberate NO-OP — the codex twin's onChange
+    // exists only because its ROUTE SET changes with the store (one route per
+    // provider, re-registered via routes.replace); claude serves everything
+    // under the ONE fixed `claude` route registered above, and that adapter
+    // reads the provider store live on every listModels/resolveModel call —
+    // no cache to invalidate, so a panel edit is visible to the next catalog
+    // query without any re-registration.
   }
 
   /**
@@ -583,7 +583,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
   #registerModelCatalog(): void {
     const llm = this.runtime.ctx.get("llm") as LlmRuntime | undefined;
     if (llm === undefined) return;
-    llm.registerAdapter([CLAUDE_PROVIDER_ID], new ClaudeLlmAdapter());
+    llm.registerAdapter([CLAUDE_PROVIDER_ID], new ClaudeLlmAdapter(this.home));
   }
 
   /**
