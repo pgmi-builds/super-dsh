@@ -116,9 +116,15 @@ function imgMark(uri: string, size: number): React.JSX.Element {
  */
 export function RuntimeMark({ agentKey, size }: { agentKey: string; size: number }): React.JSX.Element {
   if (agentKey === 'native') return <DshFish size={size} />
-  const uri = RUNTIME_ICON_URIS[agentKey]
+  // An SDK half is the SAME agent through a different transport, so it carries
+  // the same mark: roster keys are `<runtime>` and `<runtime>-sdk` (the two
+  // lines ship beside each other, and the hub's registerAgent hard-throws on a
+  // duplicate key), and inventing artwork per transport would claim the agent
+  // differs when only the plumbing does.
+  const base = agentKey.endsWith('-sdk') ? agentKey.slice(0, -'-sdk'.length) : agentKey
+  const uri = RUNTIME_ICON_URIS[base]
   if (uri === undefined) return <SubagentGlyph size={size} />
-  const tile = RUNTIME_TILE_BG[agentKey]
+  const tile = RUNTIME_TILE_BG[base]
   if (tile === undefined) return imgMark(uri, size)
   // Marks whose own ink would vanish on a dark frame carry an opaque tile:
   // Codex's black glyph on white, Pi's white glyph on black.

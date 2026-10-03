@@ -241,9 +241,10 @@ function imgMark(uri, size) {
 */
 function RuntimeMark({ agentKey, size }) {
 	if (agentKey === "native") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DshFish, { size });
-	const uri = RUNTIME_ICON_URIS[agentKey];
+	const base = agentKey.endsWith("-sdk") ? agentKey.slice(0, -4) : agentKey;
+	const uri = RUNTIME_ICON_URIS[base];
 	if (uri === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SubagentGlyph, { size });
-	const tile = RUNTIME_TILE_BG[agentKey];
+	const tile = RUNTIME_TILE_BG[base];
 	if (tile === void 0) return imgMark(uri, size);
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 		"aria-hidden": "true",
@@ -280,7 +281,10 @@ const FALLBACK_LABELS = {
 	claude: "Claude",
 	pi: "Pi",
 	hermes: "Hermes",
-	agy: "Antigravity"
+	agy: "Antigravity",
+	"omp-sdk": "OMP (SDK)",
+	"agy-sdk": "Antigravity (SDK)",
+	"codex-sdk": "Codex (SDK)"
 };
 /** Coerce a wire `agents` array into links; undefined when unusable/empty. */
 function coerceAgents(raw) {

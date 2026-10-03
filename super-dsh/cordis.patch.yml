@@ -111,6 +111,30 @@
     - id: agent-omp-sdk
       name: 'super-dsh/agents/omp-sdk'
       disabled: true
+    # PRESERVED SDK line for Codex (2026-10-04 user ruling). `agent-codex` is the
+    # PRIMARY path — it drives a `codex app-server` child process, so the plugin
+    # bundles no SDK: the CLI the operator already has is the runtime. This row
+    # drives the SAME agent through the older in-process `@openai/codex-sdk` face
+    # instead, kept because the code was already written and it is a real option
+    # (no child process per session, and it works with no `codex` binary on PATH
+    # once its runtime is fetched).
+    #
+    # DISABLED BY DEFAULT — turning the row on IS the switch (`plugin-presence IS
+    # the roster`): no env var, no config key. It runs as world key `codex-sdk`
+    # (roster label "Codex (SDK)", world home `agents/codex-sdk`), deliberately
+    # distinct from `codex` because the hub's registerAgent hard-throws on a
+    # duplicate key and this row ships beside the app-server row — the two can
+    # therefore both be enabled harmlessly.
+    #
+    # Nothing is installed at `dsh plugin add` time and this package declares NO
+    # dependency — not a dependency, not an optionalDependency, not a peer: the
+    # SDK tree (`@openai/codex-sdk` + the codex binary package, pinned together)
+    # is fetched into that world home on the first real prompt and is durable
+    # there (agent-codex-sdk/src/sdk-runtime.ts; pre-warm with
+    # `npm run fetch-sdk-runtime`). Zero-spawn, zero-download window before it.
+    - id: agent-codex-sdk
+      name: 'super-dsh/agents/codex-sdk'
+      disabled: true
     # R2 (2026-09-16): the claude adapter ships STANDALONE only — its /world
     # entry is inert. The HUB side joins it: one generic joiner row with the
     # key; spawn/roster/mount wiring lives in super-dsh/join.

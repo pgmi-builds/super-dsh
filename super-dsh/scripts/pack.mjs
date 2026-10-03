@@ -38,7 +38,14 @@ const AGENTS = ['agent-omp', 'agent-codex', 'agent-claude', 'agent-pi', 'agent-h
   // composite row is `disabled: true` AND it declares no dependency: the bun
   // runtime + `@oh-my-pi/pi-coding-agent` are fetched into the world home on
   // first real use (agent-omp-sdk/src/sdk-runtime.ts).
-  'agent-omp-sdk']
+  'agent-omp-sdk',
+  // The PRESERVED SDK line of Codex (world key `codex-sdk`, 2026-10-04 user
+  // ruling): the app-server line is the PRIMARY path, so this one is kept as an
+  // option rather than deleted. Its composite row is `disabled: true`, and it
+  // declares no dependency at all — `@openai/codex-sdk` plus the codex binary
+  // are fetched into the world home on first real use
+  // (agent-codex-sdk/src/sdk-runtime.ts).
+  'agent-codex-sdk']
 const GENERATED = [
   join(LINE, 'superd-hub', 'dist'),
   join(LINE, 'superd-hub', 'lib'),

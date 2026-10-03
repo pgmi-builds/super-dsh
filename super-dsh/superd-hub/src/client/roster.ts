@@ -46,6 +46,12 @@ const FALLBACK_LABELS: Record<string, string> = {
   pi: 'Pi',
   hermes: 'Hermes',
   agy: 'Antigravity',
+  // The opt-in SDK halves carry their own keys so a host that reports only keys
+  // still renders a distinguishable label (the composite rows are `disabled: true`
+  // by default, so these appear only once an operator turns one on).
+  'omp-sdk': 'OMP (SDK)',
+  'agy-sdk': 'Antigravity (SDK)',
+  'codex-sdk': 'Codex (SDK)',
 }
 
 /** Coerce a wire `agents` array into links; undefined when unusable/empty. */

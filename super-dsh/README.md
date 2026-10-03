@@ -18,8 +18,8 @@ dsh plugin --profile <name> add super-dsh@0.1.0
 ```
 
 That single package composes the whole line (`@pgmi-builds/superd-hub` plus the
-six `@pgmi-builds/agent-*` packages). Restart the profile and the
-sidebar gains the runtime selector; each world provisions its own nested DSH
+six primary `@pgmi-builds/agent-*` packages and three OPTIONAL SDK halves).
+Restart the profile and the
 home under `<DSH_HOME>/agents/<label>/` on first boot.
 
 ## Runtimes
@@ -32,6 +32,24 @@ home under `<DSH_HOME>/agents/<label>/` on first boot.
 | Pi | pi coding agent (`~/.pi`) | in-process SDK |
 | Hermes | Hermes (`~/.hermes`) | gateway child |
 | Antigravity | agy SDK | Python bridge (`bridge/agy_bridge.py`) |
+
+### Opt-in SDK halves
+
+Three runtimes also ship a preserved in-process SDK transport beside the primary
+line: `agent-omp-sdk`, `agent-agy-sdk` and `agent-codex-sdk`. Each is a complete
+standalone copy of its adapter with an injectable transport, and each
+
+- is **`disabled: true`** in this package's composite patch — turning the row on
+  IS the switch (`plugin-presence IS the roster`), and it runs under its own
+  world key (`omp-sdk` / `agy-sdk` / `codex-sdk`) so it can sit beside the
+  primary row without a duplicate-key error;
+- declares **no dependency at all** — not a dependency, not an optional, not a
+  peer — so `dsh plugin add super-dsh` installs and downloads nothing for it,
+  and ships no postinstall;
+- fetches its own durable runtime into `<DSH_HOME>/agents/<key>/` on the FIRST
+  real prompt (bun + the coding-agent tree for OMP, a Python venv for agy, the
+  `@openai/codex-sdk` tree for Codex), where it survives restarts and upgrades.
+  Pre-warm with `npm run fetch-sdk-runtime` in the package.
 
 ## Design
 
