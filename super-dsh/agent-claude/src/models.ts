@@ -31,6 +31,7 @@
  * round trip constructs its own adapter instance.
  */
 
+import { compositeModelId } from "./claude-route.js";
 /** One Dash-facing model entry, exactly as Claude reported it. */
 export interface ClaudeModelEntry {
   /** Claude model id (the SDK `model` value — the CLI's own alias). */
@@ -126,6 +127,20 @@ export function readModelCatalog(): ClaudeModelCatalog {
     models: Object.freeze(catalog.models.map(frozenEntry)),
     ...(catalog.defaultModel === undefined ? {} : { defaultModel: catalog.defaultModel }),
   });
+}
+
+/**
+ * Mint one observed entry's catalog id as `${provider}/${id}` (the composite id
+ * the selector picks). Only the LIVE session's authoritative `supportedModels()`
+ * roster goes through this — the degraded single-entry catalog and the boot
+ * probe stay raw (observed-default stays raw-only-in-memory).
+ *
+ * @param provider - the CURRENT turn's provider (`#turnRoute?.provider ?? "native"`).
+ * @param entries - observed entries whose ids are RAW wire ids.
+ * @returns the entries with composite ids.
+ */
+export function mintCatalogEntries(provider: string, entries: readonly ClaudeModelEntry[]): ClaudeModelEntry[] {
+  return entries.map((entry) => ({ ...entry, id: compositeModelId(provider, entry.id) }));
 }
 
 /**

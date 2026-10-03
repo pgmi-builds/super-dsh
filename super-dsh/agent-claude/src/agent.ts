@@ -56,6 +56,7 @@ import type {
   TurnEndReason,
   UserMessage,
 } from "@deepseek-ai/dsh-session";
+import { canonicalHeader, headerEquals } from "@deepseek-ai/dsh-session";
 import type { AssistantMessage, AssistantStreamRecord, ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import {
   LlmAttemptId,
@@ -74,10 +75,12 @@ import { Inbox } from "./inbox.js";
 import type { ClaudeInputContent } from "./input-queue.js";
 import type { WireEvent } from "./claude-events.js";
 import { resetProjectionState } from "./claude-events.js";
-import type { ClaudeSdkClient } from "./claude-client.js";
+import type { ClaudeClientFactory, ClaudeSdkClient } from "./claude-client.js";
+import { NATIVE_LAUNCH, type ClaudeLaunchSpec } from "./claude-launch.js";
+import { compositeModelId, parseCompositeModelId, resolveRoute, routeOf, routeSeed, type RouteSelection } from "./claude-route.js";
 import { CLAUDE_PROVIDER_ID } from "./adapter.js";
 import { claudePermissionMode, presetFromEvents, type ClaudePermissionMode, type PresetName } from "./permission.js";
-import { catalogFromInit, modelEntryFromSdk, readModelCatalog, setModelCatalog } from "./models.js";
+import { catalogFromInit, mintCatalogEntries, modelEntryFromSdk, readModelCatalog, setModelCatalog } from "./models.js";
 import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 import {
   registerClaudeCommands,
@@ -127,6 +130,9 @@ export interface ClaudeAgentRuntimeInfo {
   readonly onModeChange?: (mode: ClaudePermissionMode) => void;
   /** Mark the pairing dead in the session map (conversation never materialized). */
   readonly onNotResumable?: () => void;
+  /** The launch that pins one provider for a freshly spawned client, or
+   * `undefined` for a provider id this world does not know (native). */
+  readonly launchFor?: (providerId: string, model: string) => ClaudeLaunchSpec | undefined;
 }
 
 /**
@@ -339,7 +345,8 @@ export class ClaudeAgent implements Agent {
   readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
-  private readonly client: ClaudeSdkClient;
+  private client: ClaudeSdkClient;
+  private readonly clientFactory: ClaudeClientFactory | undefined;
   private readonly loopCtx: Context;
   private readonly scope: Scope;
   private readonly dispatch: AgentEventDispatch;
@@ -369,7 +376,12 @@ export class ClaudeAgent implements Agent {
   private systemMessageDone = false;
   /** Last `request/context` route key (`provider/model`) — dedupes per-turn emits. */
   private lastRouteKey: string | null = null;
-  /** Live v2 assistant-stream publication for the in-flight wire message. */
+  /** The route the OPEN turn runs, captured when the turn opened. */
+  private turnRoute: RouteSelection | undefined = undefined;
+  /** The route the LIVE client was last told to run (`provider/model`) — a work-saver. */
+  private routeKey: string | null = null;
+  /** Whether THIS agent instance has already logged a `request/header` snapshot. */
+  private requestHeaderLogged = false;
   private streamBridge: AssistantStreamBridge | undefined;
   private assistantAttemptCounter = 0;
   private assistantStreamRevision = 0;
@@ -413,12 +425,14 @@ export class ClaudeAgent implements Agent {
     client: ClaudeSdkClient,
     onIdleExit?: () => void,
     runtimeInfo?: ClaudeAgentRuntimeInfo,
+    clientFactory?: ClaudeClientFactory,
   ) {
     this.loopCtx = loopCtx;
     this.id = id;
     this.options = options;
     this.session = withSystemHead(session, () => createSystemMessage(""));
     this.client = client;
+    this.clientFactory = clientFactory;
     this.onIdleExit = onIdleExit;
     this.runtimeInfo = runtimeInfo;
     this.dispatch = agentEvents(loopCtx, this);
@@ -742,8 +756,14 @@ export class ClaudeAgent implements Agent {
    * than hanging, then unwinds the reservation.
    */
   private async startTurn(message: UserMessage): Promise<void> {
+    let route: RouteSelection | undefined;
     try {
-      await this.client.ensureStarted();
+      // Resolve the route and put it in force BEFORE the client is touched: a
+      // provider move is a different child, and a mid-turn selection change must
+      // land on the NEXT turn's applyRoute — never kill the running turn.
+      route = this.resolveRoute();
+      await this.applyRoute(route);
+      this.turnRoute = route;
       await this.bootstrapSessionIdentity();
     } catch (error) {
       trace(`startTurn cold start failed: ${String(error)}`);
@@ -759,9 +779,10 @@ export class ClaudeAgent implements Agent {
     }
     if (this.disposed) return;
     this.session.append("turn/start", { turn: this.dashTurn });
-    // Route metadata for the next request (`request/context`) lands before
-    // the turn's messages, exactly as the reference loop stamps it.
-    this.emitRequestContext();
+    // Route metadata for the next request lands before the turn's messages,
+    // exactly as the reference loop stamps it.
+    if (route !== undefined) this.commitRequestHeader(route);
+    this.emitRequestContext(route);
     this.appendUserMessage(message);
     // Flush any idle-injection that was parked before this turn.
     for (const entry of this.remoteQueue.splice(0)) {
@@ -863,9 +884,14 @@ export class ClaudeAgent implements Agent {
    * effective provider/model plus the model's context window when genuinely
    * known. Turn-enclosed (no step required) and deduped by route key.
    */
-  private emitRequestContext(): void {
+  private emitRequestContext(route: RouteSelection | undefined): void {
     if (!this.turnOpen) return;
-    const model = this.observedMessageModel || this.observedDefaultModel || this.options.model || "";
+    // A resolved route names the DSH-side composite model id (what the selector
+    // picks); a missing route falls back to the observed model (the degraded
+    // single-provider shape), preserving the pre-multi-provider metadata.
+    const model = route !== undefined
+      ? compositeModelId(route.provider, route.model)
+      : (this.observedMessageModel || this.observedDefaultModel || this.options.model || "");
     if (model === "") return;
     const key = `${CLAUDE_PROVIDER_ID}/${model}`;
     if (key === this.lastRouteKey) return;
@@ -878,6 +904,121 @@ export class ClaudeAgent implements Agent {
       ...(contextWindow !== undefined && contextWindow > 0 ? { contextWindow } : {}),
     });
     trace(`request/context ${key}${contextWindow === undefined ? "" : ` ctx=${contextWindow}`}`);
+  }
+
+  /**
+   * Resolve the route this session must run, mirroring the harness's own
+   * precedence (`pending ?? logged ?? preferred ?? fallback`). Each DSH-side
+   * candidate carries a COMPOSITE model id (`glm/glm-5.2`) under the single
+   * `claude` route; this splits it back to the wire-side pair. A legacy raw id
+   * (no slash) resolves as-is, and the agent reads its provider as "launch
+   * native, inject nothing" (no store entry names it).
+   */
+  resolveRoute(): RouteSelection | undefined {
+    const projections = this.loopCtx.get("sessionProjections") as
+      | { stateOf?: (session: Session, key: string) => { pending?: unknown } | undefined }
+      | undefined;
+    const service = this.ctx.get("agentDefaultModel") as
+      | { currentSelection?: () => { provider: string; model: string } }
+      | undefined;
+    return resolveRoute({
+      pending: this.parseRouteCandidate(projections?.stateOf?.(this.session, "modelSelection")?.pending),
+      logged: this.parseRouteCandidate(this.session.requestHeader()?.config),
+      preferred: this.parseRouteCandidate(service?.currentSelection?.()),
+      fallback: routeSeed(this.options as { provider: string; model: string }),
+    });
+  }
+
+  /** Split one DSH-side candidate's composite model id back to the wire pair. */
+  private parseRouteCandidate(value: unknown): RouteSelection | undefined {
+    const route = routeOf(value);
+    if (route === undefined) return undefined;
+    const parsed = parseCompositeModelId(route.model);
+    return parsed ?? route;
+  }
+
+  /**
+   * Put the resolved route in force on the client, swapping the child when the
+   * provider moved. Three cases, in increasing cost:
+   *  1. nothing spawned yet — pin the launch and let the first prompt spawn
+   *     (the lazy-spawn gate: choosing a model must not cost a process);
+   *  2. same provider — `setModel` rides the live query with the RAW id;
+   *  3. different provider — the child is replaced (`reattach`).
+   */
+  async applyRoute(route: RouteSelection | undefined): Promise<void> {
+    const launch = route === undefined ? undefined : this.runtimeInfo?.launchFor?.(route.provider, route.model);
+    // An unknown provider id (a legacy session pinned before the multi-provider
+    // rework) maps to "no injection": the user's own settings.json decides.
+    const launchSpec = launch ?? NATIVE_LAUNCH;
+    const providerId = launch === undefined ? null : route?.provider ?? null;
+    const client = this.client;
+    const key = `${providerId ?? "native"}/${route?.model ?? ""}`;
+
+    if (!client.spawned) {
+      client.setLaunch(launchSpec);
+      await client.ensureStarted();
+    } else if ((client.appliedProvider ?? null) !== providerId) {
+      await this.reattach(launchSpec, providerId, route);
+    } else if (route !== undefined) {
+      await client.setModel(route.model).catch((error) => {
+        trace(`set_model ${key} failed: ${String(error)}`);
+      });
+    }
+    this.routeKey = key;
+  }
+
+  /**
+   * Replace the client at a turn boundary: close the old one and build a fresh
+   * child through the injected factory, resuming the SAME SDK session id and
+   * re-wiring the event listener and the live permission mode.
+   */
+  private async reattach(launch: ClaudeLaunchSpec, _providerId: string | null, _route: RouteSelection | undefined): Promise<void> {
+    const old = this.client;
+    const threadId = old.threadId;
+    old.close();
+    if (this.clientFactory === undefined) {
+      throw new Error("agent-claude: cannot reattach — no clientFactory was injected");
+    }
+    const replacement = this.clientFactory({ ...(threadId !== null ? { resumeSessionId: threadId } : {}), launch });
+    replacement.on((event) => this.handleEvent(event));
+    this.client = replacement;
+    // Re-apply the live permission mode onto the fresh child (the old client's
+    // buffered control calls died with it).
+    const mode = this.runtimeInfo?.claudeMode ?? claudePermissionMode(presetFromEvents(this.session.snapshotEvents()));
+    if (mode !== undefined) void replacement.setPermissionMode(mode).catch(() => { });
+    await replacement.ensureStarted();
+  }
+
+  /**
+   * Log the request header the NEXT request runs under, so the harness's
+   * `modelSelection` projection retires a pending switch when it matches.
+   */
+  private commitRequestHeader(route: RouteSelection): void {
+    const header = canonicalHeader({
+      config: {
+        provider: CLAUDE_PROVIDER_ID,
+        model: compositeModelId(route.provider, route.model),
+      },
+    });
+    const baseline = this.session.requestHeader();
+    if (!this.requestHeaderLogged) {
+      this.session.append("request/header", { header, reason: baseline === undefined ? "initial" : "resume" });
+      this.requestHeaderLogged = true;
+      return;
+    }
+    if (baseline === undefined || !headerEquals(baseline, header)) {
+      this.session.append("request/header", { header, reason: "change" });
+    }
+  }
+
+  /** Test-only thin shell over {@link applyRoute}. */
+  async applyRouteForTest(route: RouteSelection | undefined): Promise<void> {
+    await this.applyRoute(route);
+  }
+
+  /** Test-only thin shell over {@link resolveRoute}. */
+  resolveRouteForTest(): RouteSelection | undefined {
+    return this.resolveRoute();
   }
 
   /** The open stream bridge for this message, starting one on first use. */
@@ -1027,11 +1168,18 @@ export class ClaudeAgent implements Agent {
    */
   private observeModelCatalog(init: WireEvent): void {
     if (typeof init.model === "string" && init.model !== "") this.observedDefaultModel = init.model;
+    // The degraded single-entry catalog stays RAW (observed-default stays
+    // raw-only-in-memory); the authoritative supportedModels() roster is minted
+    // composite under the CURRENT turn's provider.
     const entries = catalogFromInit(init as { model?: unknown; slashCommands?: unknown });
     if (entries.length > 0) setModelCatalog(entries, this.observedDefaultModel);
     void this.client.supportedModels().then((models) => {
       const full = Array.isArray(models) ? models.flatMap((m) => modelEntryFromSdk(m)) : [];
-      if (full.length > 0) setModelCatalog(full, this.observedDefaultModel);
+      if (full.length === 0) return;
+      const provider = this.turnRoute?.provider ?? "native";
+      const minted = mintCatalogEntries(provider, full);
+      const defaultModel = this.observedDefaultModel === "" ? undefined : compositeModelId(provider, this.observedDefaultModel);
+      setModelCatalog(minted, defaultModel);
     }).catch((error) => {
       trace(`supportedModels() failed: ${String(error)}`);
     });

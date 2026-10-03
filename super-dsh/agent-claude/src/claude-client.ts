@@ -66,6 +66,7 @@
 import { loadClaudeQuery, resolveClaudeBinary } from "./sdk-runtime.js";
 import { InputQueue, type ClaudeInputContent } from "./input-queue.js";
 import { projectClaudeEvent, type WireEvent } from "./claude-events.js";
+import { NATIVE_LAUNCH, type ClaudeLaunchSpec } from "./claude-launch.js";
 
 // ---------------------------------------------------------------------------
 // Structural seams (duck-typed so tests inject plain fakes)
@@ -206,7 +207,21 @@ export interface ClaudeClientConfig {
   canUseTool?: CanUseTool;
   /** Required by the SDK for `bypassPermissions` mode; set only for that mode. */
   allowDangerouslySkipPermissions?: boolean;
+  /** The provider-pinning launch slice merged into the SDK `Options` at spawn
+   * (env/model/binary). Defaults to {@link NATIVE_LAUNCH} (no injection). */
+  launch?: ClaudeLaunchSpec;
 }
+
+/**
+ * A per-session client constructor. The provider hands the agent ONE closure
+ * that closes over the shared `canUseTool` wiring, `worldHome`, and cwd, and
+ * accepts only the per-instance overrides a reattach (or the initial create /
+ * resume) needs — `claudeSessionId`, `resumeSessionId`, and the provider
+ * `launch`. The agent swaps the whole client at a turn boundary through it.
+ */
+export type ClaudeClientFactory = (
+  overrides?: Partial<Pick<ClaudeClientConfig, "claudeSessionId" | "resumeSessionId" | "launch">>,
+) => ClaudeSdkClient;
 
 export class ClaudeSdkClient {
   private readonly cwdPath: string;
@@ -215,6 +230,8 @@ export class ClaudeSdkClient {
   private readonly resumeSessionId: string | undefined;
   private readonly canUseTool: CanUseTool | undefined;
   private readonly allowDangerouslySkipPermissions: boolean | undefined;
+  /** The provider-pinning launch this client will spawn under (NATIVE_LAUNCH until `setLaunch`). */
+  private launch: ClaudeLaunchSpec;
   /** True while a user turn is in flight (set on push, cleared on `turn_end`/`agent_end`). */
   private turnActive = false;
 
@@ -237,6 +254,7 @@ export class ClaudeSdkClient {
     this.resumeSessionId = config.resumeSessionId;
     this.canUseTool = config.canUseTool;
     this.allowDangerouslySkipPermissions = config.allowDangerouslySkipPermissions;
+    this.launch = config.launch ?? NATIVE_LAUNCH;
     refcount += 1;
   }
 
@@ -257,6 +275,23 @@ export class ClaudeSdkClient {
   /** The SDK session id, filled from the session-init message when it arrives. */
   get threadId(): string | null {
     return this.threadIdValue;
+  }
+
+  /** The provider id this client was last told to spawn under (constructor fact; `null` = native). */
+  get appliedProvider(): string | null {
+    return this.launch.providerId;
+  }
+
+  /**
+   * Pin the launch this client will spawn under. Only legal before the query
+   * exists: once the CLI subprocess is up, a provider move is a different child
+   * (the agent swaps the whole client at a turn boundary — see `#reattach`).
+   */
+  setLaunch(launch: ClaudeLaunchSpec): void {
+    if (this.query !== undefined) {
+      throw new Error("agent-claude: setLaunch after spawn is not allowed (a provider move swaps the client)");
+    }
+    this.launch = launch;
   }
 
   /** The client's own running/streaming attestation (idle-TTL revalidation gate). */
@@ -387,14 +422,19 @@ export class ClaudeSdkClient {
   // --- internals ------------------------------------------------------------
 
   private buildOptions(): Record<string, unknown> {
-    const executable = executableResolver();
+    const launchExecutable = this.launch.pathToClaudeCodeExecutable;
+    const executable = launchExecutable !== undefined && launchExecutable !== "" ? launchExecutable : executableResolver();
     return {
       cwd: this.cwdPath,
-      env: { ...process.env },
+      // The launch env holds ADDITIONS only; spreading process.env first keeps
+      // PATH/HOME and the user's own key alive (NATIVE_LAUNCH carries an empty
+      // env, so the native shape is exactly `{ ...process.env }`).
+      env: { ...process.env, ...this.launch.env },
       // undefined (no local binary) leaves the key unset — bundled-payload
       // mode lets the SDK spawn its own platform payload as the CLI.
       ...(executable !== undefined ? { pathToClaudeCodeExecutable: executable } : {}),
       persistSession: true,
+      ...(this.launch.model !== undefined ? { model: this.launch.model } : {}),
       ...(this.claudeSessionId !== undefined ? { sessionId: this.claudeSessionId } : {}),
       ...(this.resumeSessionId !== undefined ? { resume: this.resumeSessionId } : {}),
       ...(this.canUseTool !== undefined ? { canUseTool: this.canUseTool } : {}),

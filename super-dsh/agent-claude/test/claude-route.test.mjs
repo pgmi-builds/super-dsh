@@ -149,3 +149,7 @@ test("routeSeed seeds a new session's log from the reconciled pair as one object
     model: "glm-5.2",
   });
 });
+
+test("resolveRoute skips a bad routeSeed fallback (routeOf screens it)", () => {
+  assert.equal(resolveRoute({ fallback: routeSeed({ provider: "", model: "x" }) }), undefined);
+});

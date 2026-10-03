@@ -56,7 +56,7 @@ import {
   type ClaudePermissionMode,
 } from "./permission.js";
 import { sessionRecord, upsertSession } from "./session-map.js";
-import type { CanUseTool } from "./claude-client.js";
+import type { CanUseTool, ClaudeClientFactory } from "./claude-client.js";
 import {
   makeCanUseTool,
   answerAskUserQuestion,
@@ -67,6 +67,11 @@ import {
 } from "./interaction.js";
 import { modelEntryFromSdk, readModelCatalog, setModelCatalog, CLAUDE_DEFAULT_MODEL } from "./models.js";
 import { registerClaudePreset } from "./agent-preset-claude.js";
+import { claudeLaunchFor, type ClaudeLaunchSpec } from "./claude-launch.js";
+import { compositeModelId, parseCompositeModelId, routeSeed } from "./claude-route.js";
+import { endpointKey, readProviderStore, type ClaudeProviderEntry } from "./claude-providers.js";
+import { readNativeModel, readNativeProviders } from "./claude-native-config.js";
+import { resolveClaudeBinary } from "./sdk-runtime.js";
 
 const CLAUDE_MODES: readonly string[] = ["default", "acceptEdits", "bypassPermissions", "plan", "auto", "dontAsk"];
 
@@ -280,21 +285,22 @@ export class ClaudeProvider extends Service implements AgentFactory {
     // The host-side permission gate is injected now, closing over the injected
     // approval/questions seams plus a lazy agent holder (set in setupAndPublish).
     const agentRef: { current: ClaudeAgent | undefined } = { current: undefined };
-    const client = new ClaudeSdkClient({
-      cwd: spawnCwd,
-      claudeSessionId,
-      canUseTool: makeClaudeCanUseTool({
-        approval: loopCtx.get("approval") as ApprovalLike | undefined,
-        questions: loopCtx.get("userQuestions") as UserQuestionsLike | undefined,
-        getAgent: () => agentRef.current,
-      }),
-      allowDangerouslySkipPermissions: claudeMode === "bypassPermissions",
+    const canUseTool = makeClaudeCanUseTool({
+      approval: loopCtx.get("approval") as ApprovalLike | undefined,
+      questions: loopCtx.get("userQuestions") as UserQuestionsLike | undefined,
+      getAgent: () => agentRef.current,
     });
-    // Apply the resolved boot/observed default to the CLI (mirrors codex's
-    // create-time `setModel`); an explicit caller selection is honored by
-    // `sessionAgentOptions` at publication.
-    const createCatalog = readModelCatalog();
-    void client.setModel(createCatalog.defaultModel ?? CLAUDE_DEFAULT_MODEL).catch(() => { });
+    // One factory per session: the shared wiring (canUseTool, worldHome, cwd,
+    // permission posture) plus per-instance overrides. The agent swaps the whole
+    // client through it when a provider move needs a different child.
+    const clientFactory: ClaudeClientFactory = (overrides = {}) => new ClaudeSdkClient({
+      cwd: spawnCwd,
+      worldHome: this.home,
+      canUseTool,
+      allowDangerouslySkipPermissions: claudeMode === "bypassPermissions",
+      ...overrides,
+    });
+    const client = clientFactory({ claudeSessionId });
     const preparation = SessionPreparation.create(loopCtx.sessions.prepare(id, {
       ...(options.seed === undefined ? {} : { seed: options.seed }),
       ...(meta === undefined ? {} : { meta }),
@@ -342,8 +348,10 @@ export class ClaudeProvider extends Service implements AgentFactory {
             upsertSession(this.home, String(id), { resumable: false });
             trace(`marked ${id} not resumable (conversation never materialized)`);
           },
+          launchFor: (providerId, model) => this.agentLaunchFor(providerId, model),
         },
         agentRef,
+        clientFactory,
       );
     } catch (error) {
       trace(`create ${id} THREW: ${String(error)}`);
@@ -409,16 +417,19 @@ export class ClaudeProvider extends Service implements AgentFactory {
     // first prompt). Re-apply the persisted permission mode up front (buffered
     // until the query exists), and re-inject the host-side permission gate.
     const agentRef: { current: ClaudeAgent | undefined } = { current: undefined };
-    const client = new ClaudeSdkClient({
-      cwd: spawnCwd,
-      resumeSessionId: claudeSessionId,
-      canUseTool: makeClaudeCanUseTool({
-        approval: loopCtx.get("approval") as ApprovalLike | undefined,
-        questions: loopCtx.get("userQuestions") as UserQuestionsLike | undefined,
-        getAgent: () => agentRef.current,
-      }),
-      allowDangerouslySkipPermissions: claudeMode === "bypassPermissions",
+    const canUseTool = makeClaudeCanUseTool({
+      approval: loopCtx.get("approval") as ApprovalLike | undefined,
+      questions: loopCtx.get("userQuestions") as UserQuestionsLike | undefined,
+      getAgent: () => agentRef.current,
     });
+    const clientFactory: ClaudeClientFactory = (overrides = {}) => new ClaudeSdkClient({
+      cwd: spawnCwd,
+      worldHome: this.home,
+      canUseTool,
+      allowDangerouslySkipPermissions: claudeMode === "bypassPermissions",
+      ...overrides,
+    });
+    const client = clientFactory({ resumeSessionId: claudeSessionId });
     void client.setPermissionMode(claudeMode).catch(() => { });
 
     let handle: SessionHandle | undefined;
@@ -485,8 +496,10 @@ export class ClaudeProvider extends Service implements AgentFactory {
             upsertSession(this.home, String(id), { resumable: false });
             trace(`marked ${id} not resumable (conversation never materialized)`);
           },
+          launchFor: (providerId, model) => this.agentLaunchFor(providerId, model),
         },
         agentRef,
+        clientFactory,
       );
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)} | stack=${error instanceof Error ? error.stack?.slice(0, 400) : "n/a"}`);
@@ -512,12 +525,61 @@ export class ClaudeProvider extends Service implements AgentFactory {
    * claude model.
    */
   private sessionAgentOptions(requested: AgentOptions | undefined): AgentOptions {
-    const catalog = readModelCatalog();
-    const explicit = requested?.provider === CLAUDE_PROVIDER_ID && typeof requested.model === "string" && requested.model !== ""
-      ? requested.model
-      : undefined;
-    const model = explicit ?? catalog.defaultModel ?? CLAUDE_DEFAULT_MODEL;
-    return { ...(requested ?? {}), provider: CLAUDE_PROVIDER_ID, ...(model === undefined ? {} : { model }) };
+    // 1. A caller-requested claude route wins, parsing its composite model id
+    //    back to the wire pair. A legacy raw id (no slash) keeps `claude/<raw>`
+    //    and reads as "launch native, inject nothing".
+    if (requested?.provider === CLAUDE_PROVIDER_ID && typeof requested.model === "string" && requested.model !== "") {
+      const parsed = parseCompositeModelId(requested.model);
+      if (parsed !== undefined) return { ...(requested ?? {}), provider: parsed.provider, model: parsed.model };
+      return { ...(requested ?? {}), provider: CLAUDE_PROVIDER_ID, model: requested.model };
+    }
+    // 2. Native fold model (the user's own settings.json env).
+    const nativeProvider = this.nativeProviderId();
+    const nativeModel = readNativeModel(resolveClaudeHome());
+    if (nativeProvider !== undefined && nativeModel !== undefined && nativeModel !== "") {
+      return { ...(requested ?? {}), provider: nativeProvider, model: nativeModel };
+    }
+    // 3. First provider's first model.
+    for (const entry of readProviderStore(this.home).providers) {
+      const model = entry.models[0]?.id;
+      if (model !== undefined) return { ...(requested ?? {}), provider: entry.id, model };
+    }
+    // 4. Legacy boot default (claude/sonnet → NATIVE_LAUNCH).
+    return { ...(requested ?? {}), provider: CLAUDE_PROVIDER_ID, model: CLAUDE_DEFAULT_MODEL };
+  }
+
+  /** The store entry a provider id names, or `undefined`. */
+  private providerEntry(providerId: string): ClaudeProviderEntry | undefined {
+    return readProviderStore(this.home).providers.find((entry) => entry.id === providerId);
+  }
+
+  /** The provider id the user's own settings.json env folds to, or `undefined`. */
+  private nativeProviderId(): string | undefined {
+    const table = readNativeProviders(resolveClaudeHome())[0];
+    if (table?.baseUrl === undefined) return undefined;
+    const key = endpointKey(table.baseUrl);
+    return readProviderStore(this.home).providers.find((entry) => endpointKey(entry.baseUrl) === key)?.id;
+  }
+
+  /** The launch that pins one provider for a freshly spawned client. */
+  private agentLaunchFor(providerId: string, model: string): ClaudeLaunchSpec | undefined {
+    const entry = this.providerEntry(providerId);
+    if (entry === undefined) return undefined;
+    return claudeLaunchFor({ provider: providerId, model }, entry, resolveClaudeBinary());
+  }
+
+  /** The app-wide default selection (DSH-side `claude/<composite-or-boot>`). */
+  private defaultModelSelection(): { provider: string; model: string } {
+    const nativeProvider = this.nativeProviderId();
+    const nativeModel = readNativeModel(resolveClaudeHome());
+    if (nativeProvider !== undefined && nativeModel !== undefined && nativeModel !== "") {
+      return { provider: CLAUDE_PROVIDER_ID, model: compositeModelId(nativeProvider, nativeModel) };
+    }
+    for (const entry of readProviderStore(this.home).providers) {
+      const model = entry.models[0]?.id;
+      if (model !== undefined) return { provider: CLAUDE_PROVIDER_ID, model: compositeModelId(entry.id, model) };
+    }
+    return { provider: CLAUDE_PROVIDER_ID, model: CLAUDE_DEFAULT_MODEL };
   }
 
   /**
@@ -539,8 +601,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
         }
         | undefined;
       if (service === undefined) return;
-      const catalog = readModelCatalog();
-      const target = { provider: CLAUDE_PROVIDER_ID, model: catalog.defaultModel ?? CLAUDE_DEFAULT_MODEL };
+      const target = this.defaultModelSelection();
       const targetKey = `${target.provider}/${target.model}`;
       const current = service.currentSelection?.();
       const currentKey = current === undefined ? undefined : `${current.provider}/${current.model}`;
@@ -595,6 +656,7 @@ async function setupAndPublish(
   stored: StoredSession,
   runtimeInfo: ClaudeAgentRuntimeInfo,
   agentRef: { current: ClaudeAgent | undefined },
+  clientFactory: ClaudeClientFactory,
 ): Promise<AgentHandle> {
   let detachSession: (() => void) | undefined;
   let detachAgent: (() => void) | undefined;
@@ -605,8 +667,25 @@ async function setupAndPublish(
     // module-level reset is belt-and-suspenders for a re-entry before the
     // agent exists (e.g. a throwing setup that re-publishes).
     resetProjectionState();
-    agent = new ClaudeAgent(loopCtx, id, agentOptions, session, client, () => idleExit?.(), runtimeInfo);
+    agent = new ClaudeAgent(loopCtx, id, agentOptions, session, client, () => idleExit?.(), runtimeInfo, clientFactory);
     agentRef.current = agent;
+
+    // Seed THIS session's route only when its log has none (mirrors codex): the
+    // harness's `model/selection` is the durable per-session route, so an
+    // existing one is the authority and only a session that never named a route
+    // gets the boot default. Log-only — the agent resolves it each turn.
+    try {
+      const events = session.snapshotEvents() as readonly { type: string }[];
+      const alreadyRouted = events.some((event) => event.type === "model/selection");
+      const seed = routeSeed(agentOptions as { provider: string; model: string });
+      if (!alreadyRouted && seed !== undefined) {
+        const selection = { provider: CLAUDE_PROVIDER_ID, model: compositeModelId(seed.provider, seed.model) };
+        (session.append as (type: string, data: unknown) => unknown)("model/selection", selection);
+        trace(`session route seeded: ${selection.provider}/${selection.model}`);
+      }
+    } catch (error) {
+      trace(`session route seeding failed: ${String(error)}`);
+    }
 
     // Composition-only setup on the unpublished agent scope.
     const commit = await setup?.(agent.ctx, agent);
