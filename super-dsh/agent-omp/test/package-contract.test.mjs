@@ -14,7 +14,13 @@ test("the delivery manifest no longer pulls the OMP SDK or bun", () => {
   }
 });
 
-test("the tarball files list no longer ships a sidecar", () => {
+test("the RPC line ships no sidecar; the only sidecar is the opt-in SDK adapter's", () => {
+  // 2026-10-03: the RPC line still bundles no runtime (that was the point of the
+  // transport swap). The OPT-IN `agent-omp-sdk` row — disabled by default, its
+  // runtime fetched on first use — deliberately ships its own bun sidecar
+  // source, so this guard now pins the exception rather than the absence.
   const files = JSON.parse(readFileSync(root, "utf8")).files;
-  assert.equal(files.some((f) => f.includes("sidecar")), false);
+  const sidecars = files.filter((f) => f.includes("sidecar"));
+  assert.deepEqual(sidecars, ["agent-omp-sdk/sidecar"], "only agent-omp-sdk may ship a sidecar");
+  assert.equal(files.some((f) => f.startsWith("agent-omp/sidecar")), false);
 });

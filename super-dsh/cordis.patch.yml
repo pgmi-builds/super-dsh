@@ -89,6 +89,28 @@
     - id: agent-agy-sdk
       name: 'super-dsh/agents/agy-sdk'
       disabled: true
+    # Opt-IN SDK transport for OMP (2026-10-03 user ruling). `agent-omp` is the
+    # PRIMARY path: it drives the operator's own `omp` binary, so the plugin
+    # ships no runtime at all. This row drives the SAME agent through the
+    # package's in-process SDK face instead — one bun sidecar hosting every
+    # session (shared authStorage/modelRegistry), which is the cheaper memory
+    # shape for many concurrent sessions, at the cost of fetching a ~900 MB
+    # runtime tree.
+    #
+    # DISABLED BY DEFAULT — turning the row on IS the switch
+    # (`plugin-presence IS the roster`): no env var, no config key. It runs as
+    # world key `omp-sdk` (roster label "OMP (SDK)", world home
+    # `agents/omp-sdk`), deliberately distinct from `omp` because the hub's
+    # registerAgent hard-throws on a duplicate key and this row ships beside
+    # the RPC row — the two can therefore both be enabled harmlessly.
+    #
+    # Nothing is installed at `dsh plugin add` time and this package declares no
+    # dependency: the durable bun runtime + `@oh-my-pi/pi-coding-agent` tree is
+    # fetched into that world home on first real use
+    # (agent-omp-sdk/src/sdk-runtime.ts).
+    - id: agent-omp-sdk
+      name: 'super-dsh/agents/omp-sdk'
+      disabled: true
     # R2 (2026-09-16): the claude adapter ships STANDALONE only — its /world
     # entry is inert. The HUB side joins it: one generic joiner row with the
     # key; spawn/roster/mount wiring lives in super-dsh/join.

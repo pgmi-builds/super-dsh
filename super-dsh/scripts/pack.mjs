@@ -30,7 +30,15 @@ const run = (cmd, cwd) => execSync(cmd, {
 const AGENTS = ['agent-omp', 'agent-codex', 'agent-claude', 'agent-pi', 'agent-hermes', 'agent-agy',
   // The opt-in SDK half of the Antigravity split (world key `agy-sdk`). Built
   // and packed like every other adapter — its composite row is `disabled: true`.
-  'agent-agy-sdk']
+  'agent-agy-sdk',
+  // The opt-in SDK transport for OMP (world key `omp-sdk`, 2026-10-03 user
+  // ruling): the SAME adapter logic as `agent-omp` with an injectable transport
+  // that drives an in-process bun sidecar instead of one `omp --mode rpc`
+  // child per session. Built and packed like every other adapter, but its
+  // composite row is `disabled: true` AND it declares no dependency: the bun
+  // runtime + `@oh-my-pi/pi-coding-agent` are fetched into the world home on
+  // first real use (agent-omp-sdk/src/sdk-runtime.ts).
+  'agent-omp-sdk']
 const GENERATED = [
   join(LINE, 'superd-hub', 'dist'),
   join(LINE, 'superd-hub', 'lib'),
