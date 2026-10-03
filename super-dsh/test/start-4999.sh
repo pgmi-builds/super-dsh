@@ -167,6 +167,23 @@ fi
 SEED_EXISTED=""
 [ -f "$SHARED_CREDENTIALS" ] && SEED_EXISTED=1
 
+# ---- claude world-home provider seed (task 12) ------------------------------
+# Acceptance rigging: the pack line's claude world reads its provider list from
+# `<lineHome>/agents/claude/claude-providers.json`. provisionWorldProfile builds
+# that home IN-PROCESS at world boot (and never touches this file), so seeding
+# here — after the line .env exists, before the server starts — lands the store
+# the world reads on its first boot. Keys come from the line's own .env copy
+# (a key the file omits still falls through to the inherited environment).
+# NON-FATAL by design: missing keys skip inside the seeder, and any failure here
+# must not keep the line from booting.
+SEED_ENV=()
+for _seed_key in DEEPSEEK_API_KEY ZAI_PLAN_API_KEY; do
+  _seed_val=$(sed -n "s/^${_seed_key}=//p" "$DSH_HOME_DIR/.env" | head -n 1)
+  if [ -n "$_seed_val" ]; then SEED_ENV+=("${_seed_key}=${_seed_val}"); fi
+done
+env ${SEED_ENV[@]+"${SEED_ENV[@]}"} \
+  "$NODE_BIN" "$LINE/test/seed-claude-providers.mjs" "$DSH_HOME_DIR/agents/claude" || true
+
 # ctx0's native /api + /hub fences read the CONNECTION service's trustedHosts
 # (= webRuntime: bind-derived loopback literals + EXPLICIT --trusted-host
 # extras). SUPERD_TRUSTED_HOSTS above feeds only the world fence leg and the
