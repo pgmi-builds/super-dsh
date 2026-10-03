@@ -9,6 +9,12 @@ import assert from "node:assert/strict";
 const { setClaudeFactory, resetClaudeClientState, probeClaudeModels } = await import("../dist/claude-client.js");
 const { modelEntryFromSdk, setModelCatalog, readModelCatalog, CLAUDE_DEFAULT_MODEL } = await import("../dist/models.js");
 const { ClaudeLlmAdapter, CLAUDE_PROVIDER_ID } = await import("../dist/adapter.js");
+const { ClaudeProvider } = await import("../dist/index.js");
+const { sdkEntryPath, sdkRuntimeLayout, resolveClaudeBinary, SDK_PACKAGE, SDK_PACKAGE_VERSION } = await import("../dist/sdk-runtime.js");
+const { mkdirSync, mkdtempSync, writeFileSync } = await import("node:fs");
+const { tmpdir } = await import("node:os");
+const { dirname, join } = await import("node:path");
+const { Context } = await import("@deepseek-ai/cordis");
 
 const SDK_ROWS = [
   { value: "sonnet", displayName: "Sonnet", description: "balanced", resolvedModel: "claude-sonnet-5", supportedEffortLevels: ["low", "medium", "high"] },
@@ -117,4 +123,62 @@ test("a wedged probe (supportedModels never answers) times out and closes the qu
     clearTimeout(keepAlive);
   }
   assert.equal(record.closed, 1, "the wedged query is still closed (no subprocess leak)");
+});
+
+// --- boot-probe worldHome wiring pin (the Task 2 wiring gap) ---
+//
+// `ClaudeProvider`'s constructor fires `#probeBootModels()`, which must pass
+// `worldHome: this.home`. With no worldHome, `resolveFactory(undefined)` throws
+// "client needs worldHome" and the probe's `.catch` swallows it: the catalog
+// stays sonnet-only and this test never observes the fake model. The marker and
+// entry below exist ONLY under this test's home, so a probe that resolved any
+// other home (or none) cannot reach them.
+//
+// A factory-injection pin cannot discriminate here: `resolveFactory` returns an
+// injected factory BEFORE it ever looks at worldHome, so "reached the factory"
+// proves nothing about the wiring. This test therefore drives the production
+// resolution path with an injected executable resolver only (the default).
+
+/** Seed a fake durable SDK runtime so the real `resolveFactory(worldHome)` path
+ * runs with zero network: the marker identity matches the pin, the entry exists,
+ * and the entry advertises one model. */
+function seedFakeSdkRuntime(home, modelId) {
+  const entry = sdkEntryPath(home);
+  mkdirSync(dirname(entry), { recursive: true });
+  writeFileSync(entry, [
+    "export function query() {",
+    "  return {",
+    `    supportedModels: async () => [{ value: ${JSON.stringify(modelId)}, displayName: "Fake Probe" }],`,
+    "    close() {},",
+    "    [Symbol.asyncIterator]() { return (async function* () {})(); },",
+    "  };",
+    "}",
+    "",
+  ].join("\n"));
+  const mode = resolveClaudeBinary() !== undefined ? "host-binary" : "bundled-payload";
+  writeFileSync(sdkRuntimeLayout(home).marker, JSON.stringify({
+    sdkPackage: SDK_PACKAGE, sdkVersion: SDK_PACKAGE_VERSION, mode, createdAt: Date.now(),
+  }));
+}
+
+test("the boot probe resolves its SDK runtime from the adapter's world home (`this.home`)", async () => {
+  resetClaudeClientState(); // no injected factory: the production resolveFactory(worldHome) path
+  setModelCatalog([{ id: CLAUDE_DEFAULT_MODEL, label: CLAUDE_DEFAULT_MODEL }], CLAUDE_DEFAULT_MODEL);
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-boot-probe-"));
+  seedFakeSdkRuntime(home, "fake-boot-probe-model");
+
+  const ctx = new Context();
+  ctx.provide("dshHomePath", home);
+  ctx.provide("agents", { setFactory() { } });
+  new ClaudeProvider(ctx); // the constructor fires #probeBootModels()
+
+  const observed = () => readModelCatalog().models.some((model) => model.id === "fake-boot-probe-model");
+  const deadline = Date.now() + 5_000;
+  while (!observed() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(
+    observed(),
+    "the boot probe must rebuild the catalog from the SDK runtime under this.home — with no worldHome it throws 'client needs worldHome' and stays sonnet-only",
+  );
 });

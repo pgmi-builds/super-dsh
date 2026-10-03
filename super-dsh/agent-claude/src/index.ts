@@ -202,7 +202,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
    * probe-failure fallback, and a live session re-observes anyway.
    */
   #probeBootModels(): void {
-    void probeClaudeModels()
+    void probeClaudeModels({ worldHome: this.home })
       .then((models) => {
         const entries = models.flatMap((model) => modelEntryFromSdk(model));
         if (entries.length === 0) {
