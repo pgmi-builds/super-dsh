@@ -108,3 +108,42 @@ node --test test/*.test.mjs
 - `requestUserInput` / `mcpServer/elicitation` / `permissions/requestApproval` 一律 fail-closed；
 - collab / subagent / `thread/fork` / skills / MCP 面板未接；
 - 内存镜像 `getMessages()` 仅供诊断，权威转录是 DSH 会话日志。
+
+## 多 provider 面（Hub，2026-10-03 user 裁决）
+
+Codex 是**单 provider** harness：它自己的 `config.toml` 只能写一个 `model_provider`，所以「换 provider」
+本质上就是改这个原生文件，而 provider 的**清单**在 Codex 家里无处安放——那正是 cc-switch 存在的理由。
+本轮把这个角色搬进 Hub：Agent Runtimes 里 codex 那一行展开后是 provider 列表，可增删改选。
+
+**分账**（dev-rules §5/§13）：
+
+| 位置 | 内容 |
+|---|---|
+| `$DSH_HOME/agents/codex/codex-providers.json`（0600） | adapter 自有：provider 清单 + 显式选择（含 API key） |
+| `~/.codex/config.toml` | 用户原生：只有 `model_provider` / `model` / `model_catalog_json` 与 `[model_providers.<id>]` 被改写 |
+| `~/.codex/auth.json` | 用户原生：**合并**写入 `OPENAI_API_KEY`，其余成员（`auth_mode` / `tokens` / `last_refresh`）原样保留 |
+| `~/.codex/superd-model-catalog.json` | 本 adapter 自有的模型目录；切 provider 时**吸收**当前 `model_catalog_json` 指向的那份条目 |
+
+**与 cc-switch 对齐但有意偏离两处**（都是为了不破坏用户数据）：① `config.toml` 走**外科改写**，
+cc-switch 是整份文本回写——那会静默抹掉用户的 `[projects.*] trust_level` 与全部注释；
+② `auth.json` **合并**而非重建，且解析失败时**拒绝写入**而不是覆盖凭据。其余（同一批文件、同一批键、
+同一个「两边行为对齐」语义）与 cc-switch 一致。
+
+**RPC**（`TypertRemoteService`，namespace `codexProviders`；hub 经 `/hub/api?agent=codex` 原样转发）：
+`get` / `save` / `remove` / `select`。**API key 只写不读**——wire 上只有 `hasKey`，绝不回传值。
+`select` **先写原生文件、后记选择**，写失败不会留下「记了但没生效」的状态。
+
+**已知约束（2026-10-03 交付形态验收实测）**：`auth.json` 的 `auth_mode` 为 `chatgpt` 时，codex 的 auth
+manager **先刷 OAuth token 且不会回落到同一文件里的 `OPENAI_API_KEY`** ⇒ 带 `requires_openai_auth` 的
+provider 在 ChatGPT 登录存在时静默不可用（本机刷新被地区封锁 403）。`env_key` 形态不受影响（根本不走
+auth manager）。面板会在「在役 provider 是 keyed 型」时明确告警。**本机现阶段 provider 请用 env 形态。**
+
+**生效时机**：codex 在子进程启动时读 `config.toml`，而子进程是首个 prompt 才物化 ⇒ 切换**不热**，
+只对此后新起的会话进程生效；面板如实说明。
+
+**模型目录必须克隆模板**（Task 2 实测）：codex 0.154 对 catalog 条目要求 `slug`/`display_name`/
+`supported_reasoning_levels`/`shell_type`/`visibility`/`supported_in_api`/`priority`/`support_verbosity`
+以及**嵌套 struct** `truncation_policy`… 字段链未终止，故只从既有条目克隆并覆盖身份字段。
+
+记录：`docs/superpowers/plans/2026-10-03-codex-multi-provider-hub.md` +
+`docs/test-reports/2026-10-03-codex-multi-provider-hub.md`（含 pack 线交付形态验收）。
