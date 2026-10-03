@@ -273,10 +273,10 @@ Not authorized yet. Only after the user signs off on Task 9 do we tarball → `c
 | # | Decision | Status |
 |---|---|---|
 | D1 | provider list in `$DSH_HOME/agents/codex/codex-providers.json` (0600) | accepted |
-| D2 | surgical `config.toml`; merged `auth.json`; private `superd-model-catalog.json` | accepted |
+| D2 | surgical `config.toml`; merged `auth.json`; private `superd-model-catalog.json` | accepted — **the catalog is REPLACE-per-switch, not absorbing** (§6 of the report: the absorb rule shipped a user-visible accumulation bug) |
 | D3 | API keys write-only over the wire | accepted |
 | D4 | `chat` rendered, disabled, with the binary's reason | accepted |
-| D5 | catalog template cloning vs minimal entry | **decided by measurement (Task 2): template cloning** |
+| D5 | catalog template cloning vs minimal entry | **decided by measurement (Task 2): template cloning** — old entries are a template POOL, never emitted |
 | D6 | switch applies at next child spawn; panel says so | accepted |
 | D7 | zero-IO preserved (no native read in the constructor) | accepted |
 | — | do we import existing cc-switch providers from its sqlite DB? | **no** (D1) — we seed from the live `config.toml` instead |

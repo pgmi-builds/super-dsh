@@ -122,7 +122,7 @@ Codex 是**单 provider** harness：它自己的 `config.toml` 只能写一个 `
 | `$DSH_HOME/agents/codex/codex-providers.json`（0600） | adapter 自有：provider 清单 + 显式选择（含 API key） |
 | `~/.codex/config.toml` | 用户原生：只有 `model_provider` / `model` / `model_catalog_json` 与 `[model_providers.<id>]` 被改写 |
 | `~/.codex/auth.json` | 用户原生：**合并**写入 `OPENAI_API_KEY`，其余成员（`auth_mode` / `tokens` / `last_refresh`）原样保留 |
-| `~/.codex/superd-model-catalog.json` | 本 adapter 自有的模型目录；切 provider 时**吸收**当前 `model_catalog_json` 指向的那份条目 |
+| `~/.codex/superd-model-catalog.json` | 本 adapter 自有的模型目录；切 provider 时**只写入选中的那一个 provider 的模型**（旧条目不保留，见下） |
 
 **与 cc-switch 对齐但有意偏离两处**（都是为了不破坏用户数据）：① `config.toml` 走**外科改写**，
 cc-switch 是整份文本回写——那会静默抹掉用户的 `[projects.*] trust_level` 与全部注释；
@@ -145,5 +145,11 @@ auth manager）。面板会在「在役 provider 是 keyed 型」时明确告警
 `supported_reasoning_levels`/`shell_type`/`visibility`/`supported_in_api`/`priority`/`support_verbosity`
 以及**嵌套 struct** `truncation_policy`… 字段链未终止，故只从既有条目克隆并覆盖身份字段。
 
+**目录是替换式，不是累积式**（2026-10-03 修正，来自使用反馈）：只写入选中的那一个 provider 的模型。
+早期版本会「吸收」当前 `model_catalog_json` 指向的全部条目且**永不丢弃**，于是 Chat 的模型清单只增不减
+（GLM-5.2 → +DeepSeek Flash → +GLM-5.3 Flash，而实际只跑最后一个）。DSH 侧 `LlmAdapter.listModels`
+就是这个文件的逐字投影，所以目录内容 = 用户能选的模型；cc-switch 同样只写当前 provider 的目录。
+既有/旧条目仍会被**读取**——作为克隆模板的来源，但不再被**输出**。
+
 记录：`docs/superpowers/plans/2026-10-03-codex-multi-provider-hub.md` +
-`docs/test-reports/2026-10-03-codex-multi-provider-hub.md`（含 pack 线交付形态验收）。
+`docs/test-reports/2026-10-03-codex-multi-provider-hub.md`（含 pack 线交付形态验收 + 累积清单的修正）。

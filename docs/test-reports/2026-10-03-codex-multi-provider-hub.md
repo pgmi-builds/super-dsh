@@ -120,3 +120,41 @@ We cannot fix this from our side without evicting the user's login — cc-switch
 - **dev3 target-machine acceptance** — not authorized this round.
 - The `env`-injection follow-up from §2.
 - Unifying the two credential seeds (§3).
+
+## 6. Post-acceptance correction: the catalog was accumulating
+
+**Reported from use, and the design was mine to own.** Three providers configured in sequence left all
+three models in the Chat model selector — GLM-5.2, then +DeepSeek Flash, then +GLM-5.3 Flash — while
+`config.toml` ran only the last one.
+
+Root cause, one place: `mergeModelCatalog` built the file by absorbing **every** entry of whatever
+`model_catalog_json` had named and **never dropping a foreign one**, then appending the incoming
+provider's models. That was plan decision D2/D5, written as a protection ("cc-switch's next switch must
+not delete our entries") and wrong in effect — cc-switch repoints `model_catalog_json` at its own file
+ever it switches, so absorbing bought nothing. The DSH side made it user-visible: `CodexLlmAdapter.listModels`
+answers straight out of that file (`models.ts`), so the file's contents *are* "the models I can pick".
+
+Worse, my own test **pinned the wrong behaviour as correct**: `"…never drops a foreign entry"` asserted
+`["old-model", "glm-5.2"]`. It is now replaced by `"switching providers does not accumulate the previous
+provider's models"`, which walks the exact reported sequence (GLM-5.2 → DeepSeek Flash → 智谱 CN's
+`[glm-5.3-flash, glm-4.7]`) and asserts one provider's models at every step.
+
+**Fix.** The catalog is replace-per-switch, matching cc-switch: previous entries are still *read* (as the
+clone template for the ~35 Codex-owned keys D5 measured), never *emitted*. Duplicate ids collapse.
+
+**Also fixed, from the same report:** editing the provider that is **already in force** now re-materializes
+it, so adding a model no longer needs "select DeepSeek away, then select 智谱 CN back". It is not a switch —
+the selection is unchanged, and the in-force model stays put when the edit still offers it.
+
+**Verified on the reported machine.** Before: `[deepseek-flash, glm-5.2, glm-5.3-flash, glm-4.7]`.
+After one `codexProviders/select {id: "zhipu-cn"}` on the restarted rig:
+
+```
+[deepseek-flash, glm-5.2, glm-5.3-flash, glm-4.7]   →   [glm-5.3-flash, glm-4.7]
+```
+
+and `readCodexModelCatalog('~/.codex')` — the exact call behind `listModels` — now returns
+`provider: zhipu-cn`, `default: glm-5.3-flash`, models `glm-5.3-flash (ctx 1000000)` and `glm-4.7 (ctx 1000000)`.
+The browser needs one refresh, because the page caches the list it was given.
+
+Suite after the change: **152/152** (adapter), hub green.
