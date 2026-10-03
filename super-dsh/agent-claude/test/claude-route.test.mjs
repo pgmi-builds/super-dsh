@@ -39,6 +39,40 @@ test("routeOf accepts a complete selection and drops a half-filled one", () => {
   assert.equal(routeOf(["glm", "glm-5.2"]), undefined);
 });
 
+test("a pre-rework composite selection is revived from the legacy claude route", () => {
+  // Sessions created before the per-provider-route rework pinned the hardcoded
+  // `claude` route with the COMPOSITE id as the model half. A resumed session
+  // hands that pair back as its logged header; read raw it names no store
+  // entry, so the agent would fall back to NATIVE_LAUNCH and quietly resume on
+  // the native endpoint instead of the provider the session was pinned to.
+  const legacy = { provider: "claude", model: "glm/glm-5.3" };
+  assert.deepEqual(resolveRoute({ logged: legacy }), { provider: "glm", model: "glm-5.3" });
+  // Every candidate slot carries the same legacy shape, not just `logged`.
+  assert.deepEqual(resolveRoute({ pending: legacy }), { provider: "glm", model: "glm-5.3" });
+  assert.deepEqual(routeOf(legacy), { provider: "glm", model: "glm-5.3" });
+  assert.deepEqual(routeSeed(legacy), { provider: "glm", model: "glm-5.3" });
+
+  // A NEW-shape selection already names the provider as its route half and
+  // passes through untouched.
+  assert.deepEqual(resolveRoute({ logged: { provider: "glm", model: "glm-5.3" } }), {
+    provider: "glm",
+    model: "glm-5.3",
+  });
+  // Including a curated provider whose RAW model id carries a slash: the split
+  // is keyed on the provider half, never on the model alone.
+  assert.deepEqual(resolveRoute({ logged: { provider: "zai-plan", model: "anthropic/claude-sonnet-4" } }), {
+    provider: "zai-plan",
+    model: "anthropic/claude-sonnet-4",
+  });
+
+  // A genuinely native selection has no slash and must not be reinterpreted.
+  assert.deepEqual(resolveRoute({ logged: { provider: "claude", model: "deepseek-flash" } }), {
+    provider: "claude",
+    model: "deepseek-flash",
+  });
+  assert.deepEqual(routeOf({ provider: "claude", model: "sonnet" }), { provider: "claude", model: "sonnet" });
+});
+
 test("a pending switch outranks everything, including the logged header", () => {
   // The measured behaviour this encodes: switching provider while a turn is
   // running must apply to the NEXT turn. The harness records the intent as

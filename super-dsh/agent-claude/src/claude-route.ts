@@ -28,6 +28,14 @@
  * on the FIRST slash, because a provider id is slug-alphabet and never carries
  * one while a model id may.
  *
+ * One shape predates the per-provider routes and is still in the wild: sessions
+ * created before the rework pinned the hardcoded `claude` route with the
+ * COMPOSITE id as their model half (`{provider: "claude", model: "glm/glm-5.3"}`).
+ * Read raw it names no store entry, so the session would silently relaunch on
+ * the native endpoint; {@link routeOf} revives it by splitting that one legacy
+ * shape, and only that one — a new-shape selection's raw model id may carry a
+ * slash of its own (`zai-plan` + `anthropic/claude-sonnet-4`).
+ *
  * Kept out of `agent.ts` so the precedence can be pinned without standing up
  * a Session, a Context and a client: it is the one piece of this feature whose
  * mistakes are silent.
@@ -40,6 +48,13 @@ export interface RouteSelection {
   readonly provider: string;
   readonly model: string;
 }
+
+/**
+ * The route id every selection was pinned under BEFORE the per-provider-route
+ * rework. A local literal on purpose: importing `CLAUDE_PROVIDER_ID` from
+ * `adapter.ts` would close a module cycle (`adapter → models → claude-route`).
+ */
+const LEGACY_ROUTE_ID = "claude";
 
 /**
  * Read a route out of one candidate value.
@@ -58,6 +73,15 @@ export function routeOf(value: unknown): RouteSelection | undefined {
   const provider = record["provider"];
   const model = record["model"];
   if (typeof provider !== "string" || provider === "" || typeof model !== "string" || model === "") return undefined;
+  // Revive a selection from the pre-per-provider-route architecture: the route
+  // half was hardcoded `claude` and the model half was the COMPOSITE id, so a
+  // resumed session hands back `{provider: "claude", model: "glm/glm-5.3"}`.
+  // Read raw that pair misses the provider store, and the agent falls back to
+  // NATIVE_LAUNCH — the session quietly resumes on the native endpoint instead
+  // of its pinned provider until the user re-picks. Keyed on the provider half
+  // so a new-shape selection passes through untouched, even when its raw model
+  // id carries a slash of its own.
+  if (provider === LEGACY_ROUTE_ID) return parseCompositeModelId(model) ?? { provider, model };
   return { provider, model };
 }
 
