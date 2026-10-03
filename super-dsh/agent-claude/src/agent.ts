@@ -558,6 +558,12 @@ export class ClaudeAgent implements Agent {
     }
     this.markIdle();
     this.endActivity();
+    // Release the live client's wire listener BEFORE its child closes (Task 9
+    // ledger): without this the dispose path can still receive the superseded
+    // client's stale `agent_end` — the same bug class `reattach()` guards
+    // against on the swap path.
+    this.clientUnsubscribe?.();
+    this.clientUnsubscribe = undefined;
     this.client.close();
     resetProjectionState();
     // Release the command mirror explicitly (the agent scope would also dispose

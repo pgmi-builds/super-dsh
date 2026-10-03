@@ -70,6 +70,7 @@ import { registerClaudePreset } from "./agent-preset-claude.js";
 import { claudeLaunchFor, type ClaudeLaunchSpec } from "./claude-launch.js";
 import { compositeModelId, parseCompositeModelId, routeSeed } from "./claude-route.js";
 import { endpointKey, readProviderStore, type ClaudeProviderEntry } from "./claude-providers.js";
+import { ClaudeProvidersGateway, syncFromNative } from "./claude-provider-gateway.js";
 import { readNativeModel, readNativeProviders } from "./claude-native-config.js";
 import { resolveClaudeBinary } from "./sdk-runtime.js";
 
@@ -95,6 +96,15 @@ function validatedCwd(cwd: string | undefined): string | undefined {
 const trace = (...parts: unknown[]): void => {
   if (process.env.CLAUDE_TRACE === "1") process.stderr.write(`[claude-provider ${Date.now() % 1_000_000}] ${parts.join(" ")}\n`);
 };
+
+/**
+ * How often the canonical store is reconciled with the user's `settings.json`
+ * env (2026-10-04 user ruling: startup + every ten minutes). The file is the
+ * user's own and edited with their own tools, so the sync is a poll rather
+ * than an event subscription — ten minutes is the granularity the ruling
+ * asked for.
+ */
+const SYNC_INTERVAL_MS = 600_000;
 
 /**
  * Resume identity guard (exported for unit testing): fail closed when no Claude
@@ -169,6 +179,8 @@ export class ClaudeProvider extends Service implements AgentFactory {
   private readonly home: string;
   /** Echo/staleness guard for the app-wide default-model push. */
   private defaultModelKey = "";
+  /** Epoch ms of the last reconcile with the user's `settings.json` env. */
+  private syncedAt: number | undefined;
   constructor(ctx: Context) {
     super(ctx, "claudeProvider");
     this.runtime = { ctx };
@@ -178,6 +190,17 @@ export class ClaudeProvider extends Service implements AgentFactory {
     trace(`home: worldHome=${this.home} claudeHome=${resolveClaudeHome()}`);
     ctx.effect(() => ctx.agents.setFactory(this), "claudeProvider.setFactory()");
     this.#registerModelCatalog();
+    // The store is canonical and the native settings.json env is a source
+    // (2026-10-04). Reconcile once at startup, then keep reconciling on a
+    // timer; the sync is idempotent and write-only-when-moved, so a world
+    // with no providers configured pays nothing but a no-op read.
+    this.syncNow();
+    const timer = setInterval(() => this.syncNow(), SYNC_INTERVAL_MS);
+    timer.unref?.();
+    // Fiber-scoped cleanup (super-dsh/AGENTS unload contract): the timer must
+    // never outlive this row — HMR row unload disposes the fiber, which runs
+    // this effect's disposer.
+    ctx.effect(() => () => clearInterval(timer), "claudeProvider.syncTimer()");
     // The roster must be visible to the API gateway's root-level remote
     // enumeration; nesting it under a child fiber via ctx.plugin hides its
     // @Remote routes from the gateway and every agentPresets/* call 404s (the
@@ -191,6 +214,52 @@ export class ClaudeProvider extends Service implements AgentFactory {
     registerClaudePreset(ctx);
     this.#registerDefaultModel();
     this.#probeBootModels();
+    // The Hub settings panel's data plane (2026-10-04 multi-provider ruling):
+    // an adapter-owned Typert Remote (`claudeProviders/get|save|remove`) on
+    // this world's context. The hub's carrier forwards `envelope.method`
+    // verbatim, so the panel reaches it through the existing
+    // `/hub/api?agent=claude` family — no new hub route, and no provider
+    // knowledge leaks out of the adapter (dev-rules §12). Cordis keeps the
+    // instance alive as this context's `claudeProviders` service. There is no
+    // `select`: which provider a session runs on is DSH's per-session
+    // `model/selection`.
+    //
+    // `resolveClaudeHome` is passed as a THUNK on purpose (the codex twin's
+    // rule): the native home is re-resolved per call, so a test's
+    // `CLAUDE_CONFIG_DIR` and an operator's override are both honored.
+    //
+    // The onChange hook is a deliberate NO-OP — claude has no codex-style
+    // route SET to refresh: every provider is served under the ONE fixed
+    // `claude` route registered above (the adapter answers listModels/
+    // resolveModel live from the catalog), and the catalog itself is
+    // observed-only module state (models.ts); panel mutations land through
+    // the live store reads in sessionAgentOptions/defaultModelSelection.
+    new ClaudeProvidersGateway(ctx, this.home, () => resolveClaudeHome(), () => { });
+  }
+
+  /**
+   * Reconcile the canonical provider store with the user's `settings.json`
+   * env (2026-10-04 user ruling) and stamp the last-reconcile epoch.
+   *
+   * Called once at startup and every {@link SYNC_INTERVAL_MS}. Mirrors the
+   * codex twin's semantics exactly — idempotent, silent, and
+   * write-only-when-moved (claude-providers.ts guarantees the store rewrite
+   * happens only when something actually changed) — minus codex's
+   * `#applyRoutes` step: claude serves every provider under the ONE fixed
+   * `claude` route registered at boot, so there is no route set to re-point.
+   * Never throws: a provider list is not worth a boot.
+   */
+  syncNow(): void {
+    try {
+      const { added, updated } = syncFromNative(this.home, resolveClaudeHome());
+      trace(`provider sync: added=${added.join(",") || "none"} updated=${updated.join(",") || "none"}`);
+      if (added.length > 0 || updated.length > 0) {
+        this.runtime.ctx.logger.info(`claude-provider: settings.json sync — added ${added.join(", ") || "none"}, refreshed ${updated.join(", ") || "none"}`);
+      }
+      this.syncedAt = Date.now();
+    } catch (error) {
+      this.runtime.ctx.logger.warn(`claude-provider: provider sync failed: ${String(error)}`);
+    }
   }
 
   /**

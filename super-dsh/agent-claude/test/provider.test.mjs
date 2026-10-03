@@ -306,8 +306,20 @@ test("the model catalog becomes non-empty after a session_init observation", asy
 
 test("#registerDefaultModel pushes a claude-routed target through both paths when the selection is foreign", async () => {
   setModelCatalog([]); // force the boot fallback (CLAUDE_DEFAULT_MODEL) path
+  // Hermetic native home (Task 10): the provider constructor now reconciles
+  // the store with the ambient native settings env, and a machine whose
+  // `~/.claude/settings.json` declares ANTHROPIC_BASE_URL would import that
+  // provider here — flipping the push off the boot fallback this test pins.
+  // Pin an EMPTY claude home (codex twin: codex-session-route.test.mjs pins
+  // CODEX_HOME the same way) and use a FRESH worldHome so no leftover store
+  // can feed defaultModelSelection's case 2 either.
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-default-model-"));
+  const nativeHome = mkdtempSync(join(tmpdir(), "superd-claude-native-empty-"));
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = nativeHome;
+  try {
   const ctx = new Context();
-  ctx.provide("dshHomePath", "/tmp/cc-home");
+  ctx.provide("dshHomePath", home);
   ctx.provide("agents", { setFactory() { } });
   const saved = [];
   const replaced = [];
@@ -330,6 +342,10 @@ test("#registerDefaultModel pushes a claude-routed target through both paths whe
     saved.some((s) => s.provider === "claude" && s.model === "sonnet"),
     "saveSelection must carry the claude/sonnet target",
   );
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+  }
 });
 
 test("dispose clears the session-observed slash commands", async () => {
