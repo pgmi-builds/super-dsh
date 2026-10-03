@@ -19,7 +19,10 @@ import test from "node:test";
 const dist = join(new URL(".", import.meta.url).pathname, "..", "dist", "client");
 const {
   activeMethod,
+  authKindOptions,
   hasSettingsPanel,
+  nativeDescription,
+  nativePathsLine,
   settingsPanelFor,
   parseAuthView,
   parseProvidersView,
@@ -228,4 +231,100 @@ test("missing optionals read conservatively, and an unknown protocol is not inve
   assert.equal(view.providers[0].protocol, "responses");
   assert.equal(view.native, null);
   assert.equal(view.syncedAt, undefined, "an absent reconcile stamp stays absent");
+});
+
+// ------------------------------------------------- the claude providers face
+
+/**
+ * A faithful `claudeProviders/get` answer, trimmed to what that adapter sends:
+ * NO `protocols` field (claude has no wire-protocol choice to offer),
+ * `authKind` in claude's two-value vocabulary, `native` carrying an endpoint
+ * URL instead of a provider id, and a two-path `paths` (the adapter owns the
+ * store; the user's settings.json is a read-only source).
+ */
+const claudeAnswer = {
+  providers: [
+    {
+      id: "glm",
+      label: "GLM Plan",
+      baseUrl: "https://api.z.ai/api/anthropic",
+      models: [{ id: "glm-5.3", displayName: "GLM 5.3", contextWindow: 1000000 }],
+      authKind: "authToken",
+      hasKey: true,
+    },
+    {
+      id: "deepseek",
+      label: "DeepSeek",
+      baseUrl: "https://api.deepseek.com/anthropic",
+      models: [],
+      authKind: "apiKey",
+      hasKey: false,
+    },
+  ],
+  native: { baseUrl: "https://api.z.ai/api/anthropic", model: "glm-5.3" },
+  paths: { store: "/h/agents/claude/claude-providers.json", settings: "/u/.claude/settings.json" },
+  syncedAt: 1759500000000,
+};
+
+test("claude joins the providers panel under its own namespace", () => {
+  assert.deepEqual(settingsPanelFor("claude"), { namespace: "claudeProviders", kind: "providers" });
+  assert.equal(hasSettingsPanel("claude"), true);
+});
+
+test("a claude-shaped view parses: no protocols, claude paths, an endpoint-URL native", () => {
+  const view = parseProvidersView(claudeAnswer);
+  assert.ok(view, "parses — the claude face is not a malformed codex answer");
+  // The protocol dropdown is omitted, never defaulted: an absent field reads
+  // as "this face offers no wire-protocol choice".
+  assert.deepEqual(view.protocols, []);
+  assert.equal(view.providers[0].authKind, "authToken", "claude's Bearer kind survives the parse untouched");
+  assert.equal(view.providers[1].authKind, "apiKey");
+  assert.deepEqual(
+    view.native,
+    { baseUrl: "https://api.z.ai/api/anthropic", model: "glm-5.3" },
+    "an endpoint URL rides `native` as faithfully as codex's providerId",
+  );
+  assert.equal(view.paths.store, "/h/agents/claude/claude-providers.json");
+  assert.equal(view.paths.settings, "/u/.claude/settings.json");
+  assert.equal(view.paths.config, undefined, "the codex-only path slots stay absent, not blank");
+});
+
+test("a fresh claude install — empty list, no protocols — is a state, not an error", () => {
+  const view = parseProvidersView({ providers: [], native: null, paths: claudeAnswer.paths });
+  assert.ok(view, "the panel must offer Add provider, not an error");
+  assert.deepEqual(view.providers, []);
+  assert.deepEqual(view.protocols, []);
+});
+
+test("a PRESENT-but-empty protocols field is still a malformed codex answer", () => {
+  assert.equal(parseProvidersView({ ...providersAnswer, protocols: [] }), undefined);
+});
+
+test("the add/edit form's auth dropdown speaks the VIEW's vocabulary, not one face's", () => {
+  const claude = authKindOptions(parseProvidersView(claudeAnswer));
+  assert.deepEqual(claude.map((o) => o.value), ["apiKey", "authToken"], "claude: the two header shapes");
+  const codex = authKindOptions(parseProvidersView(providersAnswer));
+  assert.deepEqual(codex.map((o) => o.value), ["apiKey", "env"], "codex: stored key or env var — unchanged");
+  for (const option of [...claude, ...codex]) {
+    assert.ok(option.label.length > 0 && option.hint.length > 0, "every option carries a label and a hint");
+  }
+});
+
+test("the native fact line describes either face's native without throwing", () => {
+  assert.equal(nativeDescription({ providerId: "deepseek", model: "deepseek-flash" }), "deepseek / deepseek-flash");
+  assert.equal(
+    nativeDescription({ baseUrl: "https://api.z.ai/api/anthropic", model: "glm-5.3" }),
+    "https://api.z.ai/api/anthropic / glm-5.3",
+  );
+  assert.equal(nativeDescription({}), "no provider");
+});
+
+test("the paths footer names whichever native files the face actually has", () => {
+  assert.equal(
+    nativePathsLine(parseProvidersView(providersAnswer).paths),
+    "/u/.codex/config.toml · /u/.codex/auth.json · /u/.codex/superd-model-catalogs",
+    "codex: unchanged",
+  );
+  assert.equal(nativePathsLine(parseProvidersView(claudeAnswer).paths), "/u/.claude/settings.json", "claude: one file, no blank slots");
+  assert.equal(nativePathsLine({ store: "/s" }), undefined, "a store-only view renders no second line at all");
 });

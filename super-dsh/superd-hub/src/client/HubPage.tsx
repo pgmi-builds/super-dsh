@@ -20,6 +20,9 @@ import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 import {
   activeMethod,
+  authKindOptions,
+  nativeDescription,
+  nativePathsLine,
   selectable,
   settingsPanelFor,
   toggleExpanded,
@@ -449,7 +452,6 @@ const fieldStyle: React.CSSProperties = {
   color: 'var(--dsw-alias-label-secondary)',
 }
 
-
 const buttonStyle: React.CSSProperties = {
   font: 'inherit',
   fontSize: 12.5,
@@ -475,6 +477,8 @@ const EMPTY_PROVIDER_DRAFT = {
   label: '',
   baseUrl: '',
   protocol: 'responses',
+  // The view's own vocabulary decides what this may be (authKindOptions).
+  authKind: 'apiKey',
   apiKey: '',
   envName: '',
   modelIds: '',
@@ -488,14 +492,10 @@ function parseModelIds(text: string): string[] {
   return text.split(/[\s,]+/).map((part) => part.trim()).filter((part) => part !== '')
 }
 
-/** `provider / model`, whichever halves the user's config.toml actually names. */
-function nativeDescription(native: { readonly providerId?: string; readonly model?: string }): string {
-  const parts = [native.providerId, native.model].filter((part): part is string => part !== undefined)
-  return parts.length === 0 ? 'no provider' : parts.join(' / ')
-}
-
 /**
- * The multi-provider body (Codex, 2026-10-03 ruling).
+ * The multi-provider body (Codex 2026-10-03 ruling; Claude 2026-10-04 rides
+ * the same body with its own view shape — no `protocols` field, two header
+ * auth kinds, an endpoint-URL native).
  *
  * Super D hosts the list cc-switch otherwise holds: add, edit and remove only.
  * The active/select half is gone — which provider a Codex session runs on is
@@ -545,6 +545,7 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
       label: provider.label,
       baseUrl: provider.baseUrl,
       protocol: provider.protocol,
+      authKind: provider.authKind,
       // Never an existing value — see the module note; blank keeps it.
       apiKey: '',
       envName: provider.envName ?? '',
@@ -562,9 +563,9 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
       label: draft.label.trim(),
       baseUrl: draft.baseUrl.trim(),
       protocol: draft.protocol,
-      auth: draft.envName.trim() === ''
-        ? { kind: 'apiKey', value: draft.apiKey }
-        : { kind: 'env', name: draft.envName.trim() },
+      auth: draft.authKind === 'env'
+        ? { kind: 'env', name: draft.envName.trim() }
+        : { kind: draft.authKind === 'authToken' ? 'authToken' : 'apiKey', value: draft.apiKey },
       models: ids.map((id) => ({
         id,
         ...(window !== undefined && Number.isSafeInteger(window) && window > 0 ? { contextWindow: window } : {}),
@@ -585,6 +586,10 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
     )
   }
 
+  // The claude face names one native file (settings.json), codex three; a face
+  // that named none renders no second footer line at all.
+  const nativePaths = nativePathsLine(view.paths)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <p style={panelHeadStyle}>Model provider</p>
@@ -594,12 +599,12 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
           selection is what a session actually runs. */}
       {view.native !== null && (
         <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>
-          Your own Codex config.toml currently names {nativeDescription(view.native)}.
+          Your own {agent.label} config currently runs {nativeDescription(view.native)}.
         </p>
       )}
       {view.syncedAt !== undefined && (
         <p style={{ margin: 0, color: 'var(--dsw-alias-label-caption)', fontSize: 11 }}>
-          synced from config.toml {new Date(view.syncedAt).toLocaleString()}
+          synced from your native config {new Date(view.syncedAt).toLocaleString()}
         </p>
       )}
 
@@ -613,6 +618,7 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
         <div key={provider.id} style={optionStyle}>
           <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{provider.label}</span>
           {provider.authKind === 'env' && <span style={chip}>env {provider.envName}</span>}
+          {provider.authKind === 'authToken' && <span style={chip}>token</span>}
           {!provider.hasKey && <span style={chip}>no key</span>}
           <span
             style={{
@@ -689,28 +695,35 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
             />
           </label>
 
-          <label style={fieldStyle}>
-            API protocol
-            <select
-              style={inputStyle}
-              value={draft.protocol}
-              onChange={(event) => { setDraft({ ...draft, protocol: event.target.value }) }}
-            >
-              {view.protocols.map((option) => (
-                <option key={option.value} value={option.value} disabled={!option.available} title={option.hint}>
-                  {option.label}{option.available ? '' : ' — unsupported'}
-                </option>
-              ))}
-            </select>
-          </label>
-          {(() => {
-            const option = view.protocols.find((candidate) => candidate.value === draft.protocol)
-            return option === undefined || option.available ? null : (
-              <p style={{ margin: 0, color: 'var(--dsw-alias-state-error-primary, #c66)', fontSize: 12 }}>
-                {option.hint}
-              </p>
-            )
-          })()}
+          {/* A face with no wire-protocol choice (claude) omits the control
+              entirely: the field is absent from its view, and inventing options
+              the runtime cannot run would be worse than no dropdown. */}
+          {view.protocols.length > 0 && (
+            <>
+              <label style={fieldStyle}>
+                API protocol
+                <select
+                  style={inputStyle}
+                  value={draft.protocol}
+                  onChange={(event) => { setDraft({ ...draft, protocol: event.target.value }) }}
+                >
+                  {view.protocols.map((option) => (
+                    <option key={option.value} value={option.value} disabled={!option.available} title={option.hint}>
+                      {option.label}{option.available ? '' : ' — unsupported'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {(() => {
+                const option = view.protocols.find((candidate) => candidate.value === draft.protocol)
+                return option === undefined || option.available ? null : (
+                  <p style={{ margin: 0, color: 'var(--dsw-alias-state-error-primary, #c66)', fontSize: 12 }}>
+                    {option.hint}
+                  </p>
+                )
+              })()}
+            </>
+          )}
 
           <label style={fieldStyle}>
             Model IDs
@@ -733,26 +746,47 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
             />
           </label>
 
+          {/* The key shapes on offer are the VIEW's (authKindOptions): codex
+              offers a stored key or an env-var name, claude its two header
+              shapes. One dropdown, never two parallel inputs — each adapter
+              rejects the other face's kind on save. */}
           <label style={fieldStyle}>
-            API key {editing !== NEW_PROVIDER && <span style={{ color: 'var(--dsw-alias-label-caption)' }}>(leave blank to keep the saved one)</span>}
-            <input
+            Key shape
+            <select
               style={inputStyle}
-              type="password"
-              value={draft.apiKey}
-              autoComplete="off"
-              onChange={(event) => { setDraft({ ...draft, apiKey: event.target.value }) }}
-            />
+              value={draft.authKind}
+              onChange={(event) => { setDraft({ ...draft, authKind: event.target.value }) }}
+            >
+              {authKindOptions(view).map((option) => (
+                <option key={option.value} value={option.value} title={option.hint}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
 
-          <label style={fieldStyle}>
-            …or read the key from an environment variable
-            <input
-              style={inputStyle}
-              value={draft.envName}
-              placeholder="DEEPSEEK_API_KEY"
-              onChange={(event) => { setDraft({ ...draft, envName: event.target.value }) }}
-            />
-          </label>
+          {draft.authKind === 'env' ? (
+            <label style={fieldStyle}>
+              Environment variable
+              <input
+                style={inputStyle}
+                value={draft.envName}
+                placeholder="DEEPSEEK_API_KEY"
+                onChange={(event) => { setDraft({ ...draft, envName: event.target.value }) }}
+              />
+            </label>
+          ) : (
+            <label style={fieldStyle}>
+              {draft.authKind === 'authToken' ? 'Bearer token' : 'API key'} {editing !== NEW_PROVIDER && <span style={{ color: 'var(--dsw-alias-label-caption)' }}>(leave blank to keep the saved one)</span>}
+              <input
+                style={inputStyle}
+                type="password"
+                value={draft.apiKey}
+                autoComplete="off"
+                onChange={(event) => { setDraft({ ...draft, apiKey: event.target.value }) }}
+              />
+            </label>
+          )}
 
           <div style={{ display: 'flex', gap: 6 }}>
             <button type="button" style={primaryButtonStyle} disabled={busy !== null} onClick={submit}>
@@ -780,9 +814,11 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
       <p style={{ margin: '4px 0 0', color: 'var(--dsw-alias-label-caption)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11 }}>
         list {view.paths.store}
       </p>
-      <p style={{ margin: 0, color: 'var(--dsw-alias-label-caption)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11 }}>
-        native {view.paths.config} · {view.paths.auth} · {view.paths.catalogs}
-      </p>
+      {nativePaths !== undefined && (
+        <p style={{ margin: 0, color: 'var(--dsw-alias-label-caption)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11 }}>
+          native {nativePaths}
+        </p>
+      )}
     </div>
   )
 }

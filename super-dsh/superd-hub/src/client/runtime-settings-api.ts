@@ -145,12 +145,12 @@ export async function setAuthMode(
   return view
 }
 
-// ------------------------------------------- the codex providers body (P4)
+// --------------------------------- the providers bodies (codex P4, claude)
 
-// Same transport, same namespace rule; only the operation names and the
-// argument shapes differ. Every call re-parses the adapter's answer through
-// `parseProvidersView`, so a malformed reply is an error here rather than a
-// half-rendered panel.
+// Same transport, same namespace rule (codexProviders, claudeProviders); only
+// the operation names and the argument shapes differ. Every call re-parses the
+// adapter's answer through `parseProvidersView`, so a malformed reply is an
+// error here rather than a half-rendered panel.
 
 function requireProvidersView(value: unknown): RuntimeProvidersView {
   const view = parseProvidersView(value)

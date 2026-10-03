@@ -1653,6 +1653,10 @@ const SETTINGS_PANELS = {
 	"codex-sdk": {
 		namespace: "codexProviders",
 		kind: "providers"
+	},
+	claude: {
+		namespace: "claudeProviders",
+		kind: "providers"
 	}
 };
 /** The panel spec for a runtime, or `undefined` when it has none yet. */
@@ -1733,6 +1737,9 @@ function modelOption(raw) {
 		...typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0 ? { contextWindow } : {}
 	};
 }
+function providerAuthKind(raw) {
+	return raw === "env" ? "env" : raw === "authToken" ? "authToken" : "apiKey";
+}
 function providerOption(raw) {
 	if (typeof raw !== "object" || raw === null) return void 0;
 	const record = raw;
@@ -1748,7 +1755,7 @@ function providerOption(raw) {
 		baseUrl,
 		protocol: record.protocol === "chat" ? "chat" : "responses",
 		models,
-		authKind: record.authKind === "env" ? "env" : "apiKey",
+		authKind: providerAuthKind(record.authKind),
 		...envName === void 0 ? {} : { envName },
 		hasKey: record.hasKey === true
 	};
@@ -1770,31 +1777,38 @@ function providerPaths(raw) {
 	if (typeof raw !== "object" || raw === null) return void 0;
 	const record = raw;
 	const store = nonEmpty(record.store);
+	if (store === void 0) return void 0;
 	const config = nonEmpty(record.config);
 	const auth = nonEmpty(record.auth);
 	const catalogs = nonEmpty(record.catalogs);
-	if (store === void 0 || config === void 0 || auth === void 0 || catalogs === void 0) return void 0;
+	const settings = nonEmpty(record.settings);
 	return {
 		store,
-		config,
-		auth,
-		catalogs
+		...config === void 0 ? {} : { config },
+		...auth === void 0 ? {} : { auth },
+		...catalogs === void 0 ? {} : { catalogs },
+		...settings === void 0 ? {} : { settings }
 	};
 }
 /**
 * Defensive parse of the adapter's providers answer.
 *
 * `undefined` for anything that is not a usable view — but an empty `providers`
-* array WITH a usable protocol list is valid (a fresh install), and so is a
-* provider whose `models` array is empty.
+* array is valid (a fresh install), and so is a provider whose `models` array
+* is empty. `protocols` is the codex face's field: an ABSENT field (the claude
+* face) reads as "no protocol choice" and never fails the parse, while a
+* present-but-unusable list is a malformed codex answer and rejects as before.
 */
 function parseProvidersView(raw) {
 	if (typeof raw !== "object" || raw === null) return void 0;
 	const record = raw;
 	if (!Array.isArray(record.providers)) return void 0;
-	if (!Array.isArray(record.protocols)) return void 0;
-	const protocols = record.protocols.map(protocolOption).filter((entry) => entry !== void 0);
-	if (protocols.length === 0) return void 0;
+	let protocols = [];
+	if (record.protocols !== void 0) {
+		if (!Array.isArray(record.protocols)) return void 0;
+		protocols = record.protocols.map(protocolOption).filter((entry) => entry !== void 0);
+		if (protocols.length === 0) return void 0;
+	}
 	const paths = providerPaths(record.paths);
 	if (paths === void 0) return void 0;
 	const providers = record.providers.map(providerOption).filter((entry) => entry !== void 0);
@@ -1810,19 +1824,78 @@ function parseProvidersView(raw) {
 	};
 }
 /**
-* The user's own config.toml as the adapter last read it. `null` when the
+* The user's own native config as the adapter last read it. `null` when the
 * adapter said nothing; otherwise an object carrying whichever halves were
-* named (an empty one is still news — the panel says the file names nothing).
+* named — codex names a provider id, claude an endpoint URL — and an empty
+* one is still news (the panel says the file names nothing).
 */
 function nativeConfig(raw) {
 	if (typeof raw !== "object" || raw === null) return null;
 	const record = raw;
 	const providerId = nonEmpty(record.providerId);
+	const baseUrl = nonEmpty(record.baseUrl);
 	const model = nonEmpty(record.model);
 	return {
 		...providerId === void 0 ? {} : { providerId },
+		...baseUrl === void 0 ? {} : { baseUrl },
 		...model === void 0 ? {} : { model }
 	};
+}
+/** The codex face: a stored key, or the name of a variable holding it. */
+const KEY_OR_ENV = [{
+	value: "apiKey",
+	label: "API key",
+	hint: "Stored with the provider; injected at launch."
+}, {
+	value: "env",
+	label: "Environment variable",
+	hint: "The child reads the key from a named variable."
+}];
+/** The claude face: both kinds are literal keys, differing only in the header. */
+const TWO_HEADER_SHAPES = [{
+	value: "apiKey",
+	label: "API key (x-api-key)",
+	hint: "Sent as the x-api-key header."
+}, {
+	value: "authToken",
+	label: "Bearer token",
+	hint: "Sent as the Authorization header."
+}];
+/**
+* The auth shapes the add/edit form may pick for a provider, in display order.
+*
+* The view carries no explicit vocabulary field, so the panel reads it off the
+* one field that distinguishes the faces today: `protocols`. The codex face
+* advertises wire protocols and offers key-or-env-var; the claude face carries
+* neither and offers its two header shapes instead. The list is per-view,
+* never a fixed union — each adapter rejects the other's kinds on save, so a
+* union dropdown would miscode silently. A third face extends the table.
+*/
+function authKindOptions(view) {
+	return view.protocols.length > 0 ? KEY_OR_ENV : TWO_HEADER_SHAPES;
+}
+/**
+* `provider / model` (codex) or `endpoint / model` (claude) — whichever halves
+* the user's own native config names, joined for the one-line fact the panel
+* states and never acts on.
+*/
+function nativeDescription(native) {
+	const parts = [native?.providerId ?? native?.baseUrl, native?.model].filter((part) => part !== void 0);
+	return parts.length === 0 ? "no provider" : parts.join(" / ");
+}
+/**
+* The non-store paths joined for the panel's second footer line, in a fixed
+* slot order. `undefined` when the face named none — the line is omitted
+* entirely rather than rendered with blank slots.
+*/
+function nativePathsLine(paths) {
+	const parts = [
+		paths.config,
+		paths.auth,
+		paths.catalogs,
+		paths.settings
+	].filter((part) => part !== void 0);
+	return parts.length === 0 ? void 0 : parts.join(" · ");
 }
 
 //#endregion
@@ -2394,6 +2467,7 @@ const EMPTY_PROVIDER_DRAFT = {
 	label: "",
 	baseUrl: "",
 	protocol: "responses",
+	authKind: "apiKey",
 	apiKey: "",
 	envName: "",
 	modelIds: "",
@@ -2403,13 +2477,10 @@ const EMPTY_PROVIDER_DRAFT = {
 function parseModelIds(text) {
 	return text.split(/[\s,]+/).map((part) => part.trim()).filter((part) => part !== "");
 }
-/** `provider / model`, whichever halves the user's config.toml actually names. */
-function nativeDescription(native) {
-	const parts = [native.providerId, native.model].filter((part) => part !== void 0);
-	return parts.length === 0 ? "no provider" : parts.join(" / ");
-}
 /**
-* The multi-provider body (Codex, 2026-10-03 ruling).
+* The multi-provider body (Codex 2026-10-03 ruling; Claude 2026-10-04 rides
+* the same body with its own view shape — no `protocols` field, two header
+* auth kinds, an endpoint-URL native).
 *
 * Super D hosts the list cc-switch otherwise holds: add, edit and remove only.
 * The active/select half is gone — which provider a Codex session runs on is
@@ -2477,6 +2548,7 @@ function ProvidersPanel({ agent, namespace }) {
 			label: provider.label,
 			baseUrl: provider.baseUrl,
 			protocol: provider.protocol,
+			authKind: provider.authKind,
 			apiKey: "",
 			envName: provider.envName ?? "",
 			modelIds: provider.models.map((model) => model.id).join(", "),
@@ -2492,12 +2564,12 @@ function ProvidersPanel({ agent, namespace }) {
 			label: draft.label.trim(),
 			baseUrl: draft.baseUrl.trim(),
 			protocol: draft.protocol,
-			auth: draft.envName.trim() === "" ? {
-				kind: "apiKey",
-				value: draft.apiKey
-			} : {
+			auth: draft.authKind === "env" ? {
 				kind: "env",
 				name: draft.envName.trim()
+			} : {
+				kind: draft.authKind === "authToken" ? "authToken" : "apiKey",
+				value: draft.apiKey
 			},
 			models: ids.map((id) => ({
 				id,
@@ -2520,6 +2592,7 @@ function ProvidersPanel({ agent, namespace }) {
 		},
 		children: error ?? "Providers are unavailable for this runtime."
 	});
+	const nativePaths = nativePathsLine(view.paths);
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 		style: {
 			display: "flex",
@@ -2537,7 +2610,9 @@ function ProvidersPanel({ agent, namespace }) {
 					color: "var(--dsw-alias-label-tertiary)"
 				},
 				children: [
-					"Your own Codex config.toml currently names ",
+					"Your own ",
+					agent.label,
+					" config currently runs ",
 					nativeDescription(view.native),
 					"."
 				]
@@ -2548,7 +2623,7 @@ function ProvidersPanel({ agent, namespace }) {
 					color: "var(--dsw-alias-label-caption)",
 					fontSize: 11
 				},
-				children: ["synced from config.toml ", new Date(view.syncedAt).toLocaleString()]
+				children: ["synced from your native config ", new Date(view.syncedAt).toLocaleString()]
 			}),
 			view.providers.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 				style: {
@@ -2570,6 +2645,10 @@ function ProvidersPanel({ agent, namespace }) {
 					provider.authKind === "env" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 						style: chip,
 						children: ["env ", provider.envName]
+					}),
+					provider.authKind === "authToken" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chip,
+						children: "token"
 					}),
 					!provider.hasKey && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 						style: chip,
@@ -2681,7 +2760,7 @@ function ProvidersPanel({ agent, namespace }) {
 							}
 						})]
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+					view.protocols.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
 						style: fieldStyle,
 						children: ["API protocol", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
 							style: inputStyle,
@@ -2699,8 +2778,7 @@ function ProvidersPanel({ agent, namespace }) {
 								children: [option.label, option.available ? "" : " — unsupported"]
 							}, option.value))
 						})]
-					}),
-					(() => {
+					}), (() => {
 						const option = view.protocols.find((candidate) => candidate.value === draft.protocol);
 						return option === void 0 || option.available ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 							style: {
@@ -2710,7 +2788,7 @@ function ProvidersPanel({ agent, namespace }) {
 							},
 							children: option.hint
 						});
-					})(),
+					})()] }),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
 						style: fieldStyle,
 						children: ["Model IDs", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
@@ -2742,8 +2820,40 @@ function ProvidersPanel({ agent, namespace }) {
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
 						style: fieldStyle,
+						children: ["Key shape", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
+							style: inputStyle,
+							value: draft.authKind,
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									authKind: event.target.value
+								});
+							},
+							children: authKindOptions(view).map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								value: option.value,
+								title: option.hint,
+								children: option.label
+							}, option.value))
+						})]
+					}),
+					draft.authKind === "env" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["Environment variable", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							style: inputStyle,
+							value: draft.envName,
+							placeholder: "DEEPSEEK_API_KEY",
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									envName: event.target.value
+								});
+							}
+						})]
+					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
 						children: [
-							"API key ",
+							draft.authKind === "authToken" ? "Bearer token" : "API key",
+							" ",
 							editing !== NEW_PROVIDER && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 								style: { color: "var(--dsw-alias-label-caption)" },
 								children: "(leave blank to keep the saved one)"
@@ -2761,20 +2871,6 @@ function ProvidersPanel({ agent, namespace }) {
 								}
 							})
 						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-						style: fieldStyle,
-						children: ["…or read the key from an environment variable", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-							style: inputStyle,
-							value: draft.envName,
-							placeholder: "DEEPSEEK_API_KEY",
-							onChange: (event) => {
-								setDraft({
-									...draft,
-									envName: event.target.value
-								});
-							}
-						})]
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						style: {
@@ -2823,21 +2919,14 @@ function ProvidersPanel({ agent, namespace }) {
 				},
 				children: ["list ", view.paths.store]
 			}),
-			/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+			nativePaths !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
 				style: {
 					margin: 0,
 					color: "var(--dsw-alias-label-caption)",
 					fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
 					fontSize: 11
 				},
-				children: [
-					"native ",
-					view.paths.config,
-					" · ",
-					view.paths.auth,
-					" · ",
-					view.paths.catalogs
-				]
+				children: ["native ", nativePaths]
 			})
 		]
 	});
