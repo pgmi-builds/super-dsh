@@ -20,12 +20,22 @@ import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 import {
   activeMethod,
+  activeProvider,
   selectable,
   settingsPanelFor,
   toggleExpanded,
   type RuntimeAuthView,
+  type RuntimeProvidersView,
 } from './agent-settings.js'
-import { fetchAuthView, setAuthMode, settingsErrorText } from './runtime-settings-api.js'
+import {
+  fetchAuthView,
+  fetchProvidersView,
+  removeProvider,
+  saveProvider,
+  selectProvider,
+  setAuthMode,
+  settingsErrorText,
+} from './runtime-settings-api.js'
 
 /**
  * The Hub main panel (`main`, key `hub`): the hub-functionality home page.
@@ -316,27 +326,43 @@ function GroupHead({ title, count, action }: { title: string; count: number; act
 }
 
 /**
- * One runtime's settings, rendered inside its expanded row (P3).
+ * One runtime's settings, rendered inside its expanded row (P3/P4).
  *
- * The adapter owns the config, so this component owns no auth knowledge: it
- * asks the adapter's Remote for the option list and renders what comes back.
- * The round trip after a change is authoritative — the adapter re-probes and
+ * The adapter owns the config, so this component owns no config knowledge: each
+ * body asks the adapter's Remote and renders what comes back. The round trip
+ * after a change is authoritative — the adapter re-reads the machine and
  * answers with the new state, which is why nothing is optimistically patched
- * here (a selection can fall through the ladder, and the UI must show that).
+ * here (a selection can fall through a ladder, or a switch can leave a provider
+ * the runtime is still running).
  *
  * Mounted only while its row is open, so expanding always re-reads the
  * machine rather than replaying a stale first read.
  */
 function RuntimeSettingsPanel({ agent }: { agent: AgentLink }): React.JSX.Element {
   const panel = settingsPanelFor(agent.key)
-  const namespace = panel?.namespace
+  if (panel === undefined) {
+    return (
+      <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>
+        No settings for this runtime yet.
+      </p>
+    )
+  }
+  return panel.kind === 'providers'
+    ? <ProvidersPanel agent={agent} namespace={panel.namespace} />
+    : <AuthSettingsPanel agent={agent} namespace={panel.namespace} />
+}
+
+/**
+ * The sign-in-form body (Antigravity): one form picked from the adapter's
+ * ladder. `namespace` always resolves — the row would not mount this body
+ * otherwise.
+ */
+function AuthSettingsPanel({ agent, namespace }: { agent: AgentLink; namespace: string }): React.JSX.Element {
   const [view, setView] = React.useState<RuntimeAuthView | undefined>(undefined)
   const [error, setError] = React.useState<string | null>(null)
   const [busy, setBusy] = React.useState<string | null>(null)
-  const [loading, setLoading] = React.useState(namespace !== undefined)
-
+  const [loading, setLoading] = React.useState(true)
   React.useEffect(() => {
-    if (namespace === undefined) return undefined
     let live = true
     setLoading(true)
     fetchAuthView(agent.key, namespace)
@@ -347,20 +373,12 @@ function RuntimeSettingsPanel({ agent }: { agent: AgentLink }): React.JSX.Elemen
   }, [agent.key, namespace])
 
   const choose = (mode: string): void => {
-    if (namespace === undefined || busy !== null) return
+    if (busy !== null) return
     setBusy(mode)
     setAuthMode(agent.key, namespace, mode)
       .then((next) => { setView(next); setError(null) })
       .catch((err: unknown) => { setError(settingsErrorText(err)) })
       .finally(() => { setBusy(null) })
-  }
-
-  if (namespace === undefined) {
-    return (
-      <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>
-        No settings for this runtime yet.
-      </p>
-    )
   }
 
   if (loading) {
@@ -423,6 +441,359 @@ function RuntimeSettingsPanel({ agent }: { agent: AgentLink }): React.JSX.Elemen
     </div>
   )
 }
+
+/** Field and control styling for the providers body — same visual language as the auth list. */
+const fieldStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 3,
+  fontSize: 12.5,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+
+const buttonStyle: React.CSSProperties = {
+  font: 'inherit',
+  fontSize: 12.5,
+  padding: '5px 10px',
+  borderRadius: 6,
+  border: '1px solid var(--dsw-alias-border-secondary, rgba(127,127,127,0.3))',
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-primary)',
+  cursor: 'pointer',
+}
+
+const primaryButtonStyle: React.CSSProperties = {
+  ...buttonStyle,
+  border: 'none',
+  background: 'var(--dsw-alias-label-primary)',
+  color: 'var(--dsw-alias-bg-base, #fff)',
+  fontWeight: 500,
+}
+
+/** The blank draft the Add form starts from. */
+const EMPTY_PROVIDER_DRAFT = {
+  id: '',
+  label: '',
+  baseUrl: '',
+  protocol: 'responses',
+  apiKey: '',
+  envName: '',
+  modelIds: '',
+  contextWindow: '',
+}
+
+type ProviderDraft = typeof EMPTY_PROVIDER_DRAFT
+
+/** `a, b c` → `['a','b','c']` — the model field takes whatever separator is natural. */
+function parseModelIds(text: string): string[] {
+  return text.split(/[\s,]+/).map((part) => part.trim()).filter((part) => part !== '')
+}
+
+/**
+ * The multi-provider body (Codex, 2026-10-03 ruling).
+ *
+ * Super D hosts the list cc-switch otherwise holds; selecting an entry writes
+ * the user's OWN Codex config, so the panel shows the exact files it rewrites
+ * and says that a switch lands on the next child Codex starts rather than
+ * pretending it is a hot swap.
+ *
+ * Keys are write-only by construction: the adapter answers `hasKey`, never a
+ * value, so the field is blank on every open and blank means "leave whatever is
+ * already there".
+ */
+function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: string }): React.JSX.Element {
+  const [view, setView] = React.useState<RuntimeProvidersView | undefined>(undefined)
+  const [error, setError] = React.useState<string | null>(null)
+  const [busy, setBusy] = React.useState<string | null>(null)
+  const [loading, setLoading] = React.useState(true)
+  /** The id being edited, `NEW_PROVIDER` for the add form, `null` when closed. */
+  const [editing, setEditing] = React.useState<string | null>(null)
+  const [draft, setDraft] = React.useState<ProviderDraft>(EMPTY_PROVIDER_DRAFT)
+
+  React.useEffect(() => {
+    let live = true
+    setLoading(true)
+    fetchProvidersView(agent.key, namespace)
+      .then((next) => { if (live) { setView(next); setError(null) } })
+      .catch((err: unknown) => { if (live) { setView(undefined); setError(settingsErrorText(err)) } })
+      .finally(() => { if (live) setLoading(false) })
+    return () => { live = false }
+  }, [agent.key, namespace])
+
+  /** One mutation, one authoritative re-read; `key` drives the busy chip. */
+  const run = (key: string, call: () => Promise<RuntimeProvidersView>): void => {
+    if (busy !== null) return
+    setBusy(key)
+    call()
+      .then((next) => { setView(next); setError(null); setEditing(null); setDraft(EMPTY_PROVIDER_DRAFT) })
+      .catch((err: unknown) => { setError(settingsErrorText(err)) })
+      .finally(() => { setBusy(null) })
+  }
+
+  const openNew = (): void => { setEditing(NEW_PROVIDER); setDraft(EMPTY_PROVIDER_DRAFT); setError(null) }
+  const openEdit = (provider: RuntimeProvidersView['providers'][number]): void => {
+    setEditing(provider.id)
+    setDraft({
+      id: provider.id,
+      label: provider.label,
+      baseUrl: provider.baseUrl,
+      protocol: provider.protocol,
+      // Never an existing value — see the module note; blank keeps it.
+      apiKey: '',
+      envName: provider.envName ?? '',
+      modelIds: provider.models.map((model) => model.id).join(', '),
+      contextWindow: provider.models[0]?.contextWindow === undefined ? '' : String(provider.models[0].contextWindow),
+    })
+    setError(null)
+  }
+
+  const submit = (): void => {
+    const ids = parseModelIds(draft.modelIds)
+    const window = draft.contextWindow.trim() === '' ? undefined : Number(draft.contextWindow)
+    const provider = {
+      id: draft.id.trim(),
+      label: draft.label.trim(),
+      baseUrl: draft.baseUrl.trim(),
+      protocol: draft.protocol,
+      auth: draft.envName.trim() === ''
+        ? { kind: 'apiKey', value: draft.apiKey }
+        : { kind: 'env', name: draft.envName.trim() },
+      models: ids.map((id) => ({
+        id,
+        ...(window !== undefined && Number.isSafeInteger(window) && window > 0 ? { contextWindow: window } : {}),
+      })),
+    }
+    run('save', () => saveProvider(agent.key, namespace, provider))
+  }
+
+  if (loading) {
+    return <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>Loading providers…</p>
+  }
+
+  if (view === undefined) {
+    return (
+      <p style={{ margin: 0, color: 'var(--dsw-alias-state-warn-label, var(--dsw-alias-label-secondary))' }}>
+        {error ?? 'Providers are unavailable for this runtime.'}
+      </p>
+    )
+  }
+
+  const inForce = activeProvider(view)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <p style={panelHeadStyle}>Model provider</p>
+
+      {view.providers.length === 0 && (
+        <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>
+          No providers yet — add one to pin a model and endpoint.
+        </p>
+      )}
+
+      {view.providers.map((provider) => {
+        const isCurrent = inForce?.id === provider.id
+        return (
+          <div
+            key={provider.id}
+            style={{
+              ...optionStyle,
+              background: isCurrent ? 'var(--dsw-alias-bg-elevated, transparent)' : 'transparent',
+            }}
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={isCurrent}
+              aria-label={`Use ${provider.label}`}
+              disabled={busy !== null}
+              onClick={() => { run(provider.id, () => selectProvider(agent.key, namespace, provider.id)) }}
+              style={{ ...buttonStyle, border: 'none', padding: '0 2px', cursor: busy === null ? 'pointer' : 'default' }}
+            >
+              <span aria-hidden>{isCurrent ? '\u25CF' : '\u25CB'}</span>
+            </button>
+            <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{provider.label}</span>
+            {isCurrent && <span style={chipSelf}>in force</span>}
+            {provider.authKind === 'env' && <span style={chip}>env {provider.envName}</span>}
+            {!provider.hasKey && <span style={chip}>no key</span>}
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontSize: 12,
+                color: 'var(--dsw-alias-label-tertiary)',
+              }}
+            >
+              {provider.baseUrl} · {provider.models.map((model) => model.id).join(', ')}
+            </span>
+            {busy === provider.id && <span style={chip}>switching…</span>}
+            <button type="button" style={buttonStyle} disabled={busy !== null}
+              onClick={() => { openEdit(provider) }}>Edit</button>
+            <button
+              type="button"
+              style={{ ...buttonStyle, color: 'var(--dsw-alias-state-error-primary, #c66)' }}
+              disabled={busy !== null}
+              aria-label={`Delete ${provider.label}`}
+              onClick={() => { run(`remove:${provider.id}`, () => removeProvider(agent.key, namespace, provider.id)) }}
+            >
+              Delete
+            </button>
+          </div>
+        )
+      })}
+
+      {editing === null && (
+        <div>
+          <button type="button" style={buttonStyle} disabled={busy !== null} onClick={openNew}>
+            + Add provider
+          </button>
+        </div>
+      )}
+
+      {editing !== null && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 520 }}>
+          <p style={panelHeadStyle}>{editing === NEW_PROVIDER ? 'Add provider' : `Edit ${editing}`}</p>
+
+          <label style={fieldStyle}>
+            Provider id
+            <input
+              style={inputStyle}
+              value={draft.id}
+              disabled={editing !== NEW_PROVIDER}
+              placeholder="zai-plan"
+              onChange={(event) => { setDraft({ ...draft, id: event.target.value }) }}
+            />
+          </label>
+
+          <label style={fieldStyle}>
+            Display name
+            <input
+              style={inputStyle}
+              value={draft.label}
+              placeholder="Z.ai Plan"
+              onChange={(event) => { setDraft({ ...draft, label: event.target.value }) }}
+            />
+          </label>
+
+          <label style={fieldStyle}>
+            Base URL
+            <input
+              style={inputStyle}
+              value={draft.baseUrl}
+              placeholder="https://api.z.ai/api/coding/paas/v4"
+              onChange={(event) => { setDraft({ ...draft, baseUrl: event.target.value }) }}
+            />
+          </label>
+
+          <label style={fieldStyle}>
+            API protocol
+            <select
+              style={inputStyle}
+              value={draft.protocol}
+              onChange={(event) => { setDraft({ ...draft, protocol: event.target.value }) }}
+            >
+              {view.protocols.map((option) => (
+                <option key={option.value} value={option.value} disabled={!option.available} title={option.hint}>
+                  {option.label}{option.available ? '' : ' — unsupported'}
+                </option>
+              ))}
+            </select>
+          </label>
+          {(() => {
+            const option = view.protocols.find((candidate) => candidate.value === draft.protocol)
+            return option === undefined || option.available ? null : (
+              <p style={{ margin: 0, color: 'var(--dsw-alias-state-error-primary, #c66)', fontSize: 12 }}>
+                {option.hint}
+              </p>
+            )
+          })()}
+
+          <label style={fieldStyle}>
+            Model IDs
+            <input
+              style={inputStyle}
+              value={draft.modelIds}
+              placeholder="glm-5.2, glm-5.2-air"
+              onChange={(event) => { setDraft({ ...draft, modelIds: event.target.value }) }}
+            />
+          </label>
+
+          <label style={fieldStyle}>
+            Context window (tokens, optional)
+            <input
+              style={inputStyle}
+              value={draft.contextWindow}
+              inputMode="numeric"
+              placeholder="1000000"
+              onChange={(event) => { setDraft({ ...draft, contextWindow: event.target.value }) }}
+            />
+          </label>
+
+          <label style={fieldStyle}>
+            API key {editing !== NEW_PROVIDER && <span style={{ color: 'var(--dsw-alias-label-caption)' }}>(leave blank to keep the saved one)</span>}
+            <input
+              style={inputStyle}
+              type="password"
+              value={draft.apiKey}
+              autoComplete="off"
+              onChange={(event) => { setDraft({ ...draft, apiKey: event.target.value }) }}
+            />
+          </label>
+
+          <label style={fieldStyle}>
+            …or read the key from an environment variable
+            <input
+              style={inputStyle}
+              value={draft.envName}
+              placeholder="DEEPSEEK_API_KEY"
+              onChange={(event) => { setDraft({ ...draft, envName: event.target.value }) }}
+            />
+          </label>
+
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button type="button" style={primaryButtonStyle} disabled={busy !== null} onClick={submit}>
+              {busy === 'save' ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              style={buttonStyle}
+              disabled={busy !== null}
+              onClick={() => { setEditing(null); setDraft(EMPTY_PROVIDER_DRAFT) }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {view.note !== undefined && (
+        <p style={{ margin: '2px 0 0', color: 'var(--dsw-alias-label-tertiary)' }}>{view.note}</p>
+      )}
+      {error !== null && (
+        <p style={{ margin: '2px 0 0', color: 'var(--dsw-alias-state-error-primary)' }}>{error}</p>
+      )}
+
+      <p style={{ margin: '4px 0 0', color: 'var(--dsw-alias-label-caption)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11 }}>
+        list {view.paths.store}
+      </p>
+      <p style={{ margin: 0, color: 'var(--dsw-alias-label-caption)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11 }}>
+        switching writes {view.paths.config}, {view.paths.auth}, {view.paths.catalog}
+      </p>
+      {/* D6: Codex reads config.toml when a child starts, and children are
+          spawned lazily on a session's first prompt — so a switch is not a hot
+          swap, and saying so is kinder than letting the user wonder. */}
+      <p style={{ margin: '2px 0 0', color: 'var(--dsw-alias-label-caption)', fontSize: 11 }}>
+        Applies to sessions whose Codex process starts after the switch.
+      </p>
+    </div>
+  )
+}
+
+/** Sentinel for "the add form", distinct from any real provider id. */
+const NEW_PROVIDER = '\u0000new'
+
 export function HubPage(): React.JSX.Element {
   const [mesh, setMesh] = React.useState<MeshList>({ machines: [] })
   const [meshLoaded, setMeshLoaded] = React.useState(false)
