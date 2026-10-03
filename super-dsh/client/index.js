@@ -1637,7 +1637,16 @@ function attemptSwitch(label) {
 
 //#endregion
 //#region src/client/agent-settings.ts
-const SETTINGS_PANELS = { agy: { namespace: "agyAuth" } };
+const SETTINGS_PANELS = {
+	agy: {
+		namespace: "agyAuth",
+		kind: "auth"
+	},
+	codex: {
+		namespace: "codexProviders",
+		kind: "providers"
+	}
+};
 /** The panel spec for a runtime, or `undefined` when it has none yet. */
 function settingsPanelFor(agentKey) {
 	return SETTINGS_PANELS[agentKey];
@@ -1711,7 +1720,6 @@ function mintRpcId() {
 	if (webCrypto !== void 0 && typeof webCrypto.getRandomValues === "function") return [...webCrypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
 	return `rpc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
-/** Build the envelope for one panel call (exported so tests pin the exact wire shape). */
 function settingsEnvelope(namespace, op, args) {
 	return {
 		type: "client-request",

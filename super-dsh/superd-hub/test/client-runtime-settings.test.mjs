@@ -17,8 +17,17 @@ import { join } from "node:path";
 import test from "node:test";
 
 const dist = join(new URL(".", import.meta.url).pathname, "..", "dist", "client");
-const { callRuntimeSettings, fetchAuthView, mintRpcId, setAuthMode, settingsEnvelope } =
-  await import(join(dist, "runtime-settings-api.js"));
+const {
+  callRuntimeSettings,
+  fetchAuthView,
+  fetchProvidersView,
+  mintRpcId,
+  removeProvider,
+  saveProvider,
+  selectProvider,
+  setAuthMode,
+  settingsEnvelope,
+} = await import(join(dist, "runtime-settings-api.js"));
 
 const VIEW = {
   methods: [
@@ -115,4 +124,62 @@ test("mintRpcId always produces a non-empty correlation id", () => {
   assert.equal(typeof id, "string");
   assert.ok(id.length >= 8, `unexpectedly short rpcId: ${id}`);
   assert.notEqual(mintRpcId(), id);
+});
+
+// ------------------------------------------------- the codex providers body
+
+/** A minimal, parseable `codexProviders/*` answer. */
+const PROVIDERS = {
+  providers: [
+    {
+      id: "deepseek",
+      label: "DeepSeek",
+      baseUrl: "https://api.deepseek.com/v1",
+      protocol: "responses",
+      models: [{ id: "deepseek-flash" }],
+      authKind: "env",
+      envName: "DEEPSEEK_API_KEY",
+      hasKey: true,
+    },
+  ],
+  selected: "deepseek",
+  effective: { providerId: "deepseek", model: "deepseek-flash" },
+  protocols: [{ value: "responses", label: "Responses API", available: true, hint: "h" }],
+  paths: { store: "/s", config: "/c", auth: "/a", catalog: "/k" },
+};
+
+test("the four providers envelopes are exactly what the /hub gateway decodes", async () => {
+  const { calls, send } = stub(answerWith({ ok: true, value: PROVIDERS }));
+
+  await fetchProvidersView("codex", "codexProviders", send);
+  assert.deepEqual(calls[0].body, { ...calls[0].body, method: "codexProviders/get", payload: { args: {} } });
+  assert.equal(calls[0].input, "/hub/api?agent=codex");
+
+  const provider = { id: "openrouter", label: "OR", baseUrl: "https://openrouter.ai/api/v1", protocol: "responses", auth: { kind: "apiKey", value: "sk" }, models: [{ id: "glm-5.2" }] };
+  await saveProvider("codex", "codexProviders", provider, send);
+  assert.equal(calls[1].body.method, "codexProviders/save");
+  assert.deepEqual(calls[1].body.payload, { args: { request: { provider } } }, "the adapter's own parameter name, nested");
+
+  await removeProvider("codex", "codexProviders", "openrouter", send);
+  assert.equal(calls[2].body.method, "codexProviders/remove");
+  assert.deepEqual(calls[2].body.payload, { args: { request: { id: "openrouter" } } });
+
+  await selectProvider("codex", "codexProviders", "openrouter", send);
+  assert.equal(calls[3].body.method, "codexProviders/select");
+  assert.deepEqual(calls[3].body.payload, { args: { request: { id: "openrouter" } } });
+
+  // Clearing the choice is an explicit null, not an omitted field.
+  await selectProvider("codex", "codexProviders", null, send);
+  assert.deepEqual(calls[4].body.payload, { args: { request: { id: null } } });
+});
+
+test("a providers call rejects an unusable answer instead of rendering an empty list", async () => {
+  const shapeless = stub(answerWith({ ok: true, value: { providers: [] } }));
+  await assert.rejects(() => fetchProvidersView("codex", "codexProviders", shapeless.send), /no usable provider list/);
+
+  const mute = stub(answerWith({ ok: false }), { ok: false, status: 400 });
+  await assert.rejects(
+    () => saveProvider("codex", "codexProviders", { id: "x" }, mute.send),
+    /settings codexProviders\/save: failed \(HTTP 400\)/,
+  );
 });

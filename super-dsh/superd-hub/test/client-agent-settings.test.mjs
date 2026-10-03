@@ -22,6 +22,7 @@ const {
   hasSettingsPanel,
   settingsPanelFor,
   parseAuthView,
+  parseProvidersView,
   selectable,
   toggleExpanded,
 } = await import(join(dist, "agent-settings.js"));
@@ -40,7 +41,12 @@ test("only the runtimes that own settings advertise a panel", () => {
   assert.equal(hasSettingsPanel("native"), false);
   // The spec names the adapter Remote the panel calls — the hub forwards the
   // method verbatim, so a wrong namespace here is a silent 404 on expand.
-  assert.deepEqual(settingsPanelFor("agy"), { namespace: "agyAuth" });
+  assert.deepEqual(settingsPanelFor("agy"), { namespace: "agyAuth", kind: "auth" });
+  // The codex row expands into the MULTI-PROVIDER surface (2026-10-03 ruling): a
+  // provider list, not an auth-method radio group. The `kind` is what tells the
+  // panel which of the two bodies to mount.
+  assert.deepEqual(settingsPanelFor("codex"), { namespace: "codexProviders", kind: "providers" });
+  assert.equal(hasSettingsPanel("codex"), true);
   assert.equal(settingsPanelFor("omp"), undefined);
 });
 
@@ -109,4 +115,80 @@ test("placeholders render but are never selectable", () => {
   assert.equal(selectable(byKey.apiKey), true);
   assert.equal(selectable(byKey.adc), true);
   assert.equal(selectable(byKey.oauth), false, "the OAuth placeholder is inert this round");
+});
+
+// ------------------------------------------------------- the providers body
+
+/** A faithful `codexProviders/get` answer, trimmed to the fields the parse keeps. */
+const providersAnswer = {
+  providers: [
+    {
+      id: "deepseek",
+      label: "DeepSeek",
+      baseUrl: "https://api.deepseek.com/v1",
+      protocol: "responses",
+      models: [{ id: "deepseek-flash", displayName: "DeepSeek Flash", contextWindow: 1048576 }],
+      authKind: "env",
+      envName: "DEEPSEEK_API_KEY",
+      hasKey: true,
+    },
+  ],
+  selected: "deepseek",
+  effective: { providerId: "deepseek", model: "deepseek-flash" },
+  protocols: [
+    { value: "responses", label: "Responses API", available: true, hint: "the only one 0.154 accepts" },
+    { value: "chat", label: "Chat Completions", available: false, hint: '`wire_api = "chat"` is no longer supported.' },
+  ],
+  paths: { store: "/h/agents/codex/codex-providers.json", config: "/u/.codex/config.toml", auth: "/u/.codex/auth.json", catalog: "/u/.codex/superd-model-catalog.json" },
+};
+
+test("a well-formed providers answer parses through intact", () => {
+  const view = parseProvidersView(providersAnswer);
+  assert.ok(view, "parses");
+  assert.deepEqual(view.providers.map((p) => p.id), ["deepseek"]);
+  assert.equal(view.providers[0].models[0].label, "DeepSeek Flash", "a display name is used when present");
+  assert.equal(view.providers[0].models[0].contextWindow, 1048576);
+  assert.equal(view.providers[0].hasKey, true);
+  assert.equal(view.selected, "deepseek");
+  assert.deepEqual(view.effective, { providerId: "deepseek", model: "deepseek-flash" });
+  assert.deepEqual(view.protocols.map((p) => [p.value, p.available]), [["responses", true], ["chat", false]]);
+  assert.equal(view.paths.config, "/u/.codex/config.toml");
+  assert.equal(view.note, undefined, "an absent note stays absent");
+});
+
+test("an EMPTY provider list is a state, not an error (the fresh-install panel)", () => {
+  const view = parseProvidersView({ ...providersAnswer, providers: [], selected: null, effective: null });
+  assert.ok(view, "the panel must offer Add provider, not an error");
+  assert.deepEqual(view.providers, []);
+  assert.equal(view.selected, null);
+  assert.equal(view.effective, null);
+});
+
+test("an unusable providers answer is rejected outright", () => {
+  for (const bad of [null, undefined, 42, "nope", {}, { providers: "no" }, { protocols: [] }, { providers: [] }]) {
+    assert.equal(parseProvidersView(bad), undefined, `rejected: ${JSON.stringify(bad) ?? String(bad)}`);
+  }
+  // Rows missing what the panel keys on are dropped; an all-dropped list is still
+  // a legitimate empty list, because the user can add one.
+  const mixed = parseProvidersView({
+    ...providersAnswer,
+    providers: [providersAnswer.providers[0], { label: "no id" }, { id: "no-url" }, null],
+  });
+  assert.deepEqual(mixed?.providers.map((p) => p.id), ["deepseek"]);
+});
+
+test("missing optionals read conservatively, and an unknown protocol is not invented", () => {
+  const view = parseProvidersView({
+    providers: [{ id: "x", label: "X", baseUrl: "https://x/v1", protocol: "grpc", models: [{ id: "m" }] }],
+    selected: null,
+    effective: null,
+    protocols: providersAnswer.protocols,
+    paths: providersAnswer.paths,
+  });
+  assert.ok(view);
+  assert.equal(view.providers[0].authKind, "apiKey", "an unstated auth kind reads as keyed");
+  assert.equal(view.providers[0].hasKey, false, "and an unstated key is never assumed present");
+  assert.equal(view.providers[0].models[0].label, "m", "a nameless model falls back to its id");
+  // a protocol the hub does not know is dropped rather than echoed into a control
+  assert.equal(view.providers[0].protocol, "responses");
 });
