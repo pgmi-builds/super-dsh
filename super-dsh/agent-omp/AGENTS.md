@@ -27,6 +27,15 @@
 
 **因此 resume 必须容忍空白会话**：无 OMP 映射 + log 无对话内容（无 `turn/start`/`user/message`/`assistant/message`）→ 视作全新会话，**lazy** 等首 prompt；有内容才 fail-loud（**绝不把 dsh transcript 喂回 OMP**）。
 
+### 权限档位：**只在 spawn 那一刻绑定**（2026-10-03，复发坑）
+
+OMP 的 `--approval-mode` 是 launch flag，**没有 RPC 能中途改**（v18.4.9 实测）。所以三档映射（`danger-full-access→yolo` / `workspace-write→write` / `read-only→always-ask`）的解析时刻必须是 **child 真正 spawn 的那一刻**，而不是 `createAgent`：
+
+- Dash session 的 `permission/preset` 由宿主 `pinInitialPermission` 在 **publish 时**才盖下（晚于 transport wrapper 构造），用户在 **new chat** 里选的那一档又是更晚的一条 `permission/preset`，而 child 要等首 prompt 才 materialize。**这三点叠加 ⇒ 在 create 时冻结 argv 必然把默认档（`danger-full-access`）冻进 child**——旧代码正是如此，症状是 new chat 选完立刻回弹成 Full Access。
+- 修法 = `LazyOmpRpc` 接受 **thunk argv** + `resolveSpawnPermission(events, fallback, envMode)`（最后一条有效 `permission/preset` → fallback → `yolo`；`OMP_APPROVAL_MODE` 覆盖）。**不要再把 spawn 参数当构造期常量。**
+- `/permission` 影子命令按 child 状态分流：未 spawn → `permissionPresets.set()`（落 durable preset + knob 事件，**不要**用全局 handler 的 `approval.setPolicy`——它会往 OMP 会话注入一条 narration user message）；已 spawn → 明确拒绝。**绝不接受中途切换**（接受 = UI 显示一档、运行中的 `omp` 跑另一档）。
+- 回归：`test/permission-spawn.test.mjs` + `test/lazy-rpc.test.mjs`（mock fixture 的 `MOCK_OMP_ARGV_FILE` argv dump 是唯一能看到 child 真实 argv 的面）。
+
 ---
 
 ## 二、写路径：dsh 原生 session log（producer 角色）

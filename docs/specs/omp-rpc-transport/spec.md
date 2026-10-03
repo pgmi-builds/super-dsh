@@ -113,6 +113,22 @@ binary 用同一个 `resolveOmpExecutable()`，cwd = `OMP_HOME`。
 
 **预期收益：profile 少 ~838M。**
 
+### 2.5 权限档位（new-chat 1:1 匹配，2026-10-03 补）
+
+OMP 的 `--approval-mode` 是 **launch flag**，没有任何 RPC 能在会话中途改它（本机 18.4.9 实测 + 上游命令表无该入口）。因此 Dash 三档 preset 只在**这个 child 的 spawn 那一刻**绑定：
+
+| Dash preset | `--approval-mode` |
+|---|---|
+| `danger-full-access` | `yolo`（OMP 自身默认） |
+| `workspace-write` | `write` |
+| `read-only` | `always-ask` |
+
+**解析时刻 = spawn，不是 create。** Dash session 的 `permission/preset` 由 `pinInitialPermission` 在 publish 时盖下（在 transport wrapper 构造**之后**），而用户在 new chat 里选的那一档是**更晚**的一条 `permission/preset`；child 要等首 prompt 才 materialize。所以 launch flag 必须在那时读会话事件：`LazyOmpRpc` 接受 **thunk argv**，`resolveSpawnPermission(events, fallback, envMode)` 按「最后一条有效 `permission/preset` → fallback（create=composition default / resume=bridge-index 行）→ `yolo`」解析，`OMP_APPROVAL_MODE` 仍覆盖全部。
+
+**`/permission` 影子命令按 child 状态分流**（agent 作用域注册，遮蔽全局同名命令）：child 不存在（new-chat draft / resume 后未首 prompt）→ 走 `permissionPresets.set()` 落 durable preset + knob 事件，与全局 handler 同语义但**不注入 narration user message**（那是给 native loop 的，OMP 看不见这次变更）；child 已存在 → 明确 error 拒绝。**绝不接受中途切换**：接受就等于 UI 显示一档、运行中的 `omp` 仍跑另一档。
+
+回归：`test/permission-spawn.test.mjs`（解析序 + 命令分流）、`test/lazy-rpc.test.mjs`（mock 的 argv dump 证明 spawn 用的是那一刻的 argv）。
+
 ## 3. 不变量（违反即缺陷）
 
 1. `~/.omp` 仍是唯一 OMP app home，spawn **零重定向**（不喂 `OMP_HOME` 给子进程；`OMP_HOME` 只作测试 knob）。
@@ -120,6 +136,7 @@ binary 用同一个 `resolveOmpExecutable()`，cwd = `OMP_HOME`。
 3. DSH 会话日志仍是唯一 WebUI 读面，OMP 原生会话文件仍是 runtime 权威，双份存储照旧。
 4. **本轮未接线（显式登记，非在效力不变量）**：L1/L2/L3 的 foreign-writer 独占语义目前只有 helper 形态——`omp-store.ts` 的 `scanForeignWriters` / `foreignWriterPid` 能判定「另一个进程正以写模式持有该 session file」，但 **`resume` 路径没有任何调用者**：桥不会因此拒绝接管用户 TUI 正在写的 transcript，两个 writer 仍可能在同一文件上交错 append。该暴露**先于本计划存在**（旧 RPC 线删除时随之失去接线），**本计划未改变它**。跟进项 = 在 `resume` 中对 `foreignWriterPid(<sessionFile>)` 做 fail-loud 校验；是否接线由操作员裁决。
 5. 插件不自带 OMP 代码副本：**用户机器上必须有 `omp`**。缺失时**不得静默回落**——readiness 语义照旧（= world mount 成功，与 hermes/claude 先例一致），但 adapter 在 `apply()` 做一次二进制的可解析性探测并打显式诊断，首轮 prompt 时以 spawn 错误 fail loud 冒到会话。
+6. 权限档位（§2.5）：launch flag **只在 spawn 时刻从会话事件解析**（`LazyOmpRpc` 的 thunk argv），且**只在 child 不存在时**接受 `/permission`；任何「中途接受切换」的实现都是缺陷（UI 会谎报有效策略）。
 
 ## 4. 已知 gap（登记，不阻塞）
 

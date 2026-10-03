@@ -47,6 +47,7 @@ import type { OmpAgentRpc } from "./lazy-rpc.js";
 // Type-only: pulls dsh-commands' `Context.commands` augmentation into this
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
+import { ompPermissionCommand, type PermissionPresetsWriteSlice } from "./permission.js";
 import { getBridgeStore } from "./store/index.js";
 import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 
@@ -383,21 +384,21 @@ export class OmpAgent implements Agent {
     // so a freshly created session announces completely blank, exactly like
     // the native agent-loop factory's: the backend takes zero part in the
     // UI's browser-local new-session draft.
-    // `/permission` cannot work here: OMP pins `--approval-mode` at launch and
-    // no RPC changes it mid-session. Registering the SAME name on this agent's
-    // own scope (a command-injected child of `agent.ctx`) SHADOWS the global
-    // permission command for this agent only — the switch then fails cleanly
-    // instead of appending approval/policy events OMP cannot honor. (The
-    // `inject` narration drop below stays as the backstop.)
+    // `/permission` — a launch fact, so the shadow routes it by child state:
+    // OMP pins `--approval-mode` at spawn and no RPC moves it mid-session, so
+    // an accepted switch only exists while this session's child does NOT. This
+    // agent-scoped registration (a child of `agent.ctx`) shadows the global
+    // command; before the first prompt it writes the same durable preset the
+    // global handler would (`permissionPresets.set`, no live-agent narration),
+    // and afterwards it refuses instead of appending a preset the running
+    // `omp` cannot honor. The spawn reads exactly those events
+    // (`resolveSpawnPermission`), so the pick reaches the child's argv.
     this.ctx.inject(["commands"], (cmdCtx) =>
       cmdCtx.commands.register({
         name: "permission",
-        description: "Unavailable for OMP sessions (approval policy is fixed at OMP launch)",
+        description: "Switch the permission preset (takes effect at the OMP child's launch)",
         input: { hint: "<preset>" },
-        handler: () => ({
-          kind: "error" as const,
-          text: "Approval policy is fixed at OMP launch; runtime switching is not supported for OMP sessions.",
-        }),
+        handler: (invocation) => this.#handlePermissionCommand(invocation.rawInput),
       }),
     );
     // `/compact` parity (route 1): OMP owns context compaction — the Dash log
@@ -599,6 +600,30 @@ export class OmpAgent implements Agent {
         this.session.stampSystemPrompt(1, 1, createSystemMessage(systemPrompt));
       }
     }
+  }
+
+  /**
+   * `/permission` handler: mirror the global command's write for a session whose
+   * `omp` child does not exist yet (the pick then lands in the launch flag via
+   * {@link resolveSpawnPermission}), and refuse it once the child does — the
+   * policy is a launch flag, so accepting later would desync UI from runtime.
+   * Uses `permissionPresets.set` (log-only preset + knob events) rather than the
+   * global handler's `approval.setPolicy`, which would inject a narration user
+   * message into the OMP session for a change OMP never sees.
+   */
+  #handlePermissionCommand(rawInput: string): CommandResult {
+    const presets = this.#loopCtx.get("permissionPresets") as PermissionPresetsWriteSlice | undefined;
+    if (presets === undefined) {
+      return { kind: "error", text: "permission presets are not available on this host" } as const;
+    }
+    const decision = ompPermissionCommand({
+      rawInput,
+      spawned: this.#rpc.spawned,
+      names: presets.names,
+      current: presets.current(this.session),
+    });
+    if (decision.action === "apply") presets.set(this.session, decision.preset);
+    return decision.result as CommandResult;
   }
 
   /**

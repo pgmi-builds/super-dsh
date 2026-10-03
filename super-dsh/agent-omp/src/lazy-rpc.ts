@@ -16,7 +16,10 @@
  *     in-flight spawn disposes the child the moment it lands.
  *
  * A model selection made before the child exists (`setModel` from the pre-turn
- * sync) is parked and applied right after the spawn, ahead of the prompt.
+ * sync) is parked and applied right after the spawn, ahead of the prompt. The
+ * spawn argv itself may be given as a thunk for the same reason: facts the Dash
+ * session only learns on its draft (the new-chat permission pick) must reach a
+ * child that does not exist yet.
  */
 import type { OmpSessionStats, OmpState, RpcEvent } from "./rpc-types.js";
 import { OmpRpcClient } from "./rpc-client.js";
@@ -53,7 +56,7 @@ export interface OmpAgentRpc {
 const IDLE_STATE: OmpState = { isStreaming: false };
 
 export class LazyOmpRpc implements OmpAgentRpc {
-  readonly #spawnArgs: string[];
+  readonly #spawnArgs: string[] | (() => string[]);
   readonly #cwd: string | undefined;
   #client: OmpRpcClient | undefined;
   #spawn: Promise<OmpRpcClient> | undefined;
@@ -64,7 +67,13 @@ export class LazyOmpRpc implements OmpAgentRpc {
   #pendingModel: { provider: string; modelId: string } | undefined;
   #onSpawned: ((client: OmpRpcClient) => void) | undefined;
 
-  constructor(spawnArgs: string[], cwd?: string) {
+  /**
+   * @param spawnArgs - the child's argv after `--mode rpc`, or a thunk called
+   *   AT SPAWN. Use the thunk whenever a launch fact can still change between
+   *   construction and the first prompt — the new-chat permission pick does.
+   * @param cwd - the spawn cwd.
+   */
+  constructor(spawnArgs: string[] | (() => string[]), cwd?: string) {
     this.#spawnArgs = spawnArgs;
     this.#cwd = cwd;
   }
@@ -88,7 +97,8 @@ export class LazyOmpRpc implements OmpAgentRpc {
   #ensure(): Promise<OmpRpcClient> {
     if (this.#client !== undefined) return Promise.resolve(this.#client);
     if (this.#spawn === undefined) {
-      this.#spawn = OmpRpcClient.spawn(this.#spawnArgs, this.#cwd).then((client) => {
+      const args = typeof this.#spawnArgs === "function" ? this.#spawnArgs() : this.#spawnArgs;
+      this.#spawn = OmpRpcClient.spawn(args, this.#cwd).then((client) => {
         // A close() that raced the in-flight spawn wins: dispose immediately.
         if (this.#closed) {
           client.close();

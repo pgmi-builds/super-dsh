@@ -45,7 +45,7 @@ import { cwdFromSessionFile, foreignWriterPid, OMP_SESSIONS_ROOT, parseSelector 
 import { ompModelRoles, ompSetModelRoles } from "./omp-cli.js";
 import { loadOmpModels, ompProviderIds, refreshOmpModelsCli } from "./models.js";
 import { OMP_NATIVE_HOME, STORAGE_RECONCILE_INTERVAL_MS } from "./knobs.js";
-import { defaultPermissionPreset, envApprovalMode, ompApprovalMode, presetFromEvents } from "./permission.js";
+import { defaultPermissionPreset, envApprovalMode, resolveSpawnPermission } from "./permission.js";
 import { closeBridgeStore, getBridgeStore, initBridgeStore } from "./store/index.js";
 import { prepareIndex, upsertCreated } from "./store/reconcile.js";
 import { installMobileBootScript } from "./mobile-boot.js";
@@ -378,16 +378,14 @@ export class OmpProvider extends Service implements AgentFactory {
       );
     }
 
-    // Approval policy is pinned at OMP launch and the Dash session does not
-    // exist yet at this point (it is prepared + announced — which is what
-    // stamps `permission/preset` via pinInitialPermission — only inside
-    // setupAndPublish, AFTER this spawn), so the effective preset cannot
-    // come from session events: read the permission service's default and
-    // map it onto the launch flag. OMP_APPROVAL_MODE (headless runs) wins.
-    const envMode = envApprovalMode();
-    const preset = defaultPermissionPreset(loopCtx);
-    const approvalMode = envMode ?? ompApprovalMode(preset);
-    trace(`create id=${id} preset=${preset ?? "none"} approval-mode=${approvalMode}${envMode === undefined ? "" : " (env override)"}`);
+    // Approval policy is pinned at OMP launch — but it is NOT frozen here.
+    // The Dash session is prepared (and `pinInitialPermission`-stamped) only
+    // inside setupAndPublish, AFTER this wrapper exists, and the new-chat
+    // `/permission` pick arrives as a later `permission/preset`; the child
+    // materializes on the first prompt. The launch flag is therefore resolved
+    // at spawn time from the session's own events
+    // (`resolveSpawnPermission`), with the composition default as the fallback
+    // and OMP_APPROVAL_MODE (headless runs) as the override.
 
     // Backend takes ZERO part in the UI's browser-local new-session draft:
     // no OMP child, no transcript, no index row, no session events — the
@@ -396,11 +394,14 @@ export class OmpProvider extends Service implements AgentFactory {
     // (LazyOmpRpc); adoptSpawnedChild writes the index row and the
     // supervisor's held baseline at that moment, so a draft abandoned before
     // the first prompt costs and leaves NOTHING server-side.
-    const rpc = new LazyOmpRpc(["--approval-mode", approvalMode], cwd);
     const preparation = SessionPreparation.create(loopCtx.sessions.prepare(id, {
       ...(options.seed === undefined ? {} : { seed: options.seed }),
       ...(meta === undefined ? {} : { meta }),
     }));
+    const session = preparation.session;
+    const spawnPermission = (): { approvalMode: string; preset: string | undefined } =>
+      resolveSpawnPermission(session.snapshotEvents(), defaultPermissionPreset(loopCtx), envApprovalMode());
+    const rpc = new LazyOmpRpc(() => ["--approval-mode", spawnPermission().approvalMode], cwd);
     // The prepared header is the single source of truth for the row the
     // first-spawn adoption writes: v2 folds header identity across
     // live/listed/loaded observations, so created_at/cwd must be copied from
@@ -415,13 +416,13 @@ export class OmpProvider extends Service implements AgentFactory {
       ? undefined
       : { handle: await persistence.create(header, { inheritedEventCount: preparation.session.inheritedEventCount }) };
     rpc.onSpawned((client) => {
-      void adoptSpawnedChild(id, header, client, preset);
+      void adoptSpawnedChild(id, header, client, spawnPermission().preset);
     });
 
     // Nothing can fail from the child here (none exists yet); the publish
     // transaction below unwinds its own half-published state on failure — its
     // catch calls rpc.close(), a no-op until the first prompt spawns.
-    const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "startup", { enterSession: true, preparation, stored });
+    const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, session, rpc, options.parentAgent, "startup", { enterSession: true, preparation, stored });
     return this.registerHeld(id, "", handle, rpc);
   }
 
@@ -465,14 +466,11 @@ export class OmpProvider extends Service implements AgentFactory {
     const ompFile = record?.ompSessionFile;
     const spawnCwd = validatedCwd(record?.cwd) ?? validatedCwd(stored.header.cwd);
 
-    // Approval mode: persisted permission preset from the dsh log seed
-    // (synthesized at create), falling back to the bridge-store row.
-    const envMode = envApprovalMode();
-    const preset =
-      getBridgeStore()?.byDshId(String(id))?.permission_preset ??
-      presetFromEvents([...coldRead.events]);
-    const approvalMode = envMode ?? ompApprovalMode(preset);
-    trace(`resume id=${id} preset=${preset ?? "none"} approval-mode=${approvalMode}${envMode === undefined ? "" : " (env override)"}${freshOmp ? " fresh-omp" : ""}`);
+    // Approval mode: the session's own last `permission/preset` (= what the
+    // `/permission` pick wrote, or the event synthesized at create), with the
+    // bridge-index row as the fallback for logs that predate the event. Resolved
+    // AT SPAWN so a pick made after this resume but before the first prompt
+    // still reaches the child; OMP_APPROVAL_MODE (headless) wins.
 
     // OMP live runtime — ALWAYS LAZY (lazy-transport ruling, both branches).
     // Opening/replaying a persisted session in the WebUI promotes it through
@@ -484,14 +482,8 @@ export class OmpProvider extends Service implements AgentFactory {
     // With content: the child re-attaches its OWN app-home file via --resume
     // (never the dsh transcript); the mapping already exists in the bridge
     // store, so no adoption hook is needed.
-    let rpc: OmpAgentRpc;
-    if (ompFile === undefined) {
-      const lazy = new LazyOmpRpc(["--approval-mode", approvalMode], spawnCwd);
-      lazy.onSpawned((client) => { void adoptSpawnedChild(id, stored.header, client, preset); });
-      rpc = lazy;
-    } else {
-      rpc = new LazyOmpRpc(["--approval-mode", approvalMode, "--resume", ompFile], spawnCwd);
-    }
+    // Both branches are LAZY and both resolve their launch flag at spawn.
+    let rpc: OmpAgentRpc | undefined;
 
     try {
       // Fresh attach: seed the dsh session from the dsh log (native replay),
@@ -504,13 +496,28 @@ export class OmpProvider extends Service implements AgentFactory {
           eventState: coldRead.eventState,
         }),
       );
-      trace(`resume id=${id} seeded from dsh session log (${coldRead.events.length} events)`);
+      const rowPreset = (): string | undefined =>
+        getBridgeStore()?.byDshId(String(id))?.permission_preset ?? undefined;
+      trace(`resume id=${id} seeded from dsh session log (${coldRead.events.length} events), approval=resolve-at-spawn (row fallback ${rowPreset() ?? "none"})${freshOmp ? " fresh-omp" : ""}`);
+      const spawnPermission = (): { approvalMode: string; preset: string | undefined } =>
+        resolveSpawnPermission(
+          preparation.session.snapshotEvents(),
+          rowPreset(),
+          envApprovalMode(),
+        );
+      if (ompFile === undefined) {
+        const lazy = new LazyOmpRpc(() => ["--approval-mode", spawnPermission().approvalMode], spawnCwd);
+        lazy.onSpawned((client) => { void adoptSpawnedChild(id, stored.header, client, spawnPermission().preset); });
+        rpc = lazy;
+      } else {
+        rpc = new LazyOmpRpc(() => ["--approval-mode", spawnPermission().approvalMode, "--resume", ompFile], spawnCwd);
+      }
       const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "resume", { enterSession: true, preparation, stored: { handle: stored, written: coldRead.events.length } });
       return this.registerHeld(id, ompFile ?? "", handle, rpc);
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)} | stack=${error instanceof Error ? error.stack?.slice(0, 400) : "n/a"}`);
       await stored.close().catch(() => {});
-      rpc.close();
+      rpc?.close();
       throw error;
     }
   }

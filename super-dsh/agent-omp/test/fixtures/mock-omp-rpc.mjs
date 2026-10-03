@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Mock `omp --mode rpc` for transport tests. Speaks protocol v1 only.
+import { appendFileSync } from "node:fs";
 //
 // `ready` carries extra unknown keys (`futureField`, `futureUint8`): the spec
 // mandates the handshake be *recorded, not validated*, so a client that
@@ -11,6 +12,13 @@
 // resolves on `ready`, so frames written into the same stdout chunk can be
 // dispatched before a test has registered a listener. Emitting them on a
 // command makes the observation deterministic without weakening assertions.
+// Spawn-argument capture: `LazyOmpRpc` resolves its argv through a thunk that
+// may run long after construction, so a test needs the argv the child ACTUALLY
+// received (not the one the caller intended at construction time). Appended
+// synchronously before `ready` so a reader that awaited the handshake sees it.
+if (process.env.MOCK_OMP_ARGV_FILE) {
+  appendFileSync(process.env.MOCK_OMP_ARGV_FILE, JSON.stringify(process.argv.slice(2)) + "\n");
+}
 process.stdout.write(JSON.stringify({
   type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2],
   maxFrameBytes: 1048576, maxReassembledFrameBytes: 67108864,
