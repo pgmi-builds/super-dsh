@@ -351,12 +351,6 @@ export interface CodexAgentRuntimeInfo {
    */
   launchFor(providerId: string): CodexLaunch | undefined;
   /**
-   * The provider the user's own `config.toml` names right now, when readable.
-   * It is the fallback route for a session whose logged selection predates the
-   * multi-provider rework, and the source of the app-wide default model.
-   */
-  nativeProviderId?(): string | undefined;
-  /**
    * The context window one provider advertises for one model, when it knows.
    * It lands in `request/context` so the UI's context meter is honest about a
    * route the DSH registry has no metadata for.

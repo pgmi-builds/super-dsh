@@ -49,6 +49,7 @@ import { readRolloutHead, resolveCodexHome } from "./codex-store.js";
 import { CodexProvidersGateway, syncFromNative } from "./codex-provider-gateway.js";
 import { readProviderStore, type CodexProviderEntry } from "./codex-providers.js";
 import { readNativeSelection } from "./codex-native-config.js";
+import { seedRoute } from "./codex-route.js";
 import { providerLaunch } from "./codex-launch.js";
 import { CodexResumeError, sessionRecord, upsertSession, type CodexSessionRecord } from "./session-map.js";
 import { codexApprovalMode, defaultPermissionPreset, envApprovalMode, presetFromEvents, sandboxModeForPreset } from "./permission.js";
@@ -229,26 +230,34 @@ export class CodexProvider extends Service implements AgentFactory {
   }
 
   /**
-   * The factory's session-level route fallback.
+   * The factory's session-level route fallback — always ONE coherent pair.
    *
    * The ambient `agentDefaultModel` selection is not authoritative here (user
    * directive 2026-09-15), and neither is a global "active" provider any more:
-   * the session's OWN `model/selection` is what decides, and it is resolved by
-   * the agent at each turn. These options are what a session with no selection
-   * of its own starts from — the provider the user's `config.toml` names, with
-   * the model it runs.
+   * the session's OWN `model/selection` decides, resolved by the agent at each
+   * turn. These options are what a session with no selection of its own starts
+   * from.
+   *
+   * The one trap this method exists to close: a cached default can outlive the
+   * model list it named, because the panel may have removed that model since
+   * (upstream persists the last pick as the deployment default). Honouring a pair
+   * the provider no longer serves would seed a route nobody can run, so a request
+   * wins only when BOTH halves are still servable; otherwise the user's own
+   * `config.toml` pair takes over, which is authoritative for exactly the provider
+   * it is in force for.
    */
   private sessionAgentOptions(requested: AgentOptions | undefined): AgentOptions {
     const native = readNativeSelection(resolveCodexHome());
+    const wanted = requested?.provider !== undefined && typeof requested.model === "string" ? requested : undefined;
+    const serves = wanted !== undefined
+      && this.providerEntry(wanted.provider as string)?.models.some((model) => model.id === wanted.model) === true;
+    if (wanted !== undefined && serves) return { ...wanted, provider: wanted.provider, model: wanted.model };
+
     const provider = this.nativeProviderId();
-    const served = requested?.provider !== undefined && this.providerEntry(requested.provider) !== undefined
-      ? requested
-      : undefined;
-    const model = served?.model
-      ?? (native.model !== undefined && native.model !== "" ? native.model : undefined);
+    const model = native.model !== undefined && native.model !== "" ? native.model : undefined;
     return {
       ...(requested ?? {}),
-      ...(provider === undefined && served === undefined ? {} : { provider: served?.provider ?? provider }),
+      ...(provider === undefined ? {} : { provider }),
       ...(model === undefined ? {} : { model }),
     };
   }
@@ -305,7 +314,6 @@ export class CodexProvider extends Service implements AgentFactory {
         const entry = this.providerEntry(providerId);
         return entry === undefined ? undefined : providerLaunch(this.home, codexHome, entry);
       },
-      nativeProviderId: () => this.nativeProviderId(),
       contextWindowFor: (providerId: string, model: string) => {
         const entry = this.providerEntry(providerId);
         const found = entry?.models.find((candidate) => candidate.id === model);
@@ -750,15 +758,18 @@ async function setupAndPublish(
       // depend on. The event name is the contract; its payload is not read here.
       const events = session.snapshotEvents() as readonly { type: string }[];
       const alreadyRouted = events.some((event) => event.type === "model/selection");
-      const provider = runtimeInfo?.nativeProviderId?.();
-      const model = agentOptions.model;
-      if (!alreadyRouted && provider !== undefined && model !== undefined && model !== "") {
-        const selection = { provider, model };
+      // ONE source, on purpose: `agentOptions` is already the reconciled pair
+      // (`sessionAgentOptions`). Building the seed from the native provider id
+      // and the default model independently produced `zhipu-cn/deepseek-flash`,
+      // which no provider serves — see `seedRoute`.
+      const seed = seedRoute(agentOptions);
+      if (!alreadyRouted && seed !== undefined) {
+        const selection = { provider: seed.provider, model: seed.model };
         // `model/selection` is contributed to `SessionEventMap` by the upstream
         // session-controller package (declaration merging); this adapter does
         // not depend on it, so the append goes through a narrow local cast.
         (session.append as (type: string, data: unknown) => unknown)("model/selection", selection);
-        trace(`session route seeded: ${provider}/${model}`);
+        trace(`session route seeded: ${seed.provider}/${seed.model}`);
       }
     } catch (error) {
       // Fail-soft: the boot-time default-model push remains the fallback.

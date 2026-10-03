@@ -68,7 +68,7 @@ failures: []
 
 - **history 完整**：T2 与 T4 都答出 `BANANA` ⇒ 两次 child 重启后 thread 都是 `resume` 而非新起。
 - **原生 rollout 是决定性证据**：`rollout-2026-10-03T17-40-17-01a10122-…jsonl` **一份**文件、`session_meta provider=zhipu-cn`（只记一次），随后 **四个 `turn_context`** 依次 `glm-5.3-flash` → `deepseek-flash` → `deepseek-flash` → `glm-4.7`。
-- **`config.toml` sha 全会话不变**（`a4e59685…`；探针与验收两轮都验）。原生只多不写——我们只在自家 home 落了 `codex-catalogs/{deepseek,zhipu-cn}.json`。
+- **`config.toml` 零写入**——但有个必须说清的细节：codex **自己**会在首次跑一个新 cwd 时追加一条 `[projects.<cwd>] trust_level = trusted`，所以「sha 不变」只在**已经 trusted 的 cwd** 里成立；用 `/tmp/...` 当会话 cwd 时文件会变，变的全是 codex 自己那几行。**干净复验**：cwd = 已 trusted 的 `/home/u1/workspaces/superd`，两轮 turn（含一次换 provider）前后 `config.toml` **逐字节相同**（`ae188f99…`）。本 adapter 自身只在自家 home 落 `codex-catalogs/{deepseek,zhipu-cn}.json`——代码里已无任何原生写入路径（原写入面整块删除）。
 - 同时只有一个 `codex app-server` 子进程存活（`ps` 计数 1）。
 
 ### 3.3 面板：只剩列表，没有 active
@@ -88,7 +88,7 @@ world failed : 0        shell(带 cookie) : 200      无 cookie : 401
 
 | 套件 | 结果 |
 |---|---|
-| `super-dsh/agent-codex`（178 tests） | **178 pass / 0 fail**（连跑 3 次同结果） |
+| `super-dsh/agent-codex`（186 tests） | **186 pass / 0 fail**（连跑 2 次同结果） |
 | `super-dsh/superd-hub`（514 tests，含 client bundle 漂移门） | **514 pass / 0 fail** |
 | `tsc -p .` / `tsc -p tsconfig.client.json` | 0 error |
 | `node super-dsh/scripts/pack.mjs` | `super-dsh-0.1.9.tgz`（267 files） |
@@ -99,15 +99,17 @@ world failed : 0        shell(带 cookie) : 200      无 cookie : 401
 - `codex-reattach.test.mjs` — **换 provider = 换 child + resume 同一 thread**（真 transport 打 programmable fake app-server，钉帧序列）；模型-only 切换不重启；
 - `codex-native-providers.test.mjs` — 读**全部** provider 表；只有在役 provider 有模型；
 - `codex-provider-tombstones.test.mjs` — 墓碑语义 + 「同步无变化即不写盘」；
+- `codex-session-route.test.mjs` — 会话起始路由的**一致性属性**（下节缺陷 3 的回归）；
 - `codex-providers.test.mjs` / `codex-provider-gateway.test.mjs` / `codex-provider-gateway-wiring.test.mjs` — 全部重写到新语义（`selected` 消失、写入面反转、`onChange` 覆盖三个动作）；
 - 删除：`models.test.mjs` + `codex-native-config.test.mjs`（死代码的测试）；其中仍活的部分（`mergeModelCatalog`、`readNativeSelection`）重新落在 `codex-native-catalog.test.mjs`。
 
-## 五、本轮从「跑起来」里抓出的两个真缺陷
+## 五、本轮从「跑起来」里抓出的三个真缺陷
 
 1. **assistant 消息的 provider 归属是假的**。Codex 的 wire 消息不带 attribution，旧代码回落到 `this.options`——而 options 在 create/resume 时冻结，于是 T2 实际跑在 `deepseek/deepseek-flash`，消息却署 `zhipu-cn/glm-5.3-flash`。UI 与「模型已切换」提示都读这个字段，属于用户可见的谎言。修法：新增 `#turnRoute`，在 turn 开始时捕获，作为归属回落。**修后复测**：T2/T4 的 `source` 与 `request/header` 一致。
 2. **同步每 10 分钟重写一次 0600 密钥文件**。`next.auth !== entry.auth` 拿的是**每次重新解析**出来的新对象，引用比较恒为真 ⇒ 「没变就不写」这条契约对 env 形态 provider 永不成立。修法：结构化比较（kind + name/value）。
+3. **会话起始路由可以是一个「没有 provider 服务它」的组合**。种 `model/selection` 时 provider 取自原生 config（`nativeProviderId()`）、model 取自 deployment default（`agentOptions.model`）——**两个独立来源拼一对**，实测种出 `zhipu-cn/deepseek-flash`（zhipu 不服务这个 model），而且那一轮真的跑出去了。同一条路上还有第二个入口：上游会把「上次选的模型」持久成 world default，而面板此后可能把那个 model 从 provider 的清单里删掉，于是新会话会拿着一个已不可服务的组合去起。修法两条：① 种路由**只接受一个来源**（`seedRoute(agentOptions)`，而 `agentOptions` 已由 `sessionAgentOptions` 收敛成一对），把「两个来源拼一对」变成不可表达；② `sessionAgentOptions` 只在 provider **确实服务**该 model 时才采纳请求，否则回落到用户自己 config.toml 的那一对。**live 前后对比**：修前新会话种出 `zhipu-cn deepseek-flash`，修后 `zhipu-cn glm-5.3-flash`；把 world default 弄成 `zhipu-cn/glm-4.7` 再从面板删掉 `glm-4.7` 后新建会话，种出回落对 `zhipu-cn glm-5.3-flash`（修前会是那个不可服务的 `glm-4.7`）。
 
-两个都不是设计问题，是**只有真跑才会露头**的那一类——也是本仓「验收与改动点同类」这条红线的直接收益。
+三个都不是设计问题，是**只有真跑才会露头**的那一类——尤其第 3 个：单测全绿、类型全绿，只有把 `lastUsed` 读回来才看得见。这正是本仓「验收与改动点同类」那条红线的直接收益。
 
 ## 六、边界与遗留
 
@@ -119,7 +121,7 @@ world failed : 0        shell(带 cookie) : 200      无 cookie : 401
 
 ## 七、文件账
 
-**新增**（agent-codex/src）：`codex-launch.ts`、`codex-route.ts`
+**新增**（agent-codex/src）：`codex-launch.ts`、`codex-route.ts`（含 `seedRoute`：会话起始路由的单一来源入口）
 **重写**：`codex-providers.ts`（正本 + 同步 + 墓碑）、`codex-provider-gateway.ts`（去 select、加 sync）、`adapter.ts`（多路由）、`agent.ts`（路由解析/应用 + `request/header` + turn 归属）、`app-server-client.ts`（launch 注入 + `reattach` + transport 世代）、`index.ts`（同步循环 + 多路由注册 + `launchFor` + 只在新会话种 `model/selection`）
 **删除**：`models.ts`（死代码）、`codex-native-config.ts` 的原生写入面（`applyProviderToConfigToml` / `mergeAuthJson` / `writeNativeSelection` / `backupOnce`）
 **hub**：`src/client/{agent-settings,runtime-settings-api,HubPage}.tsx` + 重建的交付产物 `super-dsh/client/index.js`

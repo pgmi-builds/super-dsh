@@ -80,3 +80,24 @@ export function resolveRoute(candidates: {
     ?? routeOf(candidates.preferred)
     ?? routeOf(candidates.fallback);
 }
+
+/**
+ * The route a brand-new session's log is SEEDED with.
+ *
+ * The single argument is deliberate. The factory's reconciled `AgentOptions` is
+ * the only acceptable source, because it is already ONE pair: a first attempt at
+ * this built the seed from the native provider id and the deployment default
+ * model independently, which produced `zhipu-cn/deepseek-flash` — a route no
+ * provider serves, and which had to be caught by reading a live session's
+ * projection rather than by any unit test. Taking one object makes that mistake
+ * unrepresentable.
+ *
+ * @param options - the factory's reconciled agent options.
+ * @returns the seed, or `undefined` when the pair is incomplete.
+ */
+export function seedRoute(options: {
+  readonly provider?: string | undefined;
+  readonly model?: string | undefined;
+}): RouteSelection | undefined {
+  return routeOf(options);
+}
