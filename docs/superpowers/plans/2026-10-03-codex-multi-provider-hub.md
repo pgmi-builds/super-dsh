@@ -55,7 +55,14 @@ Every write backs the target up once per run to `<name>.superd-bak-<epoch>` befo
 The user asked for both options in the dropdown (cc-switch shows both). codex 0.154 rejects `chat` with a hard error at config load, so offering it unmarked would let a user brick their own runtime. The view advertises both, `chat` with `available:false` and the binary's own sentence as the hint — the same "rendered but not selectable, and it says why" rule `agent-settings.ts` already uses for the OAuth placeholder.
 
 ### D5 — Catalog entries are cloned from a template, then overridden
-A catalog entry has 38 keys (`base_instructions`, `model_messages`, `experimental_supported_tools`, …). cc-switch stores only `{model, displayName, contextWindow}` and merges into a template; we do the same, cloning the first entry of whatever catalog we absorbed and overriding `slug`/`display_name`/`context_window`/`max_context_window`/`priority`. Task 2 **measures** whether codex also accepts a minimal entry, and only falls back to cloning if it does not.
+
+**MEASURED (Task 2, 2026-10-03) — clone it is; the minimal-entry path is dead.**
+A catalog entry has 38 keys (`base_instructions`, `model_messages`, `experimental_supported_tools`, …). cc-switch stores only `{model, displayName, contextWindow}` and merges into a template — and now we know why. Driving the real binary against a hand-built catalog, codex 0.154 demands, in struct order: `slug`, `display_name`, `supported_reasoning_levels` (sequence), `shell_type` (enum `default|local|shell_command|unified_exec|disabled`), `visibility` (enum `list|hide|none`), `supported_in_api` (bool), `priority` (i32), `support_verbosity` (bool), `truncation_policy` (**nested struct** `TruncationPolicyConfig`, which then demands its own `mode`) — and the chain had not terminated when the probe was stopped. A "minimal" entry is not a thing.
+
+The measured-good operation is therefore: take one entry from the catalog currently named by `model_catalog_json`, clone it, and override only the identity fields `slug` / `display_name` / `context_window` / `max_context_window` / `priority`. Verified with a real turn (`.scratch/codex-catalog-probe/clone`, 2026-10-03): cloned entry, mutated `display_name`+`priority`+context window, `codex exec` → `CLONE-OK`, 14,760 tokens, no "Model metadata not found" warning.
+
+Consequence for the writer: `mergeModelCatalog` takes a `template` entry, and the panel's model rows only ever supply id / display name / context window — never the other 35 keys.
+
 
 ### D6 — Switching takes effect where Codex reads config: at child spawn
 `codex app-server` reads `config.toml` when it starts. Children are spawned lazily on a session's first prompt (dev-rules §14-i), so a switch applies to every session whose child spawns afterwards; a session with a live child keeps the provider it started with. The panel states this rather than implying a hot swap.
@@ -269,7 +276,7 @@ Not authorized yet. Only after the user signs off on Task 9 do we tarball → `c
 | D2 | surgical `config.toml`; merged `auth.json`; private `superd-model-catalog.json` | accepted |
 | D3 | API keys write-only over the wire | accepted |
 | D4 | `chat` rendered, disabled, with the binary's reason | accepted |
-| D5 | catalog template cloning vs minimal entry | **pending Task 2 measurement** |
+| D5 | catalog template cloning vs minimal entry | **decided by measurement (Task 2): template cloning** |
 | D6 | switch applies at next child spawn; panel says so | accepted |
 | D7 | zero-IO preserved (no native read in the constructor) | accepted |
 | — | do we import existing cc-switch providers from its sqlite DB? | **no** (D1) — we seed from the live `config.toml` instead |
