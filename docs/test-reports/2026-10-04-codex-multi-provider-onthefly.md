@@ -88,7 +88,7 @@ world failed : 0        shell(带 cookie) : 200      无 cookie : 401
 
 | 套件 | 结果 |
 |---|---|
-| `super-dsh/agent-codex`（186 tests） | **186 pass / 0 fail**（连跑 2 次同结果） |
+| `super-dsh/agent-codex`（190 tests） | **190 pass / 0 fail**（连跑 2 次同结果） |
 | `super-dsh/superd-hub`（514 tests，含 client bundle 漂移门） | **514 pass / 0 fail** |
 | `tsc -p .` / `tsc -p tsconfig.client.json` | 0 error |
 | `node super-dsh/scripts/pack.mjs` | `super-dsh-0.1.9.tgz`（267 files） |
@@ -100,6 +100,7 @@ world failed : 0        shell(带 cookie) : 200      无 cookie : 401
 - `codex-native-providers.test.mjs` — 读**全部** provider 表；只有在役 provider 有模型；
 - `codex-provider-tombstones.test.mjs` — 墓碑语义 + 「同步无变化即不写盘」；
 - `codex-session-route.test.mjs` — 会话起始路由的**一致性属性**（下节缺陷 3 的回归）；
+- `codex-startup-sync.test.mjs` — **adapter 启动**这条入口（读原生 config → 折进空 store → 注册路由；无模型的 provider 不注册路由；二次加载不改盘）；
 - `codex-providers.test.mjs` / `codex-provider-gateway.test.mjs` / `codex-provider-gateway-wiring.test.mjs` — 全部重写到新语义（`selected` 消失、写入面反转、`onChange` 覆盖三个动作）；
 - 删除：`models.test.mjs` + `codex-native-config.test.mjs`（死代码的测试）；其中仍活的部分（`mergeModelCatalog`、`readNativeSelection`）重新落在 `codex-native-catalog.test.mjs`。
 
