@@ -67,20 +67,16 @@ export class CodexLlmAdapter extends LlmAdapter {
     super();
   }
 
-  /** The store entry a route id names; `undefined` for a stale route. */
-  #entry(provider: string): CodexProviderEntry | undefined {
-    return providerFor(this.worldHome, provider);
-  }
 
   providerInfo(provider: string): LlmProviderInfo {
     // The display name is the entry's label — for a provider folded in from the
     // user's own config that is its endpoint URL, which is the only name a
     // hand-written codex config supplies.
-    return { id: provider, name: this.#entry(provider)?.label ?? provider };
+    return { id: provider, name: providerFor(this.worldHome, provider)?.label ?? provider };
   }
 
   async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    const entry = this.#entry(provider);
+    const entry = providerFor(this.worldHome, provider);
     if (entry === undefined) return [];
     return entry.models.map((model) => ({
       provider,
@@ -90,7 +86,7 @@ export class CodexLlmAdapter extends LlmAdapter {
   }
 
   async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
-    const entry = this.#entry(provider);
+    const entry = providerFor(this.worldHome, provider);
     const found = entry?.models.find((candidate) => candidate.id === model);
     if (found === undefined) {
       throw new LlmError(
