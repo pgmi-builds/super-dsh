@@ -16,8 +16,8 @@
  *   <worldHome>/sdk-runtime/            npm tree (`--ignore-scripts`)
  *     node_modules/@anthropic-ai/claude-agent-sdk/
  *       sdk.mjs                         the entry `loadClaudeQuery` imports
- *   <worldHome>/sdk-runtime.json        marker — written LAST; presence + a
- *                                       matching identity IS the contract
+ *   <worldHome>/sdk-runtime.json        marker — written LAST; a matching
+ *                                       identity AND a live entry mean complete
  *   <worldHome>/sdk-runtime.lock        atomic (mkdir) bootstrap lock
  *   <worldHome>/sdk-runtime.error.log   written ONLY by a failed fetch
  *
@@ -115,17 +115,24 @@ export function readSdkRuntimeRecord(worldHome: string): SdkRuntimeRecord | unde
 }
 
 /**
- * The fast path: the marker is present, is ours, carries the current pin and
- * was written under `wantedMode`.
+ * The fast path: the marker is present, is ours, carries the current pin, was
+ * written under `wantedMode`, AND the SDK entry it promises still exists.
  *
  * The marker is written LAST, after a successful install, so its identity match
- * is the completeness contract; comparing it costs one read and no network.
+ * normally implies the tree underneath; but an identity match alone is not
+ * enough. `fetchRuntime`'s failure path deletes the tree, a user may delete it
+ * by hand, and a half-wiped install can leave the (separate) marker behind. The
+ * entry `existsSync` is therefore the completeness contract: without it a stale
+ * marker would hand back a record whose `sdk.mjs` is gone and every prompt would
+ * fail `ERR_MODULE_NOT_FOUND` until someone removed the marker by hand. One stat
+ * costs nothing next to a 206 MB re-download.
  */
 function sdkRuntimeReady(worldHome: string, wantedMode: SdkRuntimeMode): SdkRuntimeRecord | undefined {
   const record = readSdkRuntimeRecord(worldHome);
   if (record === undefined) return undefined;
   if (record.sdkVersion !== SDK_PACKAGE_VERSION) return undefined;
   if (record.mode !== wantedMode) return undefined;
+  if (!existsSync(sdkEntryPath(worldHome))) return undefined;
   return record;
 }
 
