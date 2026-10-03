@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { ClaudeLlmAdapter, CLAUDE_PROVIDER_ID } = await import("../dist/adapter.js");
+const { ClaudeLlmAdapter, CLAUDE_PROVIDER_ID, routeIds, routableProvider } = await import("../dist/adapter.js");
 const { setModelCatalog, readModelCatalog } = await import("../dist/models.js");
 
 test("the adapter serves exactly the observed catalog under the claude route", async () => {
@@ -82,14 +82,14 @@ test("catalogFromInit derives one real entry from the runtime's own model, or no
   assert.deepEqual(catalogFromInit({ model: 42 }), []);
 });
 
-// --- Curated provider models reach the DSH selector (2026-10-04 fix round) ---
-// The adapter's second source: the multi-provider store
-// (`<worldHome>/claude-providers.json`) minted as composite ids. Pinned here:
-// the merge (observed first, dedupe by id, observed wins), the composite
-// resolve (id echoes the request verbatim — the llm contract's
-// `resolved.id === model` check — while the RAW model id is the wire half),
-// observed-only behavior without a worldHome, and the live read (a panel edit
-// needs no re-registration).
+// --- Per-provider routes reach the DSH selector (2026-10-04 F-A rework) ---
+// The adapter now mirrors the codex twin's one-route-per-provider shape: the
+// fixed `claude` route serves the OBSERVED catalog only (raw ids), and each
+// curated provider (route id = provider id) serves its own models[] RAW. The
+// selection id string stays `deepseek/deepseek-flash` — the route half simply
+// moved from the hardcoded `claude` to the provider id itself. Pinned here:
+// routeIds order, per-route listModels/resolveModel (raw ids), observed-only
+// without a worldHome, and the live read (a panel edit needs no re-registration).
 
 const { writeProviderStore, readProviderStore, upsertProvider } = await import("../dist/claude-providers.js");
 const { mkdtempSync } = await import("node:fs");
@@ -116,57 +116,83 @@ function deepseekEntry(overrides = {}) {
   };
 }
 
-test("a curated store's models reach the selector as composite ids after the observed ones", async () => {
-  const home = curatedHome();
-  writeProviderStore(home, { providers: [deepseekEntry()], removed: [] });
-  setModelCatalog([{ id: "sonnet", label: "Sonnet" }], "sonnet");
-  const adapter = new ClaudeLlmAdapter(home);
-  const models = await adapter.listModels(CLAUDE_PROVIDER_ID);
-  assert.deepEqual(models.map((m) => m.id), ["sonnet", "deepseek/deepseek-flash", "deepseek/deepseek-chat"]);
-  assert.deepEqual(models.map((m) => m.name), ["Sonnet", "DeepSeek Flash", "deepseek-chat"]);
+/** A second provider, so route ordering and providerInfo are pinnable. */
+function glmEntry(overrides = {}) {
+  return {
+    id: "glm",
+    label: "GLM (Z.AI)",
+    baseUrl: "https://api.z.ai/api/anthropic",
+    auth: { kind: "authToken", value: "zai-secret" },
+    models: [{ id: "glm-5.3", displayName: "GLM-5.3", contextWindow: 1000000 }],
+    origin: "user",
+    ...overrides,
+  };
+}
+
+test("routeIds yields the fixed claude route first, then one route per provider with models", () => {
+  const store = { providers: [deepseekEntry(), glmEntry()], removed: [] };
+  assert.deepEqual(routeIds(store), ["claude", "deepseek", "glm"]);
+  // A provider with no models registers no route (the codex twin's rule).
+  assert.deepEqual(routeIds({ providers: [deepseekEntry(), glmEntry({ models: [] })], removed: [] }), ["claude", "deepseek"]);
+  assert.equal(routableProvider({ ...deepseekEntry(), models: [] }), false);
+  assert.equal(routableProvider(deepseekEntry()), true);
 });
 
-test("resolveModel resolves a curated composite, echoing it verbatim; the raw id is the wire half", async () => {
+test("the claude route serves observed-only; a provider route serves its curated models RAW", async () => {
+  const home = curatedHome();
+  writeProviderStore(home, { providers: [deepseekEntry(), glmEntry()], removed: [] });
+  setModelCatalog([{ id: "sonnet", label: "Sonnet" }], "sonnet");
+  const adapter = new ClaudeLlmAdapter(home);
+  assert.deepEqual((await adapter.listModels(CLAUDE_PROVIDER_ID)).map((m) => m.id), ["sonnet"]);
+  assert.deepEqual((await adapter.listModels("deepseek")).map((m) => m.id), ["deepseek-flash", "deepseek-chat"]);
+  assert.deepEqual((await adapter.listModels("deepseek")).map((m) => m.name), ["DeepSeek Flash", "deepseek-chat"]);
+  assert.deepEqual((await adapter.listModels("glm")).map((m) => m.id), ["glm-5.3"]);
+  assert.deepEqual(await adapter.listModels("ghost"), []);
+});
+
+test("resolveModel resolves a raw provider/model pair; the id echoes the request verbatim", async () => {
   const home = curatedHome();
   writeProviderStore(home, { providers: [deepseekEntry()], removed: [] });
   setModelCatalog([]);
   const adapter = new ClaudeLlmAdapter(home);
-  const resolved = await adapter.resolveModel(CLAUDE_PROVIDER_ID, "deepseek/deepseek-flash");
-  assert.equal(resolved.provider, "claude");
-  assert.equal(resolved.id, "deepseek/deepseek-flash");
+  const resolved = await adapter.resolveModel("deepseek", "deepseek-flash");
+  assert.equal(resolved.provider, "deepseek");
+  assert.equal(resolved.id, "deepseek-flash");
   assert.equal(resolved.name, "DeepSeek Flash");
   assert.equal(resolved.context?.contextWindow, 128000);
-  // No displayName → the raw model id doubles as the label; no contextWindow → no context.
-  const bare = await adapter.resolveModel(CLAUDE_PROVIDER_ID, "deepseek/deepseek-chat");
+  const bare = await adapter.resolveModel("deepseek", "deepseek-chat");
   assert.equal(bare.name, "deepseek-chat");
   assert.equal(bare.context, undefined);
-  // A composite that names no store provider/model is unknown, not native.
-  await assert.rejects(() => adapter.resolveModel(CLAUDE_PROVIDER_ID, "deepseek/nope"), /does not serve model/);
-  await assert.rejects(() => adapter.resolveModel(CLAUDE_PROVIDER_ID, "ghost/model"), /does not serve model/);
+  await assert.rejects(() => adapter.resolveModel("deepseek", "nope"), /does not serve model/);
+  await assert.rejects(() => adapter.resolveModel("ghost", "model"), /does not serve model/);
 });
 
-test("no worldHome = observed-only, even with a curated store on disk", async () => {
+test("the claude route serves no composite id — curated models live under their provider routes", async () => {
+  const home = curatedHome();
+  writeProviderStore(home, { providers: [deepseekEntry()], removed: [] });
+  setModelCatalog([{ id: "sonnet", label: "Sonnet" }], "sonnet");
+  const adapter = new ClaudeLlmAdapter(home);
+  await assert.rejects(() => adapter.resolveModel(CLAUDE_PROVIDER_ID, "deepseek/deepseek-flash"), /does not serve model/);
+  assert.equal((await adapter.resolveModel(CLAUDE_PROVIDER_ID, "sonnet")).provider, "claude");
+});
+
+test("providerInfo names the provider route by its label, and the claude route by its group", () => {
+  const home = curatedHome();
+  writeProviderStore(home, { providers: [deepseekEntry()], removed: [] });
+  const adapter = new ClaudeLlmAdapter(home);
+  assert.deepEqual(adapter.providerInfo(CLAUDE_PROVIDER_ID), { id: "claude", name: "Claude" });
+  assert.deepEqual(adapter.providerInfo("deepseek"), { id: "deepseek", name: "DeepSeek" });
+  assert.deepEqual(adapter.providerInfo("ghost"), { id: "ghost", name: "ghost" });
+});
+
+test("no worldHome = observed-only for the claude route; provider routes serve nothing", async () => {
   const home = curatedHome();
   writeProviderStore(home, { providers: [deepseekEntry()], removed: [] });
   setModelCatalog([{ id: "opus", label: "Opus" }]);
   const adapter = new ClaudeLlmAdapter();
   assert.deepEqual((await adapter.listModels(CLAUDE_PROVIDER_ID)).map((m) => m.id), ["opus"]);
-  await assert.rejects(() => adapter.resolveModel(CLAUDE_PROVIDER_ID, "deepseek/deepseek-flash"), /does not serve model/);
-});
-
-test("observed wins the id dedupe, and resolveModel follows the same precedence", async () => {
-  const home = curatedHome();
-  writeProviderStore(home, { providers: [deepseekEntry()], removed: [] });
-  setModelCatalog([{ id: "deepseek/deepseek-flash", label: "Observed Flash", description: "live session report" }]);
-  const adapter = new ClaudeLlmAdapter(home);
-  const models = await adapter.listModels(CLAUDE_PROVIDER_ID);
-  assert.equal(models.filter((m) => m.id === "deepseek/deepseek-flash").length, 1);
-  assert.equal(models[0].name, "Observed Flash");
-  const resolved = await adapter.resolveModel(CLAUDE_PROVIDER_ID, "deepseek/deepseek-flash");
-  assert.equal(resolved.name, "Observed Flash");
-  assert.equal(resolved.description, "live session report");
-  // The curated-only model is still appended after the observed one.
-  assert.equal(models.at(-1).id, "deepseek/deepseek-chat");
+  assert.deepEqual(await adapter.listModels("deepseek"), []);
+  await assert.rejects(() => adapter.resolveModel("deepseek", "deepseek-flash"), /does not serve model/);
 });
 
 test("the store is read live: a panel edit lands without re-registration", async () => {
@@ -174,12 +200,9 @@ test("the store is read live: a panel edit lands without re-registration", async
   writeProviderStore(home, { providers: [deepseekEntry()], removed: [] });
   setModelCatalog([]);
   const adapter = new ClaudeLlmAdapter(home);
-  assert.equal((await adapter.listModels(CLAUDE_PROVIDER_ID)).length, 2); // prime: the next read must see the edit
-  const glm = { ...deepseekEntry(), id: "glm", models: [{ id: "glm-5.2", displayName: "GLM-5.2" }] };
-  writeProviderStore(home, upsertProvider(readProviderStore(home), glm)); // panel save = read-modify-write
-  assert.deepEqual(
-    (await adapter.listModels(CLAUDE_PROVIDER_ID)).map((m) => m.id),
-    ["deepseek/deepseek-flash", "deepseek/deepseek-chat", "glm/glm-5.2"],
-  );
-  assert.equal((await adapter.resolveModel(CLAUDE_PROVIDER_ID, "glm/glm-5.2")).name, "GLM-5.2");
+  assert.equal((await adapter.listModels("deepseek")).length, 2);
+  const glm = glmEntry();
+  writeProviderStore(home, upsertProvider(readProviderStore(home), glm));
+  assert.deepEqual((await adapter.listModels("glm")).map((m) => m.id), ["glm-5.3"]);
+  assert.equal((await adapter.resolveModel("glm", "glm-5.3")).name, "GLM-5.3");
 });

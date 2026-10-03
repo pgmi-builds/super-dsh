@@ -7,8 +7,8 @@
 //      replacement through the injected factory, resuming the same SDK thread;
 //   2. a model move on the SAME provider is a live `setModel` with the RAW id
 //      (never a composite key);
-//   3. a DSH-side composite selection (`glm/glm-5.2`) splits back into its
-//      provider/model halves;
+//   3. a DSH-side selection names a raw provider/model pair directly (the
+//      route IS the provider id — no composite split);
 //   4. a legacy/unknown provider id resolves to NATIVE_LAUNCH (no injection).
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -126,10 +126,10 @@ test("applyRoute case 2: same provider routes to live setModel with the raw id",
   await agent.dispose();
 });
 
-test("composite id resolution: selection 'glm/glm-5.2' → provider glm, model glm-5.2", async () => {
+test("route resolution: selection 'glm/glm-5.2' → provider glm, model glm-5.2 (raw pair)", async () => {
   const ctx = new Context();
   ctx.provide("sessionProjections", {
-    stateOf: (_session, key) => (key === "modelSelection" ? { pending: { provider: "claude", model: "glm/glm-5.2" } } : undefined),
+    stateOf: (_session, key) => (key === "modelSelection" ? { pending: { provider: "glm", model: "glm-5.2" } } : undefined),
   });
   const agent = new ClaudeAgent(
     ctx, "s", {}, fakeSession(), fakeClient(), undefined,
@@ -216,7 +216,7 @@ test("provider flip quarantines the superseded client's agent_end — no spuriou
   const session = recordingSession();
   const ctx = new Context();
   ctx.provide("sessionProjections", {
-    stateOf: (_session, key) => (key === "modelSelection" ? { pending: { provider: "claude", model: "glm/glm-5.2" } } : undefined),
+    stateOf: (_session, key) => (key === "modelSelection" ? { pending: { provider: "glm", model: "glm-5.2" } } : undefined),
   });
 
   const oldClient = flippingClient({ spawned: true, threadId: "u1", appliedProvider: "deepseek", emitAgentEndOnClose: true });

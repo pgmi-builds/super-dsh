@@ -10,8 +10,11 @@
  * provider entry, and the resolved host binary, it produces the slice Task 9
  * merges into the SDK's `Options`.
  *
- * The child's environment is the ONE channel a provider enters the process
- * through (spec §2.2). Concretely:
+ * The child's environment is the ONE channel a provider's variables enter the
+ * process through (spec §2.2) — AND, for a provider-pinned launch, the same env
+ * is re-carried as a `--settings`-tier JSON string so the command-line tier
+ * outranks the user's native `~/.claude/settings.json` env (2026-10-04 F-B).
+ * Concretely, the env keys are:
  *
  *   - `ANTHROPIC_BASE_URL` — always, from the entry (validation guarantees a
  *     non-empty endpoint; an entry without one is not an entry).
@@ -61,6 +64,13 @@ export interface ClaudeLaunchSpec {
   readonly providerId: string | null;
   /** `ANTHROPIC_*` overrides; the caller spreads them AFTER `process.env`. */
   readonly env: Readonly<Record<string, string>>;
+  /** The same env carried as a `--settings`-tier JSON string (`{"env":{...}}`).
+   *  The SDK's `Options.settings` accepts a JSON string, a settings object, or a
+   *  file path; the command-line ("flag settings") tier outranks the user's
+   *  native `~/.claude/settings.json` env, so a provider-pinned launch must ride
+   *  this tier to defeat a native per-variable override. `NATIVE_LAUNCH` carries
+   *  none. */
+  readonly settings?: string;
   /** The raw model id for the wire (never the `<provider>/<model>` catalog key). */
   readonly model?: string;
   /** The resolved host CLI; absent means "let the SDK resolve its own payload". */
@@ -118,6 +128,7 @@ export function claudeLaunchFor(
   return {
     providerId: entry.id,
     env,
+    settings: JSON.stringify({ env }),
     model: route.model,
     // Spread, not `pathToClaudeCodeExecutable: hostBinary`: an absent key must
     // not exist at all, or it would ride a spread into Options as `undefined`.

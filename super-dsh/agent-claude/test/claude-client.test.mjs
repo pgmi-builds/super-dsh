@@ -117,6 +117,23 @@ test("options.env is a full spread of process.env without CLAUDE_CONFIG_DIR inje
   client.close();
 });
 
+test("the launch settings JSON string lands on options.settings (--settings tier beats native settings)", async () => {
+  setup();
+  const calls = [];
+  setClaudeFactory((o) => { calls.push(o); return fakeQuery([]); });
+  const settings = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic", ANTHROPIC_AUTH_TOKEN: "zai-secret" } });
+  const client = new ClaudeSdkClient({
+    cwd: "/w",
+    claudeSessionId: "12121212-1212-4121-8121-121212121212",
+    launch: { providerId: "glm", env: { ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic" }, settings },
+  });
+  await client.prompt("hi");
+  assert.equal(calls[0].options.settings, settings);
+  // The env spread stays (belt-and-braces): the launch env additions ride alongside.
+  assert.equal(calls[0].options.env.ANTHROPIC_BASE_URL, "https://api.z.ai/api/anthropic");
+  client.close();
+});
+
 test("resume passes resume instead of sessionId", async () => {
   setup();
   const calls = [];

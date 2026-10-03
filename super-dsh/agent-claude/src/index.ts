@@ -44,7 +44,7 @@ import { ClaudeSdkClient, probeClaudeModels } from "./claude-client.js";
 // Type-only: pulls the `ctx.sessionProjections` Context augmentation into this unit.
 import type { } from "@deepseek-ai/dsh-session-projection";
 import { ClaudeAgent, type ClaudeAgentRuntimeInfo } from "./agent.js";
-import { ClaudeLlmAdapter, CLAUDE_PROVIDER_ID } from "./adapter.js";
+import { ClaudeLlmAdapter, CLAUDE_PROVIDER_ID, routeIds } from "./adapter.js";
 import { resolveClaudeHome } from "./claude-home.js";
 import { resetProjectionState } from "./claude-events.js";
 import { claudeSessionIdFromDsh } from "./session-id.js";
@@ -68,8 +68,8 @@ import {
 import { modelEntryFromSdk, readModelCatalog, setModelCatalog, CLAUDE_DEFAULT_MODEL } from "./models.js";
 import { registerClaudePreset } from "./agent-preset-claude.js";
 import { claudeLaunchFor, type ClaudeLaunchSpec } from "./claude-launch.js";
-import { compositeModelId, parseCompositeModelId, routeSeed } from "./claude-route.js";
-import { endpointKey, readProviderStore, type ClaudeProviderEntry } from "./claude-providers.js";
+import { routeSeed } from "./claude-route.js";
+import { endpointKey, readProviderStore, type ClaudeProviderEntry, type ClaudeProviderStore } from "./claude-providers.js";
 import { ClaudeProvidersGateway, syncFromNative } from "./claude-provider-gateway.js";
 import { readNativeModel, readNativeProviders } from "./claude-native-config.js";
 import { resolveClaudeBinary } from "./sdk-runtime.js";
@@ -181,6 +181,9 @@ export class ClaudeProvider extends Service implements AgentFactory {
   private defaultModelKey = "";
   /** Epoch ms of the last reconcile with the user's `settings.json` env. */
   private syncedAt: number | undefined;
+  /** The live `ctx.llm` registration for the claude routes, when one exists.
+   *  Its `replace()` is how the route SET follows the store (codex twin). */
+  private routes: { replace(providers: string[]): void } | undefined;
   constructor(ctx: Context) {
     super(ctx, "claudeProvider");
     this.runtime = { ctx };
@@ -228,14 +231,10 @@ export class ClaudeProvider extends Service implements AgentFactory {
     // rule): the native home is re-resolved per call, so a test's
     // `CLAUDE_CONFIG_DIR` and an operator's override are both honored.
     //
-    // The onChange hook stays a deliberate NO-OP — the codex twin's onChange
-    // exists only because its ROUTE SET changes with the store (one route per
-    // provider, re-registered via routes.replace); claude serves everything
-    // under the ONE fixed `claude` route registered above, and that adapter
-    // reads the provider store live on every listModels/resolveModel call —
-    // no cache to invalidate, so a panel edit is visible to the next catalog
-    // query without any re-registration.
-    new ClaudeProvidersGateway(ctx, this.home, () => resolveClaudeHome(), () => { });
+    // A panel save/remove re-points the route SET (one route per provider, plus
+    // the fixed `claude` route) through routes.replace — the codex twin's
+    // mechanism, wired exactly.
+    new ClaudeProvidersGateway(ctx, this.home, () => resolveClaudeHome(), () => this.refreshRoutes());
   }
 
   /**
@@ -252,12 +251,13 @@ export class ClaudeProvider extends Service implements AgentFactory {
    */
   syncNow(): void {
     try {
-      const { added, updated } = syncFromNative(this.home, resolveClaudeHome());
+      const { store, added, updated } = syncFromNative(this.home, resolveClaudeHome());
       trace(`provider sync: added=${added.join(",") || "none"} updated=${updated.join(",") || "none"}`);
       if (added.length > 0 || updated.length > 0) {
         this.runtime.ctx.logger.info(`claude-provider: settings.json sync — added ${added.join(", ") || "none"}, refreshed ${updated.join(", ") || "none"}`);
       }
       this.syncedAt = Date.now();
+      this.#applyRoutes(store);
     } catch (error) {
       this.runtime.ctx.logger.warn(`claude-provider: provider sync failed: ${String(error)}`);
     }
@@ -419,6 +419,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
             trace(`marked ${id} not resumable (conversation never materialized)`);
           },
           launchFor: (providerId, model) => this.agentLaunchFor(providerId, model),
+          contextWindowFor: (providerId, model) => this.agentContextWindowFor(providerId, model),
         },
         agentRef,
         clientFactory,
@@ -567,6 +568,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
             trace(`marked ${id} not resumable (conversation never materialized)`);
           },
           launchFor: (providerId, model) => this.agentLaunchFor(providerId, model),
+          contextWindowFor: (providerId, model) => this.agentContextWindowFor(providerId, model),
         },
         agentRef,
         clientFactory,
@@ -582,27 +584,54 @@ export class ClaudeProvider extends Service implements AgentFactory {
   }
 
   #registerModelCatalog(): void {
+    this.#applyRoutes(readProviderStore(this.home));
+  }
+
+  /** Re-register the `ctx.llm` routes from the current store (panel mutation path). */
+  refreshRoutes(): void {
+    try {
+      this.#applyRoutes(readProviderStore(this.home));
+    } catch (error) {
+      this.runtime.ctx.logger.warn(`claude-provider: route refresh failed: ${String(error)}`);
+    }
+  }
+
+  /** Register or atomically re-point the claude routes at the given store
+   *  (the fixed `claude` route + one route per provider with models). */
+  #applyRoutes(store: ClaudeProviderStore): void {
     const llm = this.runtime.ctx.get("llm") as LlmRuntime | undefined;
     if (llm === undefined) return;
-    llm.registerAdapter([CLAUDE_PROVIDER_ID], new ClaudeLlmAdapter(this.home));
+    const ids = routeIds(store);
+    if (this.routes === undefined) {
+      this.routes = llm.registerAdapter([...ids], new ClaudeLlmAdapter(this.home));
+      trace(`routes registered: ${ids.join(", ")}`);
+      return;
+    }
+    // `replace` validates the whole candidate set before swapping; a throw here
+    // must not take the caller (a timer, or a panel save) down with it.
+    this.routes.replace([...ids]);
+    trace(`routes replaced: ${ids.join(", ") || "none"}`);
   }
 
   /**
    * The factory owns its sessions' route (user directive 2026-09-15): the
    * ambient `agentDefaultModel` selection is NOT authoritative here — a session
-   * created by this factory always runs on the `claude` route, with the boot
-   * default (or an observed default) unless the caller asked for a served
-   * claude model.
+   * created by this factory starts from the reconciled pair below unless the
+   * caller asked for a route this world serves (the native `claude` route or a
+   * curated provider route).
    */
   private sessionAgentOptions(requested: AgentOptions | undefined): AgentOptions {
-    // 1. A caller-requested claude route wins, parsing its composite model id
-    //    back to the wire pair. A legacy raw id (no slash) keeps `claude/<raw>`
-    //    and reads as "launch native, inject nothing".
-    if (requested?.provider === CLAUDE_PROVIDER_ID && typeof requested.model === "string" && requested.model !== "") {
-      const parsed = parseCompositeModelId(requested.model);
-      if (parsed !== undefined) return { ...(requested ?? {}), provider: parsed.provider, model: parsed.model };
-      return { ...(requested ?? {}), provider: CLAUDE_PROVIDER_ID, model: requested.model };
-    }
+    // 1. A caller-requested route wins when it names a pair this world serves:
+    //    the fixed native `claude` route (any raw id — launch native, inject
+    //    nothing) or a curated provider route whose models include the id.
+    const wanted = requested?.provider !== undefined && typeof requested.model === "string" && requested.model !== ""
+      ? requested
+      : undefined;
+    const served = wanted !== undefined && (
+      (wanted.provider as string) === CLAUDE_PROVIDER_ID
+      || this.providerEntry(wanted.provider as string)?.models.some((model) => model.id === wanted.model) === true
+    );
+    if (wanted !== undefined && served) return { ...wanted, provider: wanted.provider, model: wanted.model };
     // 2. Native fold model (the user's own settings.json env).
     const nativeProvider = this.nativeProviderId();
     const nativeModel = readNativeModel(resolveClaudeHome());
@@ -638,16 +667,22 @@ export class ClaudeProvider extends Service implements AgentFactory {
     return claudeLaunchFor({ provider: providerId, model }, entry, resolveClaudeBinary());
   }
 
+  /** The provider's own context window for one of its models, when known. */
+  private agentContextWindowFor(providerId: string, model: string): number | undefined {
+    const entry = this.providerEntry(providerId);
+    return entry?.models.find((candidate) => candidate.id === model)?.contextWindow;
+  }
+
   /** The app-wide default selection (DSH-side `claude/<composite-or-boot>`). */
   private defaultModelSelection(): { provider: string; model: string } {
     const nativeProvider = this.nativeProviderId();
     const nativeModel = readNativeModel(resolveClaudeHome());
     if (nativeProvider !== undefined && nativeModel !== undefined && nativeModel !== "") {
-      return { provider: CLAUDE_PROVIDER_ID, model: compositeModelId(nativeProvider, nativeModel) };
+      return { provider: nativeProvider, model: nativeModel };
     }
     for (const entry of readProviderStore(this.home).providers) {
       const model = entry.models[0]?.id;
-      if (model !== undefined) return { provider: CLAUDE_PROVIDER_ID, model: compositeModelId(entry.id, model) };
+      if (model !== undefined) return { provider: entry.id, model };
     }
     return { provider: CLAUDE_PROVIDER_ID, model: CLAUDE_DEFAULT_MODEL };
   }
@@ -749,7 +784,7 @@ async function setupAndPublish(
       const alreadyRouted = events.some((event) => event.type === "model/selection");
       const seed = routeSeed(agentOptions as { provider: string; model: string });
       if (!alreadyRouted && seed !== undefined) {
-        const selection = { provider: CLAUDE_PROVIDER_ID, model: compositeModelId(seed.provider, seed.model) };
+        const selection = { provider: seed.provider, model: seed.model };
         (session.append as (type: string, data: unknown) => unknown)("model/selection", selection);
         trace(`session route seeded: ${selection.provider}/${selection.model}`);
       }

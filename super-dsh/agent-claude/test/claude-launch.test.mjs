@@ -36,16 +36,18 @@ test("authToken entry + declared aliases + host binary: the exact slice", () => 
 
   // One deepEqual is deliberate: it pins the env key SET as well as the values,
   // so an accidental extra key (an empty alias, a stray BASE_URL variant) fails.
+  const env = {
+    ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic",
+    ANTHROPIC_AUTH_TOKEN: "zai-secret",
+    ANTHROPIC_MODEL: "glm-5.2",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-4.6",
+    ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-4.6",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air",
+  };
   assert.deepEqual(spec, {
     providerId: "glm",
-    env: {
-      ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic",
-      ANTHROPIC_AUTH_TOKEN: "zai-secret",
-      ANTHROPIC_MODEL: "glm-5.2",
-      ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-4.6",
-      ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-4.6",
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air",
-    },
+    env,
+    settings: JSON.stringify({ env }),
     model: "glm-5.2",
     pathToClaudeCodeExecutable: "/usr/bin/claude",
   });
@@ -122,7 +124,7 @@ test("no host binary resolved: the path key is absent, not undefined", () => {
   // `in` rather than a value check: a present-but-undefined key would still
   // travel through a spread into Options and shadow a caller default.
   assert.equal("pathToClaudeCodeExecutable" in spec, false);
-  assert.deepEqual(Object.keys(spec).sort(), ["env", "model", "providerId"]);
+  assert.deepEqual(Object.keys(spec).sort(), ["env", "model", "providerId", "settings"]);
 });
 
 test("an empty host binary is treated as unresolved", () => {
@@ -144,6 +146,15 @@ test("NATIVE_LAUNCH is the zero-injection slice (providerId null, no model, no p
   assert.deepEqual(NATIVE_LAUNCH, { providerId: null, env: {} });
   assert.equal("model" in NATIVE_LAUNCH, false);
   assert.equal("pathToClaudeCodeExecutable" in NATIVE_LAUNCH, false);
+  assert.equal("settings" in NATIVE_LAUNCH, false, "NATIVE_LAUNCH rides no --settings tier (native rules)");
+});
+
+test("the settings JSON string parses back to the env and carries the glm endpoint/key", () => {
+  const spec = claudeLaunchFor({ provider: "glm", model: "glm-5.2" }, glmEntry());
+  const parsed = JSON.parse(spec.settings);
+  assert.deepEqual(parsed, { env: spec.env });
+  assert.equal(parsed.env.ANTHROPIC_BASE_URL, "https://api.z.ai/api/anthropic");
+  assert.equal(parsed.env.ANTHROPIC_AUTH_TOKEN, "zai-secret");
 });
 
 test("the slice is computed from the entry alone — ambient process.env is never read", () => {

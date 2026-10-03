@@ -77,10 +77,10 @@ import type { WireEvent } from "./claude-events.js";
 import { resetProjectionState } from "./claude-events.js";
 import type { ClaudeClientFactory, ClaudeSdkClient } from "./claude-client.js";
 import { NATIVE_LAUNCH, type ClaudeLaunchSpec } from "./claude-launch.js";
-import { compositeModelId, parseCompositeModelId, resolveRoute, routeOf, routeSeed, type RouteSelection } from "./claude-route.js";
+import { resolveRoute, routeSeed, type RouteSelection } from "./claude-route.js";
 import { CLAUDE_PROVIDER_ID } from "./adapter.js";
 import { claudePermissionMode, presetFromEvents, type ClaudePermissionMode, type PresetName } from "./permission.js";
-import { catalogFromInit, mintCatalogEntries, modelEntryFromSdk, readModelCatalog, setModelCatalog } from "./models.js";
+import { catalogFromInit, modelEntryFromSdk, readModelCatalog, setModelCatalog } from "./models.js";
 import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 import {
   registerClaudeCommands,
@@ -133,6 +133,8 @@ export interface ClaudeAgentRuntimeInfo {
   /** The launch that pins one provider for a freshly spawned client, or
    * `undefined` for a provider id this world does not know (native). */
   readonly launchFor?: (providerId: string, model: string) => ClaudeLaunchSpec | undefined;
+  /** The provider's own context window for one of its models, when known. */
+  readonly contextWindowFor?: (providerId: string, model: string) => number | undefined;
 }
 
 /**
@@ -894,20 +896,23 @@ export class ClaudeAgent implements Agent {
    */
   private emitRequestContext(route: RouteSelection | undefined): void {
     if (!this.turnOpen) return;
-    // A resolved route names the DSH-side composite model id (what the selector
-    // picks); a missing route falls back to the observed model (the degraded
+    // A resolved route names the raw provider/model pair (the route the selector
+    // picked); a missing route falls back to the observed model (the degraded
     // single-provider shape), preserving the pre-multi-provider metadata.
     const model = route !== undefined
-      ? compositeModelId(route.provider, route.model)
+      ? route.model
       : (this.observedMessageModel || this.observedDefaultModel || this.options.model || "");
     if (model === "") return;
-    const key = `${CLAUDE_PROVIDER_ID}/${model}`;
+    const provider = route?.provider ?? CLAUDE_PROVIDER_ID;
+    const key = `${provider}/${model}`;
     if (key === this.lastRouteKey) return;
     this.lastRouteKey = key;
-    const entry = readModelCatalog().models.find((candidate) => candidate.id === model);
-    const contextWindow = entry?.contextWindow;
+    const contextWindow = route !== undefined
+      ? (this.runtimeInfo?.contextWindowFor?.(route.provider, route.model)
+        ?? readModelCatalog().models.find((candidate) => candidate.id === route.model)?.contextWindow)
+      : undefined;
     this.session.append("request/context", {
-      provider: CLAUDE_PROVIDER_ID,
+      provider,
       model,
       ...(contextWindow !== undefined && contextWindow > 0 ? { contextWindow } : {}),
     });
@@ -916,11 +921,10 @@ export class ClaudeAgent implements Agent {
 
   /**
    * Resolve the route this session must run, mirroring the harness's own
-   * precedence (`pending ?? logged ?? preferred ?? fallback`). Each DSH-side
-   * candidate carries a COMPOSITE model id (`glm/glm-5.2`) under the single
-   * `claude` route; this splits it back to the wire-side pair. A legacy raw id
-   * (no slash) resolves as-is, and the agent reads its provider as "launch
-   * native, inject nothing" (no store entry names it).
+   * precedence (`pending ?? logged ?? preferred ?? fallback`). Each candidate is
+   * already a raw provider/model pair — the provider IS the route id and the
+   * model IS the raw wire id (the codex twin's shape). A provider id with no
+   * store entry reads as "launch native, inject nothing".
    */
   resolveRoute(): RouteSelection | undefined {
     const projections = this.loopCtx.get("sessionProjections") as
@@ -930,19 +934,11 @@ export class ClaudeAgent implements Agent {
       | { currentSelection?: () => { provider: string; model: string } }
       | undefined;
     return resolveRoute({
-      pending: this.parseRouteCandidate(projections?.stateOf?.(this.session, "modelSelection")?.pending),
-      logged: this.parseRouteCandidate(this.session.requestHeader()?.config),
-      preferred: this.parseRouteCandidate(service?.currentSelection?.()),
+      pending: projections?.stateOf?.(this.session, "modelSelection")?.pending,
+      logged: this.session.requestHeader()?.config,
+      preferred: service?.currentSelection?.(),
       fallback: routeSeed(this.options as { provider: string; model: string }),
     });
-  }
-
-  /** Split one DSH-side candidate's composite model id back to the wire pair. */
-  private parseRouteCandidate(value: unknown): RouteSelection | undefined {
-    const route = routeOf(value);
-    if (route === undefined) return undefined;
-    const parsed = parseCompositeModelId(route.model);
-    return parsed ?? route;
   }
 
   /**
@@ -1005,8 +1001,8 @@ export class ClaudeAgent implements Agent {
   private commitRequestHeader(route: RouteSelection): void {
     const header = canonicalHeader({
       config: {
-        provider: CLAUDE_PROVIDER_ID,
-        model: compositeModelId(route.provider, route.model),
+        provider: route.provider,
+        model: route.model,
       },
     });
     const baseline = this.session.requestHeader();
@@ -1127,7 +1123,7 @@ export class ClaudeAgent implements Agent {
     const assistant: AssistantMessage = createAssistantMessage({
       content: blocks,
       // The OBSERVED model (what the CLI actually ran), not the requested one.
-      source: { provider: CLAUDE_PROVIDER_ID, model: this.observedMessageModel || this.observedDefaultModel || this.options.model || "" },
+      source: { provider: this.turnRoute?.provider ?? CLAUDE_PROVIDER_ID, model: this.observedMessageModel || this.observedDefaultModel || this.options.model || "" },
     });
     const event = this.session.append("assistant/message", {
       turn: this.dashTurn,
@@ -1177,18 +1173,15 @@ export class ClaudeAgent implements Agent {
    */
   private observeModelCatalog(init: WireEvent): void {
     if (typeof init.model === "string" && init.model !== "") this.observedDefaultModel = init.model;
-    // The degraded single-entry catalog stays RAW (observed-default stays
-    // raw-only-in-memory); the authoritative supportedModels() roster is minted
-    // composite under the CURRENT turn's provider.
+    // The observed catalog stays RAW: the fixed `claude` route serves exactly
+    // what the CLI reported, and curated provider models live under their own
+    // routes (2026-10-04 F-A) — no composite minting here.
     const entries = catalogFromInit(init as { model?: unknown; slashCommands?: unknown });
     if (entries.length > 0) setModelCatalog(entries, this.observedDefaultModel);
     void this.client.supportedModels().then((models) => {
       const full = Array.isArray(models) ? models.flatMap((m) => modelEntryFromSdk(m)) : [];
       if (full.length === 0) return;
-      const provider = this.turnRoute?.provider ?? "native";
-      const minted = mintCatalogEntries(provider, full);
-      const defaultModel = this.observedDefaultModel === "" ? undefined : compositeModelId(provider, this.observedDefaultModel);
-      setModelCatalog(minted, defaultModel);
+      setModelCatalog(full, this.observedDefaultModel);
     }).catch((error) => {
       trace(`supportedModels() failed: ${String(error)}`);
     });
@@ -1414,7 +1407,7 @@ export class ClaudeAgent implements Agent {
           this.commitStepStart();
           const assistant: AssistantMessage = createAssistantMessage({
             content: blocks,
-            source: { provider: CLAUDE_PROVIDER_ID, model: String(event.fallbackModel ?? this.options.model ?? "") },
+            source: { provider: this.turnRoute?.provider ?? CLAUDE_PROVIDER_ID, model: String(event.fallbackModel ?? this.options.model ?? "") },
           });
           this.session.append("assistant/message", {
             turn: this.dashTurn,

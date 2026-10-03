@@ -430,6 +430,10 @@ export class ClaudeSdkClient {
       // PATH/HOME and the user's own key alive (NATIVE_LAUNCH carries an empty
       // env, so the native shape is exactly `{ ...process.env }`).
       env: { ...process.env, ...this.launch.env },
+      // The `--settings` command-line tier (a JSON string) outranks the user's
+      // native settings.json env, so a provider-pinned launch rides it here
+      // (2026-10-04 F-B: without it the native env pins the endpoint).
+      ...(this.launch.settings !== undefined ? { settings: this.launch.settings } : {}),
       // undefined (no local binary) leaves the key unset — bundled-payload
       // mode lets the SDK spawn its own platform payload as the CLI.
       ...(executable !== undefined ? { pathToClaudeCodeExecutable: executable } : {}),

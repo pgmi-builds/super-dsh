@@ -401,3 +401,55 @@ test("dispose clears the session-observed slash commands", async () => {
   assert.deepEqual(agent.observedSlashCommands, [], "dispose must clear session-observed data");
   setModelCatalog([]);
 });
+
+// --- per-provider route set (2026-10-04 F-A): register + replace on panel mutation ---
+
+/** A stub context that records `ctx.llm` route registrations (codex twin's shape). */
+function routeRecordingContext(worldHome) {
+  hermeticSdkProbe();
+  const registrations = [];
+  const ctx = new Context();
+  ctx.provide("dshHomePath", worldHome);
+  ctx.provide("agents", { setFactory() { } });
+  ctx.provide("llm", {
+    registerAdapter(providers, adapter) {
+      const handle = () => { };
+      handle.replace = (next) => registrations.push({ op: "replace", providers: next });
+      registrations.push({ op: "register", providers, adapter });
+      return handle;
+    },
+  });
+  return { ctx, registrations };
+}
+
+function finalRoutes(registrations) {
+  assert.ok(registrations.length > 0, "the adapter registered no routes at all");
+  return registrations[registrations.length - 1].providers;
+}
+
+test("a store with deepseek+glm registers claude + per-provider routes; a panel remove replaces the set", async () => {
+  const { writeProviderStore } = await import("../dist/claude-providers.js");
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-routes-"));
+  const nativeHome = mkdtempSync(join(tmpdir(), "superd-claude-routes-native-"));
+  writeProviderStore(home, {
+    providers: [
+      { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/anthropic", auth: { kind: "apiKey", value: "sk-test" }, models: [{ id: "deepseek-flash" }], origin: "user" },
+      { id: "glm", label: "GLM (Z.AI)", baseUrl: "https://api.z.ai/api/anthropic", auth: { kind: "authToken", value: "zai-secret" }, models: [{ id: "glm-5.3" }], origin: "user" },
+    ],
+    removed: [],
+  });
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = nativeHome;
+  try {
+    const { ctx, registrations } = routeRecordingContext(home);
+    new ClaudeProvider(ctx);
+    assert.deepEqual(finalRoutes(registrations), ["claude", "deepseek", "glm"]);
+
+    const gateway = ctx.get("claudeProviders");
+    await gateway.remove({ id: "glm" });
+    assert.deepEqual(finalRoutes(registrations), ["claude", "deepseek"]);
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+  }
+});
