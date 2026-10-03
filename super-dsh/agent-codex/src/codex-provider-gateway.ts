@@ -357,6 +357,18 @@ export function saveProvider(worldHome: string, codexHome: string, request: unkn
   const existing = store.providers.find((entry) => entry.id === id);
   const entry = normalizeSaveRequest(request, existing);
   const next = upsertProvider(store, entry);
+  // Editing the provider that is ALREADY in force re-materializes it, so a
+  // changed endpoint / key / model list lands without the user having to select
+  // some other provider and come back (reported from use, 2026-10-03). This is
+  // not a switch: the selection is unchanged, and the model stays put when the
+  // edit still offers it — otherwise the first model is the honest fallback.
+  if (next.selected === entry.id) {
+    const native = readNativeSelection(codexHome);
+    const keep = native.model !== undefined && entry.models.some((model) => model.id === native.model)
+      ? native.model
+      : entry.models[0].id;
+    writeNativeSelection(codexHome, { provider: entry, model: keep });
+  }
   writeProviderStore(worldHome, next);
   return viewOf(worldHome, codexHome, next);
 }

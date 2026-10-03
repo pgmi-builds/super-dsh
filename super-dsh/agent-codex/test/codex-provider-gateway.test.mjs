@@ -273,3 +273,38 @@ test("a keyed provider behind a ChatGPT login is called out", () => {
   const envView = readProvidersView(tempHome("world-env"), codexHome);
   assert.ok(!(envView.note ?? "").includes("takes precedence"));
 });
+
+// Reported from use (2026-10-03): adding a model to the provider that is already
+// in force did nothing until the user selected a different provider and came
+// back. The catalog is only written by a select, so an edit to the active
+// provider has to re-materialize it itself.
+test("editing the provider in force lands immediately, without a select round trip", () => {
+  const { worldHome, codexHome } = seeded();
+  saveProvider(worldHome, codexHome, SAVE);
+  selectProviderEntry(worldHome, codexHome, { id: "openrouter" });
+  assert.match(readFileSync(join(codexHome, "config.toml"), "utf8"), /base_url = "https:\/\/openrouter\.ai\/api\/v1"/);
+
+  // One save, no select: new endpoint AND a second model.
+  const view = saveProvider(worldHome, codexHome, {
+    provider: {
+      ...SAVE.provider,
+      baseUrl: "https://openrouter.ai/api/v2",
+      models: [{ id: "glm-5.2", displayName: "GLM-5.2" }, { id: "glm-4.7", displayName: "GLM-4.7" }],
+    },
+  });
+  assert.match(readFileSync(join(codexHome, "config.toml"), "utf8"), /base_url = "https:\/\/openrouter\.ai\/api\/v2"/);
+  assert.equal(view.selected, "openrouter", "still not a switch");
+  assert.equal(view.effective?.model, "glm-5.2", "the in-force model stays when the edit still offers it");
+  const catalog = JSON.parse(readFileSync(join(codexHome, "superd-model-catalog.json"), "utf8"));
+  assert.deepEqual(catalog.models.map((m) => m.slug), ["glm-5.2", "glm-4.7"], "and the new model is on the list");
+
+  // Dropping the in-force model moves to the first one the provider still serves.
+  const moved = saveProvider(worldHome, codexHome, {
+    provider: { ...SAVE.provider, models: [{ id: "glm-4.7", displayName: "GLM-4.7" }] },
+  });
+  assert.equal(moved.effective?.model, "glm-4.7");
+
+  // A provider that is NOT in force stays inert until it is selected.
+  saveProvider(worldHome, codexHome, { provider: { ...SAVE.provider, id: "idle", baseUrl: "https://idle.example/v1" } });
+  assert.ok(!readFileSync(join(codexHome, "config.toml"), "utf8").includes("idle.example"));
+});

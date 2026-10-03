@@ -247,17 +247,31 @@ export function mergeModelCatalog(
   models: readonly CodexProviderModel[],
   template?: Record<string, unknown>,
 ): string {
-  const current = catalogEntries(existing);
-  const foreign = catalogEntries(absorbed);
-
+  // Both sides are a TEMPLATE POOL only — never output. What gets emitted is
+  // exactly `models`, the models the provider we are switching to serves.
+  //
+  // Replacing rather than accumulating is a correction (2026-10-03, reported
+  // from use): the earlier "absorb everything, drop nothing" rule kept every
+  // model any previous provider had ever contributed, so the Chat model
+  // selector grew without bound — GLM-5.2, then +DeepSeek Flash, then
+  // +GLM-5.3 Flash, with a provider that served only the last two. The catalog
+  // is Codex's metadata dictionary for the models it is ABOUT to run, and the
+  // DSH selector reads it verbatim (`models.ts` → `LlmAdapter.listModels`), so
+  // its contents are user-visible as "the models I can pick". cc-switch writes
+  // only the active provider's catalog for the same reason; we now match it.
+  const pool = [...catalogEntries(existing), ...catalogEntries(absorbed)];
   const bySlug = new Map<string, Record<string, unknown>>();
-  for (const entry of [...current, ...foreign]) {
+  for (const entry of pool) {
     const slug = slugOf(entry);
     if (slug !== undefined && !bySlug.has(slug)) bySlug.set(slug, entry);
   }
 
-  const fallback = template ?? current[0] ?? foreign[0];
+  const fallback = template ?? pool[0];
+  const out: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
   for (const model of models) {
+    if (seen.has(model.id)) continue;
+    seen.add(model.id);
     const base = bySlug.get(model.id) ?? fallback ?? {};
     const entry: Record<string, unknown> = {
       ...base,
@@ -270,10 +284,10 @@ export function mergeModelCatalog(
       entry["context_window"] = model.contextWindow;
       entry["max_context_window"] = model.contextWindow;
     }
-    bySlug.set(model.id, entry);
+    out.push(entry);
   }
 
-  return `${JSON.stringify({ models: [...bySlug.values()] }, null, 2)}\n`;
+  return `${JSON.stringify({ models: out }, null, 2)}\n`;
 }
 
 /** Read a file, or `undefined` when it is absent or unreadable. */

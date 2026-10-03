@@ -182,8 +182,11 @@ test("mergeModelCatalog clones the template and overrides identity fields only",
     { id: "glm-5.2", displayName: "GLM-5.2", contextWindow: 1000000 },
   ]));
   const slugs = out.models.map((m) => m.slug);
-  assert.deepEqual(slugs, ["old-model", "glm-5.2"], "the absorbed entry stays, ours is appended");
-  const mine = out.models[1];
+  // ONLY the provider we are switching to is emitted — the absorbed entry was a
+  // template source, not a survivor (2026-10-03 correction: the selector used to
+  // accumulate every provider's models ever seen).
+  assert.deepEqual(slugs, ["glm-5.2"]);
+  const mine = out.models[0];
   assert.equal(mine.display_name, "GLM-5.2");
   assert.equal(mine.context_window, 1000000);
   assert.equal(mine.max_context_window, 1000000);
@@ -193,12 +196,42 @@ test("mergeModelCatalog clones the template and overrides identity fields only",
   assert.equal(mine.priority, 10);
 });
 
-test("mergeModelCatalog re-selects an existing model in place and never drops a foreign entry", () => {
+test("mergeModelCatalog replaces the list and reuses an existing entry as its own template", () => {
   const existing = JSON.stringify({ models: [{ slug: "glm-5.2", display_name: "old label", base_instructions: "kept", priority: 5 }] });
   const out = JSON.parse(mergeModelCatalog(existing, undefined, [{ id: "glm-5.2", displayName: "GLM-5.2" }]));
-  assert.equal(out.models.length, 1, "upsert by slug, not append");
+  assert.equal(out.models.length, 1, "one entry per requested model, no strays");
   assert.equal(out.models[0].display_name, "GLM-5.2");
   assert.equal(out.models[0].base_instructions, "kept", "existing entry wins as its own template");
+});
+
+// The bug as reported from use (2026-10-03): three providers configured in
+// sequence left all three models in the Chat selector.
+test("switching providers does not accumulate the previous provider's models", () => {
+  const ccSwitch = JSON.stringify({ models: [TEMPLATE, { slug: "deepseek-flash", display_name: "DeepSeek Flash", base_instructions: "t", priority: 2 }] });
+
+  // step 1: the GLM-5.2 era, catalog authored by cc-switch.
+  let ours = mergeModelCatalog(undefined, ccSwitch, [{ id: "glm-5.2", displayName: "GLM-5.2" }]);
+  assert.deepEqual(JSON.parse(ours).models.map((m) => m.slug), ["glm-5.2"]);
+
+  // step 2: switch to DeepSeek, with cc-switch's file still the one named before us.
+  ours = mergeModelCatalog(ours, ccSwitch, [{ id: "deepseek-flash", displayName: "DeepSeek Flash" }]);
+  assert.deepEqual(JSON.parse(ours).models.map((m) => m.slug), ["deepseek-flash"], "GLM must not linger");
+  assert.equal(JSON.parse(ours).models[0].base_instructions, "t", "and it is still cloned, not synthesized");
+
+  // step 3: 智谱 CN serving two models — exactly those two, nothing historical.
+  ours = mergeModelCatalog(ours, undefined, [
+    { id: "glm-5.3-flash", displayName: "GLM-5.3 Flash" },
+    { id: "glm-4.7", displayName: "GLM-4.7" },
+  ]);
+  assert.deepEqual(JSON.parse(ours).models.map((m) => m.slug), ["glm-5.3-flash", "glm-4.7"]);
+
+  // re-submitting the same provider is idempotent, and duplicates collapse
+  const again = mergeModelCatalog(ours, undefined, [
+    { id: "glm-5.3-flash" },
+    { id: "glm-5.3-flash" },
+    { id: "glm-4.7" },
+  ]);
+  assert.deepEqual(JSON.parse(again).models.map((m) => m.slug), ["glm-5.3-flash", "glm-4.7"]);
 });
 
 test("mergeModelCatalog tolerates garbage on either side", () => {
@@ -242,7 +275,7 @@ test("writeNativeSelection writes three files, backs each up once, and is read b
   assert.deepEqual(readNativeSelection(home), { providerId: "deepseek", model: "glm-5.2", baseUrl: "https://api.deepseek.com/v1", protocol: "responses", auth: { kind: "env", name: "DEEPSEEK_API_KEY" } });
 });
 
-test("writeNativeSelection absorbs the catalog currently named by model_catalog_json", () => {
+test("writeNativeSelection takes its template from the catalog currently named by model_catalog_json", () => {
   const home = tempHome();
   writeFileSync(join(home, "config.toml"), 'model_catalog_json = "cc-switch-model-catalog.json"\n');
   writeFileSync(join(home, "cc-switch-model-catalog.json"), JSON.stringify({ models: [TEMPLATE] }));
@@ -252,8 +285,8 @@ test("writeNativeSelection absorbs the catalog currently named by model_catalog_
     model: "glm-5.2",
   }, { stamp: 1 });
   const ours = JSON.parse(readFileSync(join(home, SUPERD_CATALOG_FILE), "utf8"));
-  assert.deepEqual(ours.models.map((m) => m.slug), ["old-model", "glm-5.2"]);
-  assert.equal(ours.models[1].base_instructions, "you are codex", "the foreign catalog supplied the template");
+  assert.deepEqual(ours.models.map((m) => m.slug), ["glm-5.2"], "only ours is emitted");
+  assert.equal(ours.models[0].base_instructions, "you are codex", "but the foreign catalog supplied the template");
 });
 
 test("writeNativeSelection keeps the previous provider usable and its own file intact", () => {
