@@ -35,6 +35,7 @@
  * downstream sees an unchanged shape.
  */
 import { CodexAppServerTransport, type ServerRequestOutcome, type WireNotification, type WireServerRequest } from "./app-server-wire.js";
+import { NATIVE_LAUNCH, type CodexLaunch } from "./codex-launch.js";
 import { projectAppServerNotification, type WireContentBlock, type WireEvent, type WireMessage } from "./app-server-events.js";
 import { failClosedResponse } from "./app-server-approvals.js";
 
@@ -80,6 +81,14 @@ export interface CodexAppServerOptions {
   readonly cwd?: string;
   /** Existing Codex thread to re-attach, when resuming. */
   readonly resumeThreadId?: string;
+  /**
+   * The provider this child is pinned to for its whole life, and the argv/env
+   * that pin it (`codex-launch.ts`). Absent = the native `config.toml` decides,
+   * which is the legacy `codex` route's honest fallback.
+   */
+  readonly launch?: CodexLaunch;
+  /** The DSH route id `launch` pins; `null`/absent means "whatever the config names". */
+  readonly providerId?: string | null;
   /** Initial model override (the factory's pinned catalog default). */
   readonly model?: string;
   /** Launch approval policy; overridable per turn via {@link CodexAppServerClient.setTurnPolicy}. */
@@ -174,6 +183,18 @@ export class CodexAppServerClient {
   #failure: Error | null = null;
   #pendingModel: string | null;
   #appliedModel: string | null = null;
+  /** The provider the live child was spawned on; `null` = the native config decides. */
+  #appliedProvider: string | null;
+  /** The argv/env that pins {@link CodexAppServerClient.#appliedProvider}. */
+  #launch: CodexLaunch;
+  /**
+   * Bumped whenever a transport is orphaned on purpose (a provider reattach)
+   * and whenever one is created. A transport's `onExit` carries the generation
+   * it was built with, so the child a reattach deliberately kills cannot reach
+   * {@link CodexAppServerClient.#onExit} and fail the client permanently —
+   * without this, a restart is indistinguishable from a crash.
+   */
+  #transportGeneration = 0;
   #turnPolicy: TurnPolicy = {};
   #lastUsage: Record<string, number> | null = null;
   #terminalError: string | null = null;
@@ -187,6 +208,9 @@ export class CodexAppServerClient {
     this.#options = options;
     this.#pendingResumeId = options.resumeThreadId ?? null;
     this.#pendingModel = options.model ?? null;
+    this.#launch = options.launch ?? NATIVE_LAUNCH;
+    this.#appliedProvider = options.providerId ?? null;
+    this.#launch = options.launch ?? { argv: [], env: {} };
   }
 
   /**
@@ -253,6 +277,70 @@ export class CodexAppServerClient {
   /** The id of the turn currently in flight, when one is. */
   get activeTurnId(): string | null {
     return this.#activeTurnId;
+  }
+
+  /** The provider the live child is pinned to (`null` = the native config decides). */
+  get appliedProvider(): string | null {
+    return this.#appliedProvider;
+  }
+
+  /**
+   * Pin the NEXT spawn to a provider without touching a live child. The cheap
+   * path: a session that has not run a turn yet owns no process, so its first
+   * prompt simply spawns under the new provider.
+   *
+   * @param launch - argv/env pinning the provider (`codex-launch.ts`).
+   * @param providerId - the DSH route id `launch` pins; `null` = native config.
+   */
+  applyLaunch(launch: CodexLaunch, providerId: string | null): void {
+    this.#ensureUsable();
+    this.#launch = launch;
+    this.#appliedProvider = providerId;
+  }
+
+  /**
+   * Move an ALREADY-ATTACHED session onto another provider.
+   *
+   * A provider is bound to the CHILD PROCESS, not to the thread: `turn/start`
+   * carries a model but no provider field at all, and a `thread/resume` aimed at
+   * a thread a live app-server already holds re-joins it instead of reloading
+   * it, so the override is accepted and silently ignored (measured 2026-10-03 —
+   * asked for `zhipu-cn`, got `deepseek` back). The death of the child is
+   * therefore the ONLY boundary at which a provider can change, which is why
+   * this runs between turns and why the thread id is carried across: the new
+   * child resumes the same Codex thread, so the conversation survives.
+   *
+   * A session with no attached thread has nothing to restart — it just takes the
+   * new launch for its first spawn.
+   *
+   * @param launch - argv/env pinning the new provider.
+   * @param providerId - the DSH route id `launch` pins; `null` = native config.
+   * @param model - the model the next turn must run.
+   */
+  async reattach(launch: CodexLaunch, providerId: string | null, model?: string): Promise<void> {
+    this.#ensureUsable();
+    if (model !== undefined) this.#pendingModel = model;
+    const threadId = this.#threadId;
+    if (threadId === null) {
+      this.applyLaunch(launch, providerId);
+      return;
+    }
+    this.#trace(`reattach: provider ${this.#appliedProvider ?? "native"} → ${providerId ?? "native"} thread=${threadId}`);
+    // Orphan the dying child FIRST: its `exit` must not be read as a crash.
+    this.#transportGeneration += 1;
+    this.#transport?.close();
+    this.#transport = undefined;
+    this.#threadId = null;
+    this.#pendingResumeId = threadId;
+    this.#launch = launch;
+    this.#appliedProvider = providerId;
+    this.#inFlight = false;
+    this.#activeTurnId = null;
+    this.#messages.length = 0;
+    this.#queue.length = 0;
+    this.#turnSettled.resolve();
+    this.#turnStarted.resolve("");
+    await this.ensureStarted();
   }
 
   /**
@@ -435,16 +523,30 @@ export class CodexAppServerClient {
 
   /** Spawn + handshake + thread attach. Runs at most once per thread. */
   async #start(epoch: number): Promise<void> {
-    const transport =
-      this.#transport ??
-      transportFactory({
+    const existing = this.#transport;
+    const first = existing === undefined;
+    let transport: CodexAppServerTransport;
+    if (existing !== undefined) {
+      transport = existing;
+    } else {
+      // The generation is captured by THIS transport's exit closure, so a child
+      // orphaned on purpose (a provider reattach) stays silent while a real
+      // crash still fails the client.
+      const generation = ++this.#transportGeneration;
+      const launch = this.#launch;
+      transport = transportFactory({
         ...(this.#options.cwd === undefined ? {} : { cwd: this.#options.cwd }),
         ...(this.#options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: this.#options.requestTimeoutMs }),
+        args: ["app-server", ...launch.argv],
+        env: { ...process.env, ...launch.env },
         onNotification: (notification) => this.#onNotification(notification),
         onServerRequest: (request) => this.#onServerRequest(request),
-        onExit: (info) => this.#onExit(info),
+        onExit: (info) => {
+          if (generation !== this.#transportGeneration) return;
+          this.#onExit(info);
+        },
       });
-    const first = this.#transport === undefined;
+    }
     this.#transport = transport;
     if (first) {
       transport.start();
@@ -465,6 +567,10 @@ export class CodexAppServerClient {
       personality: "none" as const,
       serviceName: "superd-agent-codex",
       ...(this.#pendingModel === null ? {} : { model: this.#pendingModel }),
+      // The provider is a property of the CHILD (`-c` overrides), but restating
+      // it on the thread keeps `thread/resume` honest when the id was injected
+      // through the config object rather than argv.
+      ...(this.#appliedProvider === null ? {} : { modelProvider: this.#appliedProvider }),
       ...(this.#options.approvalPolicy === undefined && this.#turnPolicy.approvalPolicy === undefined
         ? {}
         : { approvalPolicy: this.#turnPolicy.approvalPolicy ?? this.#options.approvalPolicy }),

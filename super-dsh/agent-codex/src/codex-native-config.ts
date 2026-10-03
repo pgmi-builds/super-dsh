@@ -1,27 +1,35 @@
 /**
- * codex-native-config.ts — the WRITE side of the Hub multi-provider panel: the
- * act of switching a provider, expressed as three mutations in the foreign
- * runtime's own home.
+ * codex-native-config.ts — reading the foreign runtime's own home, and the one
+ * artifact we still put on disk (2026-10-04).
  *
- * Codex is a single-provider harness, so there is no "list" to edit natively —
- * only one active provider named by `config.toml`. This module materializes the
- * selection the way cc-switch does (same files, same keys), with two deliberate
- * deviations from cc-switch, both of them protections:
+ * Codex is a single-provider harness: its `config.toml` can name exactly ONE
+ * `model_provider`, so the LIST of providers a user has configured has nowhere
+ * to live natively and lives in the adapter's store instead
+ * (`codex-providers.ts`). This module is the other half of that split — the
+ * sole authority on what the user's own file actually says.
  *
- *  1. `config.toml` is edited SURGICALLY. cc-switch stores a whole config text
- *     per provider and writes it back wholesale, which silently destroys the
- *     user's `[projects."…"] trust_level` entries and every comment. We rewrite
- *     only the four regions we own and preserve every other byte.
- *  2. `auth.json` is MERGED, never rebuilt — it can hold the user's ChatGPT
- *     OAuth login (cc-switch has dedicated code to preserve it too) — and an
- *     `auth.json` we cannot parse is REFUSED rather than clobbered.
+ * The direction is one-way and stayed that way through the 2026-10-04 rework:
+ * `config.toml` is a SOURCE. Nothing here writes it, and nothing writes
+ * `auth.json`; a provider reaches a `codex app-server` child as process
+ * arguments (see `codex-launch.ts`), which is also why the two protection
+ * rules this module used to carry — surgical TOML edits, a merged `auth.json` —
+ * are gone rather than kept as dead weight. cc-switch can still own the native
+ * file; the sync in `codex-provider-gateway.ts` picks up whatever it leaves
+ * there.
  *
- * The model catalog is ours (`superd-model-catalog.json`) but it ABSORBS the
- * entries of whatever catalog `model_catalog_json` currently names, so a later
- * cc-switch switch (which repoints that key at its own file) loses nothing, and
- * our next switch re-absorbs. New entries are cloned from a template rather
- * than synthesized: codex 0.154 requires a deep, partly nested field set
- * (measured in plan Task 2 — see docs/superpowers/plans/2026-10-03-*).
+ * Two reads live here:
+ *
+ *  - `readNativeSelection` — what the file puts IN FORCE right now (the panel's
+ *    passive "your own codex runs this" line, and the app-wide default model);
+ *  - `readNativeProviders` — every `[model_providers.<id>]` table, which is what
+ *    the sync folds into the canonical store.
+ *
+ * Plus the per-provider model catalog we generate under the WORLD home. New
+ * entries are cloned from a template rather than synthesized: codex 0.154
+ * validates a deep, partly nested field set (`supported_reasoning_levels`,
+ * `shell_type`, `visibility`, `priority`, `truncation_policy.…`) that only a
+ * real catalog entry carries (measured in plan Task 2 — see
+ * docs/superpowers/plans/2026-10-03-*).
  *
  * Everything above the fs layer is a pure string→string function, which is
  * where the tests live.
@@ -29,36 +37,16 @@
  * @module agent-codex/codex-native-config
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
-import type { CodexProviderEntry, CodexProviderModel } from "./codex-providers.js";
+import { isWireProtocol, type CodexProviderAuth, type CodexProviderEntry, type CodexProviderModel, type CodexWireProtocol } from "./codex-providers.js";
 
 /** The catalog file this adapter owns inside the codex home. */
 export const SUPERD_CATALOG_FILE = "superd-model-catalog.json";
 
 const CONFIG_FILE = "config.toml";
-const AUTH_FILE = "auth.json";
 
-/** Top-level config keys this adapter owns; every other key is the user's. */
-const OWNED_KEYS = ["model_provider", "model", "model_catalog_json"] as const;
-
-/**
- * One snapshot per target per PROCESS, not per call: a long-lived world rewrites
- * config.toml on every switch, and piling up a backup each time would bury the
- * one snapshot that matters (the user's state before Super D ever wrote).
- */
-const PROCESS_STAMP = Date.now();
-const CONSIDERED = new Map<string, Set<string>>();
-
-/** Everything one switch needs to write. */
-export interface CodexConfigWriteInput {
-  readonly provider: CodexProviderEntry;
-  /** The model this provider should run — one of `provider.models[].id`. */
-  readonly model: string;
-  /** Override the catalog filename (tests / future layouts). */
-  readonly catalogFile?: string;
-}
 
 /** What `config.toml` says right now — the panel's "in force" read. */
 export interface NativeSelection {
@@ -82,7 +70,7 @@ interface Line {
 }
 
 /** Quote a TOML basic string. Provider ids are slug-validated, but URLs are free. */
-function tomlString(value: string): string {
+export function tomlString(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
@@ -106,108 +94,6 @@ function classify(text: string): Line[] {
     out.push(eq > 0 ? { text: raw, table, key: trimmed.slice(0, eq).trim() } : { text: raw, table });
   }
   return out;
-}
-
-/** The owned lines of one provider table, in the order Codex expects to read them. */
-function providerTableLines(provider: CodexProviderEntry): string[] {
-  return [
-    `[model_providers.${provider.id}]`,
-    `name = ${tomlString(provider.label)}`,
-    `base_url = ${tomlString(provider.baseUrl)}`,
-    `wire_api = ${tomlString(provider.protocol)}`,
-    // cc-switch's shape for a keyed provider; the value itself lives in auth.json.
-    provider.auth.kind === "apiKey"
-      ? "requires_openai_auth = true"
-      : `env_key = ${tomlString(provider.auth.name)}`,
-  ];
-}
-
-/**
- * Rewrite ONLY the four regions this adapter owns and return the new file text.
- *
- * Owned: the top-level keys `model_provider` / `model` / `model_catalog_json`,
- * and the whole `[model_providers.<id>]` table for the incoming provider. An
- * existing occurrence is replaced in place (so the diff is minimal and the file
- * does not churn); a missing one is inserted before the first table header,
- * because TOML requires top-level keys to precede every `[table]`.
- *
- * Everything else — comments, blank lines, other providers, `[projects.*]`,
- * nested `model = …` keys inside a provider table — is copied verbatim.
- *
- * @param text - the current config file (empty string for a fresh home).
- * @param input - the provider to activate and the model to pin.
- * @returns the complete new file text.
- */
-export function applyProviderToConfigToml(text: string, input: CodexConfigWriteInput): string {
-  const catalogFile = input.catalogFile ?? SUPERD_CATALOG_FILE;
-  const wanted = new Map<string, string>([
-    ["model_provider", tomlString(input.provider.id)],
-    ["model", tomlString(input.model)],
-    ["model_catalog_json", tomlString(catalogFile)],
-  ]);
-  const providerTable = `model_providers.${input.provider.id}`;
-  const replacement = providerTableLines(input.provider);
-
-  const out: string[] = [];
-  let providerWritten = false;
-  for (const line of classify(text)) {
-    // The incoming provider's whole definition is ours to restate, including
-    // any sub-table it may have grown.
-    if (line.table === providerTable || (line.table?.startsWith(`${providerTable}.`) ?? false)) {
-      if (!providerWritten) {
-        out.push(...replacement);
-        providerWritten = true;
-      }
-      continue;
-    }
-    if (line.table === null && line.key !== undefined && wanted.has(line.key)) {
-      out.push(`${line.key} = ${wanted.get(line.key) as string}`);
-      wanted.delete(line.key);
-      continue;
-    }
-    out.push(line.text);
-  }
-
-  if (wanted.size > 0) {
-    // Insert ahead of the first header. `wanted` keeps OWNED_KEYS order.
-    const insertAt = out.findIndex((line) => line.trim().startsWith("["));
-    const missing = OWNED_KEYS.filter((key) => wanted.has(key)).map((key) => `${key} = ${wanted.get(key) as string}`);
-    if (insertAt === -1) out.push(...missing);
-    else out.splice(insertAt, 0, ...missing);
-  }
-
-  if (!providerWritten) {
-    // A trailing blank separator only when something precedes it.
-    if (out.some((line) => line.trim() !== "")) out.push("");
-    out.push(...replacement);
-  }
-
-  const joined = out.join("\n");
-  return joined.endsWith("\n") ? joined : `${joined}\n`;
-}
-
-/**
- * Set the provider's key in `auth.json`, keeping every other member — notably
- * the ChatGPT OAuth `tokens` — intact.
- *
- * @throws {TypeError} when the file exists but is not a JSON object: refusing is
- * the only safe answer, because the alternative is destroying credentials we
- * could not read.
- */
-export function mergeAuthJson(text: string | undefined, apiKey: string): string {
-  if (text === undefined || text.trim() === "") {
-    return `${JSON.stringify({ OPENAI_API_KEY: apiKey }, null, 2)}\n`;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new TypeError(`codexProviders: ${AUTH_FILE} is not valid JSON; refusing to overwrite it`);
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new TypeError(`codexProviders: ${AUTH_FILE} is not a JSON object; refusing to overwrite it`);
-  }
-  return `${JSON.stringify({ ...(parsed as Record<string, unknown>), OPENAI_API_KEY: apiKey }, null, 2)}\n`;
 }
 
 /** The `{models:[…]}` member of a catalog string, or `[]` for anything unusable. */
@@ -344,24 +230,6 @@ export function readNativeSelection(codexHome: string): NativeSelection {
   };
 }
 
-/** Snapshot one target once per stamp, before the first write that could lose it. */
-function backupOnce(path: string, stamp: string): void {
-  let considered = CONSIDERED.get(stamp);
-  if (considered === undefined) {
-    considered = new Set<string>();
-    CONSIDERED.set(stamp, considered);
-  }
-  if (considered.has(path)) return;
-  considered.add(path);
-  if (!existsSync(path)) return;
-  try {
-    copyFileSync(path, `${path}.superd-bak-${stamp}`);
-  } catch {
-    // A failed snapshot must not block the switch; the write itself still backs
-    // nothing up beyond this best effort.
-  }
-}
-
 /** The catalog file the current config points at, resolved against the home. */
 function currentCatalogPath(configText: string | undefined, codexHome: string): string | undefined {
   const text = configText ?? "";
@@ -373,59 +241,198 @@ function currentCatalogPath(configText: string | undefined, codexHome: string): 
 }
 
 /**
- * Materialize a selection into the runtime's real home: rewrite `config.toml`,
- * merge `auth.json` for a keyed provider, and write our model catalog.
+ * One provider the native config declares, with the identity the store needs.
  *
- * Ordering and scope are the contract: the native config lands first (it is
- * what actually switches Codex), `auth.json` is only touched by an `apiKey`
- * provider, and every target is snapshotted once per process before the first
- * write.
- *
- * @param codexHome - the NATIVE codex home (`~/.codex`); never redirected.
- * @param input - provider + model to put in force.
- * @param options.stamp - backup discriminator; tests pin it, production uses the process stamp.
- * @returns the absolute paths written, in write order.
+ * Codex's `config.toml` carries no friendly name for a provider beyond its
+ * `[model_providers.<id>]` table key and its `base_url`; `models` is knowable
+ * ONLY for the table named by the top-level `model_provider`, because Codex's
+ * catalog file is per-provider-in-force. Every other provider arrives with an
+ * empty model list, which the store models as a real state.
  */
-export function writeNativeSelection(
-  codexHome: string,
-  input: CodexConfigWriteInput,
-  options?: { readonly stamp?: string | number },
-): { readonly written: readonly string[] } {
-  const stamp = String(options?.stamp ?? PROCESS_STAMP);
-  const configPath = join(codexHome, CONFIG_FILE);
-  const authPath = join(codexHome, AUTH_FILE);
-  const catalogPath = join(codexHome, input.catalogFile ?? SUPERD_CATALOG_FILE);
-
-  mkdirSync(codexHome, { recursive: true });
-
-  const configText = readIfExists(configPath);
-  const authText = readIfExists(authPath);
-  const catalogText = readIfExists(catalogPath);
-
-  const absorbedPath = currentCatalogPath(configText, codexHome);
-  const absorbed = absorbedPath !== undefined && absorbedPath !== catalogPath ? readIfExists(absorbedPath) : undefined;
-
-  for (const path of [configPath, authPath, catalogPath]) backupOnce(path, stamp);
-
-  // Parse before any write: a refusal must not leave a half-applied switch.
-  // An apiKey provider with an EMPTY stored value means "the key is already in
-  // auth.json and Super D does not hold it" — the seeded shape. Writing then
-  // would be a no-op at best and a wipe at worst, so auth.json is left alone and
-  // the config still names `requires_openai_auth = true`.
-  const key = input.provider.auth.kind === "apiKey" ? input.provider.auth.value : undefined;
-  const nextAuth = key !== undefined && key !== "" ? mergeAuthJson(authText, key) : undefined;
-  const nextConfig = applyProviderToConfigToml(configText ?? "", input);
-  const nextCatalog = mergeModelCatalog(catalogText, absorbed, input.provider.models);
-
-  const written: string[] = [];
-  writeFileSync(configPath, nextConfig, { encoding: "utf8", mode: 0o600 });
-  written.push(configPath);
-  if (nextAuth !== undefined) {
-    writeFileSync(authPath, nextAuth, { encoding: "utf8", mode: 0o600 });
-    written.push(authPath);
-  }
-  writeFileSync(catalogPath, nextCatalog, { encoding: "utf8", mode: 0o644 });
-  written.push(catalogPath);
-
-  return { written };
+export interface NativeProviderTable {
+  /** The TOML table key, verbatim (the caller decides whether it is a legal provider id). */
+  readonly id: string;
+  /** The table's own `name` key when it has one, else the id. */
+  readonly label: string;
+  readonly baseUrl: string;
+  readonly protocol: CodexWireProtocol;
+  readonly auth: CodexProviderAuth;
+  /** Model ids visible natively; empty for every provider not currently in force. */
+  readonly models: readonly string[];
+  /** Whether the top-level `model_provider` names this table. */
+  readonly active: boolean;
 }
+
+/** The unquoted value of a `key = value` line, tolerating a trailing comment. */
+function lineValue(line: Line): string {
+  const raw = line.text.slice(line.text.indexOf("=") + 1).trim();
+  const quoted = /^"(.*)"$/.exec(raw) ?? /^'(.*)'$/.exec(raw);
+  if (quoted !== null) return quoted[1];
+  const hash = raw.indexOf(" #");
+  return hash >= 0 ? raw.slice(0, hash).trim() : raw;
+}
+
+/** The model slugs a catalog string advertises, in file order. */
+function catalogSlugs(text: string | undefined): readonly string[] {
+  return catalogEntries(text)
+    .map((entry) => slugOf(entry))
+    .filter((slug): slug is string => slug !== undefined);
+}
+
+/**
+ * Parse every `[model_providers.<id>]` table out of the native config.
+ *
+ * This is the sync SOURCE (2026-10-04): the store is canonical, and the user's
+ * own `config.toml` is folded into it by endpoint URL. Only one level of table
+ * nesting is read — `model_providers.<id>` and anything under
+ * `model_providers.<id>.…` belongs to `<id>` — and a table that declares no
+ * usable `base_url` is skipped (there is nothing to dedupe it by).
+ *
+ * @param codexHome - the NATIVE codex home.
+ * @returns every declarable provider, in file order; `[]` when the file is absent.
+ */
+export function readNativeProviders(codexHome: string): readonly NativeProviderTable[] {
+  const text = readIfExists(join(codexHome, CONFIG_FILE));
+  if (text === undefined) return [];
+  const lines = classify(text);
+
+  let activeId: string | undefined;
+  let activeModel: string | undefined;
+  let catalogFile: string | undefined;
+  for (const line of lines) {
+    if (line.table !== null || line.key === undefined) continue;
+    if (line.key === "model_provider") activeId = lineValue(line);
+    else if (line.key === "model") activeModel = lineValue(line);
+    else if (line.key === "model_catalog_json") catalogFile = lineValue(line);
+  }
+
+  interface Draft { id: string; label?: string; baseUrl?: string; protocol?: string; envKey?: string; openaiAuth?: boolean }
+  const drafts = new Map<string, Draft>();
+  for (const line of lines) {
+    const table = line.table;
+    if (table === null || line.key === undefined) continue;
+    if (table !== "model_providers" && !table.startsWith("model_providers.")) continue;
+    const rest = table.slice("model_providers.".length);
+    if (rest === "") continue;
+    const id = rest.split(".")[0];
+    if (id === "") continue;
+    let draft = drafts.get(id);
+    if (draft === undefined) {
+      draft = { id };
+      drafts.set(id, draft);
+    }
+    // A nested sub-table's keys are not the provider's own; only the top level counts.
+    if (rest !== id) continue;
+    const value = lineValue(line);
+    if (line.key === "name") draft.label = value;
+    else if (line.key === "base_url") draft.baseUrl = value;
+    else if (line.key === "wire_api") draft.protocol = value;
+    else if (line.key === "env_key") draft.envKey = value;
+    else if (line.key === "requires_openai_auth") draft.openaiAuth = value === "true";
+  }
+
+  // The catalog the native home currently points at — the only model source,
+  // and only for the provider in force.
+  const activeSlugs = activeId !== undefined && catalogFile !== undefined && catalogFile !== ""
+    ? catalogSlugs(readIfExists(join(codexHome, catalogFile)))
+    : [];
+
+  const out: NativeProviderTable[] = [];
+  for (const draft of drafts.values()) {
+    const baseUrl = nonEmpty(draft.baseUrl);
+    if (baseUrl === undefined) continue;
+    const active = draft.id === activeId;
+    const models = active
+      ? [...new Set([...(activeModel === undefined ? [] : [activeModel]), ...activeSlugs])]
+      : [];
+    out.push({
+      id: draft.id,
+      label: nonEmpty(draft.label) ?? draft.id,
+      baseUrl,
+      protocol: isWireProtocol(draft.protocol) ? draft.protocol : "responses",
+      auth: draft.envKey !== undefined && draft.envKey !== ""
+        ? { kind: "env", name: draft.envKey }
+        : { kind: "apiKey", value: "" },
+      models,
+      active,
+    });
+  }
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Per-provider model catalogs (adapter-owned; the native home is never written) */
+/* -------------------------------------------------------------------------- */
+
+/** The directory holding one catalog file per provider, under the world home. */
+export function providerCatalogDir(worldHome: string): string {
+  return join(worldHome, "codex-catalogs");
+}
+
+/** The catalog file this adapter points `model_catalog_json` at for one provider. */
+export function providerCatalogPath(worldHome: string, providerId: string): string {
+  return join(providerCatalogDir(worldHome), `${providerId}.json`);
+}
+
+/**
+ * The template every generated entry is cloned from.
+ *
+ * Codex 0.154 refuses a synthesized catalog entry: it validates a deep, partly
+ * nested field set (`supported_reasoning_levels`, `shell_type`, `visibility`,
+ * `priority`, `truncation_policy.…`) that only a REAL catalog entry carries.
+ * So the first entry of any catalog we can read — ours, or the one the user's
+ * own config points at — is the source of the ~35 fields we do not own.
+ *
+ * @param codexHome - the native home, to find the config-named catalog.
+ * @param worldHome - the world home, holding our previously generated catalogs.
+ * @returns a template entry, or `undefined` when nothing readable exists yet.
+ */
+export function catalogTemplate(codexHome: string, worldHome: string): Record<string, unknown> | undefined {
+  const configText = readIfExists(join(codexHome, CONFIG_FILE));
+  const absorbedPath = currentCatalogPath(configText, codexHome);
+  const sources = [
+    readIfExists(providerCatalogPath(worldHome, "superd-model-catalog")),
+    absorbedPath === undefined ? undefined : readIfExists(absorbedPath),
+    readIfExists(join(codexHome, SUPERD_CATALOG_FILE)),
+  ];
+  for (const text of sources) {
+    const first = catalogEntries(text)[0];
+    if (first !== undefined) return first;
+  }
+  return undefined;
+}
+
+/**
+ * Materialize one provider's model catalog into the ADAPTER's own tree.
+ *
+ * Nothing is written into `~/.codex` any more (2026-10-04 on-the-fly rework):
+ * the file lives at `<worldHome>/codex-catalogs/<id>.json` and reaches the child
+ * through `-c model_catalog_json="<absolute path>"`. Codex resolves that key
+ * against the process cwd when it arrives as an override, so the path is
+ * absolute on purpose (measured: a relative path fails `ENOENT`).
+ *
+ * @param worldHome - the world's DSH home (adapter state root).
+ * @param codexHome - the native home, only read (template material).
+ * @param provider - the provider whose models the catalog must advertise.
+ * @returns the absolute catalog path, or `undefined` when the provider has no models.
+ */
+export function writeProviderCatalog(
+  worldHome: string,
+  codexHome: string,
+  provider: CodexProviderEntry,
+): string | undefined {
+  if (provider.models.length === 0) return undefined;
+  const path = providerCatalogPath(worldHome, provider.id);
+  const next = mergeModelCatalog(readIfExists(path), undefined, provider.models, catalogTemplate(codexHome, worldHome));
+  if (readIfExists(path) !== next) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, next, { encoding: "utf8", mode: 0o644 });
+  }
+  return path;
+}
+
+/** A trimmed non-empty string, or `undefined`. */
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+

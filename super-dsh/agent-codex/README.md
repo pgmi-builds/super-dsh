@@ -109,47 +109,71 @@ node --test test/*.test.mjs
 - collab / subagent / `thread/fork` / skills / MCP 面板未接；
 - 内存镜像 `getMessages()` 仅供诊断，权威转录是 DSH 会话日志。
 
-## 多 provider 面（Hub，2026-10-03 user 裁决）
+## 多 provider 面（Hub + DSH，2026-10-04 重做）
 
-Codex 是**单 provider** harness：它自己的 `config.toml` 只能写一个 `model_provider`，所以「换 provider」
-本质上就是改这个原生文件，而 provider 的**清单**在 Codex 家里无处安放——那正是 cc-switch 存在的理由。
-本轮把这个角色搬进 Hub：Agent Runtimes 里 codex 那一行展开后是 provider 列表，可增删改选。
+Codex 是**单 provider** harness：它自己的 `config.toml` 只能写一个 `model_provider`。provider 的**清单**
+在 Codex 家里无处安放——那正是 cc-switch 存在的理由；而「这个会话现在跑在哪个 provider 上」在 DSH
+里已有公认答案（`session/selectModel` + 持久的 `model/selection`）。所以本线**只做清单**，选择交给 DSH：
 
-**分账**（dev-rules §5/§13）：
+- adapter 的 store 是**正本**（canonical），原生 `config.toml` 是**来源**（source），单向读入；
+- UI 不再有「active provider」概念——界面里切换 provider/model 就是 DSH 自带模型选择器，与本仓其它
+  harness 完全一致；
+- provider 由**进程参数**注入子进程（`-c model_providers.<id>.*`），**不写任何原生文件**。
+
+### 分账
 
 | 位置 | 内容 |
 |---|---|
-| `$DSH_HOME/agents/codex/codex-providers.json`（0600） | adapter 自有：provider 清单 + 显式选择（含 API key） |
-| `~/.codex/config.toml` | 用户原生：只有 `model_provider` / `model` / `model_catalog_json` 与 `[model_providers.<id>]` 被改写 |
-| `~/.codex/auth.json` | 用户原生：**合并**写入 `OPENAI_API_KEY`，其余成员（`auth_mode` / `tokens` / `last_refresh`）原样保留 |
-| `~/.codex/superd-model-catalog.json` | 本 adapter 自有的模型目录；切 provider 时**只写入选中的那一个 provider 的模型**（旧条目不保留，见下） |
+| `$DSH_HOME/agents/codex/codex-providers.json`（0600） | **正本**：provider 清单 + 被显式删除的 endpoint 墓碑（含 API key） |
+| `$DSH_HOME/agents/codex/codex-catalogs/<id>.json` | 本 adapter 自有的 per-provider 模型目录；经 `-c model_catalog_json=<绝对路径>` 注入 |
+| `~/.codex/config.toml` | 用户原生：**只读**。启动时 + 每 10 分钟读一次，按 endpoint URL 去重折进正本 |
+| `~/.codex/auth.json` | 用户原生：**只读**。`apiKey` 形态的 key 走子进程环境，不走这里 |
 
-**与 cc-switch 对齐但有意偏离两处**（都是为了不破坏用户数据）：① `config.toml` 走**外科改写**，
-cc-switch 是整份文本回写——那会静默抹掉用户的 `[projects.*] trust_level` 与全部注释；
-② `auth.json` **合并**而非重建，且解析失败时**拒绝写入**而不是覆盖凭据。其余（同一批文件、同一批键、
-同一个「两边行为对齐」语义）与 cc-switch 一致。
+### 同步（2026-10-04 user 裁决）
 
-**RPC**（`TypertRemoteService`，namespace `codexProviders`；hub 经 `/hub/api?agent=codex` 原样转发）：
-`get` / `save` / `remove` / `select`。**API key 只写不读**——wire 上只有 `hasKey`，绝不回传值。
-`select` **先写原生文件、后记选择**，写失败不会留下「记了但没生效」的状态。
+`syncFromNative()`：启动时 + 每 10 分钟（`SYNC_INTERVAL_MS = 600_000`）读 `config.toml` 的**全部**
+`[model_providers.<id>]` 表，按 endpoint URL 去重折进正本。新 endpoint 在库里没有名字，**就用 URL 端点
+当名字**（`label = baseUrl`）——Codex 的 catalog 是「当前在役 provider」专用的，所以非在役 provider 的
+模型清单**确实无从得知**，此时存 `models: []`（面板显示「no models yet」，该 provider 不注册路由），
+而不是编一个。同步只**增/刷**、永不删；唯一的例外是用户显式删除留下的**墓碑**（endpoint key），
+否则「删除」会在十分钟后自己撤销。
 
-**已知约束（2026-10-03 交付形态验收实测）**：`auth.json` 的 `auth_mode` 为 `chatgpt` 时，codex 的 auth
-manager **先刷 OAuth token 且不会回落到同一文件里的 `OPENAI_API_KEY`** ⇒ 带 `requires_openai_auth` 的
-provider 在 ChatGPT 登录存在时静默不可用（本机刷新被地区封锁 403）。`env_key` 形态不受影响（根本不走
-auth manager）。面板会在「在役 provider 是 keyed 型」时明确告警。**本机现阶段 provider 请用 env 形态。**
+### 选择与切换
 
-**生效时机**：codex 在子进程启动时读 `config.toml`，而子进程是首个 prompt 才物化 ⇒ 切换**不热**，
-只对此后新起的会话进程生效；面板如实说明。
+- **路由 = DSH 的**：每个有模型的 provider 注册一条 `ctx.llm` 路由，于是 `session/modelCatalog` 天然
+  按 provider 分组，`session/selectModel` 天然持久（`model/selection` + `modelSelection` 投影）；
+- **turn 边界判定 = DSH 的**：agent 每轮按 `pending ?? request/header ?? agentDefaultModel ?? options`
+  解析路由（`codex-route.ts`），并回写 `request/header`——于是投影的 `lastUsed`/`next`、
+  `consumeSelection`、以及「会话上次跑在哪个 provider」全部由上游自洽，UI 重放自然准确；
+- **中途切换不用打断**：`turn/start` 的 `model` 覆盖「本轮及后续轮」，所以换**模型**是原生的；换
+  **provider** 必须换子进程——`turn/start` 没有 provider 字段，而打给**已加载**线程的 `thread/resume`
+  是「接受但忽略」（2026-10-03 实测：要 `zhipu-cn` 回 `deepseek`）。故 agent 在**下一轮冷启动**时
+  kill 掉旧 child、用新 `-c` 起新 child、`thread/resume` **同一个 thread id**，历史与上下文完整保留。
+  turn 中发起的切换落在下一轮（DSH 的 pending 语义），**不打断在跑的 turn**。
 
-**模型目录必须克隆模板**（Task 2 实测）：codex 0.154 对 catalog 条目要求 `slug`/`display_name`/
-`supported_reasoning_levels`/`shell_type`/`visibility`/`supported_in_api`/`priority`/`support_verbosity`
-以及**嵌套 struct** `truncation_policy`… 字段链未终止，故只从既有条目克隆并覆盖身份字段。
+### 启动注入（零原生写入）
 
-**目录是替换式，不是累积式**（2026-10-03 修正，来自使用反馈）：只写入选中的那一个 provider 的模型。
-早期版本会「吸收」当前 `model_catalog_json` 指向的全部条目且**永不丢弃**，于是 Chat 的模型清单只增不减
-（GLM-5.2 → +DeepSeek Flash → +GLM-5.3 Flash，而实际只跑最后一个）。DSH 侧 `LlmAdapter.listModels`
-就是这个文件的逐字投影，所以目录内容 = 用户能选的模型；cc-switch 同样只写当前 provider 的目录。
-既有/旧条目仍会被**读取**——作为克隆模板的来源，但不再被**输出**。
+`codex-launch.ts` 生成 argv/env；三条实测约束写死在注释里：
+
+1. hyphenated id 在 `-c` 点路径里合法（`model_providers.zhipu-cn.…`）⇒ 原生表名可原样作 provider id；
+2. `model_catalog_json` 作为 override 时按**进程 cwd** 解析 ⇒ 路径必须绝对（相对路径实测 `ENOENT`）；
+3. `env_key` 是唯一不经过 auth manager 的形态 ⇒ 库里的 key 以合成变量名（`SUPERD_CODEX_KEY_<ID>`）
+   经**子进程环境**交给 codex，`auth.json` 完全不碰。**这也顺带解决了 ChatGPT 登录遮蔽 keyed provider
+   的老问题**（`requires_openai_auth` 才会被 `auth_mode=chatgpt` 遮蔽）；只有「seeded」形态
+   （`apiKey` 且 value 为空 = key 在 auth.json 里）才回落到 `requires_openai_auth`，面板仍会告警。
+
+### RPC
+
+`TypertRemoteService`，namespace `codexProviders`（hub 经 `/hub/api?agent=codex` 原样转发）：
+`get` / `save` / `remove`。**API key 只写不读**——wire 上只有 `hasKey`，绝不回传值。
+没有 `select`：选择是 DSH 的 per-session 状态。
+
+### 模型目录必须克隆模板
+
+codex 0.154 对 catalog 条目要求 `slug`/`display_name`/`supported_reasoning_levels`/`shell_type`/
+`visibility`/`supported_in_api`/`priority`/`support_verbosity` 以及**嵌套 struct** `truncation_policy`…
+字段链未终止，故只从既有条目克隆并覆盖身份字段。目录是**替换式**：一份目录只写它那个 provider 的模型
+（2026-10-03 修正：早期「吸收且永不丢弃」让 Chat 模型清单只增不减）。
 
 记录：`docs/superpowers/plans/2026-10-03-codex-multi-provider-hub.md` +
-`docs/test-reports/2026-10-03-codex-multi-provider-hub.md`（含 pack 线交付形态验收 + 累积清单的修正）。
+`docs/test-reports/2026-10-04-codex-multi-provider-onthefly.md`。

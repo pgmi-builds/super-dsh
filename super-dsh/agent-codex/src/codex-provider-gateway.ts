@@ -1,14 +1,13 @@
 /**
  * codex-provider-gateway.ts — the adapter-owned Remote behind the Hub's Codex
- * settings panel (2026-10-03 user ruling; `agyAuth` is the working precedent).
+ * settings panel (2026-10-03 user ruling; reworked 2026-10-04).
  *
- * Why a Remote and not a hub route: the provider list, the native-file mutation
- * and the "which one is in force" read are all ADAPTER config (dev-rules §12),
- * so the adapter owns them and the hub only forwards. `TypertRemoteService` +
- * `@Remote` is the whole mechanism — standard (TC39) method decorators recorded
- * on the class prototype, read back at dispatch time by the gateway's
- * source-claim scan. No codegen, no compiler-injected metadata, which is why a
- * plain `tsc` adapter build can ship one.
+ * Why a Remote and not a hub route: the provider list is ADAPTER config
+ * (dev-rules §12), so the adapter owns it and the hub only forwards.
+ * `TypertRemoteService` + `@Remote` is the whole mechanism — standard (TC39)
+ * method decorators recorded on the class prototype, read back at dispatch time
+ * by the gateway's source-claim scan. No codegen, no compiler-injected metadata,
+ * which is why a plain `tsc` adapter build can ship one.
  *
  * Wire contract (`superd-hub/src/client/runtime-settings-api.ts` builds each
  * envelope; the hub carrier forwards `envelope.method` verbatim):
@@ -18,9 +17,14 @@
  *               payload: { args: { request?: … } } }
  *   response  { type:'server-response', rpcId, result:{ ok:true, value:<view> } }
  *
+ * There is no `select`: which provider a SESSION runs on is DSH's own
+ * per-session `model/selection`, chosen from the harness's model selector. This
+ * panel is a list editor — add, edit, remove — plus the reconcile with the
+ * user's `config.toml` that {@link syncFromNative} performs.
+ *
  * The class is a delegation shell on purpose: every operation is a plain
  * function over (worldHome, codexHome), so the entire contract — the key
- * privacy rule, the validation, the seeding, the write ordering — is pinnable
+ * privacy rule, the validation, the sync, the view projection — is pinnable
  * under `node --test` with no Cordis Context and no real home.
  *
  * @module agent-codex/codex-provider-gateway
@@ -35,19 +39,20 @@ import {
   providerStorePath,
   readProviderStore,
   removeProvider,
-  selectProvider,
+  syncNativeProviders,
   upsertProvider,
   writeProviderStore,
   type CodexProviderEntry,
   type CodexProviderModel,
   type CodexProviderStore,
   type CodexWireProtocol,
+  type NativeProviderImport,
 } from "./codex-providers.js";
 import {
-  SUPERD_CATALOG_FILE,
+  providerCatalogDir,
+  readNativeProviders,
   readNativeSelection,
-  writeNativeSelection,
-  type NativeSelection,
+  type NativeProviderTable,
 } from "./codex-native-config.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -89,6 +94,7 @@ export interface CodexProviderView {
   readonly label: string;
   readonly baseUrl: string;
   readonly protocol: CodexWireProtocol;
+  /** May be empty: an imported provider's models are only knowable once it is in force. */
   readonly models: readonly CodexProviderModel[];
   readonly authKind: "apiKey" | "env";
   /** The variable an `env` provider expects, when that is its shape. */
@@ -100,18 +106,24 @@ export interface CodexProviderView {
 /** The panel's whole state. */
 export interface CodexProvidersView {
   readonly providers: readonly CodexProviderView[];
-  /** The user's explicit choice, `null` until they make one. */
-  readonly selected: string | null;
-  /** What `config.toml` actually puts in force right now. */
-  readonly effective: { readonly providerId?: string; readonly model?: string } | null;
+  /**
+   * What the user's OWN `config.toml` names right now. Informational: it is
+   * what their `codex` CLI runs, not what any Super D session runs, and there
+   * is deliberately no action attached to it.
+   */
+  readonly native: { readonly providerId?: string; readonly model?: string } | null;
   readonly protocols: readonly CodexProtocolOptionView[];
-  /** The files a switch writes — shown so the effect is never a surprise. */
+  /** The paths this adapter reads and owns — shown so their split is never a surprise. */
   readonly paths: {
     readonly store: string;
+    /** Read only, since the on-the-fly rework: nothing here is written any more. */
     readonly config: string;
     readonly auth: string;
-    readonly catalog: string;
+    /** The adapter's own per-provider model catalogs, under the world home. */
+    readonly catalogs: string;
   };
+  /** Epoch ms of the last reconcile against `config.toml`, when one has happened. */
+  readonly syncedAt?: number;
   /** Populated only when something needs explaining. */
   readonly note?: string;
 }
@@ -141,10 +153,11 @@ function authJsonHasKey(codexHome: string): boolean {
  * auth manager refreshes the OAuth token FIRST and never falls through to the
  * `OPENAI_API_KEY` in the same file — so a `requires_openai_auth` provider is
  * silently unusable behind a ChatGPT login (here the refresh is 403
- * `unsupported_country_region_territory`; the `env_key` shape is unaffected
- * because it never consults the auth manager at all). We cannot fix that from
- * our side without evicting the user's login, which cc-switch has dedicated
- * code to preserve — so we say it out loud instead.
+ * `unsupported_country_region_territory`). The `env_key` shape is unaffected
+ * because it never consults the auth manager at all, which is why the launch
+ * path now hands a stored key to the child through its own environment
+ * (`codex-launch.ts`). What remains exposed is only the SEEDED shape: an entry
+ * that holds no key because the runtime's auth.json was supposed to.
  */
 function chatgptAuthMode(codexHome: string): boolean {
   try {
@@ -176,96 +189,103 @@ function project(codexHome: string, entry: CodexProviderEntry): CodexProviderVie
   };
 }
 
-/**
- * Build the store entry for whatever the user's own `config.toml` already runs,
- * so the panel opens on the truth instead of on an empty list.
- *
- * The key is deliberately NOT copied out of `auth.json`: an `apiKey` seed lands
- * with an empty value, which means "the runtime holds this one". Selecting such
- * an entry writes the provider table and leaves `auth.json` alone.
- *
- * @returns the entry, or `undefined` when the config names nothing we can
- * represent (no id, or no base URL / model to describe).
- */
-export function seedFromNative(native: NativeSelection): CodexProviderEntry | undefined {
-  if (native.providerId === undefined || !isProviderId(native.providerId)) return undefined;
-  const baseUrl = nonEmpty(native.baseUrl);
-  const model = nonEmpty(native.model);
-  if (baseUrl === undefined || model === undefined) return undefined;
-  const envName = native.auth?.kind === "env" ? native.auth.name : undefined;
+/** Turn one parsed native table into the store's import shape. */
+function toImport(table: NativeProviderTable): NativeProviderImport {
   return {
-    id: native.providerId,
-    label: native.providerId,
-    baseUrl,
-    protocol: isWireProtocol(native.protocol) ? native.protocol : "responses",
-    auth: envName === undefined ? { kind: "apiKey", value: "" } : { kind: "env", name: envName },
-    models: [{ id: model }],
+    ...(table.id === "" ? {} : { nativeId: table.id }),
+    baseUrl: table.baseUrl,
+    protocol: table.protocol,
+    auth: table.auth,
+    models: table.models,
   };
 }
 
 /**
- * Read the store, seeding it once from the live config when Super D has no
- * providers of its own yet. Seeding is the only write a read performs, and it
- * touches nothing but the adapter's own store.
+ * Reconcile the canonical store against the user's `config.toml`.
+ *
+ * This is the sync the 2026-10-04 ruling asks for: the store is canonical, the
+ * native file is a SOURCE, and the two are joined by endpoint URL (the only
+ * identity a hand-written codex config reliably carries). It runs at adapter
+ * startup and every ten minutes thereafter, and it is idempotent and silent —
+ * the file is only rewritten when something actually moved.
+ *
+ * @param worldHome - the world's DSH home.
+ * @param codexHome - the native codex home (read only).
+ * @returns the effective store plus what the sync changed.
  */
-function loadStore(worldHome: string, codexHome: string): { store: CodexProviderStore; note?: string } {
-  const stored = readProviderStore(worldHome);
-  if (stored.providers.length > 0) return { store: stored };
-
-  const seed = seedFromNative(readNativeSelection(codexHome));
-  if (seed === undefined) return { store: stored };
-
-  const store = selectProvider(upsertProvider({ version: 1, providers: [] }, seed), seed.id);
-  writeProviderStore(worldHome, store);
-  return {
-    store,
-    note: `Imported "${seed.id}" from your Codex config.toml — Super D had no providers yet.`,
-  };
+export function syncFromNative(
+  worldHome: string,
+  codexHome: string,
+): { store: CodexProviderStore; added: readonly string[]; updated: readonly string[] } {
+  const store = readProviderStore(worldHome);
+  const imported = readNativeProviders(codexHome).map(toImport);
+  const result = syncNativeProviders(store, imported);
+  if (result.added.length > 0 || result.updated.length > 0) {
+    writeProviderStore(worldHome, result.store);
+  }
+  return result;
 }
 
 /** The view for one (already loaded) store. */
-function viewOf(worldHome: string, codexHome: string, store: CodexProviderStore, note?: string): CodexProvidersView {
-  const native = readNativeSelection(codexHome);
-  const effective = native.providerId === undefined && native.model === undefined
+function viewOf(
+  worldHome: string,
+  codexHome: string,
+  store: CodexProviderStore,
+  syncedAt?: number,
+  note?: string,
+): CodexProvidersView {
+  const nativeSelection = readNativeSelection(codexHome);
+  const native = nativeSelection.providerId === undefined && nativeSelection.model === undefined
     ? null
     : {
-      ...(native.providerId === undefined ? {} : { providerId: native.providerId }),
-      ...(native.model === undefined ? {} : { model: native.model }),
+      ...(nativeSelection.providerId === undefined ? {} : { providerId: nativeSelection.providerId }),
+      ...(nativeSelection.model === undefined ? {} : { model: nativeSelection.model }),
     };
 
-  // A provider configured outside Super D (by cc-switch, or by hand) is in force
-  // but unlisted; saying so is the difference between a confusing panel and an
-  // honest one.
-  const unlisted = native.providerId !== undefined && !store.providers.some((entry) => entry.id === native.providerId)
-    ? `Codex is running "${native.providerId}", which was configured outside Super D and is not in this list.`
+  // Only a SEEDED keyed entry defers to auth.json, so only it can be shadowed
+  // by a ChatGPT login. An entry holding its own key bypasses the auth manager
+  // entirely through the launch's synthetic `env_key`.
+  const deferred = store.providers.some((entry) => entry.auth.kind === "apiKey" && entry.auth.value === "");
+  const shadowed = deferred && chatgptAuthMode(codexHome)
+    ? 'Codex is signed in with a ChatGPT account, which takes precedence over a saved API key — a provider that relies on auth.json will not run until you sign out (`codex logout`) or give this provider its own key.'
     : undefined;
-  // The measured footgun (2026-10-03): a keyed provider behind a ChatGPT login
-  // looks configured and cannot run. Say so on the panel rather than let the
-  // user discover it as a failed turn.
-  const shadowed = native.auth?.kind === "apiKey" && chatgptAuthMode(codexHome)
-    ? 'Codex is signed in with a ChatGPT account, which takes precedence over a saved API key — a keyed provider will not run until you sign out (`codex logout`) or switch this provider to an environment variable.'
-    : undefined;
-  const combined = [note, unlisted, shadowed].filter((part): part is string => part !== undefined).join(" ");
+  const combined = [note, shadowed].filter((part): part is string => part !== undefined).join(" ");
 
   return {
     providers: store.providers.map((entry) => project(codexHome, entry)),
-    selected: store.selected ?? null,
-    effective,
+    native,
     protocols: PROTOCOL_OPTIONS,
     paths: {
       store: providerStorePath(worldHome),
       config: join(codexHome, "config.toml"),
       auth: join(codexHome, "auth.json"),
-      catalog: join(codexHome, SUPERD_CATALOG_FILE),
+      catalogs: providerCatalogDir(worldHome),
     },
+    ...(syncedAt === undefined ? {} : { syncedAt }),
     ...(combined === "" ? {} : { note: combined }),
   };
 }
 
-/** Read the panel state (seeding the store from the live config when empty). */
-export function readProvidersView(worldHome: string, codexHome: string): CodexProvidersView {
-  const { store, note } = loadStore(worldHome, codexHome);
-  return viewOf(worldHome, codexHome, store, note);
+/**
+ * Read the panel state, reconciling with `config.toml` first.
+ *
+ * Reading is a write-free act for the native home now (the old build seeded the
+ * store from it once); the only write this can perform is to the adapter's own
+ * store, and only when the sync found something new.
+ *
+ * @param worldHome - the world's DSH home.
+ * @param codexHome - the native codex home.
+ * @param syncedAt - epoch ms to report as the last reconcile.
+ * @returns the panel's state.
+ */
+export function readProvidersView(worldHome: string, codexHome: string, syncedAt?: number): CodexProvidersView {
+  const { store, added, updated } = syncFromNative(worldHome, codexHome);
+  const note = added.length === 0 && updated.length === 0
+    ? undefined
+    : `Imported ${added.length} provider(s) from your Codex config.toml${updated.length === 0 ? "" : ` and refreshed ${updated.join(", ")}`}.`;
+  // A read IS the reconcile, so the timestamp is the read's own unless the
+  // caller has a better one — otherwise the panel would never have one to show.
+  return viewOf(worldHome, codexHome, store, syncedAt ?? Date.now(), note);
 }
 
 /**
@@ -311,8 +331,11 @@ export function normalizeSaveRequest(request: unknown, existing?: CodexProviderE
   }
 
   const rawModels = raw["models"];
-  if (!Array.isArray(rawModels) || rawModels.length === 0) {
-    throw new TypeError("codexProviders/save: models must be a non-empty array");
+  // An empty list is legal: it is the state a provider imported from a native
+  // config arrives in (only the provider in force has a discoverable catalog),
+  // and the panel must be able to save an edit without inventing models.
+  if (!Array.isArray(rawModels)) {
+    throw new TypeError("codexProviders/save: models must be an array");
   }
   const models: CodexProviderModel[] = rawModels.map((value) => {
     if (!isRecord(value)) throw new TypeError("codexProviders/save: every entry of models must be an object");
@@ -347,69 +370,35 @@ export function normalizeSaveRequest(request: unknown, existing?: CodexProviderE
     throw new TypeError(`codexProviders/save: auth.kind must be "apiKey" or "env" (got ${JSON.stringify(rawAuth["kind"])})`);
   }
 
-  return { id, label, baseUrl, protocol, auth, models };
+  return { id, label, baseUrl, protocol, auth, models, origin: "user" };
 }
 
-/** Insert or replace one provider. Saving never switches the runtime. */
-export function saveProvider(worldHome: string, codexHome: string, request: unknown): CodexProvidersView {
-  const { store } = loadStore(worldHome, codexHome);
+/**
+ * Insert or replace one provider.
+ *
+ * Nothing native is written, and nothing is "activated": the model catalog for
+ * this provider is regenerated on the adapter's own tree (`codex-launch.ts`
+ * does it at spawn), and the next session that picks one of these models gets a
+ * child pinned to it.
+ */
+export function saveProvider(worldHome: string, codexHome: string, request: unknown, syncedAt?: number): CodexProvidersView {
+  const store = readProviderStore(worldHome);
   const id = isRecord(request) && isRecord(request["provider"]) ? request["provider"]["id"] : undefined;
   const existing = store.providers.find((entry) => entry.id === id);
   const entry = normalizeSaveRequest(request, existing);
   const next = upsertProvider(store, entry);
-  // Editing the provider that is ALREADY in force re-materializes it, so a
-  // changed endpoint / key / model list lands without the user having to select
-  // some other provider and come back (reported from use, 2026-10-03). This is
-  // not a switch: the selection is unchanged, and the model stays put when the
-  // edit still offers it — otherwise the first model is the honest fallback.
-  if (next.selected === entry.id) {
-    const native = readNativeSelection(codexHome);
-    const keep = native.model !== undefined && entry.models.some((model) => model.id === native.model)
-      ? native.model
-      : entry.models[0].id;
-    writeNativeSelection(codexHome, { provider: entry, model: keep });
-  }
   writeProviderStore(worldHome, next);
-  return viewOf(worldHome, codexHome, next);
+  return viewOf(worldHome, codexHome, next, syncedAt);
 }
 
 /** Drop one provider. The native config is left alone — removing from this list is not unconfiguring Codex. */
-export function removeProviderEntry(worldHome: string, codexHome: string, request: unknown): CodexProvidersView {
+export function removeProviderEntry(worldHome: string, codexHome: string, request: unknown, syncedAt?: number): CodexProvidersView {
   const id = isRecord(request) ? nonEmpty(request["id"]) : undefined;
   if (id === undefined) throw new TypeError("codexProviders/remove: id must be a non-empty string");
-  const { store } = loadStore(worldHome, codexHome);
+  const store = readProviderStore(worldHome);
   const next = removeProvider(store, id);
   writeProviderStore(worldHome, next);
-  return viewOf(worldHome, codexHome, next);
-}
-
-/**
- * Put one provider in force: write the native files first, record the choice
- * second. A failed write therefore leaves no selection claiming something that
- * is not running.
- *
- * `null` clears the explicit choice without rewriting the runtime — clearing a
- * preference is not a request to unconfigure Codex.
- */
-export function selectProviderEntry(worldHome: string, codexHome: string, request: unknown): CodexProvidersView {
-  const raw = isRecord(request) ? request["id"] : null;
-  let id: string | null;
-  if (raw === null || raw === undefined) {
-    id = null;
-  } else {
-    const value = nonEmpty(raw);
-    if (value === undefined) throw new TypeError("codexProviders/select: id must be a non-empty string or null");
-    id = value;
-  }
-
-  const { store } = loadStore(worldHome, codexHome);
-  const next = selectProvider(store, id);
-  if (id !== null) {
-    const entry = store.providers.find((candidate) => candidate.id === id) as CodexProviderEntry;
-    writeNativeSelection(codexHome, { provider: entry, model: entry.models[0].id });
-  }
-  writeProviderStore(worldHome, next);
-  return viewOf(worldHome, codexHome, next);
+  return viewOf(worldHome, codexHome, next, syncedAt);
 }
 
 /**
@@ -420,36 +409,38 @@ export class CodexProvidersGateway extends TypertRemoteService {
    * @param ctx - the world context this service registers on (namespace `codexProviders`).
    * @param worldHome - the world's DSH home holding adapter state (`<dshHome>/agents/codex`).
    * @param codexHome - the USER's real codex home (native settings live there), resolved lazily so construction stays zero-IO.
+   * @param onChange - notified after any mutation, so the provider's `ctx.llm` routes can be re-registered.
    */
   constructor(
     ctx: Context,
     private readonly worldHome: string,
     private readonly codexHome: () => string,
+    private readonly onChange: () => void = () => { },
   ) {
     super(ctx, "codexProviders");
   }
 
-  /** Read the panel state. Seeds the adapter store on first read; never writes the native home. */
+  /** Read the panel state, reconciling the store with `config.toml` first. Never writes the native home. */
   @Remote("get")
   async get(): Promise<CodexProvidersView> {
-    return readProvidersView(this.worldHome, this.codexHome());
+    const view = readProvidersView(this.worldHome, this.codexHome());
+    this.onChange();
+    return view;
   }
 
-  /** Add or edit one provider. Does not switch the runtime. */
+  /** Add or edit one provider. */
   @Remote("save")
   async save(request?: unknown): Promise<CodexProvidersView> {
-    return saveProvider(this.worldHome, this.codexHome(), request);
+    const view = saveProvider(this.worldHome, this.codexHome(), request);
+    this.onChange();
+    return view;
   }
 
-  /** Drop one provider from the list. Does not rewrite the native config. */
+  /** Drop one provider from the list. */
   @Remote("remove")
   async remove(request?: unknown): Promise<CodexProvidersView> {
-    return removeProviderEntry(this.worldHome, this.codexHome(), request);
-  }
-
-  /** Put one provider in force in the user's real codex home (`null` clears the choice). */
-  @Remote("select")
-  async select(request?: unknown): Promise<CodexProvidersView> {
-    return selectProviderEntry(this.worldHome, this.codexHome(), request);
+    const view = removeProviderEntry(this.worldHome, this.codexHome(), request);
+    this.onChange();
+    return view;
   }
 }

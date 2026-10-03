@@ -34,6 +34,7 @@
  * turn-token fold (`deriveTurnTokenUsage`) refuses cross-turn samples
  * (plan RC-6: the old one-turn lag made every usage sample unprovable).
  */
+import type {} from "@deepseek-ai/dsh-session-projection";
 import type {} from "@deepseek-ai/dsh-user-approval";
 import type { Context } from "@deepseek-ai/cordis";
 import type {
@@ -54,6 +55,7 @@ import type {
   SessionSeq,
   UserMessage,
 } from "@deepseek-ai/dsh-session";
+import { canonicalHeader, headerEquals, type EpochHeader } from "@deepseek-ai/dsh-session";
 import type { AssistantMessage, AssistantStreamRecord, ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { LlmAttemptId, ToolCallId, QUOTA_EXCEEDED_CODE, createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
@@ -65,6 +67,8 @@ import { presetFromEvents, turnPolicyFromEvents } from "./permission.js";
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
 import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
+import { NATIVE_LAUNCH, type CodexLaunch } from "./codex-launch.js";
+import { resolveRoute, type RouteSelection } from "./codex-route.js";
 
 /**
  * v2 live assistant-stream publication for the Codex bridge — the same frame
@@ -340,11 +344,25 @@ export interface CodexAgentRuntimeInfo {
   /** Codex's own system prompt for this session's thread, when readable. */
   systemPrompt(): string | undefined;
   /**
-   * The effective codex route for this session: `preferredModel` (the
-   * session's selected codex model) wins, else the catalog default. Returns
-   * `undefined` when neither is known.
+   * The argv/env that pin one provider for a freshly spawned child
+   * (`codex-launch.ts`). Returns `undefined` for a provider id this world does
+   * not know, which the agent reads as "let the native config.toml decide" —
+   * the honest meaning of a session pinned to the retired single `codex` route.
    */
-  routeContext(preferredModel: string | undefined): { provider: string; model: string; contextWindow?: number } | undefined;
+  launchFor(providerId: string): CodexLaunch | undefined;
+  /**
+   * The provider the user's own `config.toml` names right now, when readable.
+   * It is the fallback route for a session whose logged selection predates the
+   * multi-provider rework, and the source of the app-wide default model.
+   */
+  nativeProviderId?(): string | undefined;
+  /**
+   * The context window one provider advertises for one model, when it knows.
+   * It lands in `request/context` so the UI's context meter is honest about a
+   * route the DSH registry has no metadata for.
+   * Optional: absent means "no window known" and the field is omitted.
+   */
+  contextWindowFor?(providerId: string, model: string): number | undefined;
   /**
    * Mark this session's identity-map record not resumable — called when the
    * native runtime rejects the session's thread at turn time (plan RC-4),
@@ -408,8 +426,26 @@ export class CodexAgent implements Agent {
    * failure/abort paths so the turn's visible text is never dropped.
    */
   #deferredAssistant: WireMessage | null = null;
-  /** The last selection already synced to the client via `set_model`, as `provider/model`. */
-  #lastSyncedModel: string | null = null;
+  /**
+   * The route the OPEN turn runs, captured when the turn opened.
+   *
+   * Codex's wire messages carry no provider attribution, so the assistant
+   * message's `source` has to be stamped from here. `options` is the wrong
+   * source for it: options are frozen at create/resume, so after a mid-session
+   * switch they name the provider the session STARTED on. Measured on the 4999
+   * line: turn 2 ran on `deepseek/deepseek-flash` while its assistant message was
+   * attributed to `zhipu-cn/glm-5.3-flash` — a user-visible lie, since the UI and
+   * the model-switch notice both read that attribution.
+   */
+  #turnRoute: RouteSelection | undefined = undefined;
+  /**
+   * The route the LIVE child was last told to run, as `provider/model`. Purely
+   * a work-saver: the client is idempotent about `setModel` and `reattach`, and
+   * this only keeps a steady session from re-issuing either every turn.
+   */
+  #routeKey: string | null = null;
+  /** Whether THIS agent instance has already logged a `request/header` snapshot. */
+  #requestHeaderLogged = false;
   /** Fires when the agent has been idle past CODEX_IDLE_EXIT_MS (tears down the client). */
   readonly #onIdleExit: (() => void) | undefined;
   #idleExitTimer: NodeJS.Timeout | undefined = undefined;
@@ -613,10 +649,14 @@ export class CodexAgent implements Agent {
    * reservation.
    */
   async #startTurn(message: UserMessage): Promise<void> {
+    let route: { provider: string; model: string; reasoningEffort?: string } | undefined;
     try {
-      await this.#client.ensureStarted();
-      await this.#bootstrapSessionIdentity();
-      await this.#syncModelSelection();
+      // The route is resolved and put in force BEFORE the thread is touched: a
+      // provider switch is a different child process, and `thread/resume` cannot
+      // move a thread a live app-server already holds (`#applyRoute`).
+      route = this.#resolveRoute();
+      await this.#applyRoute(route);
+      this.#turnRoute = route;
       this.#syncTurnPolicy();
     } catch (error) {
       trace(`#startTurn cold start failed: ${String(error)}`);
@@ -630,7 +670,8 @@ export class CodexAgent implements Agent {
     }
     if (this.#disposed) return;
     this.session.append("turn/start", { turn: this.#dashTurn });
-    this.#emitRequestContext();
+    if (route !== undefined) this.#commitRequestHeader(route);
+    this.#emitRequestContext(route);
     this.session.append("user/message", message, { surfaceOp: "append" });
     void this.#client.prompt(userMessageText(message)).catch((error) => this.#fail(error));
   }
@@ -667,19 +708,26 @@ export class CodexAgent implements Agent {
    * Turn-enclosed (no step required) and deduped by route key, so it lands at
    * the start of a turn and again only when the effective route changes.
    */
-  #emitRequestContext(): void {
-    if (this.#runtimeInfo === undefined || !this.#turnOpen) return;
-    const route = this.#runtimeInfo.routeContext(this.options.model);
-    if (route === undefined) return;
+  /**
+   * Stamp route metadata for the next request (`request/context`): the effective
+   * provider/model plus the provider's own context window when it advertises one.
+   * Turn-enclosed (no step required) and deduped by route key, so it lands at
+   * the start of a turn and again only when the effective route changes.
+   *
+   * @param route - the route this turn runs, already resolved by `#resolveRoute`.
+   */
+  #emitRequestContext(route: { provider: string; model: string } | undefined): void {
+    if (route === undefined || !this.#turnOpen) return;
     const key = `${route.provider}/${route.model}`;
     if (key === this.#lastRouteKey) return;
     this.#lastRouteKey = key;
+    const contextWindow = this.#runtimeInfo?.contextWindowFor?.(route.provider, route.model);
     this.session.append("request/context", {
       provider: route.provider,
       model: route.model,
-      ...(route.contextWindow === undefined ? {} : { contextWindow: route.contextWindow }),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
     });
-    trace(`request/context ${key}${route.contextWindow === undefined ? "" : ` ctx=${route.contextWindow}`}`);
+    trace(`request/context ${key}${contextWindow === undefined ? "" : ` ctx=${contextWindow}`}`);
   }
 
   /**
@@ -715,9 +763,26 @@ export class CodexAgent implements Agent {
     if (this.#streaming || transport === "followUp") this.#flushRemote();
   }
 
+  /**
+   * Retarget the model the NEXT turn requests, without disturbing a live one.
+   *
+   * A delivery can arrive while a turn is running (steering, or a queued
+   * follow-up the client will auto-generate), and the app-server fixes a turn's
+   * route at `turn/start`. So the model — which the app-server does accept per
+   * turn — is re-pinned here, while a PROVIDER move is deliberately left to the
+   * next turn's `#startTurn`, which is the only place a child can be replaced.
+   */
+  async #pinNextModel(): Promise<void> {
+    const route = this.#resolveRoute();
+    if (route === undefined) return;
+    await this.#client.setModel(route.provider, route.model).catch((error) => {
+      trace(`set_model ${route.provider}/${route.model} failed: ${String(error)}`);
+    });
+  }
+
   #flushRemote(): void {
     this.#syncTurnPolicy();
-    void this.#syncModelSelection().finally(() => {
+    void this.#pinNextModel().finally(() => {
       for (const entry of this.#remoteQueue) {
         if (entry.sent) continue;
         entry.sent = true;
@@ -730,32 +795,111 @@ export class CodexAgent implements Agent {
   }
 
   /**
-   * Push the effective model selection into the client before a turn is
-   * dispatched. The SDK has no live setModel, so the client stores the id
-   * and applies it as the next run's ThreadOption (via resumeThread, so the
-   * conversation context survives). The omp waterfall pair
-   * (system-prompt assemble → agent/request) is a V1 cut: the base is the
-   * session's logged `request/header` falling back to the global
-   * `agentDefaultModel` selection, else the agent options — the apiproxy's
-   * installed selection IS the global one this process serves.
+   * The route this session must run, resolved the way the harness itself
+   * resolves it.
+   *
+   * `sessionController.selectionFor(agent).current` is `pending ?? logged ??
+   * default`, and `pending` is the durable `modelSelection` projection's view of
+   * the latest `model/selection` event that no later `request/header` has
+   * consumed. Reading the PROJECTION (rather than re-scanning the log) is what
+   * makes a mid-turn switch work for free: the harness's own `session.selectModel`
+   * appends that event and retires it once this agent logs the header that used
+   * it, so "switch now, run next turn" is the projection's semantics, not ours.
+   *
+   * @returns the route, or `undefined` when nothing in the log or the services
+   * names a complete provider/model pair.
+   * @returns the route, or `undefined` when nothing in the log or the services
+   * names a complete provider/model pair (see `codex-route.ts` for the order).
    */
-  async #syncModelSelection(): Promise<void> {
-    const persisted = this.session.requestHeader()?.config;
+  #resolveRoute(): RouteSelection | undefined {
+    const projections = this.#loopCtx.get("sessionProjections") as
+      | { stateOf?: (session: Session, key: string) => { pending?: unknown } | undefined }
+      | undefined;
     const service = this.ctx.get("agentDefaultModel") as AgentDefaultModelSlice | undefined;
-    const selection = service?.currentSelection();
-    const target =
-      persisted !== undefined && persisted.provider !== "" && persisted.model !== ""
-        ? { provider: persisted.provider, model: persisted.model }
-        : selection !== undefined && selection.provider !== "" && selection.model !== ""
-          ? selection
-          : { provider: this.options.provider ?? "", model: this.options.model ?? "" };
-    if (target.provider === "" || target.model === "") return;
-    const key = `${target.provider}/${target.model}`;
-    if (key === this.#lastSyncedModel) return;
-    await this.#client.setModel(target.provider, target.model).catch((error) => {
-      trace(`set_model ${key} failed: ${String(error)}`);
+    return resolveRoute({
+      pending: projections?.stateOf?.(this.session, "modelSelection")?.pending,
+      logged: this.session.requestHeader()?.config,
+      preferred: service?.currentSelection(),
+      fallback: { provider: this.options.provider, model: this.options.model },
     });
-    this.#lastSyncedModel = key;
+  }
+
+  /**
+   * Put the resolved route in force on the native side, switching the CHILD if
+   * the provider moved.
+   *
+   * Three cases, in increasing cost:
+   *
+   *  1. nothing attached yet — pin the launch and let the first prompt spawn
+   *     (this is the lazy-spawn gate: choosing a model must not cost a process);
+   *  2. same provider, different model — `setModel` rides the next `turn/start`,
+   *     which the app-server documents as "this turn and subsequent turns";
+   *  3. different provider — the child has to be replaced, because a provider is
+   *     an argv-level property of the process and `thread/resume` cannot move a
+   *     thread a live app-server already holds (see `app-server-client.ts`
+   *     `reattach`). This is THE turn boundary the feature is built around.
+   *
+   * @param route - the resolved route, or `undefined` when none is known (the
+   * native config then decides, which is also a legacy `codex` selection's fate).
+   */
+  async #applyRoute(route: { provider: string; model: string; reasoningEffort?: string } | undefined): Promise<void> {
+    const launch = route === undefined ? undefined : this.#runtimeInfo?.launchFor(route.provider);
+    // An unknown provider id (a session pinned before the multi-provider rework)
+    // maps to "no injection": the user's own config.toml is the honest answer.
+    const launchSpec = launch ?? NATIVE_LAUNCH;
+    const providerId = launch === undefined ? null : route?.provider ?? null;
+    const client = this.#client;
+    const key = `${providerId ?? "native"}/${route?.model ?? ""}`;
+
+    if (!client.spawned && client.threadId === null) {
+      client.applyLaunch(launchSpec, providerId);
+      await client.ensureStarted();
+    } else if (client.threadId === null) {
+      // A live child with no thread yet: still just a launch swap.
+      client.applyLaunch(launchSpec, providerId);
+      await client.ensureStarted();
+    } else if (client.appliedProvider !== providerId) {
+      await client.reattach(launchSpec, providerId, route?.model);
+    } else if (route !== undefined) {
+      await client.setModel(route.provider, route.model).catch((error) => {
+        trace(`set_model ${key} failed: ${String(error)}`);
+      });
+    }
+    this.#routeKey = key;
+  }
+
+  /**
+   * Log the request header the NEXT request runs under, exactly as the reference
+   * loop does.
+   *
+   * This single append is what wires Super D into the harness's model-selection
+   * state machine rather than beside it: the `modelSelection` projection takes
+   * `lastUsed` from it, `sessionController.consumeSelection` retires a pending
+   * switch when it matches, and `installModelSelection` compares it to decide
+   * whether a model-change notice is owed. Without it a resumed session can
+   * never say which provider produced its transcript.
+   *
+   * @param route - the route this turn runs.
+   */
+  #commitRequestHeader(route: { provider: string; model: string; reasoningEffort?: string }): void {
+    const header = canonicalHeader({
+      config: {
+        provider: route.provider,
+        model: route.model,
+        ...(route.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: route.reasoningEffort as EpochHeader["config"]["reasoningEffort"] }),
+      },
+    });
+    const baseline = this.session.requestHeader();
+    if (!this.#requestHeaderLogged) {
+      this.session.append("request/header", { header, reason: baseline === undefined ? "initial" : "resume" });
+      this.#requestHeaderLogged = true;
+      return;
+    }
+    if (baseline === undefined || !headerEquals(baseline, header)) {
+      this.session.append("request/header", { header, reason: "change" });
+    }
   }
 
   /**
@@ -799,7 +943,14 @@ export class CodexAgent implements Agent {
     this.#reserveTurn();
     this.#localUserPending = localUser;
     this.session.append("turn/start", { turn: this.#dashTurn });
-    this.#emitRequestContext();
+    // This path opens a turn for a message the CLIENT queued and is now
+    // generating, so the child is already running: resolve the route for the
+    // log's benefit only. It cannot have moved since the turn it belongs to
+    // started, because a provider switch needs a turn boundary.
+    const route = this.#resolveRoute();
+    this.#turnRoute = route;
+    if (route !== undefined) this.#commitRequestHeader(route);
+    this.#emitRequestContext(route);
     this.session.append("user/message", message, { surfaceOp: "append" });
   }
 
@@ -1157,10 +1308,11 @@ export class CodexAgent implements Agent {
     const assistant: AssistantMessage = createAssistantMessage({
       content,
       source: {
-        // Rollout/wire messages may carry no attribution: fall back to this
-        // agent's options (the omp bridge did the same).
-        provider: String(message.provider ?? this.options.provider ?? ""),
-        model: String(message.model ?? this.options.model ?? ""),
+        // Codex's wire messages carry no attribution at all, so the fallback is
+        // the route the OPEN turn runs — never `options`, which is frozen at
+        // create/resume and would name the provider the session started on.
+        provider: String(message.provider ?? this.#turnRoute?.provider ?? this.options.provider ?? ""),
+        model: String(message.model ?? this.#turnRoute?.model ?? this.options.model ?? ""),
       },
     });
     const bridge = this.#streamBridge;
