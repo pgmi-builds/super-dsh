@@ -67,8 +67,10 @@ export interface SettingsPanelSpec {
   /**
    * Which body the expanded row mounts. A runtime's config is not always a
    * choice among a fixed set: Antigravity picks one sign-in form from a ladder,
-   * while Codex carries a LIST of providers the user adds, edits and selects
-   * (2026-10-03 ruling). One namespace, two shapes — the kind discriminates.
+   * while Codex carries a LIST of providers the user adds, edits and removes
+   * (2026-10-03 ruling; the former active/select toggle is gone — which provider
+   * a Codex session runs on is DSH's own per-session model selection, not a
+   * hub-side switch). One namespace, two shapes — the kind discriminates.
    */
   readonly kind: 'auth' | 'providers'
 }
@@ -77,10 +79,10 @@ const SETTINGS_PANELS: Readonly<Record<string, SettingsPanelSpec>> = {
   // The one runtime with a settings surface this round: the CLI adapter owns the
   // auth ladder and is the configuration surface for the user's local Antigravity.
   agy: { namespace: 'agyAuth', kind: 'auth' },
-  // Codex is a single-provider harness whose real config.toml names exactly one
-  // `model_provider`, so "switch provider" there is a rewrite of the user's own
-  // native file. Super D hosts the list cc-switch otherwise holds, and the
-  // adapter owns both the list and the write.
+  // Codex's own config.toml names exactly one `model_provider`, but that file
+  // is the USER's and no longer the hub's toggle: Super D hosts the list
+  // cc-switch otherwise holds (add / edit / remove) and the adapter owns both
+  // the list and whatever it does with the native file.
   codex: { namespace: 'codexProviders', kind: 'providers' },
 }
 
@@ -166,9 +168,13 @@ export function selectable(option: AuthMethodOption): boolean {
 // The multi-provider surface of a single-provider harness (codex). Config is
 // still the ADAPTER's (dev-rules §12), so nothing here knows what a provider is
 // beyond the shape the adapter promises. The parse is defensive in the same way
-// `parseAuthView` is, with one deliberate difference — an EMPTY provider list is
+// `parseAuthView` is, with two deliberate differences — an EMPTY provider list is
 // a legitimate state (a fresh install), so the panel renders its "Add provider"
-// affordance rather than an error.
+// affordance rather than an error; and a provider's `models` may be empty (one
+// folded in from the user's config.toml that is not the one in force has no
+// discoverable list), which the row states instead of rendering a blank. There
+// is no `selected`/active half at all: choosing what a session runs is DSH's own
+// model selection.
 
 /** One model behind a provider, as the panel lists it. */
 export interface ProviderModelOption {
@@ -200,23 +206,27 @@ export interface ProviderProtocolOption {
   readonly hint: string
 }
 
-/** The paths a switch writes, shown so the effect is never a surprise. */
+/** The files this surface reads and writes, shown so where an edit lands is never a surprise. */
 export interface ProviderPaths {
   readonly store: string
   readonly config: string
   readonly auth: string
-  readonly catalog: string
+  readonly catalogs: string
 }
 
 /** The adapter's answer to `codexProviders/get` (and to every mutation). */
 export interface RuntimeProvidersView {
   readonly providers: readonly ProviderOption[]
-  /** The user's explicit choice; `null` until they make one. */
-  readonly selected: string | null
-  /** What the runtime's own config actually runs right now. */
-  readonly effective: { readonly providerId?: string; readonly model?: string } | null
+  /**
+   * What the user's OWN ~/.codex/config.toml currently names. Informational
+   * only — there is no action attached to it, and DSH's per-session model
+   * selection (not this list) decides what a session runs.
+   */
+  readonly native: { readonly providerId?: string; readonly model?: string } | null
   readonly protocols: readonly ProviderProtocolOption[]
   readonly paths: ProviderPaths
+  /** Epoch ms of the last reconcile against config.toml, when one has happened. */
+  readonly syncedAt?: number
   readonly note?: string
 }
 
@@ -279,17 +289,17 @@ function providerPaths(raw: unknown): ProviderPaths | undefined {
   const store = nonEmpty(record.store)
   const config = nonEmpty(record.config)
   const auth = nonEmpty(record.auth)
-  const catalog = nonEmpty(record.catalog)
-  if (store === undefined || config === undefined || auth === undefined || catalog === undefined) return undefined
-  return { store, config, auth, catalog }
+  const catalogs = nonEmpty(record.catalogs)
+  if (store === undefined || config === undefined || auth === undefined || catalogs === undefined) return undefined
+  return { store, config, auth, catalogs }
 }
 
 /**
  * Defensive parse of the adapter's providers answer.
  *
  * `undefined` for anything that is not a usable view — but an empty `providers`
- * array WITH a usable protocol list is valid, because that is what a fresh
- * install legitimately looks like and the panel must still offer "Add".
+ * array WITH a usable protocol list is valid (a fresh install), and so is a
+ * provider whose `models` array is empty.
  */
 export function parseProvidersView(raw: unknown): RuntimeProvidersView | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
@@ -301,34 +311,31 @@ export function parseProvidersView(raw: unknown): RuntimeProvidersView | undefin
   const paths = providerPaths(record.paths)
   if (paths === undefined) return undefined
   const providers = record.providers.map(providerOption).filter((entry): entry is ProviderOption => entry !== undefined)
+  const syncedAt = record.syncedAt
+  const note = nonEmpty(record.note)
 
-  const effective = record.effective
   return {
     providers,
-    selected: nonEmpty(record.selected) ?? null,
-    effective:
-      typeof effective === 'object' && effective !== null
-        ? {
-            ...(nonEmpty((effective as Record<string, unknown>).providerId) === undefined
-              ? {}
-              : { providerId: nonEmpty((effective as Record<string, unknown>).providerId) as string }),
-            ...(nonEmpty((effective as Record<string, unknown>).model) === undefined
-              ? {}
-              : { model: nonEmpty((effective as Record<string, unknown>).model) as string }),
-          }
-        : null,
+    native: nativeConfig(record.native),
     protocols,
     paths,
-    ...(nonEmpty(record.note) === undefined ? {} : { note: nonEmpty(record.note) as string }),
+    ...(typeof syncedAt === 'number' && Number.isFinite(syncedAt) ? { syncedAt } : {}),
+    ...(note === undefined ? {} : { note }),
   }
 }
 
 /**
- * The provider the panel marks as in force: what the runtime's own config runs,
- * falling back to the explicit selection. `undefined` when neither is known.
+ * The user's own config.toml as the adapter last read it. `null` when the
+ * adapter said nothing; otherwise an object carrying whichever halves were
+ * named (an empty one is still news — the panel says the file names nothing).
  */
-export function activeProvider(view: RuntimeProvidersView): ProviderOption | undefined {
-  const wanted = view.effective?.providerId ?? view.selected
-  if (wanted === null || wanted === undefined) return undefined
-  return view.providers.find((provider) => provider.id === wanted)
+function nativeConfig(raw: unknown): RuntimeProvidersView['native'] {
+  if (typeof raw !== 'object' || raw === null) return null
+  const record = raw as Record<string, unknown>
+  const providerId = nonEmpty(record.providerId)
+  const model = nonEmpty(record.model)
+  return {
+    ...(providerId === undefined ? {} : { providerId }),
+    ...(model === undefined ? {} : { model }),
+  }
 }

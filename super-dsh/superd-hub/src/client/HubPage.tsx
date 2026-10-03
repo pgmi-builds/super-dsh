@@ -20,7 +20,6 @@ import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
 import {
   activeMethod,
-  activeProvider,
   selectable,
   settingsPanelFor,
   toggleExpanded,
@@ -32,7 +31,6 @@ import {
   fetchProvidersView,
   removeProvider,
   saveProvider,
-  selectProvider,
   setAuthMode,
   settingsErrorText,
 } from './runtime-settings-api.js'
@@ -490,13 +488,21 @@ function parseModelIds(text: string): string[] {
   return text.split(/[\s,]+/).map((part) => part.trim()).filter((part) => part !== '')
 }
 
+/** `provider / model`, whichever halves the user's config.toml actually names. */
+function nativeDescription(native: { readonly providerId?: string; readonly model?: string }): string {
+  const parts = [native.providerId, native.model].filter((part): part is string => part !== undefined)
+  return parts.length === 0 ? 'no provider' : parts.join(' / ')
+}
+
 /**
  * The multi-provider body (Codex, 2026-10-03 ruling).
  *
- * Super D hosts the list cc-switch otherwise holds; selecting an entry writes
- * the user's OWN Codex config, so the panel shows the exact files it rewrites
- * and says that a switch lands on the next child Codex starts rather than
- * pretending it is a hot swap.
+ * Super D hosts the list cc-switch otherwise holds: add, edit and remove only.
+ * The active/select half is gone — which provider a Codex session runs on is
+ * DSH's own per-session model selection, so no row is marked "in force". What
+ * the user's OWN config.toml names is rendered as a passive fact (the adapter
+ * reconciles the list against that file), and the files it touches are named so
+ * an edit is never a surprise.
  *
  * Keys are write-only by construction: the adapter answers `hasKey`, never a
  * value, so the field is blank on every open and blank means "leave whatever is
@@ -579,10 +585,23 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
     )
   }
 
-  const inForce = activeProvider(view)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <p style={panelHeadStyle}>Model provider</p>
+
+      {/* The user's own file, shown as a fact and never as a control: the
+          adapter reconciles the list from it, but DSH's per-session model
+          selection is what a session actually runs. */}
+      {view.native !== null && (
+        <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>
+          Your own Codex config.toml currently names {nativeDescription(view.native)}.
+        </p>
+      )}
+      {view.syncedAt !== undefined && (
+        <p style={{ margin: 0, color: 'var(--dsw-alias-label-caption)', fontSize: 11 }}>
+          synced from config.toml {new Date(view.syncedAt).toLocaleString()}
+        </p>
+      )}
 
       {view.providers.length === 0 && (
         <p style={{ margin: 0, color: 'var(--dsw-alias-label-tertiary)' }}>
@@ -590,59 +609,42 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
         </p>
       )}
 
-      {view.providers.map((provider) => {
-        const isCurrent = inForce?.id === provider.id
-        return (
-          <div
-            key={provider.id}
+      {view.providers.map((provider) => (
+        <div key={provider.id} style={optionStyle}>
+          <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{provider.label}</span>
+          {provider.authKind === 'env' && <span style={chip}>env {provider.envName}</span>}
+          {!provider.hasKey && <span style={chip}>no key</span>}
+          <span
             style={{
-              ...optionStyle,
-              background: isCurrent ? 'var(--dsw-alias-bg-elevated, transparent)' : 'transparent',
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontSize: 12,
+              color: 'var(--dsw-alias-label-tertiary)',
             }}
           >
-            <button
-              type="button"
-              role="radio"
-              aria-checked={isCurrent}
-              aria-label={`Use ${provider.label}`}
-              disabled={busy !== null}
-              onClick={() => { run(provider.id, () => selectProvider(agent.key, namespace, provider.id)) }}
-              style={{ ...buttonStyle, border: 'none', padding: '0 2px', cursor: busy === null ? 'pointer' : 'default' }}
-            >
-              <span aria-hidden>{isCurrent ? '\u25CF' : '\u25CB'}</span>
-            </button>
-            <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{provider.label}</span>
-            {isCurrent && <span style={chipSelf}>in force</span>}
-            {provider.authKind === 'env' && <span style={chip}>env {provider.envName}</span>}
-            {!provider.hasKey && <span style={chip}>no key</span>}
-            <span
-              style={{
-                flex: 1,
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                fontSize: 12,
-                color: 'var(--dsw-alias-label-tertiary)',
-              }}
-            >
-              {provider.baseUrl} · {provider.models.map((model) => model.id).join(', ')}
-            </span>
-            {busy === provider.id && <span style={chip}>switching…</span>}
-            <button type="button" style={buttonStyle} disabled={busy !== null}
-              onClick={() => { openEdit(provider) }}>Edit</button>
-            <button
-              type="button"
-              style={{ ...buttonStyle, color: 'var(--dsw-alias-state-error-primary, #c66)' }}
-              disabled={busy !== null}
-              aria-label={`Delete ${provider.label}`}
-              onClick={() => { run(`remove:${provider.id}`, () => removeProvider(agent.key, namespace, provider.id)) }}
-            >
-              Delete
-            </button>
-          </div>
-        )
-      })}
+            {provider.baseUrl}
+            {provider.models.length === 0 ? '' : ` · ${provider.models.map((model) => model.id).join(', ')}`}
+          </span>
+          {/* A provider folded in from config.toml may carry no discoverable
+              model list; say so instead of a bare " · " and an empty tail. */}
+          {provider.models.length === 0 && <span style={chipWarn}>no models yet — add one</span>}
+          {busy === `remove:${provider.id}` && <span style={chip}>removing…</span>}
+          <button type="button" style={buttonStyle} disabled={busy !== null}
+            onClick={() => { openEdit(provider) }}>Edit</button>
+          <button
+            type="button"
+            style={{ ...buttonStyle, color: 'var(--dsw-alias-state-error-primary, #c66)' }}
+            disabled={busy !== null}
+            aria-label={`Delete ${provider.label}`}
+            onClick={() => { run(`remove:${provider.id}`, () => removeProvider(agent.key, namespace, provider.id)) }}
+          >
+            Delete
+          </button>
+        </div>
+      ))}
 
       {editing === null && (
         <div>
@@ -779,13 +781,7 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
         list {view.paths.store}
       </p>
       <p style={{ margin: 0, color: 'var(--dsw-alias-label-caption)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11 }}>
-        switching writes {view.paths.config}, {view.paths.auth}, {view.paths.catalog}
-      </p>
-      {/* D6: Codex reads config.toml when a child starts, and children are
-          spawned lazily on a session's first prompt — so a switch is not a hot
-          swap, and saying so is kinder than letting the user wonder. */}
-      <p style={{ margin: '2px 0 0', color: 'var(--dsw-alias-label-caption)', fontSize: 11 }}>
-        Applies to sessions whose Codex process starts after the switch.
+        native {view.paths.config} · {view.paths.auth} · {view.paths.catalogs}
       </p>
     </div>
   )

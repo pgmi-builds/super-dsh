@@ -51,7 +51,7 @@ export interface ClientRequestEnvelope {
 
 /** Build the envelope for one panel call (exported so tests pin the exact wire shape). */
 /** The operation names the adapter Remotes accept (auth ladder + providers). */
-export type RuntimeSettingsOp = 'get' | 'set' | 'save' | 'remove' | 'select'
+export type RuntimeSettingsOp = 'get' | 'set' | 'save' | 'remove'
 
 export function settingsEnvelope(namespace: string, op: RuntimeSettingsOp, args: Record<string, unknown>): ClientRequestEnvelope {
   return {
@@ -167,7 +167,10 @@ export async function fetchProvidersView(
   return requireProvidersView(await callRuntimeSettings(agentKey, namespace, 'get', {}, doFetch))
 }
 
-/** Add or edit one provider. Does not switch the runtime. */
+/**
+ * Add or edit one provider in the adapter's list. Which provider a session runs
+ * on is DSH's own per-session model selection, so this touches no active half.
+ */
 export async function saveProvider(
   agentKey: string,
   namespace: string,
@@ -185,16 +188,6 @@ export async function removeProvider(
   doFetch?: FetchLike,
 ): Promise<RuntimeProvidersView> {
   return requireProvidersView(await callRuntimeSettings(agentKey, namespace, 'remove', { request: { id } }, doFetch))
-}
-
-/** Put one provider in force (`null` clears the explicit choice). */
-export async function selectProvider(
-  agentKey: string,
-  namespace: string,
-  id: string | null,
-  doFetch?: FetchLike,
-): Promise<RuntimeProvidersView> {
-  return requireProvidersView(await callRuntimeSettings(agentKey, namespace, 'select', { request: { id } }, doFetch))
 }
 
 export { messageOf as settingsErrorText }

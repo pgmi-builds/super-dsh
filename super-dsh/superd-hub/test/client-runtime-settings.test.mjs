@@ -24,7 +24,6 @@ const {
   mintRpcId,
   removeProvider,
   saveProvider,
-  selectProvider,
   setAuthMode,
   settingsEnvelope,
 } = await import(join(dist, "runtime-settings-api.js"));
@@ -142,13 +141,12 @@ const PROVIDERS = {
       hasKey: true,
     },
   ],
-  selected: "deepseek",
-  effective: { providerId: "deepseek", model: "deepseek-flash" },
+  native: { providerId: "deepseek", model: "deepseek-flash" },
   protocols: [{ value: "responses", label: "Responses API", available: true, hint: "h" }],
-  paths: { store: "/s", config: "/c", auth: "/a", catalog: "/k" },
+  paths: { store: "/s", config: "/c", auth: "/a", catalogs: "/k" },
 };
 
-test("the four providers envelopes are exactly what the /hub gateway decodes", async () => {
+test("the three providers envelopes are exactly what the /hub gateway decodes", async () => {
   const { calls, send } = stub(answerWith({ ok: true, value: PROVIDERS }));
 
   await fetchProvidersView("codex", "codexProviders", send);
@@ -164,13 +162,7 @@ test("the four providers envelopes are exactly what the /hub gateway decodes", a
   assert.equal(calls[2].body.method, "codexProviders/remove");
   assert.deepEqual(calls[2].body.payload, { args: { request: { id: "openrouter" } } });
 
-  await selectProvider("codex", "codexProviders", "openrouter", send);
-  assert.equal(calls[3].body.method, "codexProviders/select");
-  assert.deepEqual(calls[3].body.payload, { args: { request: { id: "openrouter" } } });
-
-  // Clearing the choice is an explicit null, not an omitted field.
-  await selectProvider("codex", "codexProviders", null, send);
-  assert.deepEqual(calls[4].body.payload, { args: { request: { id: null } } });
+  assert.equal(calls.length, 3, "get / save / remove only — the select op is gone");
 });
 
 test("a providers call rejects an unusable answer instead of rendering an empty list", async () => {

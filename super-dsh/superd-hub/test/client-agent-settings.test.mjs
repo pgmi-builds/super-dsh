@@ -119,7 +119,12 @@ test("placeholders render but are never selectable", () => {
 
 // ------------------------------------------------------- the providers body
 
-/** A faithful `codexProviders/get` answer, trimmed to the fields the parse keeps. */
+/**
+ * A faithful `codexProviders/get` answer, trimmed to the fields the parse
+ * keeps. Deliberately carries NO `selected`/`effective`: that active half was
+ * removed (which provider a session runs is DSH's own model selection), so the
+ * parse must not invent one.
+ */
 const providersAnswer = {
   providers: [
     {
@@ -133,13 +138,13 @@ const providersAnswer = {
       hasKey: true,
     },
   ],
-  selected: "deepseek",
-  effective: { providerId: "deepseek", model: "deepseek-flash" },
+  native: { providerId: "deepseek", model: "deepseek-flash" },
   protocols: [
     { value: "responses", label: "Responses API", available: true, hint: "the only one 0.154 accepts" },
     { value: "chat", label: "Chat Completions", available: false, hint: '`wire_api = "chat"` is no longer supported.' },
   ],
-  paths: { store: "/h/agents/codex/codex-providers.json", config: "/u/.codex/config.toml", auth: "/u/.codex/auth.json", catalog: "/u/.codex/superd-model-catalog.json" },
+  paths: { store: "/h/agents/codex/codex-providers.json", config: "/u/.codex/config.toml", auth: "/u/.codex/auth.json", catalogs: "/u/.codex/superd-model-catalogs" },
+  syncedAt: 1759500000000,
 };
 
 test("a well-formed providers answer parses through intact", () => {
@@ -149,19 +154,46 @@ test("a well-formed providers answer parses through intact", () => {
   assert.equal(view.providers[0].models[0].label, "DeepSeek Flash", "a display name is used when present");
   assert.equal(view.providers[0].models[0].contextWindow, 1048576);
   assert.equal(view.providers[0].hasKey, true);
-  assert.equal(view.selected, "deepseek");
-  assert.deepEqual(view.effective, { providerId: "deepseek", model: "deepseek-flash" });
+  assert.deepEqual(view.native, { providerId: "deepseek", model: "deepseek-flash" }, "the user's own config rides as the informational `native`");
   assert.deepEqual(view.protocols.map((p) => [p.value, p.available]), [["responses", true], ["chat", false]]);
-  assert.equal(view.paths.config, "/u/.codex/config.toml");
+  assert.equal(view.paths.catalogs, "/u/.codex/superd-model-catalogs");
+  assert.equal(view.syncedAt, 1759500000000, "the reconcile stamp is kept");
   assert.equal(view.note, undefined, "an absent note stays absent");
 });
 
+test("the removed active-selection half never comes back, even from a stale adapter", () => {
+  // The panel keys on `native`; an old adapter's extra `selected`/`effective`
+  // keys are ignored, and an answer carrying none of them still parses (that is
+  // exactly what today's adapter sends).
+  const view = parseProvidersView({ ...providersAnswer, selected: "deepseek", effective: { providerId: "deepseek", model: "x" } });
+  assert.ok(view, "legacy keys do not break the parse");
+  assert.equal("selected" in view, false, "no `selected` is invented");
+  assert.equal("effective" in view, false, "the renamed field is not resurrected");
+  assert.deepEqual(view.native, { providerId: "deepseek", model: "deepseek-flash" });
+
+  assert.equal(parseProvidersView({ ...providersAnswer, native: null }).native, null, "a null native reads as null");
+  const { native: _dropped, ...noNativeKey } = providersAnswer;
+  assert.equal(parseProvidersView(noNativeKey).native, null, "an adapter that omits `native` reads as null too");
+});
+
+test("a provider may legitimately carry an EMPTY model list", () => {
+  // A provider folded in from the user's config.toml that the file does not
+  // name has no discoverable list; the row says "no models yet" instead of the
+  // view failing to parse.
+  const view = parseProvidersView({
+    ...providersAnswer,
+    providers: [{ id: "zai", label: "Z.ai", baseUrl: "https://api.z.ai/v1", protocol: "responses", models: [], authKind: "apiKey", hasKey: false }],
+  });
+  assert.ok(view, "an empty per-provider model list is a state, not a parse failure");
+  assert.deepEqual(view.providers[0].models, []);
+  assert.equal(view.providers[0].protocol, "responses");
+});
+
 test("an EMPTY provider list is a state, not an error (the fresh-install panel)", () => {
-  const view = parseProvidersView({ ...providersAnswer, providers: [], selected: null, effective: null });
+  const view = parseProvidersView({ ...providersAnswer, providers: [], native: null });
   assert.ok(view, "the panel must offer Add provider, not an error");
   assert.deepEqual(view.providers, []);
-  assert.equal(view.selected, null);
-  assert.equal(view.effective, null);
+  assert.equal(view.native, null);
 });
 
 test("an unusable providers answer is rejected outright", () => {
@@ -180,8 +212,7 @@ test("an unusable providers answer is rejected outright", () => {
 test("missing optionals read conservatively, and an unknown protocol is not invented", () => {
   const view = parseProvidersView({
     providers: [{ id: "x", label: "X", baseUrl: "https://x/v1", protocol: "grpc", models: [{ id: "m" }] }],
-    selected: null,
-    effective: null,
+    native: null,
     protocols: providersAnswer.protocols,
     paths: providersAnswer.paths,
   });
@@ -191,4 +222,6 @@ test("missing optionals read conservatively, and an unknown protocol is not inve
   assert.equal(view.providers[0].models[0].label, "m", "a nameless model falls back to its id");
   // a protocol the hub does not know is dropped rather than echoed into a control
   assert.equal(view.providers[0].protocol, "responses");
+  assert.equal(view.native, null);
+  assert.equal(view.syncedAt, undefined, "an absent reconcile stamp stays absent");
 });

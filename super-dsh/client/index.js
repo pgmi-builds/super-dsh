@@ -1764,21 +1764,21 @@ function providerPaths(raw) {
 	const store = nonEmpty(record.store);
 	const config = nonEmpty(record.config);
 	const auth = nonEmpty(record.auth);
-	const catalog = nonEmpty(record.catalog);
-	if (store === void 0 || config === void 0 || auth === void 0 || catalog === void 0) return void 0;
+	const catalogs = nonEmpty(record.catalogs);
+	if (store === void 0 || config === void 0 || auth === void 0 || catalogs === void 0) return void 0;
 	return {
 		store,
 		config,
 		auth,
-		catalog
+		catalogs
 	};
 }
 /**
 * Defensive parse of the adapter's providers answer.
 *
 * `undefined` for anything that is not a usable view — but an empty `providers`
-* array WITH a usable protocol list is valid, because that is what a fresh
-* install legitimately looks like and the panel must still offer "Add".
+* array WITH a usable protocol list is valid (a fresh install), and so is a
+* provider whose `models` array is empty.
 */
 function parseProvidersView(raw) {
 	if (typeof raw !== "object" || raw === null) return void 0;
@@ -1790,27 +1790,31 @@ function parseProvidersView(raw) {
 	const paths = providerPaths(record.paths);
 	if (paths === void 0) return void 0;
 	const providers = record.providers.map(providerOption).filter((entry) => entry !== void 0);
-	const effective = record.effective;
+	const syncedAt = record.syncedAt;
+	const note = nonEmpty(record.note);
 	return {
 		providers,
-		selected: nonEmpty(record.selected) ?? null,
-		effective: typeof effective === "object" && effective !== null ? {
-			...nonEmpty(effective.providerId) === void 0 ? {} : { providerId: nonEmpty(effective.providerId) },
-			...nonEmpty(effective.model) === void 0 ? {} : { model: nonEmpty(effective.model) }
-		} : null,
+		native: nativeConfig(record.native),
 		protocols,
 		paths,
-		...nonEmpty(record.note) === void 0 ? {} : { note: nonEmpty(record.note) }
+		...typeof syncedAt === "number" && Number.isFinite(syncedAt) ? { syncedAt } : {},
+		...note === void 0 ? {} : { note }
 	};
 }
 /**
-* The provider the panel marks as in force: what the runtime's own config runs,
-* falling back to the explicit selection. `undefined` when neither is known.
+* The user's own config.toml as the adapter last read it. `null` when the
+* adapter said nothing; otherwise an object carrying whichever halves were
+* named (an empty one is still news — the panel says the file names nothing).
 */
-function activeProvider(view) {
-	const wanted = view.effective?.providerId ?? view.selected;
-	if (wanted === null || wanted === void 0) return void 0;
-	return view.providers.find((provider) => provider.id === wanted);
+function nativeConfig(raw) {
+	if (typeof raw !== "object" || raw === null) return null;
+	const record = raw;
+	const providerId = nonEmpty(record.providerId);
+	const model = nonEmpty(record.model);
+	return {
+		...providerId === void 0 ? {} : { providerId },
+		...model === void 0 ? {} : { model }
+	};
 }
 
 //#endregion
@@ -1895,17 +1899,16 @@ function requireProvidersView(value) {
 async function fetchProvidersView(agentKey, namespace, doFetch) {
 	return requireProvidersView(await callRuntimeSettings(agentKey, namespace, "get", {}, doFetch));
 }
-/** Add or edit one provider. Does not switch the runtime. */
+/**
+* Add or edit one provider in the adapter's list. Which provider a session runs
+* on is DSH's own per-session model selection, so this touches no active half.
+*/
 async function saveProvider(agentKey, namespace, provider, doFetch) {
 	return requireProvidersView(await callRuntimeSettings(agentKey, namespace, "save", { request: { provider } }, doFetch));
 }
 /** Drop one provider from the list. Does not rewrite the runtime's own config. */
 async function removeProvider(agentKey, namespace, id, doFetch) {
 	return requireProvidersView(await callRuntimeSettings(agentKey, namespace, "remove", { request: { id } }, doFetch));
-}
-/** Put one provider in force (`null` clears the explicit choice). */
-async function selectProvider(agentKey, namespace, id, doFetch) {
-	return requireProvidersView(await callRuntimeSettings(agentKey, namespace, "select", { request: { id } }, doFetch));
 }
 
 //#endregion
@@ -2392,13 +2395,20 @@ const EMPTY_PROVIDER_DRAFT = {
 function parseModelIds(text) {
 	return text.split(/[\s,]+/).map((part) => part.trim()).filter((part) => part !== "");
 }
+/** `provider / model`, whichever halves the user's config.toml actually names. */
+function nativeDescription(native) {
+	const parts = [native.providerId, native.model].filter((part) => part !== void 0);
+	return parts.length === 0 ? "no provider" : parts.join(" / ");
+}
 /**
 * The multi-provider body (Codex, 2026-10-03 ruling).
 *
-* Super D hosts the list cc-switch otherwise holds; selecting an entry writes
-* the user's OWN Codex config, so the panel shows the exact files it rewrites
-* and says that a switch lands on the next child Codex starts rather than
-* pretending it is a hot swap.
+* Super D hosts the list cc-switch otherwise holds: add, edit and remove only.
+* The active/select half is gone — which provider a Codex session runs on is
+* DSH's own per-session model selection, so no row is marked "in force". What
+* the user's OWN config.toml names is rendered as a passive fact (the adapter
+* reconciles the list against that file), and the files it touches are named so
+* an edit is never a surprise.
 *
 * Keys are write-only by construction: the adapter answers `hasKey`, never a
 * value, so the field is blank on every open and blank means "leave whatever is
@@ -2502,7 +2512,6 @@ function ProvidersPanel({ agent, namespace }) {
 		},
 		children: error ?? "Providers are unavailable for this runtime."
 	});
-	const inForce = activeProvider(view);
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 		style: {
 			display: "flex",
@@ -2514,6 +2523,25 @@ function ProvidersPanel({ agent, namespace }) {
 				style: panelHeadStyle,
 				children: "Model provider"
 			}),
+			view.native !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: {
+					margin: 0,
+					color: "var(--dsw-alias-label-tertiary)"
+				},
+				children: [
+					"Your own Codex config.toml currently names ",
+					nativeDescription(view.native),
+					"."
+				]
+			}),
+			view.syncedAt !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: {
+					margin: 0,
+					color: "var(--dsw-alias-label-caption)",
+					fontSize: 11
+				},
+				children: ["synced from config.toml ", new Date(view.syncedAt).toLocaleString()]
+			}),
 			view.providers.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 				style: {
 					margin: 0,
@@ -2521,98 +2549,68 @@ function ProvidersPanel({ agent, namespace }) {
 				},
 				children: "No providers yet — add one to pin a model and endpoint."
 			}),
-			view.providers.map((provider) => {
-				const isCurrent = inForce?.id === provider.id;
-				return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					style: {
-						...optionStyle,
-						background: isCurrent ? "var(--dsw-alias-bg-elevated, transparent)" : "transparent"
-					},
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							role: "radio",
-							"aria-checked": isCurrent,
-							"aria-label": `Use ${provider.label}`,
-							disabled: busy !== null,
-							onClick: () => {
-								run(provider.id, () => selectProvider(agent.key, namespace, provider.id));
-							},
-							style: {
-								...buttonStyle,
-								border: "none",
-								padding: "0 2px",
-								cursor: busy === null ? "pointer" : "default"
-							},
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								"aria-hidden": true,
-								children: isCurrent ? "●" : "○"
-							})
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							style: {
-								fontWeight: 500,
-								whiteSpace: "nowrap"
-							},
-							children: provider.label
-						}),
-						isCurrent && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							style: chipSelf,
-							children: "in force"
-						}),
-						provider.authKind === "env" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-							style: chip,
-							children: ["env ", provider.envName]
-						}),
-						!provider.hasKey && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							style: chip,
-							children: "no key"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-							style: {
-								flex: 1,
-								minWidth: 0,
-								overflow: "hidden",
-								textOverflow: "ellipsis",
-								whiteSpace: "nowrap",
-								fontSize: 12,
-								color: "var(--dsw-alias-label-tertiary)"
-							},
-							children: [
-								provider.baseUrl,
-								" · ",
-								provider.models.map((model) => model.id).join(", ")
-							]
-						}),
-						busy === provider.id && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							style: chip,
-							children: "switching…"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							style: buttonStyle,
-							disabled: busy !== null,
-							onClick: () => {
-								openEdit(provider);
-							},
-							children: "Edit"
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							style: {
-								...buttonStyle,
-								color: "var(--dsw-alias-state-error-primary, #c66)"
-							},
-							disabled: busy !== null,
-							"aria-label": `Delete ${provider.label}`,
-							onClick: () => {
-								run(`remove:${provider.id}`, () => removeProvider(agent.key, namespace, provider.id));
-							},
-							children: "Delete"
-						})
-					]
-				}, provider.id);
-			}),
+			view.providers.map((provider) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				style: optionStyle,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: {
+							fontWeight: 500,
+							whiteSpace: "nowrap"
+						},
+						children: provider.label
+					}),
+					provider.authKind === "env" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+						style: chip,
+						children: ["env ", provider.envName]
+					}),
+					!provider.hasKey && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chip,
+						children: "no key"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+						style: {
+							flex: 1,
+							minWidth: 0,
+							overflow: "hidden",
+							textOverflow: "ellipsis",
+							whiteSpace: "nowrap",
+							fontSize: 12,
+							color: "var(--dsw-alias-label-tertiary)"
+						},
+						children: [provider.baseUrl, provider.models.length === 0 ? "" : ` · ${provider.models.map((model) => model.id).join(", ")}`]
+					}),
+					provider.models.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chipWarn,
+						children: "no models yet — add one"
+					}),
+					busy === `remove:${provider.id}` && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chip,
+						children: "removing…"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						style: buttonStyle,
+						disabled: busy !== null,
+						onClick: () => {
+							openEdit(provider);
+						},
+						children: "Edit"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						style: {
+							...buttonStyle,
+							color: "var(--dsw-alias-state-error-primary, #c66)"
+						},
+						disabled: busy !== null,
+						"aria-label": `Delete ${provider.label}`,
+						onClick: () => {
+							run(`remove:${provider.id}`, () => removeProvider(agent.key, namespace, provider.id));
+						},
+						children: "Delete"
+					})
+				]
+			}, provider.id)),
 			editing === null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 				type: "button",
 				style: buttonStyle,
@@ -2825,21 +2823,13 @@ function ProvidersPanel({ agent, namespace }) {
 					fontSize: 11
 				},
 				children: [
-					"switching writes ",
+					"native ",
 					view.paths.config,
-					", ",
+					" · ",
 					view.paths.auth,
-					", ",
-					view.paths.catalog
+					" · ",
+					view.paths.catalogs
 				]
-			}),
-			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-				style: {
-					margin: "2px 0 0",
-					color: "var(--dsw-alias-label-caption)",
-					fontSize: 11
-				},
-				children: "Applies to sessions whose Codex process starts after the switch."
 			})
 		]
 	});
