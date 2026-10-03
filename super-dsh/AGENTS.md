@@ -41,3 +41,22 @@
 - **测试准备（2026-09-24 user 裁决，写死在 `test/start-4999.sh`，缺一不可）**：测试线必须「看到被测者看到的世界」。三条 = ① prod `.env` copy 进线 home（禁 API-key env 透传）② `SUPERD_TRUSTED_HOSTS` 喂世界 fence + page-trust 两腿 ③ 全部 env 显式设、不依赖继承。机制细节：`docs/07` §7；认证免重注入（seed 持久）见 `docs/07` §3.3。
 - **page-trust 组件（2026-09-24，移植自 better-dsh `web-trust` authorities leg）**：`superd-hub/src/web-trust.ts`，ctx0 经 composite 行 `super-dsh/web-trust`、各世界经 worldMountPatches 行 `@pgmi-builds/superd-hub/web-trust`（世界页在自己的 root 上 emit `webserver/index-inject`，ctx0 一条行覆盖不到）。作用：operator 声明的非 loopback 页面 authority（Caddy 域 / LAN IP）上，页面在应用 bundle 物化前设 `window.__DSH_TRANSPORT__ = { ownsHost: true }` → connection client 的 `isLoopback` 判定为真，恢复 trusted authority 的 upstream 文档行为（否则 Host 设置持久化呈终端 `memory` 不可用）。开关两级：行级 `disabled: true`；config 级 `trustedPageAuthorities: []`（全惰性）。默认值从 `DSH_TRUSTED_HOSTS ?? SUPERD_TRUSTED_HOSTS` 派生（schema 级 default，穿透所有 overlay 层；显式配置恒胜）。
 - ~~`test/start-{codex,claude,hermes,pi}-app.sh` = standalone legacy 线~~ **已删除**（2026-09-24 场景退役，见「测试约定」）；场景级测试唯一入口 = 4999 pack 线（+ dev3 目标机实装）。
+
+## 世界行 / adapter 的卸载契约（2026-10-03 omp-sdk 验收踩到，两条都复发过）
+
+world 插件（`agent-*/src/world-plugin.ts`，含 `world-join`）**不是**「挂上就完事」：plugin manager 的 `setPluginEnabled` 会把行写进 profile patch 并 **HMR 热卸/热挂**，所以卸载路径必须真的干净。两条硬规则：
+
+1. **roster 条目必须 fiber-scoped**：`registerAgent()` 没有 disposer 就会留下裸 map 条目。`/api/agent-runtime` 的视图按 **host mount** 过滤（`agent-roster.ts` 的 `takeHostMount`），所以行卸掉后 UI 里**看不到**它，但 `registerAgent` 的重复 key 检查仍然会命中 —— 症状是**再次开启该行必然失败**：`roster: duplicate agent key <key>`（4997 实测复现）。正确写法：
+   ```ts
+   ctx.effect?.(() => {
+     registerAgent({ key: KEY, label: LABEL, ready: false })
+     return () => unregisterAgent(KEY)
+   }, `agent-${KEY}: roster`)
+   ```
+2. **卸载必须 dispose world**：`spawnWorld()` 返回的世界 context 带 `fiber`，插件必须在自己被 dispose 时把它一起 dispose，否则世界（以及它里面 provider 持有的传输子进程：`omp --mode rpc` 子进程 / bun sidecar）会**越过自己的行继续活着**（实测：关掉 `omp-sdk` 行后 435 MB 的 sidecar 仍在跑）。正确写法：
+   ```ts
+   ctx.effect?.(() => () => { void ctxW.fiber?.dispose() }, `agent-${KEY}: world teardown`)
+   ```
+   （dispose world → dispose 其 provider → 释放各自 transport → 子进程随之回收。）
+
+两条已同时落在 `agent-omp` 与 `agent-omp-sdk`（`agent-agy*`/`world-join` 尚未补，属同族遗留）。

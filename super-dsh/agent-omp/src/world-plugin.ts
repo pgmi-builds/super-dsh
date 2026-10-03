@@ -20,7 +20,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { join } from 'node:path'
 import {
-  spawnWorld, registerAgent, setReady, registerForeignTarget,
+  spawnWorld, registerAgent, unregisterAgent, setReady, registerForeignTarget,
   registerHostMount, worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
 } from '../../superd-hub/dist/index.js'
 import { resolveOmpExecutable } from './rpc-client.js'
@@ -61,7 +61,13 @@ function diagnoseOmpBinary(): void {
 
 export function apply(ctx: HostContext): void {
   diagnoseOmpBinary()
-  registerAgent({ key: KEY, label: 'OMP', ready: false })
+  // Fiber-scoped roster entry: disabling the row disposes this fiber and the
+  // entry must go with it, otherwise a re-enable dies on `roster: duplicate
+  // agent key omp` (same defect the omp-sdk acceptance surfaced live).
+  ctx.effect?.(() => {
+    registerAgent({ key: KEY, label: 'OMP', ready: false })
+    return () => unregisterAgent(KEY)
+  }, `agent-${KEY}: roster`)
   // Harness resolver (env → ~/.dsh): a consumer install has no DSH_HOME and
   // no cwd contract — deriving the world root from cwd spawns worlds into a
   // garbage tree or throws inside apply() and kills the whole host boot.
@@ -101,6 +107,12 @@ export function apply(ctx: HostContext): void {
     ctx.effect?.(() => () => {
       dropHostMount()
     }, `agent-${KEY}: mount`)
+    // Unloading the row must unload the world: disposing the world's fiber
+    // disposes its provider, which closes every held transport (and therefore
+    // the `omp --mode rpc` children).
+    ctx.effect?.(() => () => {
+      void (ctxW as unknown as { fiber?: { dispose(): unknown } }).fiber?.dispose()
+    }, `agent-${KEY}: world teardown`)
     return ctxW
   })().catch((cause: unknown) => {
     // A failed world degrades to a not-ready roster row; a rejected provided
