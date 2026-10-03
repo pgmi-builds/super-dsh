@@ -8,6 +8,15 @@
  * methods exist at all), drives the bridge lazily per session, and fans every
  * message out through `projectClaudeEvent` (claude-events.ts).
  *
+ * ## The SDK is runtime-self-fetched, not imported
+ *
+ * The SDK is not a static dependency of this package: the default factory
+ * resolves it at the first real prompt via `loadClaudeQuery(worldHome)`
+ * (sdk-runtime.ts), which fetches the pinned tree into the agent world's
+ * home. `ClaudeFactory` stays SYNCHRONOUS — the await lives in factory
+ * RESOLUTION, never between query construction and the `this.query`
+ * assignment (see `ensureStarted`).
+ *
  * ## The two hard deviations from the codex precedent
  *
  * 1. **No shared singleton.** `agent-codex` multiplexes all clients through one
@@ -54,18 +63,9 @@
  *   every push is queued in order and there is no separate follow-up channel.
  *   `steer` differs by pushing with `priority: "now"`.
  */
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
-import { query as officialQuery } from "@anthropic-ai/claude-agent-sdk";
-import type { CanUseTool, Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { loadClaudeQuery, resolveClaudeBinary } from "./sdk-runtime.js";
 import { InputQueue, type ClaudeInputContent } from "./input-queue.js";
 import { projectClaudeEvent, type WireEvent } from "./claude-events.js";
-
-/** Host Claude Code binary driven through the SDK bridge (spec ruling R5).
- * PATH-resolved like any host CLI: $CLAUDE_EXECUTABLE wins, else a bare
- * "claude" the SDK spawns through PATH. No machine-specific path ships. */
-export const DEFAULT_CLAUDE_EXECUTABLE = "claude";
 
 // ---------------------------------------------------------------------------
 // Structural seams (duck-typed so tests inject plain fakes)
@@ -92,30 +92,30 @@ export interface ClaudeQueryOptions {
 
 export type ClaudeFactory = (options: ClaudeQueryOptions) => ClaudeQueryLike;
 
-const defaultFactory: ClaudeFactory = (o) =>
-  officialQuery({
-    prompt: o.prompt as AsyncIterable<SDKUserMessage>,
-    options: o.options as Options,
-  }) as unknown as ClaudeQueryLike;
+/** The default executable resolution: Task 1's `resolveClaudeBinary` —
+ * `$CLAUDE_EXECUTABLE` (only while it exists) > `claude` on PATH >
+ * `~/.local/bin/claude` > `/usr/local/bin/claude`. `undefined` means "no
+ * local binary": `pathToClaudeCodeExecutable` is left unset and the SDK's
+ * bundled platform payload is the CLI (bundled-payload mode). */
+const defaultExecutableResolver = () => resolveClaudeBinary();
 
-const defaultExecutableResolver = () => process.env.CLAUDE_EXECUTABLE ?? resolveClaudeExecutable()
-
-/** PATH first, then the common native-installer locations (a service unit
- * PATH may not include ~/.local/bin — dev3 2026-09-22: "native binary not
- * found at claude" mid-session). */
-function resolveClaudeExecutable(): string {
-  for (const dir of (process.env.PATH ?? "").split(":").filter(Boolean)) {
-    if (existsSync(join(dir, "claude"))) return DEFAULT_CLAUDE_EXECUTABLE
-  }
-  for (const candidate of [join(homedir(), ".local/bin/claude"), "/usr/local/bin/claude"]) {
-    if (existsSync(candidate)) return candidate
-  }
-  return DEFAULT_CLAUDE_EXECUTABLE
-}
-
-let factory: ClaudeFactory = defaultFactory;
-let executableResolver = defaultExecutableResolver;
+let factory: ClaudeFactory | undefined; // test injection only
+let executableResolver: () => string | undefined = defaultExecutableResolver;
 let refcount = 0;
+
+/** The factory to construct queries with: a test-injected one wins (the sync
+ * seam); otherwise the SDK is self-fetched into `worldHome`'s durable runtime
+ * on first use (sdk-runtime.ts). */
+async function resolveFactory(worldHome: string | undefined): Promise<ClaudeFactory> {
+  if (factory) return factory;
+  if (worldHome === undefined) {
+    throw new Error(
+      "agent-claude: client needs worldHome to fetch its SDK runtime (the provider passes dshHomePath)",
+    );
+  }
+  const sdkQuery = await loadClaudeQuery(worldHome);
+  return (o) => sdkQuery({ prompt: o.prompt, options: o.options }) as ClaudeQueryLike;
+}
 
 /** Replace the SDK entry point (tests inject a fake query). */
 export function setClaudeFactory(next: ClaudeFactory): void {
@@ -124,7 +124,7 @@ export function setClaudeFactory(next: ClaudeFactory): void {
 
 
 /** Replace the pathToClaudeCodeExecutable resolution. */
-export function setClaudeExecutableResolver(next: () => string): void {
+export function setClaudeExecutableResolver(next: () => string | undefined): void {
   executableResolver = next;
 }
 
@@ -136,7 +136,7 @@ export function claudeClientRefCount(): number {
 /** Restore module-level seams and refcount (test isolation only). */
 export function resetClaudeClientState(): void {
   refcount = 0;
-  factory = defaultFactory;
+  factory = undefined;
   executableResolver = defaultExecutableResolver;
 }
 
@@ -149,14 +149,16 @@ export function resetClaudeClientState(): void {
  * race, which guards against a wedged startup pinning a subprocess forever)
  * is the caller's to trace; the boot catalog stays as-is.
  */
-export async function probeClaudeModels(config: { cwd?: string; timeoutMs?: number } = {}): Promise<unknown[]> {
+export async function probeClaudeModels(config: { cwd?: string; worldHome?: string; timeoutMs?: number } = {}): Promise<unknown[]> {
+  const queryFactory = await resolveFactory(config.worldHome);
+  const executable = executableResolver();
   const queue = new InputQueue();
-  const query = factory({
+  const query = queryFactory({
     prompt: queue,
     options: {
       cwd: config.cwd ?? process.cwd(),
       env: { ...process.env },
-      pathToClaudeCodeExecutable: executableResolver(),
+      ...(executable !== undefined ? { pathToClaudeCodeExecutable: executable } : {}),
       persistSession: false,
     },
   });
@@ -180,8 +182,24 @@ export async function probeClaudeModels(config: { cwd?: string; timeoutMs?: numb
 }
 
 // ---------------------------------------------------------------------------
+/** Structural stand-in for the SDK's `CanUseTool` permission gate (the SDK is
+ * no longer imported for types). The shape is interaction.ts's dispatcher —
+ * the options fields it actually reads (toolUseID / signal / decisionReason) —
+ * plus `requestId`, a required member of the SDK's own callback options so
+ * the SDK-typed producer in index.ts stays assignable here; the SDK may also
+ * resolve null ("no control_response"), which is never a grant. */
+export type CanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { toolUseID: string; signal: AbortSignal; decisionReason?: string; requestId: string },
+) => Promise<{ behavior: "allow" } | { behavior: "deny"; message: string } | null>;
+
 export interface ClaudeClientConfig {
   cwd?: string;
+  /** The agent world's DSH home — where the SDK runtime is self-fetched on
+   * first use (sdk-runtime.ts). Required on the production path (the provider
+   * passes dshHomePath); a test-injected factory bypasses the gate. */
+  worldHome?: string;
   claudeSessionId?: string;
   resumeSessionId?: string;
   /** Host-side tool-permission gate (the interaction bridge's dispatcher). */
@@ -192,6 +210,7 @@ export interface ClaudeClientConfig {
 
 export class ClaudeSdkClient {
   private readonly cwdPath: string;
+  private readonly worldHome: string | undefined;
   private readonly claudeSessionId: string | undefined;
   private readonly resumeSessionId: string | undefined;
   private readonly canUseTool: CanUseTool | undefined;
@@ -213,6 +232,7 @@ export class ClaudeSdkClient {
       throw new Error("agent-claude: claudeSessionId and resumeSessionId are mutually exclusive");
     }
     this.cwdPath = config.cwd ?? process.cwd();
+    this.worldHome = config.worldHome;
     this.claudeSessionId = config.claudeSessionId;
     this.resumeSessionId = config.resumeSessionId;
     this.canUseTool = config.canUseTool;
@@ -274,21 +294,25 @@ export class ClaudeSdkClient {
   }
 
   /**
-   * Lazily construct the query (zero-IO until this runs). Everything up to the
-   * `this.query = query` assignment is synchronous, so concurrent first prompts
-   * can never build two queries: the first caller assigns `this.query` before
-   * any `await` yields control. This single-query invariant therefore depends
-   * on the `ClaudeFactory` contract staying synchronous (it must return the
-   * `Query` without awaiting). The reader loop is started fire-and-forget before
-   * any pending control call is replayed, so a throwing control can never leave
-   * the CLI undrained.
+   * Lazily construct the query (zero-IO until this runs). The factory is
+   * resolved first — an await (a test-injected seam, or the world-home SDK
+   * self-fetch) — and a caller that loses the race during that await reuses
+   * the winner's query at the re-check. From the construct line through the
+   * `this.query = query` assignment everything is synchronous (zero awaits),
+   * so concurrent first prompts can never build two queries. The single-query
+   * invariant therefore still depends on the `ClaudeFactory` contract staying
+   * synchronous (it must return the `Query` without awaiting). The reader loop
+   * is started fire-and-forget before any pending control call is replayed, so
+   * a throwing control can never leave the CLI undrained.
    */
   async ensureStarted(): Promise<void> {
     if (this.query !== undefined) return;
+    const f = await resolveFactory(this.worldHome); // await BEFORE the sync section
+    if (this.query !== undefined) return; // lost the race to a concurrent first prompt — reuse its query
     const queue = new InputQueue();
-    const query = factory({ prompt: queue, options: this.buildOptions() });
+    const query = f({ prompt: queue, options: this.buildOptions() });
     this.queue = queue;
-    this.query = query;
+    this.query = query; // sync section: zero awaits before this assignment (invariant)
     void this.runReader(query);
     const controls = this.pendingControls;
     this.pendingControls = [];
@@ -363,10 +387,13 @@ export class ClaudeSdkClient {
   // --- internals ------------------------------------------------------------
 
   private buildOptions(): Record<string, unknown> {
+    const executable = executableResolver();
     return {
       cwd: this.cwdPath,
       env: { ...process.env },
-      pathToClaudeCodeExecutable: executableResolver(),
+      // undefined (no local binary) leaves the key unset — bundled-payload
+      // mode lets the SDK spawn its own platform payload as the CLI.
+      ...(executable !== undefined ? { pathToClaudeCodeExecutable: executable } : {}),
       persistSession: true,
       ...(this.claudeSessionId !== undefined ? { sessionId: this.claudeSessionId } : {}),
       ...(this.resumeSessionId !== undefined ? { resume: this.resumeSessionId } : {}),

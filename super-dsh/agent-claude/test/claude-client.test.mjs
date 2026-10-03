@@ -149,10 +149,12 @@ test("pathToClaudeCodeExecutable defaults to the host binary and honors CLAUDE_E
   const saved = process.env.CLAUDE_EXECUTABLE;
   const savedPath = process.env.PATH;
 
-  // The default leg asserts the BARE name, which the resolver only returns
-  // when `claude` is findable on PATH. Pin a stub dir onto PATH so the leg is
-  // machine-independent (0.1.7-h bare-lane note: a runner whose PATH lacks
-  // ~/.local/bin drove the native-installer fallback -> absolute path -> red).
+  // The default leg asserts the RESOLVED ABSOLUTE path: the production
+  // resolver is Task 1's resolveClaudeBinary (sdk-runtime.ts), which returns
+  // the binary it actually found — never a bare name that only PATH could
+  // resolve later, and undefined when nothing resolves (which leaves the
+  // pathToClaudeCodeExecutable key unset, third leg below). Pin a stub dir
+  // onto PATH so the leg is machine-independent.
   const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -167,9 +169,9 @@ test("pathToClaudeCodeExecutable defaults to the host binary and honors CLAUDE_E
   try {
     const c1 = new ClaudeSdkClient({ cwd: "/w", claudeSessionId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" });
     await c1.prompt("hi");
-    // Deliberate contract (claude-client.ts): the default is the BARE name,
-    // PATH-resolved like any host CLI — not a probed absolute path.
-    assert.equal(defaultCalls[0].options.pathToClaudeCodeExecutable, "claude");
+    // Deliberate contract (claude-client.ts -> sdk-runtime.ts): the default is
+    // the resolved ABSOLUTE path of a binary that exists.
+    assert.equal(defaultCalls[0].options.pathToClaudeCodeExecutable, join(stubBin, "claude"));
     c1.close();
   } finally {
     if (saved === undefined) delete process.env.CLAUDE_EXECUTABLE;
@@ -179,16 +181,30 @@ test("pathToClaudeCodeExecutable defaults to the host binary and honors CLAUDE_E
 
   const envCalls = [];
   setClaudeFactory((o) => { envCalls.push(o); return fakeQuery([]); });
-  process.env.CLAUDE_EXECUTABLE = "/custom/bin/claude";
+  // CLAUDE_EXECUTABLE wins only while it points at something that EXISTS
+  // (resolveClaudeBinary's existence-checked override).
+  const stubOverride = join(stubBin, "claude-override");
+  writeFileSync(stubOverride, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  process.env.CLAUDE_EXECUTABLE = stubOverride;
   try {
     const c2 = new ClaudeSdkClient({ cwd: "/w", claudeSessionId: "ffffffff-ffff-4fff-8fff-ffffffffffff" });
     await c2.prompt("hi");
-    assert.equal(envCalls[0].options.pathToClaudeCodeExecutable, "/custom/bin/claude");
+    assert.equal(envCalls[0].options.pathToClaudeCodeExecutable, stubOverride);
     c2.close();
   } finally {
     delete process.env.CLAUDE_EXECUTABLE;
     if (saved !== undefined) process.env.CLAUDE_EXECUTABLE = saved;
   }
+
+  // Undefined resolution (bundled-payload mode: no local binary) leaves the
+  // key ABSENT so the SDK spawns its own platform payload as the CLI.
+  const absentCalls = [];
+  setClaudeExecutableResolver(() => undefined);
+  setClaudeFactory((o) => { absentCalls.push(o); return fakeQuery([]); });
+  const c3 = new ClaudeSdkClient({ cwd: "/w", claudeSessionId: "12121212-1212-4121-8121-121212121212" });
+  await c3.prompt("hi");
+  assert.equal("pathToClaudeCodeExecutable" in absentCalls[0].options, false);
+  c3.close();
 });
 
 test("control calls made before the first prompt are buffered and replayed in order", async () => {
@@ -361,3 +377,15 @@ test("prompt/followUp/steer accept a block array and push it unchanged", async (
   assert.equal(pushes[2].priority, "now", "steer still carries priority now on the block path");
   assert.equal(pushes[0].priority, undefined);
 });
+
+test("ensureStarted without worldHome and without injected factory throws", async () => {
+  resetClaudeClientState(); // factory 回到 default（自取路径）
+  const client = new ClaudeSdkClient({ cwd: "/tmp" });
+  await assert.rejects(() => client.ensureStarted(), /worldHome/);
+});
+
+test("module top-level has no bare claude-agent-sdk import", async () => {
+  const src = await import("node:fs").then(fs => fs.readFileSync(new URL("../dist/claude-client.js", import.meta.url), "utf8"));
+  assert.ok(!src.includes('from "@anthropic-ai/claude-agent-sdk"'), "bare specifier must not survive");
+});
+
