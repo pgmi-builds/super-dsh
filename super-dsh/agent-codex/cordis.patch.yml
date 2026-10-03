@@ -1,4 +1,4 @@
-# @pgmi-builds/agent-codex bundle patch (SDK line, standalone form).
+# @pgmi-builds/agent-codex bundle patch (app-server line, standalone form).
 # This file is the `dsh.bundle.patch` layer of the adapter package: when the
 # codex world profile mounts the bundle, the boot merges THIS patch — mount
 # the Codex provider plus disable the native components it replaces.
@@ -8,16 +8,17 @@
 # fixture carries the 127.0.0.1:0 listener posture).
 
 # Mount the Codex provider: a Cordis Service that registers an AgentFactory
-# on ctx.agents. The provider drives @openai/codex-sdk threads (one
-# CodexSdkClient per session) plus resume (--resume-thread); the model
-# selector is served by a Codex-backed LlmAdapter reading the codex home's
-# config.toml + model_catalog_json.
+# on ctx.agents. The provider drives one `codex app-server` child per session
+# (stdio JSONL JSON-RPC; CodexAppServerClient, spawned lazily on the first
+# prompt) plus thread resume by id; the model selector is served by a
+# Codex-backed LlmAdapter reading the codex home's config.toml +
+# model_catalog_json.
 - insert:
     - id: codex-provider
       name: '@pgmi-builds/agent-codex'
 
 # Codex owns the live agent transcript (the rollout JSONL); disable the
-# built-in loop so it does not double-run alongside the SDK thread.
+# built-in loop so it does not double-run alongside the app-server thread.
 - id: agent-loop
   disabled: true
 
@@ -29,7 +30,7 @@
 - id: llm-pi-ai
   disabled: true
 
-# Codex is single-mode: the SDK thread drives tools itself, so no Dash preset
+# Codex is single-mode: the app-server thread drives tools itself, so no Dash preset
 # composition is needed (the provider ships the fixed single-preset roster).
 # 0.1.7: the host AgentPresetRegistry row (renamed `agent-presets` ->
 # `agent-preset-registry`) stays MOUNTED — the adapter registers its one
@@ -43,9 +44,12 @@
 # list/read/replay/workspace grouping are ordinary DSH services over that log.
 # The adapter no longer provides its own persistence.
 
-# Codex has no runtime approval control — the adapter maps the preset onto
-# the launch-only --approval-mode flag (3:3 table in src/permission.ts).
-# Default to danger-full-access. Restate the full 3-preset table: a patch
+# The app-server line DOES have runtime approval control: the adapter folds
+# `approval/policy` + `sandbox/mode` from the session log into the
+# `turn/start` per-turn overrides (src/permission.ts turnPolicyFromEvents),
+# so `/permission` is live. This table still supplies the LAUNCH posture and
+# the fold's fallback. Default to danger-full-access. Restate the full
+# 3-preset table: a patch
 # with only defaultPreset silently drops the bundle's 3-preset table to the
 # plugin's built-in 2, breaking the 3:3 Dash<->Codex pairing.
 - id: permission

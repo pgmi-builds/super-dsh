@@ -3,15 +3,26 @@
  *
  * The browser model selector never touches the Codex agent directly: it is an
  * RPC round-trip through the apiproxy, which reads `ctx.llm.listProviders /
- * listModels / resolveModel` to build the catalog. This adapter answers those
- * queries from the Codex home's real catalog (`models.ts`: config.toml +
- * model_catalog_json) under the single provider route `codex` — never the
- * native deepseek-official / pi-ai routes, which the profile disables.
+ * listModels / resolveModelInfo` to build the catalog. This adapter answers
+ * those queries from the ADAPTER's canonical provider store
+ * (`codex-providers.ts`), registering ONE ROUTE PER CONFIGURED PROVIDER.
  *
- * `stream` is never dispatched: Codex owns generation through its SDK thread
- * (`CodexAgent`), so the adapter only serves catalog/metadata queries. It
- * throws rather than fabricating a wire route the harness would misuse.
+ * That one-route-per-provider shape is the 2026-10-04 rework, and it is what
+ * makes the whole feature DSH-native: the harness's own model selector already
+ * renders a provider-grouped catalog, already keeps the choice per session
+ * (`session/selectModel` → the durable `model/selection` event + the
+ * `modelSelection` projection), and already reports which route a session last
+ * used. Registering the Codex providers as real routes means Super D gets all
+ * of that by construction instead of re-implementing it — there is no "active
+ * provider" left for the UI to hold.
+ *
+ * `stream` is never dispatched: Codex owns generation through its app-server
+ * thread (`CodexAgent`), so the adapter only serves catalog/metadata queries.
+ * It throws rather than fabricating a wire route the harness would misuse.
+ *
+ * @module agent-codex/adapter
  */
+
 import {
   LlmAdapter,
   LlmError,
@@ -21,48 +32,86 @@ import {
   type LlmResolvedModelInfo,
   type StreamChunk,
 } from "@deepseek-ai/dsh-llm";
-import { readCodexModelCatalog } from "./models.js";
-import { useCodexHome } from "./codex-store.js";
+import { readProviderStore, type CodexProviderEntry, type CodexProviderStore } from "./codex-providers.js";
 
-/** The one provider route every Codex model is served under. */
+/**
+ * The single route every Codex model was served under before the multi-provider
+ * rework. No longer registered (a session pinned to it falls back to whatever
+ * the native `config.toml` runs), but kept as the one named constant so the
+ * legacy value is greppable in session logs.
+ */
 export const CODEX_PROVIDER_ID = "codex";
+
+/** Whether a provider may be registered as a model route. */
+export function routableProvider(entry: CodexProviderEntry): boolean {
+  return entry.models.length > 0;
+}
+
+/** The route ids a store currently contributes to `ctx.llm`. */
+export function routeIds(store: CodexProviderStore): readonly string[] {
+  return store.providers.filter(routableProvider).map((entry) => entry.id);
+}
+
+/** The provider entry a route id names, or `undefined`. */
+export function providerFor(worldHome: string, providerId: string): CodexProviderEntry | undefined {
+  return readProviderStore(worldHome).providers.find((entry) => entry.id === providerId);
+}
 
 export class CodexLlmAdapter extends LlmAdapter {
   /**
-   * `home` = the codex app home — the CLI's native `~/.codex` (2026-09-17
-   * home ruling), resolved by the provider via resolveCodexHome() so catalog
-   * reads never depend on construction-time context.
+   * @param worldHome - the world's DSH home, holding the canonical provider
+   *   store in `<worldHome>/codex-providers.json`. Read on every call, so a
+   *   panel edit is visible to the next catalog query without re-registration.
    */
-  constructor(private readonly home?: string) {
+  constructor(private readonly worldHome: string) {
     super();
   }
 
-  providerInfo(_provider: string): LlmProviderInfo {
-    return { id: CODEX_PROVIDER_ID, name: readCodexModelCatalog(this.home).provider ?? "Codex" };
+  /** The store entry a route id names; `undefined` for a stale route. */
+  #entry(provider: string): CodexProviderEntry | undefined {
+    return providerFor(this.worldHome, provider);
   }
 
-  async listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
-    return readCodexModelCatalog(this.home).models.map((model) => ({
-      provider: CODEX_PROVIDER_ID,
+  providerInfo(provider: string): LlmProviderInfo {
+    // The display name is the entry's label — for a provider folded in from the
+    // user's own config that is its endpoint URL, which is the only name a
+    // hand-written codex config supplies.
+    return { id: provider, name: this.#entry(provider)?.label ?? provider };
+  }
+
+  async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const entry = this.#entry(provider);
+    if (entry === undefined) return [];
+    return entry.models.map((model) => ({
+      provider,
       id: model.id,
-      name: model.label,
+      name: model.displayName ?? model.id,
     }));
   }
 
-  async resolveModel(_provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    const found = readCodexModelCatalog(this.home).models.find((candidate) => candidate.id === model);
+  async resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+    const entry = this.#entry(provider);
+    const found = entry?.models.find((candidate) => candidate.id === model);
     if (found === undefined) {
-      throw new LlmError(`Codex provider "${CODEX_PROVIDER_ID}" does not serve model "${model}"`, "MODEL_NOT_FOUND");
+      throw new LlmError(
+        `Codex provider "${provider}" does not serve model "${model}"`,
+        "MODEL_NOT_FOUND",
+      );
     }
     return {
-      provider: CODEX_PROVIDER_ID,
+      provider,
       id: found.id,
-      name: found.label,
-      ...(found.contextWindow !== undefined && found.contextWindow > 0 ? { context: { contextWindow: found.contextWindow } } : {}),
+      name: found.displayName ?? found.id,
+      ...(found.contextWindow !== undefined && found.contextWindow > 0
+        ? { context: { contextWindow: found.contextWindow } }
+        : {}),
     };
   }
 
   stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
-    throw new LlmError("the Codex adapter does not stream: Codex owns generation through its SDK agent", "UNSUPPORTED_STREAM");
+    throw new LlmError(
+      "the Codex adapter does not stream: Codex owns generation through its app-server thread",
+      "UNSUPPORTED_STREAM",
+    );
   }
 }

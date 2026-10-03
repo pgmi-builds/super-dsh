@@ -1637,7 +1637,16 @@ function attemptSwitch(label) {
 
 //#endregion
 //#region src/client/agent-settings.ts
-const SETTINGS_PANELS = { agy: { namespace: "agyAuth" } };
+const SETTINGS_PANELS = {
+	agy: {
+		namespace: "agyAuth",
+		kind: "auth"
+	},
+	codex: {
+		namespace: "codexProviders",
+		kind: "providers"
+	}
+};
 /** The panel spec for a runtime, or `undefined` when it has none yet. */
 function settingsPanelFor(agentKey) {
 	return SETTINGS_PANELS[agentKey];
@@ -1701,6 +1710,112 @@ function activeMethod(view) {
 function selectable(option) {
 	return !option.placeholder;
 }
+function nonEmpty(value) {
+	return typeof value === "string" && value !== "" ? value : void 0;
+}
+function modelOption(raw) {
+	if (typeof raw !== "object" || raw === null) return void 0;
+	const record = raw;
+	const id = nonEmpty(record.id);
+	if (id === void 0) return void 0;
+	const contextWindow = record.contextWindow;
+	return {
+		id,
+		label: nonEmpty(record.displayName) ?? id,
+		...typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0 ? { contextWindow } : {}
+	};
+}
+function providerOption(raw) {
+	if (typeof raw !== "object" || raw === null) return void 0;
+	const record = raw;
+	const id = nonEmpty(record.id);
+	const label = nonEmpty(record.label);
+	const baseUrl = nonEmpty(record.baseUrl);
+	if (id === void 0 || label === void 0 || baseUrl === void 0) return void 0;
+	const models = Array.isArray(record.models) ? record.models.map(modelOption).filter((entry) => entry !== void 0) : [];
+	const envName = nonEmpty(record.envName);
+	return {
+		id,
+		label,
+		baseUrl,
+		protocol: record.protocol === "chat" ? "chat" : "responses",
+		models,
+		authKind: record.authKind === "env" ? "env" : "apiKey",
+		...envName === void 0 ? {} : { envName },
+		hasKey: record.hasKey === true
+	};
+}
+function protocolOption(raw) {
+	if (typeof raw !== "object" || raw === null) return void 0;
+	const record = raw;
+	const value = nonEmpty(record.value);
+	const label = nonEmpty(record.label);
+	if (value === void 0 || label === void 0) return void 0;
+	return {
+		value,
+		label,
+		available: record.available === true,
+		hint: nonEmpty(record.hint) ?? ""
+	};
+}
+function providerPaths(raw) {
+	if (typeof raw !== "object" || raw === null) return void 0;
+	const record = raw;
+	const store = nonEmpty(record.store);
+	const config = nonEmpty(record.config);
+	const auth = nonEmpty(record.auth);
+	const catalogs = nonEmpty(record.catalogs);
+	if (store === void 0 || config === void 0 || auth === void 0 || catalogs === void 0) return void 0;
+	return {
+		store,
+		config,
+		auth,
+		catalogs
+	};
+}
+/**
+* Defensive parse of the adapter's providers answer.
+*
+* `undefined` for anything that is not a usable view — but an empty `providers`
+* array WITH a usable protocol list is valid (a fresh install), and so is a
+* provider whose `models` array is empty.
+*/
+function parseProvidersView(raw) {
+	if (typeof raw !== "object" || raw === null) return void 0;
+	const record = raw;
+	if (!Array.isArray(record.providers)) return void 0;
+	if (!Array.isArray(record.protocols)) return void 0;
+	const protocols = record.protocols.map(protocolOption).filter((entry) => entry !== void 0);
+	if (protocols.length === 0) return void 0;
+	const paths = providerPaths(record.paths);
+	if (paths === void 0) return void 0;
+	const providers = record.providers.map(providerOption).filter((entry) => entry !== void 0);
+	const syncedAt = record.syncedAt;
+	const note = nonEmpty(record.note);
+	return {
+		providers,
+		native: nativeConfig(record.native),
+		protocols,
+		paths,
+		...typeof syncedAt === "number" && Number.isFinite(syncedAt) ? { syncedAt } : {},
+		...note === void 0 ? {} : { note }
+	};
+}
+/**
+* The user's own config.toml as the adapter last read it. `null` when the
+* adapter said nothing; otherwise an object carrying whichever halves were
+* named (an empty one is still news — the panel says the file names nothing).
+*/
+function nativeConfig(raw) {
+	if (typeof raw !== "object" || raw === null) return null;
+	const record = raw;
+	const providerId = nonEmpty(record.providerId);
+	const model = nonEmpty(record.model);
+	return {
+		...providerId === void 0 ? {} : { providerId },
+		...model === void 0 ? {} : { model }
+	};
+}
 
 //#endregion
 //#region src/client/runtime-settings-api.ts
@@ -1711,7 +1826,6 @@ function mintRpcId() {
 	if (webCrypto !== void 0 && typeof webCrypto.getRandomValues === "function") return [...webCrypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
 	return `rpc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
-/** Build the envelope for one panel call (exported so tests pin the exact wire shape). */
 function settingsEnvelope(namespace, op, args) {
 	return {
 		type: "client-request",
@@ -1775,6 +1889,26 @@ async function setAuthMode(agentKey, namespace, mode, doFetch) {
 	const view = parseAuthView(await callRuntimeSettings(agentKey, namespace, "set", { request: { mode } }, doFetch));
 	if (view === void 0) throw new Error("settings: the runtime returned no usable auth options");
 	return view;
+}
+function requireProvidersView(value) {
+	const view = parseProvidersView(value);
+	if (view === void 0) throw new Error("settings: the runtime returned no usable provider list");
+	return view;
+}
+/** Read the multi-provider state of one runtime. */
+async function fetchProvidersView(agentKey, namespace, doFetch) {
+	return requireProvidersView(await callRuntimeSettings(agentKey, namespace, "get", {}, doFetch));
+}
+/**
+* Add or edit one provider in the adapter's list. Which provider a session runs
+* on is DSH's own per-session model selection, so this touches no active half.
+*/
+async function saveProvider(agentKey, namespace, provider, doFetch) {
+	return requireProvidersView(await callRuntimeSettings(agentKey, namespace, "save", { request: { provider } }, doFetch));
+}
+/** Drop one provider from the list. Does not rewrite the runtime's own config. */
+async function removeProvider(agentKey, namespace, id, doFetch) {
+	return requireProvidersView(await callRuntimeSettings(agentKey, namespace, "remove", { request: { id } }, doFetch));
 }
 
 //#endregion
@@ -2038,25 +2172,46 @@ function GroupHead({ title, count, action }) {
 	});
 }
 /**
-* One runtime's settings, rendered inside its expanded row (P3).
+* One runtime's settings, rendered inside its expanded row (P3/P4).
 *
-* The adapter owns the config, so this component owns no auth knowledge: it
-* asks the adapter's Remote for the option list and renders what comes back.
-* The round trip after a change is authoritative — the adapter re-probes and
+* The adapter owns the config, so this component owns no config knowledge: each
+* body asks the adapter's Remote and renders what comes back. The round trip
+* after a change is authoritative — the adapter re-reads the machine and
 * answers with the new state, which is why nothing is optimistically patched
-* here (a selection can fall through the ladder, and the UI must show that).
+* here (a selection can fall through a ladder, or a switch can leave a provider
+* the runtime is still running).
 *
 * Mounted only while its row is open, so expanding always re-reads the
 * machine rather than replaying a stale first read.
 */
 function RuntimeSettingsPanel({ agent }) {
-	const namespace = settingsPanelFor(agent.key)?.namespace;
+	const panel = settingsPanelFor(agent.key);
+	if (panel === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+		style: {
+			margin: 0,
+			color: "var(--dsw-alias-label-tertiary)"
+		},
+		children: "No settings for this runtime yet."
+	});
+	return panel.kind === "providers" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ProvidersPanel, {
+		agent,
+		namespace: panel.namespace
+	}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(AuthSettingsPanel, {
+		agent,
+		namespace: panel.namespace
+	});
+}
+/**
+* The sign-in-form body (Antigravity): one form picked from the adapter's
+* ladder. `namespace` always resolves — the row would not mount this body
+* otherwise.
+*/
+function AuthSettingsPanel({ agent, namespace }) {
 	const [view, setView] = react.useState(void 0);
 	const [error, setError] = react.useState(null);
 	const [busy, setBusy] = react.useState(null);
-	const [loading, setLoading] = react.useState(namespace !== void 0);
+	const [loading, setLoading] = react.useState(true);
 	react.useEffect(() => {
-		if (namespace === void 0) return void 0;
 		let live = true;
 		setLoading(true);
 		fetchAuthView(agent.key, namespace).then((next) => {
@@ -2077,7 +2232,7 @@ function RuntimeSettingsPanel({ agent }) {
 		};
 	}, [agent.key, namespace]);
 	const choose = (mode) => {
-		if (namespace === void 0 || busy !== null) return;
+		if (busy !== null) return;
 		setBusy(mode);
 		setAuthMode(agent.key, namespace, mode).then((next) => {
 			setView(next);
@@ -2088,13 +2243,6 @@ function RuntimeSettingsPanel({ agent }) {
 			setBusy(null);
 		});
 	};
-	if (namespace === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-		style: {
-			margin: 0,
-			color: "var(--dsw-alias-label-tertiary)"
-		},
-		children: "No settings for this runtime yet."
-	});
 	if (loading) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 		style: {
 			margin: 0,
@@ -2207,6 +2355,487 @@ function RuntimeSettingsPanel({ agent }) {
 		]
 	});
 }
+/** Field and control styling for the providers body — same visual language as the auth list. */
+const fieldStyle = {
+	display: "flex",
+	flexDirection: "column",
+	gap: 3,
+	fontSize: 12.5,
+	color: "var(--dsw-alias-label-secondary)"
+};
+const buttonStyle = {
+	font: "inherit",
+	fontSize: 12.5,
+	padding: "5px 10px",
+	borderRadius: 6,
+	border: "1px solid var(--dsw-alias-border-secondary, rgba(127,127,127,0.3))",
+	background: "transparent",
+	color: "var(--dsw-alias-label-primary)",
+	cursor: "pointer"
+};
+const primaryButtonStyle = {
+	...buttonStyle,
+	border: "none",
+	background: "var(--dsw-alias-label-primary)",
+	color: "var(--dsw-alias-bg-base, #fff)",
+	fontWeight: 500
+};
+/** The blank draft the Add form starts from. */
+const EMPTY_PROVIDER_DRAFT = {
+	id: "",
+	label: "",
+	baseUrl: "",
+	protocol: "responses",
+	apiKey: "",
+	envName: "",
+	modelIds: "",
+	contextWindow: ""
+};
+/** `a, b c` → `['a','b','c']` — the model field takes whatever separator is natural. */
+function parseModelIds(text) {
+	return text.split(/[\s,]+/).map((part) => part.trim()).filter((part) => part !== "");
+}
+/** `provider / model`, whichever halves the user's config.toml actually names. */
+function nativeDescription(native) {
+	const parts = [native.providerId, native.model].filter((part) => part !== void 0);
+	return parts.length === 0 ? "no provider" : parts.join(" / ");
+}
+/**
+* The multi-provider body (Codex, 2026-10-03 ruling).
+*
+* Super D hosts the list cc-switch otherwise holds: add, edit and remove only.
+* The active/select half is gone — which provider a Codex session runs on is
+* DSH's own per-session model selection, so no row is marked "in force". What
+* the user's OWN config.toml names is rendered as a passive fact (the adapter
+* reconciles the list against that file), and the files it touches are named so
+* an edit is never a surprise.
+*
+* Keys are write-only by construction: the adapter answers `hasKey`, never a
+* value, so the field is blank on every open and blank means "leave whatever is
+* already there".
+*/
+function ProvidersPanel({ agent, namespace }) {
+	const [view, setView] = react.useState(void 0);
+	const [error, setError] = react.useState(null);
+	const [busy, setBusy] = react.useState(null);
+	const [loading, setLoading] = react.useState(true);
+	/** The id being edited, `NEW_PROVIDER` for the add form, `null` when closed. */
+	const [editing, setEditing] = react.useState(null);
+	const [draft, setDraft] = react.useState(EMPTY_PROVIDER_DRAFT);
+	react.useEffect(() => {
+		let live = true;
+		setLoading(true);
+		fetchProvidersView(agent.key, namespace).then((next) => {
+			if (live) {
+				setView(next);
+				setError(null);
+			}
+		}).catch((err) => {
+			if (live) {
+				setView(void 0);
+				setError(messageOf(err));
+			}
+		}).finally(() => {
+			if (live) setLoading(false);
+		});
+		return () => {
+			live = false;
+		};
+	}, [agent.key, namespace]);
+	/** One mutation, one authoritative re-read; `key` drives the busy chip. */
+	const run = (key, call) => {
+		if (busy !== null) return;
+		setBusy(key);
+		call().then((next) => {
+			setView(next);
+			setError(null);
+			setEditing(null);
+			setDraft(EMPTY_PROVIDER_DRAFT);
+		}).catch((err) => {
+			setError(messageOf(err));
+		}).finally(() => {
+			setBusy(null);
+		});
+	};
+	const openNew = () => {
+		setEditing(NEW_PROVIDER);
+		setDraft(EMPTY_PROVIDER_DRAFT);
+		setError(null);
+	};
+	const openEdit = (provider) => {
+		setEditing(provider.id);
+		setDraft({
+			id: provider.id,
+			label: provider.label,
+			baseUrl: provider.baseUrl,
+			protocol: provider.protocol,
+			apiKey: "",
+			envName: provider.envName ?? "",
+			modelIds: provider.models.map((model) => model.id).join(", "),
+			contextWindow: provider.models[0]?.contextWindow === void 0 ? "" : String(provider.models[0].contextWindow)
+		});
+		setError(null);
+	};
+	const submit = () => {
+		const ids = parseModelIds(draft.modelIds);
+		const window$1 = draft.contextWindow.trim() === "" ? void 0 : Number(draft.contextWindow);
+		const provider = {
+			id: draft.id.trim(),
+			label: draft.label.trim(),
+			baseUrl: draft.baseUrl.trim(),
+			protocol: draft.protocol,
+			auth: draft.envName.trim() === "" ? {
+				kind: "apiKey",
+				value: draft.apiKey
+			} : {
+				kind: "env",
+				name: draft.envName.trim()
+			},
+			models: ids.map((id) => ({
+				id,
+				...window$1 !== void 0 && Number.isSafeInteger(window$1) && window$1 > 0 ? { contextWindow: window$1 } : {}
+			}))
+		};
+		run("save", () => saveProvider(agent.key, namespace, provider));
+	};
+	if (loading) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+		style: {
+			margin: 0,
+			color: "var(--dsw-alias-label-tertiary)"
+		},
+		children: "Loading providers…"
+	});
+	if (view === void 0) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+		style: {
+			margin: 0,
+			color: "var(--dsw-alias-state-warn-label, var(--dsw-alias-label-secondary))"
+		},
+		children: error ?? "Providers are unavailable for this runtime."
+	});
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+		style: {
+			display: "flex",
+			flexDirection: "column",
+			gap: 6
+		},
+		children: [
+			/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				style: panelHeadStyle,
+				children: "Model provider"
+			}),
+			view.native !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: {
+					margin: 0,
+					color: "var(--dsw-alias-label-tertiary)"
+				},
+				children: [
+					"Your own Codex config.toml currently names ",
+					nativeDescription(view.native),
+					"."
+				]
+			}),
+			view.syncedAt !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: {
+					margin: 0,
+					color: "var(--dsw-alias-label-caption)",
+					fontSize: 11
+				},
+				children: ["synced from config.toml ", new Date(view.syncedAt).toLocaleString()]
+			}),
+			view.providers.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				style: {
+					margin: 0,
+					color: "var(--dsw-alias-label-tertiary)"
+				},
+				children: "No providers yet — add one to pin a model and endpoint."
+			}),
+			view.providers.map((provider) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				style: optionStyle,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: {
+							fontWeight: 500,
+							whiteSpace: "nowrap"
+						},
+						children: provider.label
+					}),
+					provider.authKind === "env" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+						style: chip,
+						children: ["env ", provider.envName]
+					}),
+					!provider.hasKey && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chip,
+						children: "no key"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+						style: {
+							flex: 1,
+							minWidth: 0,
+							overflow: "hidden",
+							textOverflow: "ellipsis",
+							whiteSpace: "nowrap",
+							fontSize: 12,
+							color: "var(--dsw-alias-label-tertiary)"
+						},
+						children: [provider.baseUrl, provider.models.length === 0 ? "" : ` · ${provider.models.map((model) => model.id).join(", ")}`]
+					}),
+					provider.models.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chipWarn,
+						children: "no models yet — add one"
+					}),
+					busy === `remove:${provider.id}` && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chip,
+						children: "removing…"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						style: buttonStyle,
+						disabled: busy !== null,
+						onClick: () => {
+							openEdit(provider);
+						},
+						children: "Edit"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						style: {
+							...buttonStyle,
+							color: "var(--dsw-alias-state-error-primary, #c66)"
+						},
+						disabled: busy !== null,
+						"aria-label": `Delete ${provider.label}`,
+						onClick: () => {
+							run(`remove:${provider.id}`, () => removeProvider(agent.key, namespace, provider.id));
+						},
+						children: "Delete"
+					})
+				]
+			}, provider.id)),
+			editing === null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				style: buttonStyle,
+				disabled: busy !== null,
+				onClick: openNew,
+				children: "+ Add provider"
+			}) }),
+			editing !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: 8,
+					maxWidth: 520
+				},
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						style: panelHeadStyle,
+						children: editing === NEW_PROVIDER ? "Add provider" : `Edit ${editing}`
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["Provider id", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							style: inputStyle,
+							value: draft.id,
+							disabled: editing !== NEW_PROVIDER,
+							placeholder: "zai-plan",
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									id: event.target.value
+								});
+							}
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["Display name", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							style: inputStyle,
+							value: draft.label,
+							placeholder: "Z.ai Plan",
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									label: event.target.value
+								});
+							}
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["Base URL", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							style: inputStyle,
+							value: draft.baseUrl,
+							placeholder: "https://api.z.ai/api/coding/paas/v4",
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									baseUrl: event.target.value
+								});
+							}
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["API protocol", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
+							style: inputStyle,
+							value: draft.protocol,
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									protocol: event.target.value
+								});
+							},
+							children: view.protocols.map((option) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("option", {
+								value: option.value,
+								disabled: !option.available,
+								title: option.hint,
+								children: [option.label, option.available ? "" : " — unsupported"]
+							}, option.value))
+						})]
+					}),
+					(() => {
+						const option = view.protocols.find((candidate) => candidate.value === draft.protocol);
+						return option === void 0 || option.available ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+							style: {
+								margin: 0,
+								color: "var(--dsw-alias-state-error-primary, #c66)",
+								fontSize: 12
+							},
+							children: option.hint
+						});
+					})(),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["Model IDs", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							style: inputStyle,
+							value: draft.modelIds,
+							placeholder: "glm-5.2, glm-5.2-air",
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									modelIds: event.target.value
+								});
+							}
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["Context window (tokens, optional)", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							style: inputStyle,
+							value: draft.contextWindow,
+							inputMode: "numeric",
+							placeholder: "1000000",
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									contextWindow: event.target.value
+								});
+							}
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: [
+							"API key ",
+							editing !== NEW_PROVIDER && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								style: { color: "var(--dsw-alias-label-caption)" },
+								children: "(leave blank to keep the saved one)"
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+								style: inputStyle,
+								type: "password",
+								value: draft.apiKey,
+								autoComplete: "off",
+								onChange: (event) => {
+									setDraft({
+										...draft,
+										apiKey: event.target.value
+									});
+								}
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+						style: fieldStyle,
+						children: ["…or read the key from an environment variable", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							style: inputStyle,
+							value: draft.envName,
+							placeholder: "DEEPSEEK_API_KEY",
+							onChange: (event) => {
+								setDraft({
+									...draft,
+									envName: event.target.value
+								});
+							}
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						style: {
+							display: "flex",
+							gap: 6
+						},
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							style: primaryButtonStyle,
+							disabled: busy !== null,
+							onClick: submit,
+							children: busy === "save" ? "Saving…" : "Save"
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							style: buttonStyle,
+							disabled: busy !== null,
+							onClick: () => {
+								setEditing(null);
+								setDraft(EMPTY_PROVIDER_DRAFT);
+							},
+							children: "Cancel"
+						})]
+					})
+				]
+			}),
+			view.note !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				style: {
+					margin: "2px 0 0",
+					color: "var(--dsw-alias-label-tertiary)"
+				},
+				children: view.note
+			}),
+			error !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				style: {
+					margin: "2px 0 0",
+					color: "var(--dsw-alias-state-error-primary)"
+				},
+				children: error
+			}),
+			/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: {
+					margin: "4px 0 0",
+					color: "var(--dsw-alias-label-caption)",
+					fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+					fontSize: 11
+				},
+				children: ["list ", view.paths.store]
+			}),
+			/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+				style: {
+					margin: 0,
+					color: "var(--dsw-alias-label-caption)",
+					fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+					fontSize: 11
+				},
+				children: [
+					"native ",
+					view.paths.config,
+					" · ",
+					view.paths.auth,
+					" · ",
+					view.paths.catalogs
+				]
+			})
+		]
+	});
+}
+/** Sentinel for "the add form", distinct from any real provider id. */
+const NEW_PROVIDER = "\0new";
 function HubPage() {
 	const [mesh, setMesh] = react.useState({ machines: [] });
 	const [meshLoaded, setMeshLoaded] = react.useState(false);

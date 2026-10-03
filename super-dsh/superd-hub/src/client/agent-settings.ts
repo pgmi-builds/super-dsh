@@ -64,12 +64,26 @@ export interface RuntimeAuthView {
 export interface SettingsPanelSpec {
   /** The adapter's Remote namespace (`agyAuth`). */
   readonly namespace: string
+  /**
+   * Which body the expanded row mounts. A runtime's config is not always a
+   * choice among a fixed set: Antigravity picks one sign-in form from a ladder,
+   * while Codex carries a LIST of providers the user adds, edits and removes
+   * (2026-10-03 ruling; the former active/select toggle is gone — which provider
+   * a Codex session runs on is DSH's own per-session model selection, not a
+   * hub-side switch). One namespace, two shapes — the kind discriminates.
+   */
+  readonly kind: 'auth' | 'providers'
 }
 
 const SETTINGS_PANELS: Readonly<Record<string, SettingsPanelSpec>> = {
   // The one runtime with a settings surface this round: the CLI adapter owns the
   // auth ladder and is the configuration surface for the user's local Antigravity.
-  agy: { namespace: 'agyAuth' },
+  agy: { namespace: 'agyAuth', kind: 'auth' },
+  // Codex's own config.toml names exactly one `model_provider`, but that file
+  // is the USER's and no longer the hub's toggle: Super D hosts the list
+  // cc-switch otherwise holds (add / edit / remove) and the adapter owns both
+  // the list and whatever it does with the native file.
+  codex: { namespace: 'codexProviders', kind: 'providers' },
 }
 
 /** The panel spec for a runtime, or `undefined` when it has none yet. */
@@ -147,4 +161,181 @@ export function activeMethod(view: RuntimeAuthView): AuthMethodOption | undefine
 /** Whether an option may be picked (placeholders are rendered, never selected). */
 export function selectable(option: AuthMethodOption): boolean {
   return !option.placeholder
+}
+
+// ------------------------------------------------------------- providers body
+
+// The multi-provider surface of a single-provider harness (codex). Config is
+// still the ADAPTER's (dev-rules §12), so nothing here knows what a provider is
+// beyond the shape the adapter promises. The parse is defensive in the same way
+// `parseAuthView` is, with two deliberate differences — an EMPTY provider list is
+// a legitimate state (a fresh install), so the panel renders its "Add provider"
+// affordance rather than an error; and a provider's `models` may be empty (one
+// folded in from the user's config.toml that is not the one in force has no
+// discoverable list), which the row states instead of rendering a blank. There
+// is no `selected`/active half at all: choosing what a session runs is DSH's own
+// model selection.
+
+/** One model behind a provider, as the panel lists it. */
+export interface ProviderModelOption {
+  readonly id: string
+  /** Human label; the adapter sends one, else the id stands in. */
+  readonly label: string
+  readonly contextWindow?: number
+}
+
+/** One configured provider, listed but never carrying its key. */
+export interface ProviderOption {
+  readonly id: string
+  readonly label: string
+  readonly baseUrl: string
+  readonly protocol: string
+  readonly models: readonly ProviderModelOption[]
+  readonly authKind: 'apiKey' | 'env'
+  /** The variable an env-shaped provider expects. */
+  readonly envName?: string
+  /** Whether a key is available — the ONLY thing the wire says about it. */
+  readonly hasKey: boolean
+}
+
+/** One wire protocol the adapter offers, and whether it may be picked. */
+export interface ProviderProtocolOption {
+  readonly value: string
+  readonly label: string
+  readonly available: boolean
+  readonly hint: string
+}
+
+/** The files this surface reads and writes, shown so where an edit lands is never a surprise. */
+export interface ProviderPaths {
+  readonly store: string
+  readonly config: string
+  readonly auth: string
+  readonly catalogs: string
+}
+
+/** The adapter's answer to `codexProviders/get` (and to every mutation). */
+export interface RuntimeProvidersView {
+  readonly providers: readonly ProviderOption[]
+  /**
+   * What the user's OWN ~/.codex/config.toml currently names. Informational
+   * only — there is no action attached to it, and DSH's per-session model
+   * selection (not this list) decides what a session runs.
+   */
+  readonly native: { readonly providerId?: string; readonly model?: string } | null
+  readonly protocols: readonly ProviderProtocolOption[]
+  readonly paths: ProviderPaths
+  /** Epoch ms of the last reconcile against config.toml, when one has happened. */
+  readonly syncedAt?: number
+  readonly note?: string
+}
+
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+function modelOption(raw: unknown): ProviderModelOption | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  const id = nonEmpty(record.id)
+  if (id === undefined) return undefined
+  const contextWindow = record.contextWindow
+  return {
+    id,
+    label: nonEmpty(record.displayName) ?? id,
+    ...(typeof contextWindow === 'number' && Number.isSafeInteger(contextWindow) && contextWindow > 0
+      ? { contextWindow }
+      : {}),
+  }
+}
+
+function providerOption(raw: unknown): ProviderOption | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  const id = nonEmpty(record.id)
+  const label = nonEmpty(record.label)
+  const baseUrl = nonEmpty(record.baseUrl)
+  if (id === undefined || label === undefined || baseUrl === undefined) return undefined
+  const models = Array.isArray(record.models)
+    ? record.models.map(modelOption).filter((entry): entry is ProviderModelOption => entry !== undefined)
+    : []
+  const envName = nonEmpty(record.envName)
+  return {
+    id,
+    label,
+    baseUrl,
+    // An unknown protocol is never echoed into a control; the only value this
+    // harness can actually run is the safe default.
+    protocol: record.protocol === 'chat' ? 'chat' : 'responses',
+    models,
+    authKind: record.authKind === 'env' ? 'env' : 'apiKey',
+    ...(envName === undefined ? {} : { envName }),
+    hasKey: record.hasKey === true,
+  }
+}
+
+function protocolOption(raw: unknown): ProviderProtocolOption | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  const value = nonEmpty(record.value)
+  const label = nonEmpty(record.label)
+  if (value === undefined || label === undefined) return undefined
+  return { value, label, available: record.available === true, hint: nonEmpty(record.hint) ?? '' }
+}
+
+function providerPaths(raw: unknown): ProviderPaths | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  const store = nonEmpty(record.store)
+  const config = nonEmpty(record.config)
+  const auth = nonEmpty(record.auth)
+  const catalogs = nonEmpty(record.catalogs)
+  if (store === undefined || config === undefined || auth === undefined || catalogs === undefined) return undefined
+  return { store, config, auth, catalogs }
+}
+
+/**
+ * Defensive parse of the adapter's providers answer.
+ *
+ * `undefined` for anything that is not a usable view — but an empty `providers`
+ * array WITH a usable protocol list is valid (a fresh install), and so is a
+ * provider whose `models` array is empty.
+ */
+export function parseProvidersView(raw: unknown): RuntimeProvidersView | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  if (!Array.isArray(record.providers)) return undefined
+  if (!Array.isArray(record.protocols)) return undefined
+  const protocols = record.protocols.map(protocolOption).filter((entry): entry is ProviderProtocolOption => entry !== undefined)
+  if (protocols.length === 0) return undefined
+  const paths = providerPaths(record.paths)
+  if (paths === undefined) return undefined
+  const providers = record.providers.map(providerOption).filter((entry): entry is ProviderOption => entry !== undefined)
+  const syncedAt = record.syncedAt
+  const note = nonEmpty(record.note)
+
+  return {
+    providers,
+    native: nativeConfig(record.native),
+    protocols,
+    paths,
+    ...(typeof syncedAt === 'number' && Number.isFinite(syncedAt) ? { syncedAt } : {}),
+    ...(note === undefined ? {} : { note }),
+  }
+}
+
+/**
+ * The user's own config.toml as the adapter last read it. `null` when the
+ * adapter said nothing; otherwise an object carrying whichever halves were
+ * named (an empty one is still news — the panel says the file names nothing).
+ */
+function nativeConfig(raw: unknown): RuntimeProvidersView['native'] {
+  if (typeof raw !== 'object' || raw === null) return null
+  const record = raw as Record<string, unknown>
+  const providerId = nonEmpty(record.providerId)
+  const model = nonEmpty(record.model)
+  return {
+    ...(providerId === undefined ? {} : { providerId }),
+    ...(model === undefined ? {} : { model }),
+  }
 }

@@ -21,7 +21,7 @@
  * @module superd-hub/client/runtime-settings-api
  */
 
-import { parseAuthView, type RuntimeAuthView } from './agent-settings.js'
+import { parseAuthView, parseProvidersView, type RuntimeAuthView, type RuntimeProvidersView } from './agent-settings.js'
 
 /** Structural slice of `fetch` — the bundle uses the global, tests inject a stub. */
 export type FetchLike = (input: string, init: RequestInit) => Promise<{
@@ -50,7 +50,10 @@ export interface ClientRequestEnvelope {
 }
 
 /** Build the envelope for one panel call (exported so tests pin the exact wire shape). */
-export function settingsEnvelope(namespace: string, op: 'get' | 'set', args: Record<string, unknown>): ClientRequestEnvelope {
+/** The operation names the adapter Remotes accept (auth ladder + providers). */
+export type RuntimeSettingsOp = 'get' | 'set' | 'save' | 'remove'
+
+export function settingsEnvelope(namespace: string, op: RuntimeSettingsOp, args: Record<string, unknown>): ClientRequestEnvelope {
   return {
     type: 'client-request',
     rpcId: mintRpcId(),
@@ -85,7 +88,7 @@ function messageOf(error: unknown): string {
 export async function callRuntimeSettings(
   agentKey: string,
   namespace: string,
-  op: 'get' | 'set',
+  op: RuntimeSettingsOp,
   args: Record<string, unknown>,
   doFetch?: FetchLike,
 ): Promise<unknown> {
@@ -140,6 +143,51 @@ export async function setAuthMode(
   const view = parseAuthView(value)
   if (view === undefined) throw new Error('settings: the runtime returned no usable auth options')
   return view
+}
+
+// ------------------------------------------- the codex providers body (P4)
+
+// Same transport, same namespace rule; only the operation names and the
+// argument shapes differ. Every call re-parses the adapter's answer through
+// `parseProvidersView`, so a malformed reply is an error here rather than a
+// half-rendered panel.
+
+function requireProvidersView(value: unknown): RuntimeProvidersView {
+  const view = parseProvidersView(value)
+  if (view === undefined) throw new Error('settings: the runtime returned no usable provider list')
+  return view
+}
+
+/** Read the multi-provider state of one runtime. */
+export async function fetchProvidersView(
+  agentKey: string,
+  namespace: string,
+  doFetch?: FetchLike,
+): Promise<RuntimeProvidersView> {
+  return requireProvidersView(await callRuntimeSettings(agentKey, namespace, 'get', {}, doFetch))
+}
+
+/**
+ * Add or edit one provider in the adapter's list. Which provider a session runs
+ * on is DSH's own per-session model selection, so this touches no active half.
+ */
+export async function saveProvider(
+  agentKey: string,
+  namespace: string,
+  provider: unknown,
+  doFetch?: FetchLike,
+): Promise<RuntimeProvidersView> {
+  return requireProvidersView(await callRuntimeSettings(agentKey, namespace, 'save', { request: { provider } }, doFetch))
+}
+
+/** Drop one provider from the list. Does not rewrite the runtime's own config. */
+export async function removeProvider(
+  agentKey: string,
+  namespace: string,
+  id: string,
+  doFetch?: FetchLike,
+): Promise<RuntimeProvidersView> {
+  return requireProvidersView(await callRuntimeSettings(agentKey, namespace, 'remove', { request: { id } }, doFetch))
 }
 
 export { messageOf as settingsErrorText }

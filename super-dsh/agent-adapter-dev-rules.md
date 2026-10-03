@@ -87,6 +87,15 @@
 
 ## 7. agent-codex 现状（SDK-first 调查结论，2026-09-15）
 
+> **⚠️ 本节已被 2026-10-03 取代（app-server 线）**：user 裁决把现役 `agent-codex`
+> **直接改为 `codex app-server` 线**（不是另起 `agent-codex-gui`；§9.4-10 的形态判断
+> 同步作废），`@openai/codex-sdk` 依赖已从本包与主 pack 移除。下面的 SDK 面描述与
+> 「已知 V1 降级」清单**仅作历史对照**；现役能力面与接线裁决见 `agent-codex/README.md`
+> 与计划 `docs/superpowers/plans/2026-10-03-agent-codex-app-server-migration.md`。
+> 其中已消解的降级：无 steer / 模型切换下一轮生效 / 审批仅 launch-only /
+> usage 滞后一轮 —— 四者现在都是真实能力（`turn/steer`、`turn/start.model`、
+> `turn/start.approvalPolicy|sandboxPolicy`、`thread/tokenUsage/updated`）。
+
 **SDK 面（`@openai/codex-sdk@0.154.0` 类型声明全文）**：
 ```ts
 class Codex  { constructor(options?); startThread(options?); resumeThread(id, options?) }
@@ -176,7 +185,7 @@ events: thread.started / turn.started|completed|failed / item.started|updated|co
 7. **P3 审批与交互**：`*/requestApproval`、`requestUserInput`、`mcpServer/elicitation` → DSH 审批/扩展 UI（当前 launch-only 降级）。
 8. **P3 流式增量与 steer**：`*/delta`、`turn/steer`（SDK 不支持）→ 实时体验与打断插话。
 9. **P4 其它**：`fs/*`、`gitDiffToRemote`、`review/start`、`thread/fork`、`threadSection/*`、`thread_spawn`（子代理）。
-10. **形态判断**：以上 5–9 大量能力**不在 SDK**，属 app-server 面 ⇒ 按 §4 的 per-adapter 决策，**`agent-codex-gui`（app-server 线）** 是这些能力的自然归属；SDK 线（本包）保持 happy path + P1/P2 里可由 rollout/CLI 补的项。
+10. ~~**形态判断**：以上 5–9 大量能力**不在 SDK**，属 app-server 面 ⇒ 按 §4 的 per-adapter 决策，**`agent-codex-gui`（app-server 线）** 是这些能力的自然归属；SDK 线（本包）保持 happy path + P1/P2 里可由 rollout/CLI 补的项。~~ **2026-10-03 user 裁决作废**：现役 `agent-codex` **整包改为 app-server 线**（不另起 `agent-codex-gui`）——1、3、4、5、7 已接；2（用量）改走 `thread/tokenUsage/updated`；6（skills/mcp/plugin）与压缩（`thread/compact/start`）仍是登记 backlog。
 
 ---
 

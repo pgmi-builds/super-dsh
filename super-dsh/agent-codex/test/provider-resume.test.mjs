@@ -18,7 +18,6 @@ import { Context } from "@deepseek-ai/cordis";
 const { CodexProvider } = await import("../dist/index.js");
 const { sessionRecord, upsertSession } = await import("../dist/session-map.js");
 const { clearRolloutHeadCache } = await import("../dist/codex-store.js");
-const { setCodexFactory } = await import("../dist/codex-client.js");
 
 const THREAD = "01a0a5cb-e919-7480-81ee-7dcf758aa0aa";
 const THREAD_B = "01a0a5cb-e919-7480-81ee-7dcf758aa0bb";
@@ -192,51 +191,59 @@ test("resume re-validates the recorded cwd and refuses a vanished directory", as
   }
 });
 
-// ── C6: followThreadId re-arms on thread change ─────────────────────────────
+// ── C6: followThreadId re-arms on thread ATTACH ─────────────────────────────
+//
+// app-server line (2026-10-03): the observer is `onThreadAttached`, which the
+// client fires with the id the moment `thread/start|resume` lands (and
+// synchronously when a thread is already attached). The old "any wire event,
+// then poll `client.threadId`" seam is gone.
 
 test("followThreadId re-arms on change: newSession() thread swaps keep the map current", () => {
   const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   // Production order: create() seeds the full record (with cwd) BEFORE the
-  // follow loop patches the thread id in.
+  // attach observer patches the thread id in.
   upsertSession(home, "session-swap", { threadId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
   const provider = new CodexProvider(ctx);
-  const listeners = [];
+  const observers = [];
   const client = {
     threadId: null,
-    on(listener) {
-      listeners.push(listener);
+    onThreadAttached(listener) {
+      observers.push(listener);
+      if (this.threadId !== null) listener(this.threadId);
       return () => {
-        listeners.splice(listeners.indexOf(listener), 1);
+        observers.splice(observers.indexOf(listener), 1);
       };
     },
   };
   provider.followThreadId("session-swap", client);
-  // First materialization (the old one-shot path recorded this and stopped).
-  client.threadId = "01a0a5cb-e919-7480-81ee-7dcf758aa0c1";
-  for (const listener of [...listeners]) listener({ type: "agent_start" });
+  // Nothing is recorded until a thread actually attaches (lazy spawn: the
+  // thread does not exist yet at create/resume time).
+  assert.equal(sessionRecord(home, "session-swap").threadId, null);
+  // First attach (the old one-shot path recorded this and stopped).
+  for (const observer of [...observers]) observer("01a0a5cb-e919-7480-81ee-7dcf758aa0c1");
   assert.equal(sessionRecord(home, "session-swap").threadId, "01a0a5cb-e919-7480-81ee-7dcf758aa0c1");
   // newSession() swaps the thread mid-session — the observer must still fire.
-  client.threadId = "01a0a5cb-e919-7480-81ee-7dcf758aa0c2";
-  for (const listener of [...listeners]) listener({ type: "agent_start" });
+  for (const observer of [...observers]) observer("01a0a5cb-e919-7480-81ee-7dcf758aa0c2");
   assert.equal(sessionRecord(home, "session-swap").threadId, "01a0a5cb-e919-7480-81ee-7dcf758aa0c2");
   // The subscription was never torn down (still armed for further changes).
-  assert.equal(listeners.length, 1);
+  assert.equal(observers.length, 1);
 });
 
-test("followThreadId ignores null observations and repeats (idempotent upserts)", () => {
+test("followThreadId ignores repeats (idempotent upserts)", () => {
   const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   upsertSession(home, "session-null", { threadId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home);
   const provider = new CodexProvider(ctx);
-  const listeners = [];
-  const client = { threadId: null, on(l) { listeners.push(l); return () => { }; } };
+  const observers = [];
+  const client = { threadId: null, onThreadAttached(l) { observers.push(l); return () => { }; } };
   provider.followThreadId("session-null", client);
-  for (const listener of [...listeners]) listener({ type: "agent_start" });
+  // No attach yet → the record stays untouched (never a fabricated id).
   assert.equal(sessionRecord(home, "session-null").threadId, null);
-  client.threadId = "01a0a5cb-e919-7480-81ee-7dcf758aa0d1";
-  for (const listener of [...listeners]) listener({ type: "agent_start" });
-  for (const listener of [...listeners]) listener({ type: "agent_start" });
+  // The file already exists (seeded above); only the ATTACH may change it.
+  // A repeated identical observation is a no-op, not a rewrite.
+  for (const observer of [...observers]) observer("01a0a5cb-e919-7480-81ee-7dcf758aa0d1");
+  for (const observer of [...observers]) observer("01a0a5cb-e919-7480-81ee-7dcf758aa0d1");
   assert.equal(sessionRecord(home, "session-null").threadId, "01a0a5cb-e919-7480-81ee-7dcf758aa0d1");
   assert.ok(existsSync(join(home, "dsh-sessions.json")));
 });

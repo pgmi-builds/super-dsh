@@ -53,3 +53,99 @@ test("presetFromEvents: last permission/preset event wins, others ignored", () =
   assert.equal(presetFromEvents([{ type: "turn/start", seq: 0, time: 1, data: { turn: 1 } }]), undefined);
   assert.equal(presetFromEvents([]), undefined);
 });
+
+// ── app-server line: the per-turn fold (2026-10-03) ─────────────────────────
+
+const {
+  approvalPolicyFromEvents,
+  isSandboxMode,
+  sandboxModeForPreset,
+  sandboxModeFromEvents,
+  sandboxPolicyFor,
+  turnPolicyFromEvents,
+} = await import("../dist/permission.js");
+
+const WS = "/home/u/ws";
+
+/** Build a session-log-shaped event. */
+const ev = (type, data, seq) => ({ type, seq, time: seq, data });
+
+test("sandboxPolicyFor: the three Dash modes become the structured v2 SandboxPolicy", () => {
+  assert.deepEqual(sandboxPolicyFor("danger-full-access", WS), { type: "dangerFullAccess" });
+  assert.deepEqual(sandboxPolicyFor("read-only", WS), { type: "readOnly", networkAccess: false });
+  assert.deepEqual(sandboxPolicyFor("workspace-write", WS), {
+    type: "workspaceWrite",
+    writableRoots: [WS],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  });
+});
+
+test("sandboxModeForPreset: preset → mode, unknown/absent → danger-full-access (the profile pin)", () => {
+  assert.equal(sandboxModeForPreset("read-only"), "read-only");
+  assert.equal(sandboxModeForPreset("workspace-write"), "workspace-write");
+  assert.equal(sandboxModeForPreset("danger-full-access"), "danger-full-access");
+  assert.equal(sandboxModeForPreset(undefined), "danger-full-access");
+  assert.equal(sandboxModeForPreset("yolo"), "danger-full-access");
+  assert.equal(isSandboxMode("workspace-write"), true);
+  assert.equal(isSandboxMode("yolo"), false);
+});
+
+test("event folds: only the LAST valid event of each kind wins", () => {
+  const events = [
+    ev("sandbox/mode", { mode: "read-only" }, 0),
+    ev("approval/policy", { policy: "ask" }, 1),
+    ev("sandbox/mode", { mode: "workspace-write" }, 2),
+    ev("approval/policy", { policy: "bogus" }, 3),
+  ];
+  assert.equal(sandboxModeFromEvents(events), "workspace-write");
+  // The bogus policy is skipped over — the earlier valid one still stands.
+  assert.equal(approvalPolicyFromEvents(events), "on-request");
+  assert.equal(sandboxModeFromEvents([]), undefined);
+  assert.equal(approvalPolicyFromEvents([]), undefined);
+});
+
+test("turnPolicyFromEvents: the log drives both halves (this is what makes /permission live)", () => {
+  const events = [ev("permission/preset", { preset: "danger-full-access" }, 0), ev("sandbox/mode", { mode: "read-only" }, 1), ev("approval/policy", { policy: "ask" }, 2)];
+  assert.deepEqual(turnPolicyFromEvents(events, "danger-full-access", WS), {
+    approvalPolicy: "on-request",
+    sandbox: { type: "readOnly", networkAccess: false },
+  });
+});
+
+test("turnPolicyFromEvents: a log with only the preset falls back to the preset table", () => {
+  assert.deepEqual(turnPolicyFromEvents([ev("permission/preset", { preset: "workspace-write" }, 0)], "workspace-write", WS), {
+    approvalPolicy: "on-request",
+    sandbox: { type: "workspaceWrite", writableRoots: [WS], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+  });
+});
+
+test("turnPolicyFromEvents: an empty log with no preset degrades to the profile pin (danger-full-access / never)", () => {
+  assert.deepEqual(turnPolicyFromEvents([], undefined, WS), { approvalPolicy: "never", sandbox: { type: "dangerFullAccess" } });
+  assert.deepEqual(turnPolicyFromEvents([], "yolo", WS), { approvalPolicy: "never", sandbox: { type: "dangerFullAccess" } });
+});
+
+test("turnPolicyFromEvents: a HALF-specified log folds the two halves independently", () => {
+  // Only a sandbox event: the approval half keeps the preset's value.
+  const sandboxOnly = turnPolicyFromEvents([ev("sandbox/mode", { mode: "read-only" }, 0)], "danger-full-access", WS);
+  assert.equal(sandboxOnly.approvalPolicy, "never");
+  assert.deepEqual(sandboxOnly.sandbox, { type: "readOnly", networkAccess: false });
+  // Only an approval event: the sandbox half keeps the preset's value.
+  const approvalOnly = turnPolicyFromEvents([ev("approval/policy", { policy: "ask" }, 0)], "workspace-write", WS);
+  assert.equal(approvalOnly.approvalPolicy, "on-request");
+  assert.equal(approvalOnly.sandbox.type, "workspaceWrite");
+});
+
+test("turnPolicyFromEvents: CODEX_APPROVAL_MODE still wins for the approval half only", () => {
+  const original = process.env.CODEX_APPROVAL_MODE;
+  try {
+    process.env.CODEX_APPROVAL_MODE = "untrusted";
+    const policy = turnPolicyFromEvents([ev("approval/policy", { policy: "never" }, 0), ev("sandbox/mode", { mode: "read-only" }, 1)], undefined, WS);
+    assert.equal(policy.approvalPolicy, "untrusted");
+    assert.deepEqual(policy.sandbox, { type: "readOnly", networkAccess: false });
+  } finally {
+    if (original === undefined) delete process.env.CODEX_APPROVAL_MODE;
+    else process.env.CODEX_APPROVAL_MODE = original;
+  }
+});
