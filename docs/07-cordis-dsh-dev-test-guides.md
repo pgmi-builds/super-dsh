@@ -106,14 +106,14 @@
 
 机制（⚠ upstream 实证：`packages/client/connection/src/browser-auth.ts` + `packages/credentials/credentials-local`）：
 
-- 浏览器会话认证的**签名 secret（seed，32B）持久在每个 home 的 `$DSH_HOME/.credentials.yaml`**（owner-only 600）：每 home 一份，跨重启、跨重装 profile 不变——**只要不删 home，seed 就不变**。
-- 浏览器 cookie = `v1.<payload>.<HMAC-SHA256(seed, payload)>`，payload 含 `{authority, issuedAt, expiresAt}`；有效期 = `connection.cookieMaxAgeDays`（schema 默认 **30 天**）；cookie 名绑定 authority（Host 头）——同一 home 的不同访问 authority（Caddy 域名 vs `LAN-IP:port`）各铸各的 cookie，吃同一个 seed。
+- 浏览器会话认证的**签名 secret（seed，32B）** = credentials 文档里 `client-connection/browser-session` 记录的 `payload.secret`，owner-only 600。**2026-10-04 user 裁决：seed 不再是「每 home 一份」，而是全机测试线共用一份**——`/home/u1/workspaces/.dsh-test-credentials.yaml`（可用 `SUPERD_TEST_CREDENTIALS` 覆盖）。原因：cookie 名与签名只取决于 **authority + seed**，而 499x 端口无主、任何 rig 都可能接管 4999；每 home 一份 seed 意味着每次换 rig 接管，用户手里那个 `test.pc.internal.test` 的 cookie 就被另一个 secret 判为无效，得重走 token。启动脚本做法：给 upstream 的 `credentials` 行（`@deepseek-ai/dsh-credentials-local`，schema 有 `path`）套一行 profile patch 指到共用文件；该文件不存在时先由本 home 自己的旧文档播种（所以采纳这个约定**不会**让用户已持有的 cookie 失效）。**跨仓纪律**：姊妹仓的 launcher 指同一个 path 即自动同源（dashr `.test/home` 与本仓 `.tests/superd` 本就是同一个 secret）。
+- 浏览器 cookie = `v1.<payload>.<HMAC-SHA256(seed, payload)>`，payload 含 `{authority, issuedAt, expiresAt}`；有效期 = `connection.cookieMaxAgeDays`（schema 默认 **30 天**）；cookie 名绑定 authority（Host 头）——同一 seed 下，不同访问 authority（Caddy 域名 vs `LAN-IP:port`）各铸各的 cookie；反过来，同名同 authority 的 cookie 只要 seed 相同就到处都认（这正是共用 seed 的依据）。
 - URL 里的 `?token=<launch token>` 是 **per-boot 进程内随机值**（`PROCESS_LAUNCH_TOKENS`，WeakMap），唯一职责 = 首次访问时铸 cookie。
 
 **纪律**：
 
-1. **重启测试线不需要换 token、不需要重注 cookie**——旧 cookie 只要还在 30 天窗口内、authority 没变、home 没删，就直接过认证。`start-4999.sh` 在 seed 已存在时明说这一点，token URL 只标注为「首登 / 新 client 用」。
-2. 需要重新走 token 的只有三种情况：home 被删/换（seed 重生成）、换了访问 authority、cookie 过 30 天窗口。
+1. **重启测试线、换 rig 接管同一端口，都不需要换 token、不需要重注 cookie**——旧 cookie 只要还在 30 天窗口内、authority 没变、共用 seed 文件没被删，就直接过认证。`start-4999.sh` 在共用 seed 已存在时明说这一点（并打印它的路径），token URL 只标注为「首登 / 新 client 用」。⚠ 实测（2026-10-04）：同一个 cookie、同一个 home，只把 seed 源从共用文件换回该 home 自己的 `.credentials.yaml`（secret 不同）→ **401**；换回共用文件 → **200**。
+2. 需要重新走 token 的只有三种情况：**共用 seed 文件**被删/换（重生成）、换了访问 authority、cookie 过 30 天窗口。换被测版本、重启 daemon、重建 profile、删掉某个 home **都不影响**。
 3. 换被测版本、重启 daemon、重建 profile **都不影响** seed 与既有 cookie。
 
 ### 3.4 种子（入库、可重生成）与运行 home（gitignored）分离

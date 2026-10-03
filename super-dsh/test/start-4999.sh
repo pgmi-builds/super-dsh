@@ -42,6 +42,19 @@ PNPM="corepack pnpm@10.33.2"   # consumer-parity installer (store v10)
 PNPM_STORE="$REPO/.npm-cache/pnpm-store-v10"
 ANCHOR="$REPO/upstream/deepseek-harness/apps/cli/package.json"  # repo-line contract: the checkout build IS the installation
 
+# ---- ONE credential seed for every test rig on this machine (2026-10-04 user
+# ruling). The browser cookie is HMAC-signed with the constant secret inside
+# `$DSH_HOME/.credentials.yaml`, and its name is derived from the AUTHORITY —
+# so for a fixed URL (test.pc.internal.test) a rig whose home carries a
+# DIFFERENT secret invalidates the cookie the user just minted. Ports are
+# shared test ground (499x has no owner), so the seed must not be per-home:
+# every rig points the `credentials` row at this one file and the cookie the
+# user minted once survives every takeover. Seeded on first use from the home's
+# own document (which the repo's main homes already share), so no existing
+# cookie is invalidated by adopting it. Other repos' launchers adopt the same
+# convention by pointing their `credentials` row at the same path.
+SHARED_CREDENTIALS="${SUPERD_TEST_CREDENTIALS:-$(dirname "$REPO")/.dsh-test-credentials.yaml}"
+
 # ---- red line: home must be this repo's test tree ----
 case "$DSH_HOME_DIR" in
   "$REPO/.tests"*) ;;
@@ -110,6 +123,14 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
   config:
     host: 127.0.0.1
     port: ${PORT}
+# One seed for every rig on this machine (see SHARED_CREDENTIALS above): the
+# upstream row defaults to `$DSH_HOME/.credentials.yaml`, which makes the
+# browser cookie die every time a rig with another home takes the port. The
+# profile patch composes AFTER the bundle patch, so restating the id with an
+# explicit absolute path wins.
+- id: credentials
+  config:
+    path: ${SHARED_CREDENTIALS}
 EOF
 echo "--- pnpm install (first run downloads the runtime SDKs into the store; later runs reuse it)"
 (cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" --config.store-dir="$PNPM_STORE" --prefer-offline)
@@ -132,12 +153,18 @@ fi
 cp -f "$HOME/.dsh/.env" "$DSH_HOME_DIR/.env"
 chmod 600 "$DSH_HOME_DIR/.env"
 
-# Auth seed awareness (2026-09-27 user ruling): the browser-session signing
-# secret persists at the home root (.credentials.yaml, owner-only). When it
-# already exists, cookies minted before this restart remain valid — the boot's
-# launch token only serves first mint / new clients.
+# Auth seed awareness (2026-09-27 user ruling; shared file since 2026-10-04):
+# the browser-session signing secret persists in the SHARED document (the row
+# override above). When it already exists, cookies minted before this restart —
+# and cookies minted by any other rig on this machine — remain valid; the
+# boot's launch token only serves first mint / new clients. A home that has its
+# own document and no shared one yet seeds the shared file from it, so adopting
+# the convention never invalidates a cookie the user already holds.
+if [ ! -f "$SHARED_CREDENTIALS" ] && [ -f "$DSH_HOME_DIR/.credentials.yaml" ]; then
+  install -m 600 "$DSH_HOME_DIR/.credentials.yaml" "$SHARED_CREDENTIALS"
+fi
 SEED_EXISTED=""
-[ -f "$DSH_HOME_DIR/.credentials.yaml" ] && SEED_EXISTED=1
+[ -f "$SHARED_CREDENTIALS" ] && SEED_EXISTED=1
 
 # ctx0's native /api + /hub fences read the CONNECTION service's trustedHosts
 # (= webRuntime: bind-derived loopback literals + EXPLICIT --trusted-host
@@ -188,10 +215,11 @@ if [ "$PORT" != "4999" ]; then
   [ -n "$lan_ok" ] || echo "WARN: socat relay $RELAY not listening on ${LAN_IP}:${PORT}" >&2
 fi
 if [ -n "$SEED_EXISTED" ]; then
-  echo "--- listening on ${PORT}; auth seed persisted — existing browser cookies stay valid (≤30d),"
-  echo "    no re-injection needed; the token URL is for first mint / new clients only:"
+  echo "--- listening on ${PORT}; SHARED auth seed persisted (${SHARED_CREDENTIALS}) — cookies stay"
+  echo "    valid across rigs and restarts (≤30d per authority); the token URL is for first mint / new"
+  echo "    clients only:"
 else
-  echo "--- listening on ${PORT}; NEW home seed — mint your cookie once via the token URL (valid 30d per authority):"
+  echo "--- listening on ${PORT}; NEW shared seed — mint your cookie once via the token URL (valid 30d per authority):"
 fi
 JAR=$(mktemp)
 # ctx0's token can land a few seconds after the bind (worlds interleave their

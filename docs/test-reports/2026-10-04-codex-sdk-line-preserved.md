@@ -121,7 +121,7 @@ lock 已释放、error.log 不存在、dsh-sessions.json 写入真 Codex thread 
 Missing environment variable: `ZHIPU_API_KEY`
 ```
 
-这不是本轮的缺陷：**裸 `codex` 二进制**在同样环境下报**一模一样**的错。原因在分账设计里：本轮 rig 的 provider 是启动时从原生 `config.toml` 折进来的，形态是 `auth.kind = "env"`（原生文件里写的是 `env_key = "ZHIPU_API_KEY"`），即「值由环境提供」；而当前所有 rig 的进程环境都没有这个变量（`dsh.service` 也没有）。要走通一条 codex turn，需要二选一：把 `ZHIPU_API_KEY` 放进 rig 的 unit 环境，或在 hub 面板里给该 provider 存一个 key（`auth.kind = "apiKey"`，走合成变量名注入）。同步**不会**覆盖已存的 key（`adoptAuth = entry.auth.kind === "env" || entry.auth.value === ""`），所以面板存过就不会被 10 分钟 reconcile 冲掉。
+**⚠ 更正（同日复测）：上一条结论是错的，rig 里这个变量是有的。** `app-boot` 会把 line home 的 `.env` 层**物化进 `process.env`**（`packages/boot/app-boot/src/index.ts:232-250`，home 层 = `$DSH_HOME/.env`，而本 launcher 的第一步就是把 prod `.env` copy 过去），所以 codex 子进程能正常继承到 key。我先前之所以看到 `Missing environment variable`，是因为探针在 **agent shell**（harness 之外）里直接跑 —— 那是我的 shell 的 env，不是 rig 的 `process.env`；`/proc/<pid>/environ` 也查不到，它只反映 exec 时的环境，看不到运行期 `process.env[name] = …`。**复测**：把 `.tests/superd/.env` 按 harness 的方式载入后再跑同一个二进制 → `tokens used 27,218` / **`PLUM`**。结论：codex 两线在 4999 上都能拿到 provider key，无需额外动作。
 
 ---
 
@@ -129,4 +129,21 @@ Missing environment variable: `ZHIPU_API_KEY`
 
 - 4.3–4.5 的探针产物**已全部清除**（临时 profile patch、`.tests/sdkfetch-probe/`、`agents/codex-sdk/`、两条探针会话目录与 `dsh-sessions.json` 条目），4999 已重启回**实际交付的默认态**（`codex-sdk` 不在 roster）。
 - 顺带在真机上确认了合并后的多 provider 面：主线 home 启动同步自己建出了 `.tests/superd/agents/codex/codex-providers.json`（0600），折进 `deepseek` + `zhipu-cn`（label = endpoint URL，`origin: native`），并按 provider 写了 `codex-catalogs/`。
+## 六、附带：共用 credential seed（2026-10-04 user 裁决，同一轮追加）
+
+user 现场反馈：不同 repo 的 rig 都抢 4999，而每个 home 自带一份 `.credentials.yaml`，secret 不同 ⇒ 浏览器 cookie 每次换 rig 都要重铸。
+
+本仓落法（`test/start-4999.sh`）：给 upstream `credentials` 行套 profile patch，把 `path` 指到**全机共用**的 `$(dirname $REPO)/.dsh-test-credentials.yaml`（`SUPERD_TEST_CREDENTIALS` 可覆盖）；文件不存在时先由本 home 旧文档播种，所以**采纳这个约定不会让用户手上那个 cookie 失效**（本仓 `.tests/superd` 与 dashr `.test/home` 本就是同一个 secret）。
+
+⚠ 实测 A/B（同一个 home、同一个 cookie，只换 seed 源）：
+
+| seed 源 | secret | 结果 |
+|---|---|---|
+| 该 home 自己的 `.credentials.yaml`（模拟旧行为） | `b703c974…` | **401** |
+| 共用文件 `/home/u1/workspaces/.dsh-test-credentials.yaml` | `aebac32c…` | **200** |
+
+过程中还跨了三次 rig 重启与一次换 home 接管 4999，**最初那一枚 cookie 始终 200**；该 home 自己的 `.credentials.yaml` 全程未被读写（sha 不变）。机制：cookie 名由 authority 派生（`dsh-auth--<sha256(authority)>`），签名只吃 seed ⇒ 同 authority + 同 seed 的 cookie 跨 rig 通用。文档：`docs/07` §3.3、`super-dsh/AGENTS.md`。
+
+## 七、版本与发布
+
 - pack 版本 `0.1.9-a`（测试迭代字母后缀，registry 仍冻在 0.1.9）；`npm publish` 未授权、未执行。
