@@ -1649,6 +1649,10 @@ const SETTINGS_PANELS = {
 	codex: {
 		namespace: "codexProviders",
 		kind: "providers"
+	},
+	"codex-sdk": {
+		namespace: "codexProviders",
+		kind: "providers"
 	}
 };
 /** The panel spec for a runtime, or `undefined` when it has none yet. */

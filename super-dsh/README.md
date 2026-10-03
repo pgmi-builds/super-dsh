@@ -46,6 +46,10 @@ standalone copy of its adapter with an injectable transport, and each
 - declares **no dependency at all** — not a dependency, not an optional, not a
   peer — so `dsh plugin add super-dsh` installs and downloads nothing for it,
   and ships no postinstall;
+- supports the same multi-provider surface as its primary line (the Codex halves
+  share one provider store implementation, one native-config reader, one route
+  resolver and one `codexProviders` panel; only the launch encoding differs —
+  argv for the app-server child, a config object for the SDK);
 - fetches its own durable runtime into `<DSH_HOME>/agents/<key>/` on the FIRST
   real prompt (bun + the coding-agent tree for OMP, a Python venv for agy, the
   `@openai/codex-sdk` tree for Codex), where it survives restarts and upgrades.

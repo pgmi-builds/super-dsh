@@ -84,6 +84,11 @@ const SETTINGS_PANELS: Readonly<Record<string, SettingsPanelSpec>> = {
   // cc-switch otherwise holds (add / edit / remove) and the adapter owns both
   // the list and whatever it does with the native file.
   codex: { namespace: 'codexProviders', kind: 'providers' },
+  // Both Codex lines host the SAME provider list (2026-10-04): the SDK half is
+  // the same agent through a different transport, so it carries the same panel
+  // and the same Remote namespace. The two worlds keep separate stores under
+  // their own `agents/<key>/`, so neither sees the other's list.
+  'codex-sdk': { namespace: 'codexProviders', kind: 'providers' },
 }
 
 /** The panel spec for a runtime, or `undefined` when it has none yet. */

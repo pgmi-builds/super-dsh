@@ -144,6 +144,30 @@ user 现场反馈：不同 repo 的 rig 都抢 4999，而每个 home 自带一�
 
 过程中还跨了三次 rig 重启与一次换 home 接管 4999，**最初那一枚 cookie 始终 200**；该 home 自己的 `.credentials.yaml` 全程未被读写（sha 不变）。机制：cookie 名由 authority 派生（`dsh-auth--<sha256(authority)>`），签名只吃 seed ⇒ 同 authority + 同 seed 的 cookie 跨 rig 通用。文档：`docs/07` §3.3、`super-dsh/AGENTS.md`。
 
+## 八、追加：SDK 线拿到同一条多 provider 面（2026-10-04 同日，user 指令）
+
+user：「Both adapters work, but can we bring the same multi provider to codex-sdk?」
+
+**结论：成立**，而且比 app-server 线更省。做法照抄仓内既有形态（`agent-omp`/`agent-omp-sdk`：16 个同名 src 文件里 11 个逐字节相同，只有传输件不同）：
+
+| 分类 | 内容 |
+|---|---|
+| **逐字节复制**（`cmp` 全绿） | `adapter.ts`(117) / `codex-providers.ts`(487) / `codex-native-config.ts`(438) / `codex-provider-gateway.ts`(446) / `codex-route.ts`(103)——只 import node 内建、彼此、`@deepseek-ai/*`，**零** app-server 传输耦合 |
+| **新写**（唯一传输件） | `codex-sdk-launch.ts`：同一 provider 表 → SDK `CodexOptions.config`。SDK 的 d.ts 明说它把这些 override「flatten into dotted paths … compatible with the CLI's `--config` parsing」——**与 app-server 线的 `-c` 是同一条通道**，三种 auth 分支原样复刻 |
+| **接线** | `index.ts` 搬 CLI 线的 provider 机械（store 正本 / 10 min 原生同步 / `codexProviders` gateway / 每 provider 一条 `ctx.llm` route / `seedRoute`）；`agent.ts` 换成 `#resolveRoute`+`#turnRoute`+`launchFor`；`codex-sdk-client.ts` 把单例 handle 改成**按 provider 分键**的 refcount 注册表 |
+
+**换 provider 比 app-server 线简单**：SDK 每个 turn 都 spawn 一个 `codex exec`（`dist/index.js:263`），provider 只是「这一轮用哪个 handle」的属性，所以不 kill 子进程——换 handle + `resumeThread(同一 thread id)` 即可（thread id 是磁盘上的 rollout，两个 handle 都读得到）。turn 中切换自然落下一轮。
+
+**实测**（真 SDK、真网络、真 provider 表）：
+
+| 探针 | 结果 |
+|---|---|
+| `providerSdkLaunch(store.entry)` | `{model_providers: {zhipu-cn: {name,base_url,wire_api,env_key}}, model_provider, model_catalog_json:<绝对路径>}` |
+| `new Codex({config, env:{...process.env}}) → startThread → runStreamed` | **`MANGO`** + usage + thread id `01a101ee-…` |
+| **换 handle**（新构造）+ `resumeThread(同一 id, {model:"glm-4.7"})` | **`MANGO`** —— 实例换了、模型换了，上下文仍在 |
+
+**测试**：`agent-codex-sdk` **170/170**（原 95 + 复制的 provider 面测试；其中 `codex-provider-gateway-wiring` 与 `codex-session-route` 当初因 `dist/index.js` 未就绪被暂缓，接线后**原样通过**——它们本是照 app-server 线写的，能直接用就是两条线同形的证据）；`superd-hub` **514/514**（面板映射 `codex-sdk → codexProviders`）。
+
 ## 七、版本与发布
 
 - pack 版本 `0.1.9-a`（测试迭代字母后缀，registry 仍冻在 0.1.9）；`npm publish` 未授权、未执行。

@@ -47,6 +47,10 @@ test("only the runtimes that own settings advertise a panel", () => {
   // panel which of the two bodies to mount.
   assert.deepEqual(settingsPanelFor("codex"), { namespace: "codexProviders", kind: "providers" });
   assert.equal(hasSettingsPanel("codex"), true);
+  // Both Codex lines answer the same panel (2026-10-04): the SDK half is the
+  // same agent over another transport, and the two worlds keep separate stores.
+  assert.deepEqual(settingsPanelFor("codex-sdk"), { namespace: "codexProviders", kind: "providers" });
+  assert.equal(hasSettingsPanel("codex-sdk"), true);
   assert.equal(settingsPanelFor("omp"), undefined);
 });
 

@@ -44,11 +44,15 @@ import {
 import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session-persistence";
 import { CodexSdkClient } from "./codex-sdk-client.js";
 import { CodexAgent, type CodexAgentRuntimeInfo } from "./agent.js";
-import { CodexLlmAdapter, CODEX_PROVIDER_ID } from "./adapter.js";
+import { CodexLlmAdapter, CODEX_PROVIDER_ID, routeIds } from "./adapter.js";
 import { registerCodexPreset } from "./agent-preset-codex.js";
 import { readRolloutHead, resolveCodexHome } from "./codex-store.js";
 import { CodexResumeError, sessionRecord, upsertSession, type CodexSessionRecord } from "./session-map.js";
-import { readCodexModelCatalog, CODEX_DEFAULT_MODEL_PLACEHOLDER } from "./models.js";
+import { readProviderStore, type CodexProviderEntry } from "./codex-providers.js";
+import { readNativeSelection } from "./codex-native-config.js";
+import { CodexProvidersGateway, syncFromNative } from "./codex-provider-gateway.js";
+import { seedRoute } from "./codex-route.js";
+import { providerSdkLaunch } from "./codex-sdk-launch.js";
 import { codexApprovalMode, defaultPermissionPreset, envApprovalMode, presetFromEvents } from "./permission.js";
 
 /** Realpath of a recorded cwd, accepted only when it names an existing directory. */
@@ -66,6 +70,14 @@ function validatedCwd(cwd: string | undefined): string | undefined {
 const trace = (...parts: unknown[]): void => {
   if (process.env.CODEX_TRACE === "1") process.stderr.write(`[codex-provider ${Date.now() % 1_000_000}] ${parts.join(" ")}\n`);
 };
+
+/**
+ * How often the provider store is reconciled with the user's `config.toml`
+ * (2026-10-04 user ruling). cc-switch writes that file behind our back, so a
+ * one-shot read at boot would let the panel drift from the file the user edits;
+ * a minute-scale tick is cheap (one small file parse) and keeps the two honest.
+ */
+const SYNC_INTERVAL_MS = 600_000;
 
 /** An owned write handle plus the count of events already stored through it. */
 interface StoredSession {
@@ -111,6 +123,14 @@ export class CodexProvider extends Service implements AgentFactory {
   private readonly home: string;
   /** Echo/staleness guard for the app-wide default-model push. */
   private defaultModelKey = "";
+  /**
+   * The live `ctx.llm` registration for the codex routes, when one exists.
+   * Held so a later store change can re-point it atomically: re-registering
+   * from scratch would race the picker and briefly lose every provider.
+   */
+  private routes: { replace(providers: string[]): void } | undefined;
+  /** Epoch ms of the last reconcile with the user's `config.toml`. */
+  private syncedAt: number | undefined;
 
   constructor(ctx: Context) {
     super(ctx, "codexProvider");
@@ -123,7 +143,15 @@ export class CodexProvider extends Service implements AgentFactory {
     const codexHome = resolveCodexHome();
     trace(`home: worldHome=${this.home} codexHome=${codexHome} configExists=${existsSync(join(codexHome, "config.toml"))}`);
     ctx.effect(() => ctx.agents.setFactory(this), "codexProvider.setFactory()");
+    // The store is canonical and the native file is a source (2026-10-04).
+    // Register the routes the store already implies FIRST, so a malformed
+    // config.toml costs the world a reconcile, never its provider list; then
+    // reconcile, then keep reconciling on a timer.
     this.#registerModelCatalog();
+    this.syncNow();
+    const timer = setInterval(() => this.syncNow(), SYNC_INTERVAL_MS);
+    timer.unref?.();
+    ctx.effect(() => () => clearInterval(timer), "codexProvider.syncTimer()");
     this.#registerDefaultModel();
     // The roster must be visible to the API gateway's root-level remote
     // enumeration (dsh-host-apiproxy read it from the root service table);
@@ -137,24 +165,100 @@ export class CodexProvider extends Service implements AgentFactory {
     // pins its `default` to the Codex preset). The adapter only registers
     // its one fixed preset into the registry.
     registerCodexPreset(ctx);
+    // The Hub settings panel's data plane (2026-10-04 multi-provider ruling on
+    // the SDK line): an adapter-owned Typert Remote (`codexProviders/get|save|remove`)
+    // on this world's context, exactly as the app-server line mounts it. The
+    // hub's carrier forwards `envelope.method` verbatim, so the panel reaches it
+    // through the existing `/hub/api?agent=codex-sdk` family — no new hub route,
+    // and no provider knowledge leaks out of the adapter (dev-rules §12).
+    //
+    // `resolveCodexHome` is passed as a THUNK on purpose: the native home is
+    // re-resolved per call (so a test's `CODEX_HOME` and an operator's override
+    // are both honored) and construction stays read-free — the panel's first
+    // `get` is what touches disk.
+    new CodexProvidersGateway(ctx, this.home, () => resolveCodexHome(), () => this.refreshRoutes());
   }
 
   /**
-   * The factory owns its sessions' route (user directive 2026-09-15): the
-   * ambient `agentDefaultModel` selection is NOT authoritative here — a
-   * session created by this factory always runs on the codex route, with the
-   * codex config's real default model unless the caller asked for a served
-   * codex model. Without an explicit choice the model rides the thread
-   * options only when the catalog is readable (the placeholder is omitted so
-   * codex's own config default applies).
+   * Reconcile the canonical provider store with the user's `config.toml` and
+   * re-register the `ctx.llm` routes if either moved.
+   *
+   * Called once at startup and every {@link SYNC_INTERVAL_MS} (2026-10-04 user
+   * ruling), plus after every panel mutation through the gateway's `onChange`.
+   * Never throws: a provider list is not worth a boot.
+   */
+  syncNow(): void {
+    try {
+      const { store, added, updated } = syncFromNative(this.home, resolveCodexHome());
+      if (added.length > 0 || updated.length > 0) {
+        this.runtime.ctx.logger.info(`codex-provider: config.toml sync — added ${added.join(", ") || "none"}, refreshed ${updated.join(", ") || "none"}`);
+      }
+      this.syncedAt = Date.now();
+      this.#applyRoutes(store.providers);
+    } catch (error) {
+      this.runtime.ctx.logger.warn(`codex-provider: provider sync failed: ${String(error)}`);
+    }
+  }
+
+  /** Re-register the `ctx.llm` routes from the current store (panel mutation path). */
+  refreshRoutes(): void {
+    try {
+      this.#applyRoutes(readProviderStore(this.home).providers);
+    } catch (error) {
+      this.runtime.ctx.logger.warn(`codex-provider: route refresh failed: ${String(error)}`);
+    }
+  }
+
+  /**
+   * The provider id the user's own `config.toml` names, mapped into the store.
+   * It is the app-wide default's provider and the fallback for a session whose
+   * logged selection predates the multi-provider rework. `undefined` when the
+   * native file names nothing this world can serve.
+   */
+  private nativeProviderId(): string | undefined {
+    const native = readNativeSelection(resolveCodexHome());
+    const wanted = native.providerId;
+    if (wanted === undefined) return undefined;
+    const providers = readProviderStore(this.home).providers;
+    return providers.find((entry) => entry.id === wanted)?.id ?? undefined;
+  }
+
+  /** The store entry a DSH route id names. */
+  private providerEntry(providerId: string): CodexProviderEntry | undefined {
+    return readProviderStore(this.home).providers.find((entry) => entry.id === providerId);
+  }
+
+  /**
+   * The factory's session-level route fallback — always ONE coherent pair.
+   *
+   * The ambient `agentDefaultModel` selection is not authoritative here (user
+   * directive 2026-09-15), and neither is a global "active" provider any more:
+   * the session's OWN `model/selection` decides, resolved by the agent at each
+   * turn. These options are what a session with no selection of its own starts
+   * from.
+   *
+   * The one trap this method exists to close: a cached default can outlive the
+   * model list it named, because the panel may have removed that model since
+   * (upstream persists the last pick as the deployment default). Honouring a pair
+   * the provider no longer serves would seed a route nobody can run, so a request
+   * wins only when BOTH halves are still servable; otherwise the user's own
+   * `config.toml` pair takes over, which is authoritative for exactly the provider
+   * it is in force for.
    */
   private sessionAgentOptions(requested: AgentOptions | undefined): AgentOptions {
-    const catalog = readCodexModelCatalog(resolveCodexHome());
-    const explicit = requested?.provider === CODEX_PROVIDER_ID && typeof requested.model === "string" && requested.model !== CODEX_DEFAULT_MODEL_PLACEHOLDER
-      ? requested.model
-      : undefined;
-    const model = explicit ?? (catalog.defaultModel === CODEX_DEFAULT_MODEL_PLACEHOLDER ? undefined : catalog.defaultModel);
-    return { ...(requested ?? {}), provider: CODEX_PROVIDER_ID, ...(model === undefined ? {} : { model }) };
+    const native = readNativeSelection(resolveCodexHome());
+    const wanted = requested?.provider !== undefined && typeof requested.model === "string" ? requested : undefined;
+    const serves = wanted !== undefined
+      && this.providerEntry(wanted.provider as string)?.models.some((model) => model.id === wanted.model) === true;
+    if (wanted !== undefined && serves) return { ...wanted, provider: wanted.provider, model: wanted.model };
+
+    const provider = this.nativeProviderId();
+    const model = native.model !== undefined && native.model !== "" ? native.model : undefined;
+    return {
+      ...(requested ?? {}),
+      ...(provider === undefined ? {} : { provider }),
+      ...(model === undefined ? {} : { model }),
+    };
   }
 
   /**
@@ -189,10 +293,10 @@ export class CodexProvider extends Service implements AgentFactory {
   }
 
   /**
-   * Runtime facts the agent stamps into the log: Codex's own system prompt
-   * (rollout HEAD `base_instructions`, readable once the thread exists) and
-   * the effective route metadata (selected codex model, else the catalog
-   * default, plus the catalog's context window).
+   * Runtime facts the agent stamps into the log and needs to pin a provider:
+   * Codex's own system prompt (rollout HEAD `base_instructions`, readable once
+   * the thread exists), the launch that pins a provider, and the provider's own
+   * context window for one of its models.
    */
   private agentRuntime(client: CodexSdkClient, id: SessionId): CodexAgentRuntimeInfo {
     const codexHome = resolveCodexHome();
@@ -202,20 +306,17 @@ export class CodexProvider extends Service implements AgentFactory {
         if (threadId === null) return undefined;
         return readRolloutHead(codexHome, threadId)?.baseInstructions;
       },
-      routeContext: (preferredModel: string | undefined) => {
-        const catalog = readCodexModelCatalog(codexHome);
-        const model = preferredModel !== undefined && preferredModel !== "" && preferredModel !== CODEX_DEFAULT_MODEL_PLACEHOLDER
-          ? preferredModel
-          : catalog.defaultModel === CODEX_DEFAULT_MODEL_PLACEHOLDER
-            ? undefined
-            : catalog.defaultModel;
-        if (model === undefined) return undefined;
-        const entry = catalog.models.find((candidate) => candidate.id === model);
-        return {
-          provider: CODEX_PROVIDER_ID,
-          model,
-          ...(entry?.contextWindow !== undefined && entry.contextWindow > 0 ? { contextWindow: entry.contextWindow } : {}),
-        };
+      // The whole on-the-fly mechanism in one call: the agent asks for the
+      // config/env that pin a provider, and gets them without a single write to
+      // the user's home (the per-provider model catalog is ours).
+      launchFor: (providerId: string) => {
+        const entry = this.providerEntry(providerId);
+        return entry === undefined ? undefined : providerSdkLaunch(this.home, codexHome, entry);
+      },
+      contextWindowFor: (providerId: string, model: string) => {
+        const entry = this.providerEntry(providerId);
+        const found = entry?.models.find((candidate) => candidate.id === model);
+        return found?.contextWindow;
       },
       // RC-4: turn-time native rejections mark the map so the next resume
       // fails fast (CodexResumeError NATIVE_REJECTED) instead of burning
@@ -269,12 +370,17 @@ export class CodexProvider extends Service implements AgentFactory {
         }
         | undefined;
       if (service === undefined) return;
-      const catalog = readCodexModelCatalog(resolveCodexHome());
-      if (catalog.defaultModel === CODEX_DEFAULT_MODEL_PLACEHOLDER) {
-        trace("default model push skipped: catalog unreadable (placeholder)");
+      // The default is whatever the user's own codex config runs, expressed in
+      // the store's own route id so the harness can resolve it. A config naming
+      // a provider this world has no route for is not a default we can push.
+      const native = readNativeSelection(resolveCodexHome());
+      const nativeProvider = this.nativeProviderId();
+      const nativeModel = native.model;
+      if (nativeProvider === undefined || nativeModel === undefined || nativeModel === "") {
+        trace("default model push skipped: config.toml names no servable provider/model");
         return;
       }
-      const target = { provider: CODEX_PROVIDER_ID, model: catalog.defaultModel };
+      const target = { provider: nativeProvider, model: nativeModel };
       const targetKey = `${target.provider}/${target.model}`;
       const current = service.currentSelection?.();
       const currentKey = current === undefined ? undefined : `${current.provider}/${current.model}`;
@@ -297,13 +403,45 @@ export class CodexProvider extends Service implements AgentFactory {
     });
   }
 
+  /**
+   * Register the codex routes on `ctx.llm` — ONE ROUTE PER PROVIDER with
+   * models (2026-10-04 rework).
+   *
+   * The harness's model selector is provider-grouped, and its per-session
+   * choice is durable (`model/selection` + the `modelSelection` projection), so
+   * expressing the Codex provider list as real routes is what makes the whole
+   * feature DSH-native: nothing in Super D has to model "the active provider" or
+   * remember which route a session last used.
+   *
+   * A provider with no models yet registers no route — codex itself cannot run
+   * it until the user says which model to ask for, and an empty group in the
+   * picker would be noise.
+   */
   #registerModelCatalog(): void {
+    this.#applyRoutes(readProviderStore(this.home).providers);
+  }
+
+  /** Register or atomically re-point the codex routes at the given providers. */
+  #applyRoutes(providers: readonly CodexProviderEntry[]): void {
     const llm = this.runtime.ctx.get("llm") as LlmRuntime | undefined;
     if (llm === undefined) return;
-    // The catalog is fail-soft (a `codex-default` placeholder when the home
-    // is unreadable), so the route always registers and the selector is
-    // never empty.
-    llm.registerAdapter([CODEX_PROVIDER_ID], new CodexLlmAdapter(resolveCodexHome()));
+    const ids = routeIds({ version: 1, providers });
+    if (this.routes === undefined) {
+      if (ids.length === 0) {
+        // `registerAdapter` refuses an empty initial set, and there is nothing
+        // to serve yet; the next sync or panel save will register the routes.
+        trace("route registration deferred: no provider with models yet");
+        return;
+      }
+      this.routes = llm.registerAdapter([...ids], new CodexLlmAdapter(this.home));
+      trace(`routes registered: ${ids.join(", ")}`);
+      return;
+    }
+    // `replace` validates the whole candidate set before swapping, so a bad id
+    // cannot leave the registry half-updated — but a throw here must not take
+    // the caller (a timer, or a panel save) down with it.
+    this.routes.replace([...ids]);
+    trace(`routes replaced: ${ids.join(", ") || "none"}`);
   }
 
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
@@ -346,14 +484,10 @@ export class CodexProvider extends Service implements AgentFactory {
     // The world home is threaded through: it is where the durable SDK runtime
     // is fetched on the first real prompt (sdk-runtime.ts).
     const client = await CodexSdkClient.spawn(["--approval-mode", approvalPolicy], spawnCwd, this.home);
-    // Deterministic per-session route (user wiring directive 2026-09-15): the
-    // factory owns the model — the catalog's real default rides the first
-    // turn; the placeholder (unreadable catalog) is OMITTED so the codex
-    // config default applies.
-    const createCatalog = readCodexModelCatalog(resolveCodexHome());
-    if (createCatalog.defaultModel !== CODEX_DEFAULT_MODEL_PLACEHOLDER) {
-      void client.setModel(CODEX_PROVIDER_ID, createCatalog.defaultModel).catch(() => { });
-    }
+    // No eager `setModel` here any more (2026-10-04): the agent resolves the
+    // whole route — provider included — at the top of every turn and hands it to
+    // the client, so the seeding below is the only thing `create` says about
+    // where the first turn runs.
 
     const preparation = SessionPreparation.create(loopCtx.sessions.prepare(id, {
       ...(options.seed === undefined ? {} : { seed: options.seed }),
@@ -611,7 +745,12 @@ async function setupAndPublish(
     // per-session mechanism `session/selectModel` uses (appends the log-only
     // `model/selection` and caches the next request's route).
     try {
-      const route = runtimeInfo?.routeContext(agentOptions.model);
+      // The seed comes from ONE source — the factory's reconciled options —
+      // because that pair is already coherent. Building it from the native
+      // provider id and the deployment default model independently is what once
+      // produced a route no provider served (`zhipu-cn/deepseek-flash`); taking
+      // one object makes that mistake unrepresentable (`seedRoute`).
+      const route = seedRoute(agentOptions);
       if (route !== undefined) {
         const selection = { provider: route.provider, model: route.model };
         // Mirrors the upstream session-controller's `selectForNextRequest`:

@@ -31,6 +31,7 @@
  * reaching listeners, so Task 7's agent.ts switch is unchanged from omp.
  */
 import { loadCodexSdk } from "./sdk-runtime.js";
+import { NATIVE_SDK_LAUNCH, type CodexSdkLaunch } from "./codex-sdk-launch.js";
 import { projectThreadEvent, type WireContentBlock, type WireEvent, type WireMessage } from "./codex-sdk-events.js";
 
 // ---------------------------------------------------------------------------
@@ -68,14 +69,26 @@ export interface CodexThreadOptions {
 /** Options handed to the SDK constructor (env spread is REPLACE semantics). */
 export interface CodexFactoryOptions {
   env: Record<string, string>;
+  /**
+   * The provider's `--config` overrides, already shaped for the SDK. Absent for
+   * the native route, where the user's own `config.toml` decides — the SDK then
+   * gets no `config` member at all rather than an empty object, so the two cases
+   * stay distinguishable in a constructor spy.
+   */
+  config?: Readonly<Record<string, unknown>>;
 }
 
 /**
- * Build the shared SDK entry object. Called ONCE per process (the refcounted
- * singleton below) with the world home the runtime must be fetched into; the
- * default returns a {@link DeferredCodex}, so the call itself does no IO.
+ * Build one SDK entry object. Called once per PROVIDER KEY (the refcounted
+ * registry below) with the world home the runtime must be fetched into and the
+ * launch that pins that provider; the default returns a {@link DeferredCodex},
+ * so the call itself does no IO.
  */
-export type CodexFactory = (options: CodexFactoryOptions, worldHome: string) => CodexLike;
+export type CodexFactory = (
+  options: CodexFactoryOptions,
+  worldHome: string,
+  launch: CodexSdkLaunch,
+) => CodexLike;
 
 /**
  * The production handle: a stand-in that constructs the REAL SDK entry on first
@@ -162,6 +175,9 @@ const defaultCodexFactory: CodexFactory = (options, worldHome) => {
   }
   return new DeferredCodex(async () => {
     const sdk = await loadCodexSdk(worldHome);
+    // `options` already carries the provider's config overrides (when it has
+    // any) and the env the caller composed — the SDK is constructed exactly as
+    // the pinning launch asked, on first materialization.
     return new sdk.Codex(options) as unknown as CodexLike;
   });
 };
@@ -173,32 +189,65 @@ export function setCodexFactory(factory: CodexFactory): void {
 }
 
 // ---------------------------------------------------------------------------
-// Shared Codex instance (module-level singleton, refcounted — omp sidecar pattern)
+// Shared Codex instances (module-level, refcounted PER PROVIDER — omp sidecar
+// pattern, 2026-10-04 multi-provider rework)
 // ---------------------------------------------------------------------------
 
-let sharedCodex: CodexLike | null = null;
+/**
+ * Registry key for "let the native `config.toml` decide". Also the key every
+ * client starts on: the route is not known until the first turn resolves it.
+ */
+const NATIVE_KEY = "native";
+
+interface SharedCodex {
+  readonly codex: CodexLike;
+  refs: number;
+}
+
+/**
+ * One entry per PROVIDER, not one for the process: a provider is a property of
+ * the config object the SDK is constructed with, so clients on different
+ * providers must not share an instance. Clients on the same provider still do —
+ * that is what keeps a many-session world at one SDK handle per provider.
+ */
+const sharedCodex = new Map<string, SharedCodex>();
 let refcount = 0;
 
 /**
- * Refcount the shared handle. The construction is cheap by contract: the
- * default factory returns a {@link DeferredCodex} (zero disk, zero network) and
- * a test factory returns a plain fake. The REAL instance — and therefore the
- * runtime fetch — is materialized later, from `ensureStarted()`.
+ * Refcount one provider's handle, constructing it on first use. The construction
+ * is cheap by contract: the default factory returns a {@link DeferredCodex}
+ * (zero disk, zero network) and a test factory returns a plain fake. The REAL
+ * instance — and therefore the runtime fetch — is materialized later, from
+ * `ensureStarted()`.
+ *
+ * The first launch for a key wins. That is sound because the key IS the
+ * provider: two launches on one key carry the same provider table, the same
+ * catalog path and the same synthetic key name, so the handle they would build
+ * is the same handle.
  */
-function acquire(worldHome: string): CodexLike {
-  if (sharedCodex === null) {
-    sharedCodex = codexFactory({ env: { ...process.env } as Record<string, string> }, worldHome);
+function acquire(key: string, worldHome: string, launch: CodexSdkLaunch): CodexLike {
+  let entry = sharedCodex.get(key);
+  if (entry === undefined) {
+    entry = {
+      codex: codexFactory({ env: { ...process.env } as Record<string, string>, ...(Object.keys(launch.config).length === 0 ? {} : { config: launch.config }) }, worldHome, launch),
+      refs: 0,
+    };
+    sharedCodex.set(key, entry);
   }
+  entry.refs += 1;
   refcount += 1;
-  return sharedCodex;
+  return entry.codex;
 }
 
-function release(): void {
+function release(key: string): void {
+  const entry = sharedCodex.get(key);
+  if (entry === undefined) return;
+  entry.refs -= 1;
   refcount = Math.max(0, refcount - 1);
-  if (refcount === 0) sharedCodex = null;
+  if (entry.refs <= 0) sharedCodex.delete(key);
 }
 
-/** Test/observability hook: current shared-instance refcount (0 = none alive). */
+/** Test/observability hook: current handle refcount across providers (0 = none alive). */
 export function codexClientRefCount(): number {
   return refcount;
 }
@@ -258,7 +307,22 @@ function parseSpawnArgs(args: string[]): { approvalMode?: string; resumeThreadId
 // ---------------------------------------------------------------------------
 
 export class CodexSdkClient {
-  readonly #codex: CodexLike;
+  /** The handle in force; swapped when the route moves to another provider. */
+  #codex: CodexLike;
+  /**
+   * The world home the SDK runtime is fetched into. Held (not just borrowed at
+   * spawn) because a provider switch constructs the NEXT handle from it.
+   */
+  readonly #worldHome: string;
+  /**
+   * The launch the next turn must run under, and the registry key it maps to.
+   * `applyLaunch` is the only writer; both start native, because the route is
+   * not known until the first turn resolves it.
+   */
+  #launch: CodexSdkLaunch = NATIVE_SDK_LAUNCH;
+  #launchKey: string = NATIVE_KEY;
+  /** The key `#codex` is currently a handle of (what `close()` must release). */
+  #appliedProvider: string = NATIVE_KEY;
   readonly #listeners = new Set<(event: WireEvent) => void>();
   readonly #failureListeners = new Set<(error: Error) => void>();
   readonly #threadOptions: CodexThreadOptions;
@@ -279,8 +343,9 @@ export class CodexSdkClient {
   /** One-shot latch for `ensureStarted()` — the runtime fetch happens there. */
   #startPromise: Promise<void> | null = null;
 
-  private constructor(codex: CodexLike, cwd: string | undefined, approvalMode?: string, resumeThreadId?: string) {
+  private constructor(codex: CodexLike, cwd: string | undefined, approvalMode?: string, resumeThreadId?: string, worldHome = "") {
     this.#codex = codex;
+    this.#worldHome = worldHome;
     this.#approvalMode = approvalMode;
     // skipGitRepoCheck: adapters spawn from arbitrary test/worktree cwds (Task 1 spike precedent).
     // Launch-only approval mapping (Task 7): present only when the provider
@@ -305,11 +370,16 @@ export class CodexSdkClient {
    */
   static async spawn(args: string[] = [], cwd?: string, worldHome?: string): Promise<CodexSdkClient> {
     const { approvalMode, resumeThreadId } = parseSpawnArgs(args);
-    const codex = acquire(worldHome ?? "");
+    // Born on the native key: the route is not known until the first turn
+    // resolves it, and `applyLaunch` moves this client onto the provider it
+    // names. The handle is deferred either way, so nothing is constructed,
+    // fetched or even decided by this call.
+    const home = worldHome ?? "";
+    const codex = acquire(NATIVE_KEY, home, NATIVE_SDK_LAUNCH);
     try {
-      return new CodexSdkClient(codex, cwd, approvalMode, resumeThreadId);
+      return new CodexSdkClient(codex, cwd, approvalMode, resumeThreadId, home);
     } catch (error) {
-      release();
+      release(NATIVE_KEY);
       throw error;
     }
   }
@@ -460,7 +530,7 @@ export class CodexSdkClient {
   async setModel(provider: string, modelId: string): Promise<WireResponse> {
     this.#ensureUsable();
     void provider;
-    this.#pendingModel = modelId;
+    this.#pendingModel = this.#modelOverride(modelId);
     return ok("set_model");
   }
 
@@ -535,7 +605,7 @@ export class CodexSdkClient {
     this.#closed = true;
     this.#sessionEpoch += 1; // a settled run must not drain the queue after close
     this.#currentAbort?.abort();
-    release();
+    release(this.#appliedProvider);
     this.#fail(new Error("codex sdk client closed"));
   }
 
@@ -576,7 +646,7 @@ export class CodexSdkClient {
     const controller = new AbortController();
     this.#currentAbort = controller;
     try {
-      this.#applyPendingModel();
+      this.#reconcileRoute();
       const streamed = await this.#thread.runStreamed(message, { signal: controller.signal });
       for await (const raw of streamed.events) {
         const record = asRecord(raw);
@@ -613,16 +683,65 @@ export class CodexSdkClient {
     }
   }
 
-  /** Rebuild the thread with the pending model when one is pending (next run). */
-  #applyPendingModel(): void {
-    if (this.#pendingModel === this.#appliedModel) return;
+  /**
+   * Put the resolved route in force for the next run: swap the handle if the
+   * PROVIDER moved, then rebuild the thread object against it.
+   *
+   * Cheaper than the app-server line's equivalent by construction. There, a
+   * provider is an argv-level property of a LONG-LIVED child, so a switch means
+   * killing it and re-attaching the thread to a new one (`reattach`). Here the
+   * SDK spawns `codex exec` (or `codex exec resume <id>`) PER RUN, so the
+   * provider is a property of the handle we are about to ask for a run — the
+   * switch is just "use the other handle from now on", and the thread keeps its
+   * identity because the id is a rollout on disk that both handles read.
+   *
+   * That also means a mid-turn switch lands on the next turn for free, exactly
+   * as the app-server line promises: the user message already dispatched keeps
+   * the handle it started with, and the next `#runTurn` re-reads the route.
+   */
+  #reconcileRoute(): void {
+    const key = this.#launchKey;
+    const providerMoved = key !== this.#appliedProvider;
+    if (!providerMoved && this.#pendingModel === this.#appliedModel) return;
+    if (providerMoved) {
+      this.#codex = acquire(key, this.#worldHome, this.#launch);
+      release(this.#appliedProvider);
+      this.#appliedProvider = key;
+    }
     const model = this.#pendingModel;
     const options: CodexThreadOptions =
       model === null ? { ...this.#threadOptions } : { ...this.#threadOptions, model };
+    // Resume by id whenever the thread has one: that is what carries the
+    // conversation across BOTH a model change and a provider change.
     const currentId = this.#thread.id;
     this.#thread =
       currentId !== null ? this.#codex.resumeThread(currentId, options) : this.#codex.startThread(options);
     this.#appliedModel = model;
+  }
+
+  /**
+   * Pin the provider the NEXT run must use (2026-10-04 multi-provider rework).
+   *
+   * Called by the agent at turn open with the launch it resolved, so the client
+   * never has to know what a provider IS — it is handed a config and an env and
+   * runs on them. `providerId` is `null` for "let the native `config.toml`
+   * decide", which is what a session pinned to the retired single `codex` route
+   * resolves to.
+   */
+  applyRoute(launch: CodexSdkLaunch, providerId: string | null, model: string): void {
+    this.#launch = launch;
+    this.#launchKey = providerId ?? NATIVE_KEY;
+    this.#pendingModel = this.#modelOverride(model);
+  }
+
+  /**
+   * An empty model id means "pin no model", not "pin the empty model": the
+   * native `config.toml` then decides, which is what a route the adapter cannot
+   * resolve falls back to. Letting `model=""` through would emit
+   * `--config model=""` and codex would reject every turn.
+   */
+  #modelOverride(model: string): string | null {
+    return model === "" ? null : model;
   }
 
   /** Mirror wire events into the getMessages accumulator (best effort). */

@@ -68,7 +68,9 @@ test("a missing world home is refused instead of guessing one from ambient env",
 
 test("source-level: the runtime fetch is reachable only from the client's default factory", () => {
   const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
-  const pluginFiles = ["index.ts", "world-plugin.ts", "agent.ts", "adapter.ts", "models.ts", "codex-store.ts"];
+  // models.ts retired with the provider-store rework (2026-10-04); the
+  // canonical catalog now lives in codex-native-config.ts.
+  const pluginFiles = ["index.ts", "world-plugin.ts", "agent.ts", "adapter.ts", "codex-store.ts"];
   for (const file of pluginFiles) {
     const text = readFileSync(join(src, file), "utf8");
     assert.doesNotMatch(text, /loadCodexSdk|ensureSdkRuntime/, `${file} must not fetch the SDK runtime`);

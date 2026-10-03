@@ -58,6 +58,8 @@ import { LlmAttemptId, ToolCallId, QUOTA_EXCEEDED_CODE, createAssistantMessage, 
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
 import type { WireAssistantMessageEvent, WireContentBlock, WireEvent, WireMessage } from "./codex-sdk-events.js";
 import type { CodexSdkClient } from "./codex-sdk-client.js";
+import { NATIVE_SDK_LAUNCH, type CodexSdkLaunch } from "./codex-sdk-launch.js";
+import { resolveRoute, type RouteSelection } from "./codex-route.js";
 // Type-only: pulls dsh-commands' `Context.commands` augmentation into this
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
@@ -326,11 +328,19 @@ export interface CodexAgentRuntimeInfo {
   /** Codex's own system prompt for this session's thread, when readable. */
   systemPrompt(): string | undefined;
   /**
-   * The effective codex route for this session: `preferredModel` (the
-   * session's selected codex model) wins, else the catalog default. Returns
-   * `undefined` when neither is known.
+   * The launch that pins one provider for the next run (`codex-sdk-launch.ts`).
+   * Returns `undefined` for a provider id this world does not know, which the
+   * agent reads as "let the native config.toml decide" — the honest meaning of a
+   * session pinned to the retired single `codex` route.
    */
-  routeContext(preferredModel: string | undefined): { provider: string; model: string; contextWindow?: number } | undefined;
+  launchFor(providerId: string): CodexSdkLaunch | undefined;
+  /**
+   * The context window one provider advertises for one model, when it knows.
+   * It lands in `request/context` so the UI's context meter is honest about a
+   * route the DSH registry has no metadata for.
+   * Optional: absent means "no window known" and the field is omitted.
+   */
+  contextWindowFor?(providerId: string, model: string): number | undefined;
   /**
    * Mark this session's identity-map record not resumable — called when the
    * native runtime rejects the session's thread at turn time (plan RC-4),
@@ -388,8 +398,13 @@ export class CodexAgent implements Agent {
    * failure/abort paths so the turn's visible text is never dropped.
    */
   #deferredAssistant: WireMessage | null = null;
-  /** The last selection already synced to the client via `set_model`, as `provider/model`. */
-  #lastSyncedModel: string | null = null;
+  /**
+   * The route this TURN runs, captured at turn open. Held per turn (not read
+   * live) because the projection can change mid-turn: a switch made while a
+   * turn is in flight must land on the NEXT one, and the transcript must keep
+   * naming the provider that actually produced it.
+   */
+  #turnRoute: RouteSelection | undefined = undefined;
   /** Fires when the agent has been idle past CODEX_IDLE_EXIT_MS (tears down the client). */
   readonly #onIdleExit: (() => void) | undefined;
   #idleExitTimer: NodeJS.Timeout | undefined = undefined;
@@ -592,7 +607,11 @@ export class CodexAgent implements Agent {
     try {
       await this.#client.ensureStarted();
       await this.#bootstrapSessionIdentity();
-      await this.#syncModelSelection();
+      // The route is resolved and put in force BEFORE the turn commits: the
+      // provider is a property of the handle the run is about to use, and a
+      // mid-turn switch must land on the NEXT turn (hence the per-turn hold).
+      this.#turnRoute = this.#resolveRoute();
+      this.#applyRoute(this.#turnRoute);
     } catch (error) {
       trace(`#startTurn cold start failed: ${String(error)}`);
       if (this.#turnOpen) {
@@ -637,24 +656,25 @@ export class CodexAgent implements Agent {
   }
 
   /**
-   * Stamp route metadata for the next request (`request/context`): the
-   * effective provider/model plus the catalog's context window when known.
-   * Turn-enclosed (no step required) and deduped by route key, so it lands at
-   * the start of a turn and again only when the effective route changes.
+   * Stamp route metadata for the next request (`request/context`): the TURN's
+   * route plus the provider's context window when known. Turn-enclosed (no step
+   * required) and deduped by route key, so it lands at the start of a turn and
+   * again only when the route changes.
    */
   #emitRequestContext(): void {
-    if (this.#runtimeInfo === undefined || !this.#turnOpen) return;
-    const route = this.#runtimeInfo.routeContext(this.options.model);
+    if (!this.#turnOpen) return;
+    const route = this.#turnRoute;
     if (route === undefined) return;
     const key = `${route.provider}/${route.model}`;
     if (key === this.#lastRouteKey) return;
     this.#lastRouteKey = key;
+    const contextWindow = this.#runtimeInfo?.contextWindowFor?.(route.provider, route.model);
     this.session.append("request/context", {
       provider: route.provider,
       model: route.model,
-      ...(route.contextWindow === undefined ? {} : { contextWindow: route.contextWindow }),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
     });
-    trace(`request/context ${key}${route.contextWindow === undefined ? "" : ` ctx=${route.contextWindow}`}`);
+    trace(`request/context ${key}${contextWindow === undefined ? "" : ` ctx=${contextWindow}`}`);
   }
 
   /**
@@ -691,7 +711,12 @@ export class CodexAgent implements Agent {
   }
 
   #flushRemote(): void {
-    void this.#syncModelSelection().finally(() => {
+    // A remote-driven delivery (follow-up / steer) opens no new DSH turn, so
+    // the route is re-read here too: it is the only chance to notice that the
+    // user moved the session to another provider before this message lands.
+    this.#turnRoute = this.#resolveRoute();
+    this.#applyRoute(this.#turnRoute);
+    void Promise.resolve().finally(() => {
       for (const entry of this.#remoteQueue) {
         if (entry.sent) continue;
         entry.sent = true;
@@ -704,32 +729,43 @@ export class CodexAgent implements Agent {
   }
 
   /**
-   * Push the effective model selection into the client before a turn is
-   * dispatched. The SDK has no live setModel, so the client stores the id
-   * and applies it as the next run's ThreadOption (via resumeThread, so the
-   * conversation context survives). The omp waterfall pair
-   * (system-prompt assemble → agent/request) is a V1 cut: the base is the
-   * session's logged `request/header` falling back to the global
-   * `agentDefaultModel` selection, else the agent options — the apiproxy's
-   * installed selection IS the global one this process serves.
+   * Resolve the route for the NEXT turn by the harness's own precedence
+   * (`codex-route.ts`): a `session/selectModel` switch that no turn has consumed
+   * yet, else what the session actually ran last, else the deployment default,
+   * else the factory's own options.
+   *
+   * @returns the route, or `undefined` when nothing names a complete pair.
    */
-  async #syncModelSelection(): Promise<void> {
-    const persisted = this.session.requestHeader()?.config;
+  #resolveRoute(): RouteSelection | undefined {
+    const projections = this.#loopCtx.get("sessionProjections") as
+      | { stateOf?: (session: Session, key: string) => { pending?: unknown } | undefined }
+      | undefined;
     const service = this.ctx.get("agentDefaultModel") as AgentDefaultModelSlice | undefined;
-    const selection = service?.currentSelection();
-    const target =
-      persisted !== undefined && persisted.provider !== "" && persisted.model !== ""
-        ? { provider: persisted.provider, model: persisted.model }
-        : selection !== undefined && selection.provider !== "" && selection.model !== ""
-          ? selection
-          : { provider: this.options.provider ?? "", model: this.options.model ?? "" };
-    if (target.provider === "" || target.model === "") return;
-    const key = `${target.provider}/${target.model}`;
-    if (key === this.#lastSyncedModel) return;
-    await this.#client.setModel(target.provider, target.model).catch((error) => {
-      trace(`set_model ${key} failed: ${String(error)}`);
+    return resolveRoute({
+      pending: projections?.stateOf?.(this.session, "modelSelection")?.pending,
+      logged: this.session.requestHeader()?.config,
+      preferred: service?.currentSelection(),
+      fallback: { provider: this.options.provider, model: this.options.model },
     });
-    this.#lastSyncedModel = key;
+  }
+
+  /**
+   * Put the resolved route in force for the next run.
+   *
+   * The SDK line needs no child surgery here: the client swaps the handle it
+   * will ask for the next run and re-attaches the SAME thread id to it (see
+   * `CodexSdkClient.applyRoute`), so a provider move costs one config object and
+   * never a process. An unknown provider id (a session pinned before the
+   * multi-provider rework) maps to "no injection": the user's own `config.toml`
+   * is the honest answer, which is also what `NATIVE_SDK_LAUNCH` means.
+   *
+   * @param route - the resolved route, or `undefined` when none is known.
+   */
+  #applyRoute(route: RouteSelection | undefined): void {
+    const launch = route === undefined ? undefined : this.#runtimeInfo?.launchFor(route.provider);
+    const launchSpec = launch ?? NATIVE_SDK_LAUNCH;
+    const providerId = launch === undefined ? null : route?.provider ?? null;
+    this.#client.applyRoute(launchSpec, providerId, route?.model ?? "");
   }
 
   /**
