@@ -235,6 +235,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
     // reads the provider store live on every listModels/resolveModel call —
     // no cache to invalidate, so a panel edit is visible to the next catalog
     // query without any re-registration.
+    new ClaudeProvidersGateway(ctx, this.home, () => resolveClaudeHome(), () => { });
   }
 
   /**

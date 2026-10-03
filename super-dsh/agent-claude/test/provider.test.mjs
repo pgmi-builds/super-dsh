@@ -130,6 +130,33 @@ test("create requires session persistence before anything is spawned", async () 
   );
 });
 
+// --- wiring pin (edit-range-slip guard) ---
+
+/**
+ * e3bb8e3's comment rewrite in src/index.ts diffed over the constructor's
+ * trailing `new ClaudeProvidersGateway(...)` call, so the `claudeProviders`
+ * Typert Remote was never registered (hub panel dead) while `syncNow` + the
+ * sync timer survived — nothing else in the suite observed the service, so
+ * the slip shipped. Pin the wiring at its honest observable: construction
+ * makes the service retrievable from the provider's own ctx (Cordis hard-
+ * errors on a second same-key registration, so "retrievable" == "once").
+ */
+test("ClaudeProvider construction registers the claudeProviders service on its ctx", async () => {
+  const home = mkdtempSync(join(tmpdir(), "superd-claude-provider-"));
+  const ctx = providerContext(home);
+  const { ClaudeProvidersGateway } = await import("../dist/claude-provider-gateway.js");
+
+  new ClaudeProvider(ctx);
+
+  const gateway = ctx.get("claudeProviders");
+  assert.ok(gateway, "the claudeProviders service must be registered on the provider's ctx");
+  assert.ok(
+    gateway instanceof ClaudeProvidersGateway,
+    "the registered service must be the adapter-owned gateway (hub panel data plane)",
+  );
+  assert.equal(gateway.name, "claudeProviders");
+});
+
 test("resume fails closed when the DSH session has no recorded Claude session", async () => {
   const home = mkdtempSync(join(tmpdir(), "superd-claude-provider-"));
   const ctx = providerContext(home);
