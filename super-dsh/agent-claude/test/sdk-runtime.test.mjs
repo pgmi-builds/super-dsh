@@ -1,7 +1,7 @@
 // agent-claude/test/sdk-runtime.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -141,10 +141,17 @@ test("an abandoned lock is reclaimed so a crashed fetch cannot brick the line", 
   const old = (Date.now() - 60 * 60 * 1000) / 1000; // older than the stale threshold
   utimesSync(l.lock, old, old);
   const calls = [];
-  await ensureSdkRuntime(h, { install: async (c, a) => { calls.push(a); }, now: () => 7 });
+  // The installer materializes nothing, so under the Round-2 contract the
+  // fetch FAILS the entry verification — the lock subject is unchanged: the
+  // fetch ran (past the abandoned lock) and the lock was released in the
+  // finally. (No-op install + expected success no longer tells the truth.)
+  await assert.rejects(
+    ensureSdkRuntime(h, { install: async (c, a) => { calls.push(a); }, now: () => 7 }),
+    /produced no entry/,
+  );
   assert.equal(calls.length, 1, "the fetch ran despite the abandoned lock");
   assert.equal(existsSync(l.lock), false, "the reclaimed lock was released");
-  assert.ok(existsSync(l.marker));
+  assert.equal(existsSync(l.marker), false, "no marker without an entry on disk");
 });
 
 test("a corrupt marker is not trusted: the fetch runs again", async () => {
@@ -153,9 +160,16 @@ test("a corrupt marker is not trusted: the fetch runs again", async () => {
   writeFileSync(l.marker, "{not json");
   assert.equal(readSdkRuntimeRecord(h), undefined);
   const calls = [];
-  await ensureSdkRuntime(h, { install: async (c, a) => { calls.push(a); }, now: () => 3 });
+  // No-op install ⇒ the fetch runs (the subject) but fails the entry
+  // verification: a corrupt marker can never become a marker-backed success.
+  // (No-op install + expected success no longer tells the truth.)
+  await assert.rejects(
+    ensureSdkRuntime(h, { install: async (c, a) => { calls.push(a); }, now: () => 3 }),
+    /produced no entry/,
+  );
   assert.equal(calls.length, 1);
-  assert.equal(readSdkRuntimeRecord(h).createdAt, 3);
+  assert.equal(readSdkRuntimeRecord(h), undefined, "no readable marker was produced");
+  assert.match(readFileSync(l.errorLog, "utf8"), /produced no entry/);
 });
 
 test("a failed mode flip wipes the tree, and the next matching-mode call heals without marker surgery", async () => {
@@ -222,4 +236,94 @@ test("a matching marker whose entry was deleted by hand reinstalls instead of tr
   });
   assert.equal(calls.length, 1, "the marker alone must not satisfy the fast path");
   assert.equal(rec.createdAt, 2);
+});
+
+// --- Round 2: npm must be anchored to the runtime dir --------------------------
+//
+// Real-machine defect (reproduced twice, 2026-10-04): `npm install <pkg>` run
+// in a cwd with NO package.json resolves the tree from the nearest ancestor
+// project, may report "up to date" against THAT project, exit 0 — and land
+// nothing in sdk-runtime/node_modules. The fetch must (a) write a private
+// manifest into the runtime dir BEFORE install so npm is anchored there, and
+// (b) verify the entry exists BEFORE the marker is written, so a no-op install
+// fails loudly instead of poisoning every later loadClaudeQuery.
+
+// The exact manifest the fetch anchors npm with (pinned here independently of
+// the source, so a drift in either direction fails this suite).
+const RUNTIME_MANIFEST = '{"name":"superd-claude-sdk-runtime","private":true}\n';
+
+test("npm is anchored: the private manifest is in the install cwd BEFORE install runs", async () => {
+  const h = tmpHome();
+  const l = sdkRuntimeLayout(h);
+  let manifestAtCall; // undefined ⇒ no package.json in the install cwd at call time
+  const rec = await ensureSdkRuntime(h, {
+    install: async (cmd, args, opts) => {
+      const manifest = join(opts.cwd, "package.json");
+      manifestAtCall = existsSync(manifest) ? readFileSync(manifest, "utf8") : undefined;
+      materializeEntry(opts.cwd);
+    },
+    now: () => 11,
+  });
+  assert.equal(rec.createdAt, 11);
+  assert.notEqual(manifestAtCall, undefined, "package.json exists in the install cwd AT CALL TIME");
+  assert.equal(manifestAtCall, RUNTIME_MANIFEST, "byte-exact anchor, trailing newline included");
+  assert.deepEqual(JSON.parse(manifestAtCall), { name: "superd-claude-sdk-runtime", private: true });
+  assert.equal(
+    readFileSync(join(l.dir, "package.json"), "utf8"),
+    RUNTIME_MANIFEST,
+    "and it is still there after the fetch",
+  );
+});
+
+test("the anchor write is idempotent: a re-fetch over an exact manifest does not rewrite it", async () => {
+  const h = tmpHome();
+  const l = sdkRuntimeLayout(h);
+  await ensureSdkRuntime(h, {
+    install: async (c, a, opts) => { materializeEntry(opts.cwd); },
+    now: () => 1,
+  });
+  const manifest = join(l.dir, "package.json");
+  const before = statSync(manifest).mtimeMs;
+  // Break readiness WITHOUT touching the manifest: the entry vanishes, the
+  // marker survives, the next call must re-fetch — and keep the manifest.
+  rmSync(join(l.dir, ENTRY_REL), { force: true });
+  const calls = [];
+  await ensureSdkRuntime(h, {
+    install: async (c, a, opts) => { calls.push(a); materializeEntry(opts.cwd); },
+    now: () => 2,
+  });
+  assert.equal(calls.length, 1, "the vanished entry forced a re-fetch");
+  assert.equal(statSync(manifest).mtimeMs, before, "an already-exact manifest is not rewritten");
+});
+
+test("a foreign manifest in the runtime dir is replaced by the exact anchor", async () => {
+  const h = tmpHome();
+  const l = sdkRuntimeLayout(h);
+  mkdirSync(l.dir, { recursive: true });
+  writeFileSync(join(l.dir, "package.json"), '{"name":"foreign","dependencies":{"left-pad":"^1.0.0"}}');
+  await ensureSdkRuntime(h, {
+    install: async (c, a, opts) => { materializeEntry(opts.cwd); },
+    now: () => 1,
+  });
+  assert.equal(
+    readFileSync(join(l.dir, "package.json"), "utf8"),
+    RUNTIME_MANIFEST,
+    "content-differs ⇒ the anchor is written; npm is never left on a foreign manifest",
+  );
+});
+
+test("a no-op install (exit 0, nothing materialized) REJECTS — a marker is impossible", async () => {
+  // The old Task-1 verbatim sketch's installer: resolves having written
+  // nothing — exactly what an un-anchored npm does against an ancestor
+  // project ("up to date", exit 0). The old contract called this success;
+  // without an entry there is no runtime, so the fetch must fail LOUDLY.
+  const h = tmpHome();
+  const l = sdkRuntimeLayout(h);
+  await assert.rejects(ensureSdkRuntime(h, {
+    install: async () => { /* resolves, lands nothing — the no-op */ },
+    now: () => 1,
+  }), /produced no entry/);
+  assert.equal(existsSync(l.marker), false, "the marker is only ever written with the entry on disk");
+  assert.equal(existsSync(l.dir), false, "the partial tree (incl. the anchor manifest) was wiped");
+  assert.match(readFileSync(l.errorLog, "utf8"), /produced no entry/, "the trace names the anchoring failure");
 });

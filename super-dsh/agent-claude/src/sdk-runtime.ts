@@ -14,6 +14,10 @@
  * `agent-codex-sdk/src/sdk-runtime.ts` runs on):
  *
  *   <worldHome>/sdk-runtime/            npm tree (`--ignore-scripts`)
+ *     package.json                 the ANCHOR we write before install
+ *                                  (private, never published): npm otherwise
+ *                                  resolves the nearest ancestor project and
+ *                                  may exit 0 having landed nothing here
  *     node_modules/@anthropic-ai/claude-agent-sdk/
  *       sdk.mjs                         the entry `loadClaudeQuery` imports
  *   <worldHome>/sdk-runtime.json        marker — written LAST; a matching
@@ -241,7 +245,7 @@ export async function ensureSdkRuntime(
     if (done !== undefined) return done;
 
     try {
-      return await fetchRuntime(layout, wantedMode, install, now);
+      return await fetchRuntime(worldHome, layout, wantedMode, install, now);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       try {
@@ -264,16 +268,59 @@ export async function ensureSdkRuntime(
   }
 }
 
-/** The idempotent install step; the marker is written last. */
+/** The private manifest that anchors npm to the runtime dir (never published). */
+const RUNTIME_MANIFEST = '{"name":"superd-claude-sdk-runtime","private":true}\n';
+
+/**
+ * The idempotent install step. npm is anchored to the runtime dir by a private
+ * manifest BEFORE install (without one, npm resolves the nearest ANCESTOR
+ * project and may exit 0 having landed nothing here), and the entry is
+ * verified on disk BEFORE the marker is written — exit 0 alone is not success.
+ */
 async function fetchRuntime(
+  worldHome: string,
   layout: SdkRuntimeLayout,
   mode: SdkRuntimeMode,
   install: SdkRuntimeDeps["install"],
   now: SdkRuntimeDeps["now"],
 ): Promise<SdkRuntimeRecord> {
   mkdirSync(layout.dir, { recursive: true });
+
+  // ANCHOR — npm resolves a tree from the nearest ancestor holding a
+  // package.json; with none in the runtime dir it walks up (on the real
+  // machine: to the repo root), reports "up to date" against THAT project,
+  // exits 0 and lands no tree here — yet the marker used to be written anyway,
+  // so every later loadClaudeQuery failed and each "heal" re-hit the same
+  // no-op install (reproduced twice, 2026-10-04). The private manifest pins
+  // the install to THIS directory; written only when missing or not
+  // byte-exact, so a re-run never rewrites a manifest that is already correct.
+  const manifest = join(layout.dir, "package.json");
+  let manifestExact = false;
+  if (existsSync(manifest)) {
+    try {
+      manifestExact = readFileSync(manifest, "utf8") === RUNTIME_MANIFEST;
+    } catch {
+      manifestExact = false; // unreadable ⇒ treat as absent and re-anchor
+    }
+  }
+  if (!manifestExact) writeFileSync(manifest, RUNTIME_MANIFEST);
+
   const npm = process.env.SUPERD_SDK_NPM ?? "npm";
   await install(npm, sdkInstallArgv(SDK_PACKAGE_VERSION, mode), { cwd: layout.dir });
+
+  // VERIFY — a zero exit is not success: an unanchored (or no-op) install
+  // resolves without producing the entry. Fail BEFORE the marker — it must
+  // only ever exist with the entry verifiably on disk, or the self-healing
+  // loop never converges. The catch in `ensureSdkRuntime` appends the trace
+  // (the note below names the cause) and wipes this partial tree.
+  const entry = sdkEntryPath(worldHome);
+  if (!existsSync(entry)) {
+    throw new Error(
+      `npm install exited 0 but produced no entry at ${entry} — ` +
+        `the install was not anchored to the runtime dir ` +
+        `(npm likely resolved an ancestor project's tree instead of ${manifest})`,
+    );
+  }
 
   // Marker LAST — a crash before this point leaves an incomplete runtime that
   // the next call heals, never a false success.
