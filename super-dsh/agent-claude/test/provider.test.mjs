@@ -71,8 +71,23 @@ test("resetProjectionState runs at BOTH agent construction and teardown (tool-na
   assert.equal(toolEndName("t1"), "tool", "teardown must reset the projection state");
 });
 
+/** Make the boot probe hermetic: an injected factory is returned by
+ *  resolveFactory before it ever inspects worldHome, so constructing
+ *  ClaudeProvider never reaches `execFile npm install` (zero network). */
+function hermeticSdkProbe() {
+  setClaudeFactory(() => ({
+    interrupt: async () => { },
+    setModel: async () => { },
+    setPermissionMode: async () => { },
+    supportedModels: async () => [],
+    close() { },
+    [Symbol.asyncIterator]() { return (async function* () { })(); },
+  }));
+}
+
 /** A stub Context carrying only the services the provider's boot touches. */
 function providerContext(home, { persistence = true } = {}) {
+  hermeticSdkProbe();
   const ctx = new Context();
   ctx.provide("dshHomePath", home);
   ctx.provide("agents", { setFactory() { } });
@@ -303,6 +318,7 @@ test("#registerDefaultModel pushes a claude-routed target through both paths whe
   ctx.provide("settings", {
     replace: async (ns, v) => { replaced.push([ns, v]); },
   });
+  hermeticSdkProbe();
   new ClaudeProvider(ctx);
   // Let the inject callback and its .then chain settle.
   await new Promise((resolve) => setTimeout(resolve, 20));

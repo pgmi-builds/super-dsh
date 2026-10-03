@@ -346,6 +346,8 @@ export class ClaudeAgent implements Agent {
   readonly inbox: Inbox;
   readonly ctx: Context;
   private client: ClaudeSdkClient;
+  /** Unsubscriber for the LIVE client's wire listener — released before a swap closes the old child. */
+  private clientUnsubscribe: (() => void) | undefined = undefined;
   private readonly clientFactory: ClaudeClientFactory | undefined;
   private readonly loopCtx: Context;
   private readonly scope: Scope;
@@ -450,7 +452,7 @@ export class ClaudeAgent implements Agent {
       this.attachCommandRuntime(commandCtx.commands);
     });
     this.lastTurn = session.snapshotEvents().findLast((event) => event.type === "turn/start")?.data.turn ?? 0;
-    client.on((event) => this.handleEvent(event));
+    this.clientUnsubscribe = client.on((event) => this.handleEvent(event));
     // Session-start projection reset: the module-level tool-name map must never
     // leak another session's tool into this one (Task 4 review finding).
     resetProjectionState();
@@ -975,12 +977,13 @@ export class ClaudeAgent implements Agent {
   private async reattach(launch: ClaudeLaunchSpec, _providerId: string | null, _route: RouteSelection | undefined): Promise<void> {
     const old = this.client;
     const threadId = old.threadId;
+    this.clientUnsubscribe?.();
     old.close();
     if (this.clientFactory === undefined) {
       throw new Error("agent-claude: cannot reattach — no clientFactory was injected");
     }
     const replacement = this.clientFactory({ ...(threadId !== null ? { resumeSessionId: threadId } : {}), launch });
-    replacement.on((event) => this.handleEvent(event));
+    this.clientUnsubscribe = replacement.on((event) => this.handleEvent(event));
     this.client = replacement;
     // Re-apply the live permission mode onto the fresh child (the old client's
     // buffered control calls died with it).

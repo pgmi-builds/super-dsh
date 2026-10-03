@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { Context } from "@deepseek-ai/cordis";
 
 const { ClaudeAgent } = await import("../dist/agent.js");
+const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
 
 /** A minimal Session stand-in (append captured; no persistence). */
 function fakeSession() {
@@ -150,5 +151,95 @@ test("unknown provider id in a legacy selection → NATIVE_LAUNCH (no injection)
   assert.equal(client.calls.setLaunch[0].providerId, null, "no provider is injected");
   assert.deepEqual(client.calls.setLaunch[0].env, {}, "empty env — the native settings decide");
   assert.equal(client.calls.ensureStarted, 1, "the lazy-spawn gate starts the child");
+  await agent.dispose();
+});
+
+/** Flush the delivery chain and any queued microtasks (the flip's agent_end). */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** A recording Session: appends are captured in order (read via `.events`). */
+function recordingSession() {
+  let seq = 0;
+  const events = [];
+  return {
+    id: "session-flip",
+    events,
+    snapshotEvents: () => events.slice(),
+    requestHeader: () => undefined,
+    append(type, data, opts) {
+      const event = { type, seq: seq++, time: Date.now(), data: structuredClone(data), ...(opts ?? {}) };
+      events.push(event);
+      return event;
+    },
+  };
+}
+
+/** A scripted client whose close() reproduces the real reader loop's post-close
+ *  agent_end (emitted on the next microtask through the still-registered listener). */
+function flippingClient({ spawned = false, threadId = null, appliedProvider = null, emitAgentEndOnClose = false } = {}) {
+  const listeners = new Set();
+  const calls = { setPermissionMode: [], ensureStarted: 0, prompt: 0 };
+  return {
+    spawned,
+    threadId,
+    appliedProvider,
+    closed: false,
+    calls,
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    setLaunch(launch) {
+      this.appliedProvider = launch.providerId;
+    },
+    async setModel() { },
+    async setPermissionMode(mode) { calls.setPermissionMode.push(mode); },
+    async ensureStarted() { calls.ensureStarted += 1; this.spawned = true; },
+    async prompt() { calls.prompt += 1; },
+    async followUp() { },
+    async steer() { },
+    async interrupt() { },
+    async supportedModels() { return []; },
+    async supportedCommands() { return []; },
+    async getState() { return { isStreaming: false }; },
+    get cwd() { return "/fake/cwd"; },
+    close() {
+      this.closed = true;
+      if (emitAgentEndOnClose) {
+        queueMicrotask(() => { for (const listener of [...listeners]) listener({ type: "agent_end" }); });
+      }
+    },
+  };
+}
+
+test("provider flip quarantines the superseded client's agent_end — no spurious turn/end, request/context still emitted", async () => {
+  const session = recordingSession();
+  const ctx = new Context();
+  ctx.provide("sessionProjections", {
+    stateOf: (_session, key) => (key === "modelSelection" ? { pending: { provider: "claude", model: "glm/glm-5.2" } } : undefined),
+  });
+
+  const oldClient = flippingClient({ spawned: true, threadId: "u1", appliedProvider: "deepseek", emitAgentEndOnClose: true });
+  const replacement = flippingClient({});
+  const clientFactory = (overrides = {}) => {
+    replacement.appliedProvider = overrides.launch?.providerId ?? null;
+    return replacement;
+  };
+
+  const agent = new ClaudeAgent(
+    ctx, "session-flip", {}, session, oldClient, undefined,
+    { launchFor: fakeLaunchFor }, clientFactory,
+  );
+
+  agent.prompt(createUserMessage({ content: [{ type: "text", text: "hello" }], source: { kind: "user" } }));
+  await settle();
+
+  const types = session.events.map((event) => event.type);
+  assert.equal(types.includes("turn/end"), false,
+    "the superseded client's stale agent_end must not close the flip turn before turn/start");
+  assert.equal(types.includes("turn/start"), true, "turn/start opens the new turn");
+  assert.ok(types.includes("request/context"),
+    "request/context is still emitted for the new turn (turnOpen survived the swap)");
+
   await agent.dispose();
 });
