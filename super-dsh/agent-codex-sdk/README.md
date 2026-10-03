@@ -14,28 +14,35 @@ WebUI 消费的是 DSH 服务提供的数据面。
 - 一个 **AgentFactory**：`src/index.ts` 里的 `CodexProvider` 在 `ctx.agents` 注册工厂，
   每个会话一个 `CodexSdkClient`（真 `@openai/codex-sdk` 线程）；`src/agent.ts` 把 Codex 线程事件
   投影成 DSH 会话事件。
-- **不包含** 任何 hub 耦合：世界挂载由 hub 侧驱动（AW-B 用 `@pgmi-builds/superd-hub/world` 的
-  mount carrier）。本包自己就足以点亮一个完整的 web app。
+- **带自己的 world 入口**：`src/world-plugin.ts`（`./world`，world key `codex-sdk`）把它作为
+  superd 世界挂载（`spawnWorld` + `worldMountPatches`），需要 hub 的 `@pgmi-builds/superd-hub`；
+  同一份 adapter 代码也可作为普通 bundle 点亮一个完整 web app（两形态一条代码路径）。
 
-## 单独跑起来（首选开发/验收形态）
+## 零声明依赖与运行时自取（2026-10-04 user 裁决）
 
-```bash
-# 在仓根执行；端口默认 4988，LAN 走只绑 LAN IP 的 socat relay
-SUPERD_APP_PORT=4989 bash super-dsh/test/start-codex-app.sh
-# 脚本会打印 loopback / LAN token URL；停止：
-systemctl --user stop superd-codex-app-<port>-test superd-codex-app-<port>-relay
-```
+本包 **不声明任何运行时依赖** —— `@openai/codex-sdk` / `@openai/codex` / `zod` 既不在
+`dependencies`、也不在 `optionalDependencies`、也不在 `peerDependencies`（`dependencies` 恒为
+`{}`），安装期零下载、零 postinstall。SDK 树在**首个真 prompt** 时才被 fetch 进
+`<worldHome>/sdk-runtime/`（`src/sdk-runtime.ts`）：
 
-环境变量：`SUPERD_APP_PORT`（端口）、`SUPERD_APP_HOME`（默认 `$WT/.tests`）、
-`SUPERD_LAN_HOST`（默认 `192.0.2.130`）、`CODEX_TRACE=1`（provider/agent 追踪）。
+- marker `<worldHome>/sdk-runtime.json`（**最后写**：写不到就不算成功）、锁 `.lock`（mkdir 原子，
+  30 min 判陈旧可夺）、失败留 `.error.log`；
+- marker 身份 = 本包版本 + 两个 pin，任一变化即重取；命中且 entry 存在则零网络短路；
+- 装完立刻 smoke `import()` entry 并要求 `Codex` 构造器存在 —— 坏树在 fetch 时报错，不留到首 prompt；
+- 预热（dev/运维）：`npm run fetch-sdk-runtime [<home>]`（只接受仓内 `.tests` 下的 home）。
 
+## 跑起来
+
+本包默认 **disabled**（composite 行 `agent-codex-sdk`，打开该行即启用）：行为级验证只走整包
+pack 线（`super-dsh/test/start-4999.sh` + dev3 实装），不另起 per-agent 场景 rig（2026-09-24
+场景退役，见 `agent-adapter-dev-rules.md` §2）。`CODEX_TRACE=1` 开 provider/agent 追踪。
 ## Home 与 profile 布局（user 裁定）
 
 | 位置 | 内容 |
 |---|---|
 | `$DSH_HOME`（测试 = `<repo>/.tests`） | 测试 DSH home |
-| `$DSH_HOME/agents/codex` | **Codex app home**：`config.toml` / `auth.json` / 模型 catalog（standalone 时代的 `setup-codex-home.mjs` 拷入已随 2026-09-24 场景退役删除）+ Codex 自己的 rollout/state |
-| `$DSH_HOME/profiles/codex` | 本 app 的 dsh profile（bundles + `cordis.patch.yml`） |
+| `<DSH_HOME>/agents/codex-sdk` | 该世界的 **world DSH home**（`dsh-sessions.json` 映射等 adapter 态）+ **自取 SDK 运行时** `<worldHome>/sdk-runtime/`；codex app home 仍是原生 `~/.codex`（绝不重定向） |
+| `$DSH_HOME/profiles/codex-sdk` | 该世界的 dsh profile（bundles + `cordis.patch.yml`） |
 | `$DSH_HOME/sessions/...` | **DSH 会话日志**（上游 `session-persistence-jsonl`，zstd）——list/replay 都由此提供 |
 
 **禁止**自造 per-app home（如 `.tests/codex-app`）。
@@ -43,7 +50,7 @@ systemctl --user stop superd-codex-app-<port>-test superd-codex-app-<port>-relay
 ## 关键实现点
 
 - **session 身份 = 一对一映射**：DSH session id 是权威；Codex thread id 在其物化后写入
-  `<codexHome>/dsh-sessions.json`（`src/session-map.ts`）。resume 只经该映射重挂线程，查不到即
+  `<worldHome>/dsh-sessions.json`（`src/session-map.ts`）。resume 只经该映射重挂线程，查不到即
   fail-closed。**不自建 rollout 扫描做 list，也不自解析 JSONL 做 replay。**
 - **DSH-native 持久化**：工厂按上游 agent-loop 的方式持有写通道（create `persistence.create` /
   resume `persistence.open(id,'write')` → `read` → `interruptedTurnClosers` → `prepare`），
@@ -63,12 +70,10 @@ SUPERD_DSH_ANCHOR=<repo>/upstream/deepseek-harness/package.json \
 node --test test/*.test.mjs
 ```
 
-live 门控：`SUPERD_CODEX_LIVE=1`（会真跑一次 Codex turn）。
-
 ## 已知边界（V1）
 
 - 审批仅 launch-only 预设（SDK 无运行时审批；app-server 线才有 `*/requestApproval`）；
 - 无 steer / 无运行时换模型（下一轮生效）/ usage 滞后一轮 / 无 fork；
 - `compaction/*`、`todo/write`、`subagent/*` 未接（见规则文档 §9.4 backlog）；
-- **AW-B world 挂载移植**：本包已无 world-plugin；若要在 AW-B 的 mount carrier 下作为世界被挂载，
-  由 hub 侧驱动（移植为跟踪项）。
+- **world 入口**：`src/world-plugin.ts`（world key `codex-sdk`）已接线 `spawnWorld`；roster 条目
+  fiber-scoped、行关闭时 dispose 世界（2026-10-03 omp-sdk 验收踩到的两条卸载契约）。
