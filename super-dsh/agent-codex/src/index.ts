@@ -47,6 +47,7 @@ import { CodexAgent, type CodexAgentRuntimeInfo } from "./agent.js";
 import { CodexLlmAdapter, CODEX_PROVIDER_ID } from "./adapter.js";
 import { registerCodexPreset } from "./agent-preset-codex.js";
 import { readRolloutHead, resolveCodexHome } from "./codex-store.js";
+import { CodexProvidersGateway } from "./codex-provider-gateway.js";
 import { CodexResumeError, sessionRecord, upsertSession, type CodexSessionRecord } from "./session-map.js";
 import { readCodexModelCatalog, CODEX_DEFAULT_MODEL_PLACEHOLDER } from "./models.js";
 import { codexApprovalMode, defaultPermissionPreset, envApprovalMode, presetFromEvents, sandboxModeForPreset } from "./permission.js";
@@ -137,6 +138,19 @@ export class CodexProvider extends Service implements AgentFactory {
     // pins its `default` to the Codex preset). The adapter only registers
     // its one fixed preset into the registry.
     registerCodexPreset(ctx);
+    // The Hub settings panel's data plane (2026-10-03 multi-provider ruling): an
+    // adapter-owned Typert Remote (`codexProviders/get|save|remove|select`) on
+    // this world's context. The hub's carrier forwards `envelope.method`
+    // verbatim, so the panel reaches it through the existing
+    // `/hub/api?agent=codex` family — no new hub route, and no provider
+    // knowledge leaks out of the adapter (dev-rules §12). Cordis keeps the
+    // instance alive as this context's `codexProviders` service.
+    //
+    // `resolveCodexHome` is passed as a THUNK on purpose: the native home is
+    // re-resolved per call (so a test's `CODEX_HOME` and an operator's override
+    // are both honored) and construction stays read-free — the panel's first
+    // `get` is what touches disk.
+    new CodexProvidersGateway(ctx, this.home, () => resolveCodexHome());
   }
 
   /**
