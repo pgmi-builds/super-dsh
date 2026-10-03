@@ -103,6 +103,68 @@ the following instructions:
 So mid-thread model switching is not merely tolerated, it is a first-class path with a re-orientation
 payload for the incoming model. That is a strong signal about how much the harness expects this.
 
+---
+
+## 7. Follow-up: can the provider be injected WITHOUT writing the native config?
+
+Asked directly, and it turns out the answer is yes, two independent ways, both measured in
+`.scratch/provider-probe/probe3.mjs`. The throwaway `config.toml` in that probe deliberately names
+**only** `deepseek`; a provider `ghost` is injected from memory and a real turn runs on it. The config
+file's sha256 is identical before and after: **zero disk writes.**
+
+**(1) Spawn-time argv — a whole provider definition from memory.**
+
+```
+codex app-server \
+  -c 'model_providers.ghost.name="ghost"' \
+  -c 'model_providers.ghost.base_url="https://open.bigmodel.cn/api/v1"' \
+  -c 'model_providers.ghost.wire_api="responses"' \
+  -c 'model_providers.ghost.env_key="ZHIPU_API_KEY"' \
+  -c 'model_provider="ghost"' \
+  -c 'model="glm-5.3-flash"'
+```
+
+`-c, --config <key=value>` is documented as *"Override a configuration value that would otherwise be
+loaded from `~/.codex/config.toml`. Use a dotted path."* The `env_key` indirection means the **API key
+also stays in memory**: it rides the child's environment, which the adapter already owns. This is the
+spawn-time, on-the-fly route the question asked about — an argv flag rather than an env var, which is
+strictly better here because it is per-child rather than process-global.
+
+**(2) RPC-level, per thread — no respawn needed to define it.**
+
+`ThreadStartParams` / `ThreadResumeParams` carry `config?: { [key: string]: JsonValue }`. Passing the
+same provider object there works identically:
+
+```
+thread/start { cwd, config: { model_providers: { ghost: {...} }, model_provider: "ghost", model: "glm-5.3-flash" } }
+-> provider=ghost model=glm-5.3-flash, turn ran
+```
+
+### So what is reachable, and where the wall is
+
+| Wish | Reachable? | Mechanism |
+|---|---|---|
+| provider list + model list in the UI | **yes, today** | the Hub's provider store |
+| new sessions on the selected provider | **yes, today** | config rewrite (or, better, the spawn-time `-c` above) |
+| **change provider mid-session, at a turn boundary, keeping the session live** | **yes, buildable** | kill the session's child at the turn boundary → respawn with `-c` (or `thread/resume.config`) → `thread/resume {threadId, modelProvider, model}` → next prompt runs on the new provider with the full history |
+| change provider *inside* one live child, between turns | **no** | `TurnStartParams` has no provider field, and `thread/resume` against a loaded thread is accepted-but-ignored (probe 2) |
+| change **model** mid-session, live | **yes** | `turn/start.model`, "this turn and subsequent turns" |
+
+The two halves that make the mid-session provider switch work are each already measured: **§2** proves a
+resume accepts a different provider, and this section proves the provider can come from memory. Nothing
+else is missing — the child restart **is** the boundary, and a sub-second respawn at a turn boundary is
+invisible next to a model turn.
+
+Consequences worth stating plainly:
+
+- The child restart is not a workaround, it is the semantics: a turn must not change provider underneath
+  itself, and `turn/completed` is precisely where the harness stops caring.
+- Writing `~/.codex/config.toml` becomes **optional rather than load-bearing**. It stays worth doing so
+  the user's own `codex` TUI/CLI agrees with the UI (the 2026-10-02 「拥抱用户自己的使用环境」 ruling),
+  but per-session provider selection no longer depends on it.
+- `session_meta.model_provider` keeps naming how the thread was born, and each `turn_context` records
+  what actually ran. Mid-session switches make that divergence normal, not corrupt.
+
 ## 6. What this means for the Hub surface
 
 - The Hub's provider switch is honest: it rewrites the config the *next* child reads, and the resume
