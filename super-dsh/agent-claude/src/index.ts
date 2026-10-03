@@ -56,7 +56,7 @@ import {
   type ClaudePermissionMode,
 } from "./permission.js";
 import { sessionRecord, upsertSession } from "./session-map.js";
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool } from "./claude-client.js";
 import {
   makeCanUseTool,
   answerAskUserQuestion,
