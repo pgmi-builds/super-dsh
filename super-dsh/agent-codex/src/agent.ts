@@ -850,6 +850,12 @@ export class CodexAgent implements Agent {
     const client = this.#client;
     const key = `${providerId ?? "native"}/${route?.model ?? ""}`;
 
+    // Pin before ensureStarted: the first thread and turn otherwise inherit
+    // the native model captured at construction, even with a new provider.
+    if (route !== undefined) {
+      await client.setModel(route.provider, route.model);
+    }
+
     if (!client.spawned && client.threadId === null) {
       client.applyLaunch(launchSpec, providerId);
       await client.ensureStarted();
@@ -859,10 +865,6 @@ export class CodexAgent implements Agent {
       await client.ensureStarted();
     } else if (client.appliedProvider !== providerId) {
       await client.reattach(launchSpec, providerId, route?.model);
-    } else if (route !== undefined) {
-      await client.setModel(route.provider, route.model).catch((error) => {
-        trace(`set_model ${key} failed: ${String(error)}`);
-      });
     }
     this.#routeKey = key;
   }

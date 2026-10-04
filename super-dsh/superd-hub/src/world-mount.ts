@@ -109,13 +109,14 @@ export const WORLD_WAVE1_DISABLED_ROWS: readonly string[] = [
  * Wave-2 of world composition minimization: the CLIENT lane. The
  * multi-ctx-multi-ui → native-ui-only transition (0.1.5 / T-D) retired the
  * world's own web UI (webserver/hmr/web-runtime/client-hmr above); wave-2
- * completes it by stripping the browser-half rows of the web-app bundle —
- * every dsh-client-* row plus the cordis client runner. In a world these
- * only registered modules into a table no browser ever reads.
+ * completes it by stripping the browser-only rows of the web-app bundle
+ * plus the cordis client runner. A dsh-client-* package can also provide
+ * host services, so its name alone does not make it safe to disable.
  *
  * Dependency-cleared 2026-09-27: the KEEP side (api controllers, gateway,
- * session core, adapters) injects none of their services with ONE
- * exceptions — `connection` (dsh-client-connection: the world's typert
+ * session core, adapters) keeps the required host services:
+ * `file-upload` (dsh-client-file-upload: sessionController injects its
+ * fileUploads service), `connection` (dsh-client-connection: the world's typert
  * gateway injects it) and `modules` (dsh-client-modules: its activation
  * work fails in world trees ("client bundles not found") and at least one
  * fiber treats it as required — the load-bearing parking restatement
@@ -124,7 +125,6 @@ export const WORLD_WAVE1_DISABLED_ROWS: readonly string[] = [
 export const WORLD_WAVE2_DISABLED_ROWS: readonly string[] = [
   'cordis-client-runner',
   'directory-picker-browse-surface',
-  'file-upload',
   'locale',
   'resources',
   'ui-agent-preset', 'ui-approval', 'ui-attachment', 'ui-brand-official',

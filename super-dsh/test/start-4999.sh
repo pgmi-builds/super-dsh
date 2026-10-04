@@ -196,6 +196,11 @@ done
 env ${SEED_ENV[@]+"${SEED_ENV[@]}"} \
   "$NODE_BIN" "$LINE/test/seed-claude-providers.mjs" "$DSH_HOME_DIR/agents/claude" || true
 
+# Codex's third-party acceptance route uses the adapter store, without writing
+# native config/auth or passing provider-key env to the systemd business unit.
+env ${SEED_ENV[@]+"${SEED_ENV[@]}"} \
+  "$NODE_BIN" "$LINE/test/seed-codex-providers.mjs" "$DSH_HOME_DIR/agents/codex" || true
+
 # ctx0's native /api + /hub fences read the CONNECTION service's trustedHosts
 # (= webRuntime: bind-derived loopback literals + EXPLICIT --trusted-host
 # extras). SUPERD_TRUSTED_HOSTS above feeds only the world fence leg and the

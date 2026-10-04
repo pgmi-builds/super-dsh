@@ -75,13 +75,14 @@ test('wave-2: the client lane is stripped (native-ui-only completion)', () => {
   const patches = worldMountPatches('omp')
   const disabled = new Set(patches.filter((p) => 'id' in p && p.disabled === true).map((p) => p.id))
   for (const id of WORLD_WAVE2_DISABLED_ROWS) assert.equal(disabled.has(id), true, id + ' must be disabled')
-  // Client-lane KEEPs: the gateway injects `connection`; `modules` is parked
-  // (inject-on-webServer), not disabled.
+  // Client-lane KEEPs: the gateway injects `connection`; sessionController
+  // injects `fileUploads`; `modules` is parked (inject-on-webServer).
   assert.equal(disabled.has('connection'), false, 'connection stays (gateway inject)')
   assert.equal(disabled.has('modules'), false, 'modules stays parked, not disabled')
+  assert.equal(disabled.has('file-upload'), false, 'file-upload stays (sessionController injects fileUploads)')
   // KEEP invariants still enabled.
   for (const keep of ['agent', 'agent-default-model', 'settings', 'agent-preset-registry']) {
     assert.equal(disabled.has(keep), false, keep + ' must stay enabled')
   }
-  assert.equal(WORLD_WAVE2_DISABLED_ROWS.length, 46, 'wave-2 = 45 dsh-client-* rows + cordis-client-runner (modules parked, connection kept)')
+  assert.equal(WORLD_WAVE2_DISABLED_ROWS.length, 45, 'wave-2 = 44 dsh-client-* rows + cordis-client-runner (modules parked, connection and file-upload kept)')
 })

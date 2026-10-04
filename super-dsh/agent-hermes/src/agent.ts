@@ -642,7 +642,8 @@ export class HermesAgent implements Agent {
     if (this.#disposed) return;
     this.session.append("turn/start", { turn: this.#dashTurn });
     await this.#emitRequestContext();
-    this.#titleSourceSeq ??= (this.session.append("user/message", message, { surfaceOp: "append" }) as { seq: number }).seq;
+    const event = this.session.append("user/message", message, { surfaceOp: "append" }) as { seq: number };
+    this.#titleSourceSeq ??= event.seq;
     this.#armTurnDeadline();
     void this.#client
       .prompt(userMessageText(message))

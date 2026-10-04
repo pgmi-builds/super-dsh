@@ -17,6 +17,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, test } from "node:test";
+import { Context } from "@deepseek-ai/cordis";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { CodexAgent } from "../dist/agent.js";
 
 import { CodexAppServerClient, setAppServerTransportFactory } from "../dist/app-server-client.js";
 import { CodexAppServerTransport } from "../dist/app-server-wire.js";
@@ -88,6 +91,40 @@ async function runTurn(client, created, index, text) {
 function turnStarts(entry) {
   return entry.calls.filter((call) => call.method === "turn/start");
 }
+
+test("a cold agent pins the selected model on the first thread and turn despite a native default", async (t) => {
+  const created = installFake();
+  const client = makeClient({ cwd: WORKSPACE, model: "gpt-native-default" });
+  const ctx = new Context();
+  ctx.provide("sessionProjections", {
+    stateOf: () => ({ pending: { provider: "deepseek", model: "deepseek-flash" } }),
+  });
+  const events = [];
+  const session = {
+    id: "session-cold-route", snapshotEvents: () => [...events],
+    requestHeader: () => undefined,
+    append(type, data) {
+      const event = { type, data, seq: events.length + 1, time: Date.now() };
+      events.push(event);
+      return event;
+    },
+  };
+  const agent = new CodexAgent(ctx, session.id, { model: "gpt-native-default" }, session, client, undefined, {
+    launchFor: () => ({ argv: ["-c", 'model_provider="deepseek"'], env: {} }),
+    systemPrompt: () => undefined,
+  });
+  t.after(() => agent.dispose());
+  agent.send(createUserMessage({ content: [{ type: "text", text: "cold route" }], source: { kind: "user" } }), "next-turn", true);
+  for (let i = 0; i < 100 && !created[0]?.calls.some(call => call.method === "turn/start"); i++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const thread = created[0]?.calls.find(call => call.method === "thread/start");
+  const turn = created[0]?.calls.find(call => call.method === "turn/start");
+  assert.ok(turn, "the real agent must reach the wire turn");
+  assert.equal(thread.params.modelProvider, "deepseek");
+  assert.equal(thread.params.model, "deepseek-flash");
+  assert.equal(turn.params.model, "deepseek-flash");
+});
 
 test("reattach kills the child, spawns the next provider, and resumes the SAME thread", async () => {
   const created = installFake();

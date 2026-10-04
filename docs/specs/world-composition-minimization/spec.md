@@ -13,7 +13,7 @@ Wave-incremental: each wave = disable block + full rig verification; anything qu
 
 - **Adapters inject `["agents","sessions","llm","agentDefaultModel","settings"]` + `agentPresets`** → rows `agent`, the `dsh-llm` family, `agent-default-model`, `settings`, `agent-preset-registry` STAY (all waves until adapters decouple).
 - Session core (`dsh-session`) injects only `invariants` + `typert`.
-- KEEP-set api controllers inject nothing from the wave-1 families: session-controller (`fileReferences`, `typert`, `attachments`), workspace-controller (`directoryPicker`, `remote`, `typert`, `workspaceRegistry`), account-controller (`deepseekAccount`), api-gateway (`typert`, `connection`, `webServer`).
+- KEEP-set api controllers inject nothing from the wave-1 families: session-controller (`fileReferences`, `fileUploads`, `typert`, `attachments`), workspace-controller (`directoryPicker`, `remote`, `typert`, `workspaceRegistry`), account-controller (`deepseekAccount`), api-gateway (`typert`, `connection`, `webServer`).
 - `mcpResources` has zero consumers in the farm; `jobs` service is consumed only by `api-job-controller` (dropped together).
 
 ## Wave-1 disable list (24 rows, dependency-cleared)
@@ -27,7 +27,8 @@ Mechanism: one shared disable block in the per-world patch layer (`worldMountPat
 
 ## Wave-2 (executed 2026-09-27 — the client lane, native-ui-only completion)
 
-User framing ratified: the multi-ctx-multi-ui → native-ui-only transition (0.1.5/T-D) retired the world's own web UI; wave-2 completes it by stripping the web-app bundle's browser-half rows. **46 rows disabled** (45 `dsh-client-*` + `cordis-client-runner`) with two KEEPS:
+User framing ratified: the multi-ctx-multi-ui → native-ui-only transition (0.1.5/T-D) retired the world's own web UI; wave-2 completes it by stripping the web-app bundle's browser-only rows. A `dsh-client-*` package may also provide host services; package naming alone cannot classify it as pure UI. **45 rows disabled** (44 `dsh-client-*` + `cordis-client-runner`) with three KEEPS (corrected 2026-10-04):
+- `file-upload` — provides the host `fileUploads` service required by `sessionController`; keeping the row does not restore a world client runner;
 - `connection` — the world's typert gateway injects it;
 - `modules` — **parked, not disabled**: its activation fails in world trees ("client bundles not found") and the omp fiber treats it as required (rig evidence: `omp world failed: 1 required plugin did not activate`); the load-bearing restatement `{ id: 'modules', inject: ['webServer'] }` keeps it inert without a startup failure.
 

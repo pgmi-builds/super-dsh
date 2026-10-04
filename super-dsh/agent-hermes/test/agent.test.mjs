@@ -254,6 +254,51 @@ test("fixture replay: wire sequence → DSH event ordering + stream records + us
   assert.equal(agent.status, "idle");
 });
 
+test("sequential prompts persist each user before its assistant and keep the first title citation", async (t) => {
+  const session = makeFakeSession();
+  const client = makeFakeClient();
+  const agent = new HermesAgent(new Context(), "s1", { provider: "hermes" }, session, client, undefined, makeRuntimeInfo());
+  t.after(() => agent.dispose());
+
+  for (const [text, rpcId, reply] of [["first prompt", "rpc-first", "first reply"], ["second prompt", "rpc-second", "second reply"]]) {
+    agent.send(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user", rpcId } }), "next-turn", true);
+    await delay(10);
+    client.emit({ type: "agent_start" });
+    client.emit({ type: "turn_start" });
+    client.emit({ type: "message_end", message: { role: "user", content: [{ type: "text", text }] } });
+    client.emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    client.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+    client.emit({ type: "turn_end", data: { status: "complete" } });
+    client.emit({ type: "agent_end" });
+    client.settlePrompt();
+    await delay(10);
+    assert.equal(agent.status, "idle");
+  }
+  client.emit({ type: "session_title", name: "Title after second turn" });
+
+  assert.deepEqual(client._calls.prompt, ["first prompt", "second prompt"]);
+  const users = session.events.filter((event) => event.type === "user/message");
+  assert.equal(users.length, 2, "each prompt persists exactly one user, even with a gateway echo");
+  assert.deepEqual(users.map((event) => event.data.content), [
+    [{ type: "text", text: "first prompt" }], [{ type: "text", text: "second prompt" }],
+  ]);
+  assert.deepEqual(users.map((event) => event.data.source), [
+    { kind: "user", rpcId: "rpc-first" }, { kind: "user", rpcId: "rpc-second" },
+  ]);
+  const starts = session.events.filter((event) => event.type === "turn/start");
+  const assistants = session.events.filter((event) => event.type === "assistant/message");
+  const ends = session.events.filter((event) => event.type === "turn/end");
+  assert.equal(starts.length, 2);
+  assert.equal(assistants.length, 2);
+  assert.equal(ends.length, 2);
+  for (let i = 0; i < 2; i += 1) {
+    assert.ok(starts[i].seq < users[i].seq && users[i].seq < assistants[i].seq && assistants[i].seq < ends[i].seq,
+      `turn ${i + 1} persists the user before its assistant inside the turn`);
+    assert.equal(ends[i].data.reason.kind, "completed");
+  }
+  assert.deepEqual(session.events.find((event) => event.type === "session/title").data.messageSeqs, [users[0].seq]);
+});
+
 test("prompt-guard: delivery while turnOpen queues followUp, flushed at idle", async () => {
   const session = makeFakeSession();
   const client = makeFakeClient();
