@@ -124,6 +124,11 @@ test("a full prompt turn synthesizes turn/step/user/assistant/tool events with s
     "system/message",
     "user/message",
     "assistant/message",
+    // dev3 2026-10-04 case-C family fix: pi assistant frames advertise no
+    // tool-call blocks, so the bridge synthesizes a minimal advertisement
+    // assistant/message before each tool/call (validator: advertisement ≡
+    // execution arguments, advertisement-before-execution).
+    "assistant/message",
     "tool/call",
     "tool/result",
     "step/end",
@@ -138,6 +143,10 @@ test("a full prompt turn synthesizes turn/step/user/assistant/tool events with s
   const call = events.find((e) => e.type === "tool/call");
   assert.equal(call.data.name, "bash");
   assert.equal(call.data.arguments, JSON.stringify({ command: "ls" }));
+  // the synthesized advertisement copies the execution arguments verbatim
+  const advertisement = events.filter((e) => e.type === "assistant/message")[1];
+  const adBlock = advertisement.data.message.content.find((b) => b.type === "tool-call");
+  assert.equal(adBlock.arguments, call.data.arguments);
   const result = events.find((e) => e.type === "tool/result");
   // 0.1.7: tool results are first-class tool-role messages — the call identity
   // lives on the message (message.toolCallId), not inside a content block.

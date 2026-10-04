@@ -422,6 +422,12 @@ export class HermesAgent implements Agent {
    */
   #remoteQueue: { message: UserMessage; sent: boolean; transport: "followUp" | "steer" }[] = [];
   #bridgedToolResults = new Set<string>();
+  /** callIds already advertised by an appended assistant/message frame — the
+   *  strict validator refuses any `tool/call` whose callId no assistant frame
+   *  advertised (2026-10-04 dev3 case C: the hermes wire never delivers the
+   *  tool_use-bearing intermediate assistant messages, so execution frames
+   *  arrived with no advertisement anchor). */
+  #advertisedToolCalls = new Set<string>();
   /** Fires when the agent has been idle past HERMES_IDLE_EXIT_MS (tears down the client). */
   readonly #onIdleExit: (() => void) | undefined;
   #idleExitTimer: NodeJS.Timeout | undefined = undefined;
@@ -666,6 +672,12 @@ export class HermesAgent implements Agent {
     await this.#handshake(`session.create`, () => this.#client.createSession({
       cwd: sessionCtx?.cwd ?? process.cwd(),
       ...(route?.model !== undefined ? { model: route.model } : {}),
+      // The route's provider slug MUST ride with the model: without it the
+      // gateway pins the session to its default provider (deepseek) and any
+      // foreign-family model id (z-ai/glm-*, anthropic/*, …) dies at
+      // session.create with `Model … is not served by provider 'deepseek'`
+      // (-32602). The gateway normalizes aliases (`z-ai` → `zai`) itself.
+      ...(route?.provider !== undefined ? { provider: route.provider } : {}),
       ...(sessionCtx?.title !== undefined && sessionCtx.title !== "" ? { title: sessionCtx.title } : {}),
     }));
   }
@@ -1027,13 +1039,40 @@ export class HermesAgent implements Agent {
         if (!this.#turnOpen) break;
         const callId = String(event.toolCallId ?? "");
         const name = String(event.toolName ?? "");
+        const argumentsJson = String(event.argumentsJson ?? JSON.stringify(event.args ?? {}));
         this.#commitStepStart();
+        // Advertisement-before-execution (validator invariant): the hermes wire
+        // never delivers the tool_use-bearing intermediate assistant messages,
+        // so unless a real assistant frame already advertised this callId,
+        // bridge a minimal assistant/message carrying the tool-call block —
+        // arguments copied verbatim into both frames (validator: lifecycle
+        // arguments ≡ advertised, strict string equality; 2026-10-04 dev3
+        // case C). A live stream bridge is left untouched — the final real
+        // assistant message settles it.
+        if (!this.#advertisedToolCalls.has(callId)) {
+          const advertisement = createAssistantMessage({
+            content: [{ type: "tool-call", id: ToolCallId(callId), name, arguments: argumentsJson }],
+            source: {
+              provider: String(this.options.provider ?? ""),
+              model: String(this.options.model ?? ""),
+            },
+          });
+          this.session.append("assistant/message", {
+            turn: this.#dashTurn,
+            step: this.#step,
+            message: advertisement,
+            stream: [],
+          }, {
+            surfaceOp: "append",
+          });
+          this.#advertisedToolCalls.add(callId);
+        }
         this.session.append("tool/call", {
           turn: this.#dashTurn,
           step: this.#step,
           callId: ToolCallId(callId),
           name,
-          arguments: String(event.argumentsJson ?? JSON.stringify(event.args ?? {})),
+          arguments: argumentsJson,
         });
         break;
       }
@@ -1162,6 +1201,9 @@ export class HermesAgent implements Agent {
 
   #appendAssistantMessage(message: WireMessage, usage?: TokenUsage): void {
     const content = convertContent(message.content);
+    for (const block of content) {
+      if (block.type === "tool-call") this.#advertisedToolCalls.add(block.id);
+    }
     const assistant: AssistantMessage = createAssistantMessage({
       content,
       source: {

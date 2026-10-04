@@ -1106,14 +1106,21 @@ export class ClaudeAgent implements Agent {
    * projection carried — so the `tool_start` flush lands a same-attempt
    * sample and nothing ever stashes across turns.
    */
-  private flushAssistant(usage?: TokenUsage): void {
-    if (this.reasoningBuffer === "" && this.textBuffer === "") {
+  private flushAssistant(usage?: TokenUsage, toolCall?: { callId: string; name: string; arguments: string }): void {
+    // A toolCall rides the SAME frame (advertise+usage on one attempt): the
+    // token-meter fold requires every step's assistant frame to carry a usage
+    // sample, so a separate no-usage advertisement frame would turn the
+    // turn's whole usage disclosure undefined.
+    if (toolCall === undefined && this.reasoningBuffer === "" && this.textBuffer === "") {
       if (usage !== undefined) trace("flush had usage but no buffered content — sample dropped (no message carries it)");
       return;
     }
     const blocks: ContentBlock[] = [];
     if (this.reasoningBuffer !== "") blocks.push({ type: "reasoning", text: this.reasoningBuffer });
     if (this.textBuffer !== "") blocks.push({ type: "text", text: this.textBuffer });
+    if (toolCall !== undefined) {
+      blocks.push({ type: "tool-call", id: ToolCallId(toolCall.callId), name: toolCall.name, arguments: toolCall.arguments });
+    }
     this.reasoningBuffer = "";
     this.textBuffer = "";
     const effectiveUsage = usage ?? this.capturedUsage;
@@ -1140,13 +1147,23 @@ export class ClaudeAgent implements Agent {
   }
 
   private appendToolCall(callId: string, name: string, args: unknown): void {
-    this.commitStepStart();
+    // The tool-call block rides the SAME assistant/message as any pending
+    // text (native advertise+usage shape): one attempt per step with the
+    // usage sample AND the advertisement on one frame. A separate no-usage
+    // advertisement frame would satisfy the format validator but break the
+    // token-meter fold (every step's assistant frame needs a usage sample).
+    const argumentsJson = JSON.stringify(args ?? {});
+    this.flushAssistant(undefined, {
+      callId,
+      name,
+      arguments: argumentsJson,
+    });
     this.session.append("tool/call", {
       turn: this.dashTurn,
       step: this.step,
       callId: ToolCallId(callId),
       name,
-      arguments: JSON.stringify(args ?? {}),
+      arguments: argumentsJson,
     });
   }
 
@@ -1324,7 +1341,8 @@ export class ClaudeAgent implements Agent {
         // RC-6: the mid-turn flush closes the attempt WITH the sample the
         // message itself reported (captured above / on the assistant events).
         this.captureProvenance(event);
-        this.flushAssistant();
+        // flushes pending text WITH the tool-call block as one assistant
+        // message (advertise+usage on one attempt — see appendToolCall).
         this.appendToolCall(callId, name, event.arguments);
         break;
       }

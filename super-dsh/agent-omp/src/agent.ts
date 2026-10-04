@@ -217,13 +217,22 @@ function userMessageFromOmp(message: OmpMessage): UserMessage {
   });
 }
 
-/** Extract every tool call an OMP assistant message names, in order, for approval correlation. */
-function toolCalls(blocks: OmpContentBlock[] | undefined): { callId: string; name: string }[] {
+/** Extract every tool call an OMP assistant message names, in order, for approval correlation.
+ *  `arguments` is the ADVERTISED args原文 (same normalization `convertContent` applies): dsh's
+ *  strict validator requires `tool/call.arguments` ≡ the assistant frame's advertised arguments
+ *  byte-for-byte, while `tool_execution_*` events carry runtime-parsed (schema-stripped) args —
+ *  models that add unknown fields (e.g. an intent string) make the two diverge and the stored
+ *  log fail to load (2026-10-04 dev3 case A). Exported for the regression test. */
+export function toolCalls(blocks: OmpContentBlock[] | undefined): { callId: string; name: string; arguments: string }[] {
   if (blocks === undefined) return [];
-  const result: { callId: string; name: string }[] = [];
+  const result: { callId: string; name: string; arguments: string }[] = [];
   for (const block of blocks) {
     if (block.type === "toolCall" && typeof block.id === "string") {
-      result.push({ callId: block.id, name: typeof block.name === "string" ? block.name : "" });
+      result.push({
+        callId: block.id,
+        name: typeof block.name === "string" ? block.name : "",
+        arguments: typeof block.arguments === "string" ? block.arguments : JSON.stringify(block.arguments ?? {}),
+      });
     }
   }
   return result;
@@ -348,7 +357,7 @@ export class OmpAgent implements Agent {
    */
   #remoteQueue: { message: UserMessage; sent: boolean; transport: "followUp" | "steer" }[] = [];
   #bridgedToolResults = new Set<string>();
-  #pendingToolCalls: { callId: string; name: string }[] = [];
+  #pendingToolCalls: { callId: string; name: string; arguments: string }[] = [];
   #approvalAborts = new Set<AbortController>();
   /** The last selection already synced to OMP via `set_model`, as `provider/model`. */
   #lastSyncedModel: string | null = null;
@@ -1016,12 +1025,16 @@ export class OmpAgent implements Agent {
       case "tool_execution_start": {
         const callId = String(event.toolCallId ?? "");
         const name = String(event.toolName ?? "");
+        // Advertised args win (strict validator: tool/call.arguments ≡ the
+        // assistant frame's advertised arguments); execution args are the
+        // fallback for calls no assistant frame ever carried.
+        const advertised = this.#pendingToolCalls.find((pending) => pending.callId === callId);
         this.session.append("tool/call", {
           turn: this.#dashTurn,
           step: this.#step,
           callId: ToolCallId(callId),
           name,
-          arguments: JSON.stringify(event.args ?? {}),
+          arguments: advertised?.arguments ?? JSON.stringify(event.args ?? {}),
         });
         // The assistant's pending tool call is now materialized as a running call.
         this.#pendingToolCalls = this.#pendingToolCalls.filter((pending) => pending.callId !== callId);

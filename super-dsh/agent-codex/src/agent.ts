@@ -413,6 +413,11 @@ export class CodexAgent implements Agent {
    */
   #remoteQueue: { message: UserMessage; sent: boolean; transport: "followUp" | "steer" }[] = [];
   #bridgedToolResults = new Set<string>();
+  /** callIds already advertised by an appended assistant/message frame — the
+   *  strict validator refuses any `tool/call` whose callId no assistant frame
+   *  advertised, and requires the execution arguments to equal the advertised
+   *  string (2026-10-04 dev3 omp/hermes repair: same write-side family). */
+  #advertisedToolCalls = new Set<string>();
   /**
    * The open turn's FINAL assistant message, buffered from `message_end`
    * until `turn_end` so the SAME turn's usage can land on it (the DSH
@@ -1162,7 +1167,32 @@ export class CodexAgent implements Agent {
       case "tool_execution_start": {
         const callId = String(event.toolCallId ?? "");
         const name = String(event.toolName ?? "");
+        const argumentsJson = String(event.argumentsJson ?? JSON.stringify(event.args ?? {}));
         this.#commitStepStart();
+        // Advertisement-before-execution (validator invariant, 2026-10-04 dev3
+        // omp/hermes repair family): unless a real assistant frame advertised
+        // this callId, bridge a minimal assistant/message carrying the
+        // tool-call block — arguments copied verbatim into both frames. The
+        // synthesized source mirrors #appendAssistantMessage's open-turn
+        // fallback chain.
+        if (!this.#advertisedToolCalls.has(callId)) {
+          const advertisement = createAssistantMessage({
+            content: [{ type: "tool-call", id: ToolCallId(callId), name, arguments: argumentsJson }],
+            source: {
+              provider: String(this.#turnRoute?.provider ?? this.options.provider ?? ""),
+              model: String(this.#turnRoute?.model ?? this.options.model ?? ""),
+            },
+          });
+          this.session.append("assistant/message", {
+            turn: this.#dashTurn,
+            step: this.#step,
+            message: advertisement,
+            stream: [],
+          }, {
+            surfaceOp: "append",
+          });
+          this.#advertisedToolCalls.add(callId);
+        }
         this.session.append("tool/call", {
           turn: this.#dashTurn,
           step: this.#step,
@@ -1171,7 +1201,7 @@ export class CodexAgent implements Agent {
           // The DSH payload requires the RAW JSON string the model produced;
           // the wire carries it verbatim for MCP calls and renders it from the
           // discrete fields for the other item shapes.
-          arguments: String(event.argumentsJson ?? JSON.stringify(event.args ?? {})),
+          arguments: argumentsJson,
         });
         break;
       }
@@ -1299,6 +1329,9 @@ export class CodexAgent implements Agent {
 
   #appendAssistantMessage(message: WireMessage, usage?: TokenUsage): void {
     const content = convertContent(message.content);
+    for (const block of content) {
+      if (block.type === "tool-call") this.#advertisedToolCalls.add(block.id);
+    }
     const assistant: AssistantMessage = createAssistantMessage({
       content,
       source: {

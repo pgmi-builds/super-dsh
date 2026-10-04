@@ -195,9 +195,27 @@ export class AgyAgent implements Agent {
         if (this.step > 0) this.closeStep();
         this.commitStepStart();
         const callId = ToolCallId(ev.id || `agy-${this.dashTurn}-${this.step}`);
+        const argumentsJson = ev.args || "{}";
+        // Advertisement-before-execution (validator invariant, 2026-10-04 dev3
+        // omp/hermes repair family): agy assistant frames carry only
+        // reasoning/text — never tool-call blocks — so every tool/call needs
+        // a minimal advertisement assistant frame first; arguments are copied
+        // verbatim into both frames (validator: lifecycle arguments ≡
+        // advertised, strict string equality).
+        const advertisement = createAssistantMessage({
+          content: [{ type: "tool-call", id: callId, name: ev.name, arguments: argumentsJson }],
+          source: {
+            provider: this.options.provider ?? "agy",
+            model: this.options.model ?? "",
+          },
+        });
+        this.session.append("assistant/message", {
+          turn: this.dashTurn, step: this.step,
+          message: advertisement, stream: [],
+        }, { surfaceOp: "append" });
         this.session.append("tool/call", {
           turn: this.dashTurn, step: this.step,
-          callId, name: ev.name, arguments: ev.args || "{}",
+          callId, name: ev.name, arguments: argumentsJson,
         });
         this.unpairedCalls.push({ callId, name: ev.name });
       } else {

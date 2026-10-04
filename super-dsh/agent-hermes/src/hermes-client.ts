@@ -61,7 +61,7 @@
  * (keep the spawned stdio transport the only transport).
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -212,6 +212,43 @@ export function resolveHermesRoot(): string {
   return process.env.SUPERD_HERMES_ROOT?.trim() || resolve(homedir(), ".hermes/hermes-agent");
 }
 
+/** Parse one `.env` body into entries: `#` comments, optional `export ` prefix,
+ *  optional single/double quotes, `KEY=VALUE` on one line each. Unparsable
+ *  lines are skipped (best effort — the gateway tolerates partial envs). */
+export function parseDotEnv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const body = line.startsWith("export ") ? line.slice("export ".length).trim() : line;
+    const eq = body.indexOf("=");
+    if (eq <= 0) continue;
+    const key = body.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = body.slice(eq + 1).trim();
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/** The native home's `.env` (`~/.hermes/.env`), parsed once per call. The omp
+ *  and pi runtimes load their own native `.env` on startup; the hermes gateway
+ *  child does NOT (and the harness env deliberately carries no provider
+ *  keys), so without this the spawned gateway sees zero provider credentials
+ *  — every provider request dies as quota/auth regardless of model. */
+export function loadHermesDotEnv(): Record<string, string> {
+  const path = resolve(resolveHermesRoot(), "..", ".env");
+  if (!existsSync(path)) return {};
+  try {
+    return parseDotEnv(readFileSync(path, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -296,6 +333,13 @@ export class HermesGatewayClient {
     const root = resolveHermesRoot();
     const python = resolveHermesPython(root);
     const env: Record<string, string> = { ...(opts.env ?? process.env) } as Record<string, string>;
+    // Native `.env` fill (dotenv convention: existing env WINS). The omp and
+    // pi runtimes load their own native `.env`; the hermes gateway child does
+    // not, and the harness env carries no provider keys — without this fill
+    // every provider request dies as quota/auth regardless of model.
+    for (const [dotKey, dotValue] of Object.entries(loadHermesDotEnv())) {
+      if (env[dotKey] === undefined || env[dotKey] === "") env[dotKey] = dotValue;
+    }
     const prevPath = env.PYTHONPATH?.trim();
     env.PYTHONPATH = prevPath ? `${root}${delimiter}${prevPath}` : root;
     env.HERMES_PYTHON_SRC_ROOT = root;

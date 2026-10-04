@@ -78,7 +78,10 @@ test_unit_on_port() {
   [ -n "$pid" ] || return 1
   unit=$(sed -n 's#^.*/\([^/]*\.service\)$#\1#p' "/proc/${pid}/cgroup" 2>/dev/null | head -1)
   [ -n "$unit" ] || return 1
-  case "$unit" in
+  # Match on the bare unit name: transient unit names end in `.service`, so
+  # suffix patterns written as `*-test`/`*-relay` never match (found 2026-10-04
+  # when the dashr rig's `test123-lan-4999-relay.service` blocked takeover).
+  case "${unit%.service}" in
     superd-*|dsh-*|*-test|*-relay) printf '%s' "$unit" ;;
     *) return 1 ;;
   esac
@@ -104,6 +107,15 @@ WATERMARK=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 TARBALL="$REPO/.scratch/superd-pack/super-dsh-$("$NODE_BIN" -p "require('$LINE/package.json').version").tgz"
 
 # ---- 2. fresh profile consuming the tarball (consumer manifest shape) ----
+# Plus the dev-only WebMCP injection bundle (super-dsh/dev-webmcp): built from
+# this checkout each boot and installed as a SECOND `file:` dep, so ANY browser
+# on the line URL gets the page-mcp tools server-side with zero manual steps.
+# It is NOT part of the pack (absent from the pack files whitelist and pack.mjs)
+# and must never reach a published artifact or a prod profile.
+if [ ! -d "$LINE/dev-webmcp/node_modules" ]; then
+  (cd "$LINE/dev-webmcp" && npm install --cache "$REPO/.npm-cache" --no-audit --no-fund --silent)
+fi
+(cd "$LINE/dev-webmcp" && npm run build --silent)
 PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
 rm -rf "$PROFILE_DIR"
 mkdir -p "$PROFILE_DIR"
@@ -111,8 +123,8 @@ cat > "$PROFILE_DIR/package.json" <<EOF
 {
   "name": "superd-pub-profile",
   "private": true,
-  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "super-dsh"] } },
-  "dependencies": { "super-dsh": "file:$TARBALL" }
+  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "super-dsh", "@pgmi-builds/superd-dev-webmcp"] } },
+  "dependencies": { "super-dsh": "file:$TARBALL", "@pgmi-builds/superd-dev-webmcp": "file:$LINE/dev-webmcp" }
 }
 EOF
 cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
@@ -134,7 +146,7 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
     path: ${SHARED_CREDENTIALS}
 EOF
 echo "--- pnpm install (first run downloads the runtime SDKs into the store; later runs reuse it)"
-(cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" --config.store-dir="$PNPM_STORE" --prefer-offline)
+(cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$LINE/dev-webmcp" --config.store-dir="$PNPM_STORE" --prefer-offline)
 
 # ---- 3. boot via the repo build's dsh CLI (no custom boot code) ----
 # ---- test preparation (2026-09-24 user ruling; spec: docs/07 §7) — the line

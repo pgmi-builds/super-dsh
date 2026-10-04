@@ -304,6 +304,11 @@ export class PiAgent implements Agent {
    */
   #remoteQueue: { message: UserMessage; sent: boolean; transport: "followUp" | "steer" }[] = [];
   #bridgedToolResults = new Set<string>();
+  /** callIds already advertised by an appended assistant/message frame — the
+   *  strict validator refuses any `tool/call` whose callId no assistant frame
+   *  advertised, and requires the execution arguments to equal the advertised
+   *  string (2026-10-04 dev3 omp/hermes repair: same write-side family). */
+  #advertisedToolCalls = new Set<string>();
   /** The last title already mirrored into the log (dedupe). */
   #mirroredTitle: string | null = null;
   /** The open compaction lifecycle's id (`compaction/start` … `compaction/end`). */
@@ -845,7 +850,30 @@ export class PiAgent implements Agent {
       case "tool_execution_start": {
         const callId = String(event.toolCallId ?? "");
         const name = String(event.toolName ?? "");
+        const argumentsJson = typeof event.args === "string" ? event.args : JSON.stringify(event.args ?? {});
         this.#commitStepStart();
+        // Advertisement-before-execution (validator invariant, 2026-10-04 dev3
+        // omp/hermes repair family): unless a real assistant frame advertised
+        // this callId, bridge a minimal assistant/message carrying the
+        // tool-call block — arguments copied verbatim into both frames.
+        if (!this.#advertisedToolCalls.has(callId)) {
+          const advertisement = createAssistantMessage({
+            content: [{ type: "tool-call", id: ToolCallId(callId), name, arguments: argumentsJson }],
+            source: {
+              provider: String(this.options.provider ?? ""),
+              model: String(this.options.model ?? ""),
+            },
+          });
+          this.session.append("assistant/message", {
+            turn: this.#dashTurn,
+            step: this.#step,
+            message: advertisement,
+            stream: [],
+          }, {
+            surfaceOp: "append",
+          });
+          this.#advertisedToolCalls.add(callId);
+        }
         this.session.append("tool/call", {
           turn: this.#dashTurn,
           step: this.#step,
@@ -853,7 +881,7 @@ export class PiAgent implements Agent {
           name,
           // The DSH payload requires the RAW JSON string the model produced;
           // the projection stringified pi's parsed args object.
-          arguments: typeof event.args === "string" ? event.args : JSON.stringify(event.args ?? {}),
+          arguments: argumentsJson,
         });
         break;
       }
@@ -990,6 +1018,9 @@ export class PiAgent implements Agent {
 
   #appendAssistantMessage(message: WireMessage): void {
     const content = convertContent(message.content);
+    for (const block of content) {
+      if (block.type === "tool-call") this.#advertisedToolCalls.add(block.id);
+    }
     // pi reports usage on every assistant message — same-event attachment,
     // no lag.
     const usage = convertUsage(message.usage);

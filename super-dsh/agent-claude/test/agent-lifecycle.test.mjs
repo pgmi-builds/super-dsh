@@ -159,6 +159,15 @@ test("a tool-using turn closes one attempt per step, each with its own sample; t
     ["step/start", "assistant/message", "step/end", "step/start", "assistant/message", "step/end"],
     "one flushed attempt per step",
   );
+  // dev3 2026-10-04 case-C family fix: the tool-call block now rides the SAME
+  // assistant/message as the step's text+usage (advertise+usage on one attempt
+  // — a separate no-usage advertisement frame would break the token-meter
+  // fold). Advertisement must equal the execution frame's arguments.
+  const toolAssistant = session.events.filter((e) => e.type === "assistant/message")[0];
+  const adBlock = toolAssistant.data.message.content.find((b) => b.type === "tool-call");
+  const call = session.events.find((e) => e.type === "tool/call");
+  assert.ok(adBlock, "tool-call block advertised on the step's assistant frame");
+  assert.equal(adBlock.arguments, call.data.arguments);
 
   // Step coordinates number 1, 2, 3, … WITHIN the turn (2026-09-18: the r1
   // code reset the counter after every step/end, numbering every step of a

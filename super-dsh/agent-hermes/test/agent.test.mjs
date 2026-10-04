@@ -552,3 +552,52 @@ test("session.resume never retries a gateway RPC rejection (the gateway answered
   const turnEnd = session.events.find((e) => e.type === "turn/end");
   assert.equal(turnEnd?.data.reason.error?.code, "NATIVE_SESSION_GONE");
 });
+
+test("dev3 case C: tool execution without advertisement gets a synthesized advertisement assistant frame first", async () => {
+  const session = makeFakeSession();
+  const client = makeFakeClient();
+  const agent = new HermesAgent(new Context(), "s1", { provider: "hermes", model: "deepseek-v4-pro" }, session, client, undefined, makeRuntimeInfo());
+
+  agent.send(makeUserMessage("run tools"), "next-turn", true);
+  await delay(10);
+
+  client.emit({ type: "agent_start" });
+  client.emit({ type: "turn_start" });
+  // The hermes wire never delivers the tool_use-bearing intermediate assistant
+  // messages — execution events arrive with NO advertisement (dev3 case C:
+  // 22 bare tool/call frames across two turns).
+  client.emit({ type: "tool_execution_start", toolCallId: "call_00_A1", toolName: "read", argumentsJson: '{"path":"x"}' });
+  client.emit({ type: "tool_execution_end", toolCallId: "call_00_A1", result: { content: [{ type: "text", text: "ok" }] } });
+  client.emit({ type: "tool_execution_start", toolCallId: "call_00_A2", toolName: "write", args: { path: "y" } });
+  client.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+  client.emit({ type: "turn_end", data: { status: "complete" } });
+  client.emit({ type: "agent_end" });
+
+  const t = types(session.events);
+  const callIdxs = t.map((x, i) => (x === "tool/call" ? i : -1)).filter((i) => i >= 0);
+  assert.equal(callIdxs.length, 2, "both executions bridged");
+  const ads = session.events.filter((e) => e.type === "assistant/message" && Array.isArray(e.data.message.content) && e.data.message.content.some((b) => b.type === "tool-call"));
+  assert.equal(ads.length, 2, "one synthesized advertisement per un-advertised call");
+  for (const callIdx of callIdxs) {
+    const adBefore = session.events.findIndex((e, i) => i < callIdx && e.type === "assistant/message" && Array.isArray(e.data.message.content) && e.data.message.content.some((b) => b.type === "tool-call"));
+    assert.ok(adBefore !== -1 && adBefore < callIdx, "advertisement assistant/message precedes each tool/call");
+  }
+  for (const ad of ads) {
+    const block = ad.data.message.content.find((b) => b.type === "tool-call");
+    const call = session.events.find((e) => e.type === "tool/call" && e.data.callId === block.id);
+    assert.ok(call, "paired tool/call found");
+    assert.equal(call.data.arguments, block.arguments, "tool/call arguments ≡ advertised (strict string equality)");
+    assert.deepEqual(ad.data.stream, [], "synthesized frame carries no stream records");
+  }
+  // A real assistant frame that DOES advertise (final message with tool-call
+  // blocks) must not trigger a second synthesized advertisement.
+  const before = ads.length;
+  client.emit({ type: "agent_start" });
+  client.emit({ type: "turn_start" });
+  client.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "call_00_A1", name: "read", arguments: '{"path":"x"}' }] } });
+  client.emit({ type: "tool_execution_start", toolCallId: "call_00_A1", toolName: "read", argumentsJson: '{"path":"x"}' });
+  client.emit({ type: "turn_end", data: { status: "complete" } });
+  client.emit({ type: "agent_end" });
+  const adsAfter = session.events.filter((e) => e.type === "assistant/message" && Array.isArray(e.data.message.content) && e.data.message.content.some((b) => b.type === "tool-call"));
+  assert.equal(adsAfter.length, before, "real advertisement suppresses synthesis");
+});

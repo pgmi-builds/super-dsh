@@ -1,0 +1,47 @@
+{
+  "name": "@pgmi-builds/superd-dev-webmcp",
+  "version": "0.1.0",
+  "description": "Dev/test-only DSH bundle: injects the page-mcp WebMCP tool provider (devtools tools on document.modelContext) into every index.html the line serves, so ANY browser — the operator's, a coding agent's browser-use, a fresh headless tab — gets the tools with zero manual steps. NEVER shipped: not in the super-dsh pack files whitelist nor pack.mjs; only dev/test profiles compose it (test/start-4999.sh).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "page-mcp": "0.0.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-0 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "5.9.3"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  }
+}
