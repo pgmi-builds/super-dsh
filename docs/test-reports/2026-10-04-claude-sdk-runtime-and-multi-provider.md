@@ -63,4 +63,6 @@
 
 ## 6. 版本
 
-`0.1.10-a/b/c/d/e`（字母迭代，dev3/tarball 通道；registry `latest` 冻结未动，publish 待 user 单独下令）
+`0.1.10-a/b/c/d/e`（字母迭代，dev3/tarball 通道）。
+
+**publish（user 2026-10-04 下令）**：`super-dsh@0.1.10-e` 已发 npmjs（`latest` → `0.1.10-e`；registry 面复核：`@openai/codex: 0.154.0` 在位、`@anthropic-ai/*` 零引用、unpacked 3,161,099 B）；git `master` 推至 `1dcfeec` + tag `v0.1.10-e`；4996 验收线按令停泊。
