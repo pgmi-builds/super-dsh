@@ -1,6 +1,6 @@
 # Codex official / desktop-first 交付验收
 
-2026-10-05，Asia/Hong_Kong。测试迭代终态 **0.1.10-o**；官方独立会话可用，跨 provider 回官方仍有下述已知限制。**用户随后明确确认阶段测试通过，要求停止 4999、清理现场并 push / publish 0.1.11**。该授权关闭当前阶段；自动 compact 未纳入本次交付，也不把下表的失败改记为通过。发布核验见 [0.1.11 收尾记录](2026-10-05-super-dsh-0.1.11-release.md)。未操作 prod 3080/3081。
+2026-10-05，Asia/Hong_Kong。测试迭代终态 **0.1.10-o**；官方独立会话可用，下述跨 provider 结果记录格式兼容的实际边界。**用户随后明确确认阶段测试通过，要求停止 4999、清理现场并 push / publish 0.1.11**。该授权关闭当前阶段；用户随后明确裁决跨 provider 历史兼容不属 adapter 保证范围，不建议 compact 补救，遇到不兼容应另起会话。下表仍如实保留请求失败，FAIL 表示该次请求结果，不代表一项尚待修复的 adapter 兼容承诺。发布核验见 [0.1.11 收尾记录](2026-10-05-super-dsh-0.1.11-release.md)。未操作 prod 3080/3081。
 
 ## 已实现与构建验证
 
@@ -65,19 +65,17 @@
 
 ![o 回官方失败现场](assets/2026-10-05-codex-o-provider-return.jpg)
 
-### 恢复接口与待讨论方案
+### 历史恢复探针（不作为产品方案）
 
 精确 0.160 的实验性 resume.history 会走 Forked 初始历史，忽略传入 threadId，不能直接用于保持同一 native thread。手动 `thread/compact/start` 是正式异步操作：旧第三方 provider 可在自己的模型上生成摘要，并把上下文改为用户历史与 summary，从而移除不可移植 reasoning；它保留 thread 身份。
 
-独立可行性探针已实际通过：native thread `01a10953-dc05-7f73-a785-e9e59ab8c893` 全程不变，official-first completed → DeepSeek-second completed（cedar）→ 旧 DeepSeek compact ACK `{}` 后等待 contextCompaction completed 与 turn/completed completed → official-third-after-compact completed（仍为 cedar）。探针使用独立 `/tmp` cwd、新 native thread、原位 OAuth、Super D identity、desktop 0.160 与同一 GOST；没有操作现有映射的 o thread。压缩后 replacement_history 为 3 个 message、reasoning_count 0、summary 1689 chars。**这是可行性证明，不是 4999 产品接入验收；没有修改产品代码接入该操作。**
+独立可行性探针已实际通过：native thread `01a10953-dc05-7f73-a785-e9e59ab8c893` 全程不变，official-first completed → DeepSeek-second completed（cedar）→ 旧 DeepSeek compact ACK `{}` 后等待 contextCompaction completed 与 turn/completed completed → official-third-after-compact completed（仍为 cedar）。探针使用独立 `/tmp` cwd、新 native thread、原位 OAuth、Super D identity、desktop 0.160 与同一 GOST；没有操作现有映射的 o thread。压缩后 replacement_history 为 3 个 message、reasoning_count 0、summary 1689 chars。**这只证明该探针在当时组合下成功，不保证其他 provider、模型或历史兼容；未接入产品，也不作为用户操作建议。**
 
-这个候选方案会在第三方切回官方时增加一次旧 provider 请求，并让 native 工作上下文使用摘要；DSH 原 transcript 仍保留。属于会话语义的重要决定，需要按 user 要求讨论后执行。不能凭源码推断或 probe 成功代替 4999 交付验收。
-
-后续实施还需要覆盖：等待 compact 真正完成而非只等 ACK；失败/取消时保留旧 provider 与原 thread；内部 compact 不伪装成用户生成回合；cold resume 根据可靠的 last-used provider/model 回到旧 route 完成 compact，无法定位或旧凭证缺失时明确失败。create/resume 查看仍保持零 native spawn，只有真实 prompt 进入此路径。
+用户最终裁决：每个 provider 自行定义格式，跨端点延续、重放或 resume 恰好能用不构成兼容保证。adapter 负责透明呈现错误并说明范围；历史格式不兼容时在目标 provider 新建会话。此前自动 compact 候选已取消，不列为后续工作，也不建议用它解决跨 provider 兼容。上述探针仅保留调查事实。
 
 ## 现场观察与验收边界
 
 - 老版本遗留的 blank draft（threadId 为 null）会被上游 workspace 导航复用并进入 resume，随后报 `NATIVE_THREAD_NEVER_STARTED`。没有删除这些测试资产；本轮用同版本全新 workspace/session 验证公平路径。
 - 共享 `models_cache.json` 在现场曾观察到 0.154 与 0.160 两种内容。0.160 自有 identity 的真实 `model/list` 可取得包括 SOL 的 8 个可见模型；较旧缓存不包含 SOL。缓存刷新进程的归属仍在核对，不把相关性作为因果结论。
 - 不以 binary 路径推断 desktop browser/computer-use 已接通；本轮只验收独立 app-server adapter。SDK 世界未做真实模型生成验收。
-- 跨 provider 历史方案确定后，下一迭代需在同版新 session 重跑 official → third-party → official → world handoff → replay/resume，并检查 native config/auth 指纹。旧 rollout 已写入的错误 hash 不追改；大上下文的 model-downshift compact 仍有独立触发条件，不在本轮简单新会话通过范围内。4999 是 user 本轮指定的第一验收线；未完成 DEV3 插件实装验收。
+- 跨 provider 历史兼容不列为后续验收要求；各 provider 的新会话与本 provider 的 world handoff/replay/resume 仍属于正常行为验收。旧 rollout 已写入的错误 hash 不追改；大上下文的 model-downshift compact 仍有独立触发条件，不在本轮简单新会话通过范围内。4999 是 user 本轮指定的第一验收线；未完成 DEV3 插件实装验收。

@@ -44,10 +44,12 @@ The adapter prefers the installed desktop core, then the CLI, then the bundled
 0.160.0 core (`CODEX_BIN` overrides discovery). Desktop host browser and computer
 use services are separate and are not attached by this adapter.
 
-**Known limitation:** returning a session with third-party reasoning history to
-OpenAI OAuth can be rejected by the official endpoint. Use a separate official
-session for now. Compaction before switching was proven in an isolated probe;
-automatic compaction is not included in this release.
+**Provider compatibility:** each provider defines its own message, reasoning,
+and encrypted-state formats. Selecting another provider does not guarantee
+that it can consume the existing session history. Successful continuation
+across endpoints is an observed convenience, not an adapter guarantee.
+The adapter surfaces provider errors; if the selected provider rejects the
+history, start a new session with that provider.
 
 ### Opt-in SDK halves
 

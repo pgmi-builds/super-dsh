@@ -100,6 +100,11 @@ adapter 正本仅存其 native 身份，token 留在 Codex home；选择该 rout
 不会改写用户的 config/auth。官方模型读取原生 `models_cache.json`，并保留原生配置的官方默认模型；第三方自定义目录不会当作官方目录。
 没有原生目录冲突时不强制注入静态 catalog，让实际选中的 binary 按版本、身份与有效期维护 cache；有目录冲突时仅注入可消费的官方 cache，缺失时明确报错。原生默认模型的 ID 不代表当前 binary 的访问权限。OAuth logout 后显式选择必须失败，不能落到本地第三方默认配置。
 
+## Provider 格式与会话兼容性
+
+各 provider 自行定义消息、reasoning 与加密状态的格式。selector 支持选择端点，不保证同一会话的历史能在不同端点间延续、重放或 resume；实测成功只表示当时的 provider/模型/历史恰好兼容。
+adapter 透明传递 provider 的错误。切换后若历史格式不兼容，请在目标 provider 新建会话；compact 不作为跨 provider 兼容性的补救建议或待实现机制。
+
 ## 测试
 
 ```bash

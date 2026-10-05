@@ -15,6 +15,6 @@
 
 2026-10-05 实测修正：普通官方配置不强制 native cache 为 static catalog，由 selected binary 自行刷新；UI 保留原生配置的官方默认模型 ID，无伪造元数据。第三方 catalog 不继承 OpenAI opaque comp_hash，原生官方 metadata 不变；正常 context-limit / model-downshift 压缩保留。旧 rollout 已记入的错误 hash 不追改，本轮按 user 同版本新会话验收标准测试。
 
-待 user 裁决：0.1.10-o 的第三方 Reasoning 历史不能直接被官方 Responses 消费。独立探针已证明旧 provider compact→同 native ID official resume 可行，但新增一次调用并摘要化工作上下文；产品尚未接入。候选为第三方切回官方前自动 compact，或暂时分开会话；详见 2026-10-05-codex-official-desktop-acceptance 报告。
+2026-10-05 user 最终裁决：各 provider 有权使用自己的消息、reasoning 和加密状态格式。跨端点历史兼容、延续与 resume 不在 adapter 的保证范围；实测成功仅属当时恰好可用的 flexibility。adapter 负责透明传递失败并在 documentation 中说明边界。不兼容时建议在目标 provider 另起会话。取消跨 provider 自动 compact 候选，不实现、也不建议把 compact 当成格式兼容的补救措施。此前隔离探针仅作历史观察，不能据此承诺兼容性。
 
-2026-10-05 阶段收尾裁决：用户确认测试通过，并明确授权停止 4999、清理现场及 push / publish 0.1.11。此前测试迭代“不 publish / 保持在役”仅描述迭代阶段，不再约束此次发布。自动 compact 候选仍未纳入产品；本阶段保留跨 provider 历史回官方限制，建议独立官方会话。见发布收尾记录。
+2026-10-05 阶段收尾裁决：用户确认测试通过，并明确授权停止 4999、清理现场及 push / publish 0.1.11。此前测试迭代“不 publish / 保持在役”仅描述迭代阶段，不再约束此次发布。跨 provider 格式兼容不属于交付承诺；遇到不兼容时建议在目标 provider 新建会话。见发布收尾记录。
