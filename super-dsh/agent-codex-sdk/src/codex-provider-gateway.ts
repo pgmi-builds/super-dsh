@@ -1,3 +1,4 @@
+import { OPENAI_OAUTH_ID, hasOpenAiOAuth, openAiOAuthEntry } from "./codex-oauth.js";
 /**
  * codex-provider-gateway.ts — the adapter-owned Remote behind the Hub's Codex
  * settings panel (2026-10-03 user ruling; reworked 2026-10-04).
@@ -92,11 +93,11 @@ export const PROTOCOL_OPTIONS: readonly CodexProtocolOptionView[] = [
 export interface CodexProviderView {
   readonly id: string;
   readonly label: string;
-  readonly baseUrl: string;
+  readonly baseUrl?: string;
   readonly protocol: CodexWireProtocol;
   /** May be empty: an imported provider's models are only knowable once it is in force. */
   readonly models: readonly CodexProviderModel[];
-  readonly authKind: "apiKey" | "env";
+  readonly authKind: "apiKey" | "env" | "oauth";
   /** The variable an `env` provider expects, when that is its shape. */
   readonly envName?: string;
   /** A key is available (stored, or already in the runtime's own auth.json). */
@@ -177,6 +178,7 @@ function keyAvailable(codexHome: string, entry: CodexProviderEntry): boolean {
 }
 
 function project(codexHome: string, entry: CodexProviderEntry): CodexProviderView {
+  if (entry.kind === "openai-oauth") return {id: entry.id, label: entry.label, protocol: "responses", models: openAiOAuthEntry(codexHome).models, authKind: "oauth", hasKey: hasOpenAiOAuth(codexHome)};
   return {
     id: entry.id,
     label: entry.label,
@@ -220,10 +222,20 @@ export function syncFromNative(
   const store = readProviderStore(worldHome);
   const imported = readNativeProviders(codexHome).map(toImport);
   const result = syncNativeProviders(store, imported);
-  if (result.added.length > 0 || result.updated.length > 0) {
-    writeProviderStore(worldHome, result.store);
-  }
-  return result;
+  const legacyAlias = result.store.providers.some(entry => entry.id === OPENAI_OAUTH_ID && entry.kind !== "openai-oauth");
+  const blockedNativeIds = [...new Set([...(result.store.blockedNativeIds ?? []), ...(legacyAlias ? [OPENAI_OAUTH_ID] : [])])];
+  const oauth = hasOpenAiOAuth(codexHome) && !blockedNativeIds.includes(OPENAI_OAUTH_ID);
+  const existed = store.providers.some(entry => entry.kind === "openai-oauth");
+  // Keep collided identities on disk so ambiguous old routes fail closed. They
+  // are quarantined by readEffectiveProviderStore, not silently repurposed.
+  const providers = result.store.providers.flatMap(entry => entry.kind === "openai-oauth"
+    ? legacyAlias || oauth ? [openAiOAuthEntry(codexHome)] : [] : [entry]);
+  if (oauth && !existed) providers.push(openAiOAuthEntry(codexHome));
+  const effective = {...result.store, providers, ...(blockedNativeIds.length === 0 ? {} : {blockedNativeIds})};
+  const blockedChanged = JSON.stringify(blockedNativeIds) !== JSON.stringify(store.blockedNativeIds ?? []);
+  const identityChanged = !legacyAlias && oauth !== existed;
+  if (result.added.length > 0 || result.updated.length > 0 || identityChanged || blockedChanged) writeProviderStore(worldHome, effective);
+  return {...result, store: effective};
 }
 
 /** The view for one (already loaded) store. */
@@ -245,14 +257,20 @@ function viewOf(
   // Only a SEEDED keyed entry defers to auth.json, so only it can be shadowed
   // by a ChatGPT login. An entry holding its own key bypasses the auth manager
   // entirely through the launch's synthetic `env_key`.
-  const deferred = store.providers.some((entry) => entry.auth.kind === "apiKey" && entry.auth.value === "");
+  const deferred = store.providers.some((entry) => entry.kind !== "openai-oauth" && entry.auth.kind === "apiKey" && entry.auth.value === "");
   const shadowed = deferred && chatgptAuthMode(codexHome)
     ? 'Codex is signed in with a ChatGPT account, which takes precedence over a saved API key — a provider that relies on auth.json will not run until you sign out (`codex logout`) or give this provider its own key.'
     : undefined;
-  const combined = [note, shadowed].filter((part): part is string => part !== undefined).join(" ");
+  const nativeAlias = readNativeProviders(codexHome).some(entry => entry.id === OPENAI_OAUTH_ID);
+  const blocked = store.blockedNativeIds?.includes(OPENAI_OAUTH_ID) === true;
+  const duplicate = store.providers.filter(entry => entry.id === OPENAI_OAUTH_ID).length > 1;
+  const collision = blocked || duplicate || (nativeAlias && store.providers.some(entry => entry.kind === "openai-oauth"))
+    ? 'OpenAI OAuth discovery is blocked by an openai-oauth provider ID conflict. Existing third-party routes and keys are preserved. Rename the conflicting native provider table; historical session routes need explicit repair before this ID can be reused.'
+    : undefined;
+  const combined = [note, shadowed, collision].filter((part): part is string => part !== undefined).join(" ");
 
   return {
-    providers: store.providers.map((entry) => project(codexHome, entry)),
+    providers: store.providers.filter(entry => !(duplicate && entry.id === OPENAI_OAUTH_ID)).map((entry) => project(codexHome, entry)),
     native,
     protocols: PROTOCOL_OPTIONS,
     paths: {
@@ -303,6 +321,7 @@ export function normalizeSaveRequest(request: unknown, existing?: CodexProviderE
   const raw = request["provider"];
 
   const id = raw["id"];
+  if (id === OPENAI_OAUTH_ID && (existing === undefined || existing.kind === "openai-oauth")) throw new TypeError("OpenAI OAuth is a reserved native provider; configure authentication in Codex");
   if (!isProviderId(id)) {
     throw new TypeError(`codexProviders/save: id must match /^[a-z0-9][a-z0-9-]*$/ (got ${JSON.stringify(id)})`);
   }
@@ -384,6 +403,7 @@ export function normalizeSaveRequest(request: unknown, existing?: CodexProviderE
 export function saveProvider(worldHome: string, codexHome: string, request: unknown, syncedAt?: number): CodexProvidersView {
   const store = readProviderStore(worldHome);
   const id = isRecord(request) && isRecord(request["provider"]) ? request["provider"]["id"] : undefined;
+  if (store.providers.filter(entry => entry.id === id).length > 1) throw new TypeError("codexProviders/save: duplicate provider ID is ambiguous; explicitly repair the conflicting identities before editing");
   const existing = store.providers.find((entry) => entry.id === id);
   const entry = normalizeSaveRequest(request, existing);
   const next = upsertProvider(store, entry);
@@ -396,6 +416,8 @@ export function removeProviderEntry(worldHome: string, codexHome: string, reques
   const id = isRecord(request) ? nonEmpty(request["id"]) : undefined;
   if (id === undefined) throw new TypeError("codexProviders/remove: id must be a non-empty string");
   const store = readProviderStore(worldHome);
+  if (id === OPENAI_OAUTH_ID && store.providers.some(entry => entry.id === id && entry.kind === "openai-oauth")) throw new TypeError("OpenAI OAuth is a read-only native provider");
+  if (store.providers.filter(entry => entry.id === id).length > 1) throw new TypeError("codexProviders/remove: duplicate provider ID is ambiguous; explicitly repair the conflicting identities before removing");
   const next = removeProvider(store, id);
   writeProviderStore(worldHome, next);
   return viewOf(worldHome, codexHome, next, syncedAt);

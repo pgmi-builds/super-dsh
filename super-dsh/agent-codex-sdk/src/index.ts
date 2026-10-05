@@ -1,3 +1,4 @@
+import { OPENAI_OAUTH_ID, readEffectiveProviderStore } from "./codex-oauth.js";
 /**
  * agent-codex provider — Codex provider plugin for DeepSeek Harness
  * (Super D, SDK line).
@@ -189,12 +190,12 @@ export class CodexProvider extends Service implements AgentFactory {
    */
   syncNow(): void {
     try {
-      const { store, added, updated } = syncFromNative(this.home, resolveCodexHome());
+      const { added, updated } = syncFromNative(this.home, resolveCodexHome());
       if (added.length > 0 || updated.length > 0) {
         this.runtime.ctx.logger.info(`codex-provider: config.toml sync — added ${added.join(", ") || "none"}, refreshed ${updated.join(", ") || "none"}`);
       }
       this.syncedAt = Date.now();
-      this.#applyRoutes(store.providers);
+      this.#applyRoutes(readEffectiveProviderStore(this.home, resolveCodexHome()).providers);
     } catch (error) {
       this.runtime.ctx.logger.warn(`codex-provider: provider sync failed: ${String(error)}`);
     }
@@ -203,7 +204,7 @@ export class CodexProvider extends Service implements AgentFactory {
   /** Re-register the `ctx.llm` routes from the current store (panel mutation path). */
   refreshRoutes(): void {
     try {
-      this.#applyRoutes(readProviderStore(this.home).providers);
+      this.#applyRoutes(readEffectiveProviderStore(this.home, resolveCodexHome()).providers);
     } catch (error) {
       this.runtime.ctx.logger.warn(`codex-provider: route refresh failed: ${String(error)}`);
     }
@@ -218,14 +219,14 @@ export class CodexProvider extends Service implements AgentFactory {
   private nativeProviderId(): string | undefined {
     const native = readNativeSelection(resolveCodexHome());
     const wanted = native.providerId;
-    if (wanted === undefined) return undefined;
-    const providers = readProviderStore(this.home).providers;
-    return providers.find((entry) => entry.id === wanted)?.id ?? undefined;
+    if (wanted === undefined || wanted === "openai") return readEffectiveProviderStore(this.home, resolveCodexHome()).providers.some(entry => entry.kind === "openai-oauth") ? OPENAI_OAUTH_ID : undefined;
+    const providers = readEffectiveProviderStore(this.home, resolveCodexHome()).providers;
+    return providers.find((entry) => entry.kind !== "openai-oauth" && entry.id === wanted)?.id ?? undefined;
   }
 
   /** The store entry a DSH route id names. */
   private providerEntry(providerId: string): CodexProviderEntry | undefined {
-    return readProviderStore(this.home).providers.find((entry) => entry.id === providerId);
+    return readEffectiveProviderStore(this.home, resolveCodexHome()).providers.find((entry) => entry.id === providerId);
   }
 
   /**
@@ -248,8 +249,12 @@ export class CodexProvider extends Service implements AgentFactory {
   private sessionAgentOptions(requested: AgentOptions | undefined): AgentOptions {
     const native = readNativeSelection(resolveCodexHome());
     const wanted = requested?.provider !== undefined && typeof requested.model === "string" ? requested : undefined;
+    const requestedEntry = wanted === undefined ? undefined : this.providerEntry(wanted.provider as string);
+    // An explicitly selected native identity must survive unavailable auth or
+    // metadata. Its launch fails honestly instead of seeding a third-party route.
+    if (wanted?.provider === OPENAI_OAUTH_ID && (requestedEntry === undefined || requestedEntry.kind === "openai-oauth")) return {...wanted};
     const serves = wanted !== undefined
-      && this.providerEntry(wanted.provider as string)?.models.some((model) => model.id === wanted.model) === true;
+      && requestedEntry?.models.some((model) => model.id === wanted.model) === true;
     if (wanted !== undefined && serves) return { ...wanted, provider: wanted.provider, model: wanted.model };
 
     const provider = this.nativeProviderId();
@@ -311,6 +316,7 @@ export class CodexProvider extends Service implements AgentFactory {
       // the user's home (the per-provider model catalog is ours).
       launchFor: (providerId: string) => {
         const entry = this.providerEntry(providerId);
+        if (entry === undefined && providerId === OPENAI_OAUTH_ID) throw new Error("OpenAI OAuth authentication is unavailable; sign in using Codex");
         return entry === undefined ? undefined : providerSdkLaunch(this.home, codexHome, entry);
       },
       contextWindowFor: (providerId: string, model: string) => {
@@ -418,7 +424,7 @@ export class CodexProvider extends Service implements AgentFactory {
    * picker would be noise.
    */
   #registerModelCatalog(): void {
-    this.#applyRoutes(readProviderStore(this.home).providers);
+    this.#applyRoutes(readEffectiveProviderStore(this.home, resolveCodexHome()).providers);
   }
 
   /** Register or atomically re-point the codex routes at the given providers. */

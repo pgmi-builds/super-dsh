@@ -1,3 +1,4 @@
+import { officialCatalogForLaunch } from "./codex-oauth.js";
 /**
  * codex-sdk-launch.ts — how a provider reaches the in-process Codex SDK
  * (2026-10-04 multi-provider rework).
@@ -74,6 +75,10 @@ export function providerSdkLaunch(
   codexHome: string,
   provider: CodexProviderEntry,
 ): CodexSdkLaunch {
+  if (provider.kind === "openai-oauth") {
+    const catalog = officialCatalogForLaunch(codexHome);
+    return {config: {model_provider: "openai", openai_base_url: "", ...(catalog === undefined ? {} : {model_catalog_json: catalog})}, env: {}, providerId: "openai"};
+  }
   // The SDK serializes these values as TOML literals itself, so unlike the argv
   // line there is no hand-quoting here: a bare object is the whole override.
   const table: Record<string, unknown> = {

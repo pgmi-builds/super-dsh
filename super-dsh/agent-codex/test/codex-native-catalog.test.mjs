@@ -49,7 +49,7 @@ trust_level = "trusted"
 
 const TEMPLATE = { slug: "old-model", display_name: "Old Model", priority: 10, base_instructions: "you are codex", shell_type: "default" };
 
-test("mergeModelCatalog clones the template and overrides identity fields only", () => {
+test("mergeModelCatalog clones the template and overrides model identity and context window", () => {
   const out = JSON.parse(mergeModelCatalog(undefined, JSON.stringify({ models: [TEMPLATE] }), [
     { id: "glm-5.2", displayName: "GLM-5.2", contextWindow: 1000000 },
   ]));
@@ -64,6 +64,47 @@ test("mergeModelCatalog clones the template and overrides identity fields only",
   assert.equal(mine.base_instructions, "you are codex");
   assert.equal(mine.shell_type, "default");
   assert.equal(mine.priority, 10);
+});
+
+test("third-party models do not inherit OpenAI compaction compatibility", () => {
+  const nativeTemplate = {
+    ...TEMPLATE,
+    slug: "gpt-6.1-sol",
+    comp_hash: "3000",
+    context_window: 272000,
+    auto_compact_token_limit: 240000,
+    effective_context_window_percent: 95,
+    future_metadata: { enabled: true },
+  };
+  const out = JSON.parse(mergeModelCatalog(undefined, undefined, [
+    { id: "deepseek-flash", contextWindow: 1000000 },
+  ], nativeTemplate));
+  const model = out.models[0];
+  assert.equal(Object.hasOwn(model, "comp_hash"), false,
+    "an OpenAI compatibility hash cannot describe an unrelated provider model");
+  assert.equal(model.context_window, 1000000);
+  assert.equal(model.max_context_window, 1000000);
+  assert.equal(model.auto_compact_token_limit, 240000,
+    "the explicit automatic compaction threshold still applies");
+  assert.equal(model.effective_context_window_percent, 95);
+  assert.deepEqual(model.future_metadata, { enabled: true });
+  assert.equal(nativeTemplate.comp_hash, "3000", "native template remains unchanged");
+});
+
+test("regenerating a third-party catalog removes stale inherited compaction hashes", () => {
+  const existing = JSON.stringify({ models: [{
+    ...TEMPLATE,
+    slug: "deepseek-flash",
+    comp_hash: "2911",
+    auto_compact_token_limit: 900000,
+  }] });
+  const model = JSON.parse(mergeModelCatalog(existing, undefined, [
+    { id: "deepseek-flash" },
+  ])).models[0];
+  assert.equal(Object.hasOwn(model, "comp_hash"), false,
+    "previously generated entries must not preserve the false compatibility claim");
+  assert.equal(model.auto_compact_token_limit, 900000);
+  assert.equal(model.base_instructions, "you are codex");
 });
 
 test("mergeModelCatalog reuses an existing entry for the same slug as its own template", () => {

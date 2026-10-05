@@ -1,3 +1,5 @@
+import { readEffectiveProviderStore } from "./codex-oauth.js";
+import { resolveCodexHome } from "./codex-store.js";
 /**
  * Codex-backed `LlmAdapter` registered on `ctx.llm` by the Codex provider.
  *
@@ -54,7 +56,7 @@ export function routeIds(store: CodexProviderStore): readonly string[] {
 
 /** The provider entry a route id names, or `undefined`. */
 export function providerFor(worldHome: string, providerId: string): CodexProviderEntry | undefined {
-  return readProviderStore(worldHome).providers.find((entry) => entry.id === providerId);
+  return readEffectiveProviderStore(worldHome, resolveCodexHome()).providers.find((entry) => entry.id === providerId);
 }
 
 export class CodexLlmAdapter extends LlmAdapter {

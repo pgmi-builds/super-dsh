@@ -1738,14 +1738,14 @@ function modelOption(raw) {
 	};
 }
 function providerAuthKind(raw) {
-	return raw === "env" ? "env" : raw === "authToken" ? "authToken" : "apiKey";
+	return raw === "oauth" ? "oauth" : raw === "env" ? "env" : raw === "authToken" ? "authToken" : "apiKey";
 }
 function providerOption(raw) {
 	if (typeof raw !== "object" || raw === null) return void 0;
 	const record = raw;
 	const id = nonEmpty(record.id);
 	const label = nonEmpty(record.label);
-	const baseUrl = nonEmpty(record.baseUrl);
+	const baseUrl = nonEmpty(record.baseUrl) ?? (record.authKind === "oauth" ? "" : void 0);
 	if (id === void 0 || label === void 0 || baseUrl === void 0) return void 0;
 	const models = Array.isArray(record.models) ? record.models.map(modelOption).filter((entry) => entry !== void 0) : [];
 	const envName = nonEmpty(record.envName);
@@ -2650,6 +2650,10 @@ function ProvidersPanel({ agent, namespace }) {
 						style: chip,
 						children: "token"
 					}),
+					provider.authKind === "oauth" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						style: chip,
+						children: "native OAuth"
+					}),
 					!provider.hasKey && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 						style: chip,
 						children: "no key"
@@ -2668,13 +2672,13 @@ function ProvidersPanel({ agent, namespace }) {
 					}),
 					provider.models.length === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 						style: chipWarn,
-						children: "no models yet — add one"
+						children: provider.authKind === "oauth" ? "model cache unavailable — open Codex to refresh" : "no models yet — add one"
 					}),
 					busy === `remove:${provider.id}` && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 						style: chip,
 						children: "removing…"
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+					provider.authKind !== "oauth" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 						type: "button",
 						style: buttonStyle,
 						disabled: busy !== null,
@@ -2682,8 +2686,7 @@ function ProvidersPanel({ agent, namespace }) {
 							openEdit(provider);
 						},
 						children: "Edit"
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 						type: "button",
 						style: {
 							...buttonStyle,
@@ -2695,7 +2698,7 @@ function ProvidersPanel({ agent, namespace }) {
 							run(`remove:${provider.id}`, () => removeProvider(agent.key, namespace, provider.id));
 						},
 						children: "Delete"
-					})
+					})] })
 				]
 			}, provider.id)),
 			editing === null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {

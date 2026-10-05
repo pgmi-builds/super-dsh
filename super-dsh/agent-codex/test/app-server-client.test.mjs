@@ -88,6 +88,27 @@ test("client: the process materializes on the first prompt, not before", async (
   assert.equal(client.spawned, true);
 });
 
+test("client: an independent child keeps its own attribution and does not borrow a desktop tool pipe", async () => {
+  const keys = ["CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_APP_TOOLS_PIPE_PATH"];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  let passed;
+  try {
+    process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = "Codex Desktop";
+    process.env.CODEX_APP_TOOLS_PIPE_PATH = "/tmp/test-only-desktop-pipe";
+    setAppServerTransportFactory(options => {
+      passed = options;
+      return new CodexAppServerTransport({...options, command: FIXTURE, args: [], env: {...process.env, FAKE_APPSERVER_CONFIG: "{}"}});
+    });
+    const client = makeClient({cwd: WORKSPACE});
+    await client.ensureStarted();
+    assert.equal(passed.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE, undefined);
+    assert.equal(passed.env.CODEX_APP_TOOLS_PIPE_PATH, undefined);
+    assert.equal(passed.env.PATH, process.env.PATH);
+  } finally {
+    for (const key of keys) previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key];
+  }
+});
+
 test("client: ensureStarted is single-flight and idempotent", async () => {
   const created = installFake();
   const client = makeClient();

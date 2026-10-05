@@ -846,7 +846,7 @@ export class CodexAgent implements Agent {
     // An unknown provider id (a session pinned before the multi-provider rework)
     // maps to "no injection": the user's own config.toml is the honest answer.
     const launchSpec = launch ?? NATIVE_LAUNCH;
-    const providerId = launch === undefined ? null : route?.provider ?? null;
+    const providerId = launch === undefined ? null : launch.runtimeProvider ?? route?.provider ?? null;
     const client = this.#client;
     const key = `${providerId ?? "native"}/${route?.model ?? ""}`;
 

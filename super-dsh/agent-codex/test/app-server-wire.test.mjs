@@ -9,10 +9,43 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import { CodexAppServerTransport, CodexWireError, SERVER_OVERLOADED_CODE } from "../dist/app-server-wire.js";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-app-server.mjs");
+
+test("native command is directly executable and receives unchanged app-server argv", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-native-wire-"));
+  const command = join(dir, "codex");
+  // A POSIX executable catches routing it through Node: Node cannot parse
+  // this launcher. Its response reports the actual arguments it received.
+  writeFileSync(command, '#!/bin/sh\nIFS= read -r frame\nprintf \'{"id":1,"result":{"args":["%s","%s","%s"]}}\\n\' "$1" "$2" "$3"\ncat >/dev/null\n', { mode: 0o700 });
+  const transport = new CodexAppServerTransport({ command, args: ["app-server", "-c", "model_provider=openai"], requestTimeoutMs: 2000 });
+  try {
+    assert.equal(transport.pid, undefined, "construction must not spawn a process");
+    transport.start();
+    assert.deepEqual(await transport.request("initialize", {}), { args: ["app-server", "-c", "model_provider=openai"] });
+  } finally {
+    transport.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("transport uses its supplied env CODEX_BIN only at start, preserving lazy construction", async () => {
+  const env = { ...process.env, CODEX_BIN: "/missing-before-start" };
+  const transport = new CodexAppServerTransport({ env, args: [], requestTimeoutMs: 2000 });
+  try {
+    assert.equal(transport.pid, undefined);
+    // Resolving in the constructor would fail on the original missing path.
+    env.CODEX_BIN = FIXTURE;
+    transport.start();
+    assert.deepEqual(await transport.request("test/echo", { value: "env-override" }), { value: "env-override" });
+  } finally {
+    transport.close();
+  }
+});
 
 /** Spawn a transport over the fake with one config, and collect diagnostics. */
 function makeTransport(config = {}, extra = {}) {

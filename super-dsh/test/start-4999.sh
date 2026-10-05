@@ -207,7 +207,16 @@ env ${SEED_ENV[@]+"${SEED_ENV[@]}"} \
 # page-trust leg — 2026-09-26 user LAN round: without these extras every
 # non-loopback Host 403s (WS stuck on "reconnecting", RPC transport failures).
 # Port-less entries match any port (api-request-trust canonicalAuthority).
-systemd-run --user --unit="$UNIT" \
+# Explicit test-only proxy; adapter/business code knows no proxy endpoint.
+# Local UI/RPC stays direct. Native Codex children inherit these standard vars.
+PROXY_ARGS=()
+if [ -n "${SUPERD_TEST_HTTP_PROXY:-}" ]; then
+  PROXY_ARGS+=(--property="Environment=HTTP_PROXY=$SUPERD_TEST_HTTP_PROXY")
+  PROXY_ARGS+=(--property="Environment=HTTPS_PROXY=$SUPERD_TEST_HTTP_PROXY")
+  PROXY_ARGS+=(--property="Environment=ALL_PROXY=$SUPERD_TEST_HTTP_PROXY")
+  PROXY_ARGS+=(--property="Environment=NO_PROXY=localhost,127.0.0.1,::1")
+fi
+systemd-run --user --unit="$UNIT" "${PROXY_ARGS[@]}" \
   --property=WorkingDirectory="$REPO" \
   --property=Environment="DSH_HOME=$DSH_HOME_DIR" \
   --property=Environment="SUPERD_DSH_ANCHOR=$ANCHOR" \

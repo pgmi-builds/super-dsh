@@ -126,6 +126,40 @@ test("a cold agent pins the selected model on the first thread and turn despite 
   assert.equal(turn.params.model, "deepseek-flash");
 });
 
+test("an OAuth UI route pins the builtin binary provider on the first thread and turn", async (t) => {
+  const created = installFake();
+  const client = makeClient({ cwd: WORKSPACE, model: "gpt-native-default" });
+  const ctx = new Context();
+  ctx.provide("sessionProjections", {
+    stateOf: () => ({ pending: { provider: "openai-oauth", model: "official-sol" } }),
+  });
+  const events = [];
+  const session = {
+    id: "session-cold-route", snapshotEvents: () => [...events],
+    requestHeader: () => undefined,
+    append(type, data) {
+      const event = { type, data, seq: events.length + 1, time: Date.now() };
+      events.push(event);
+      return event;
+    },
+  };
+  const agent = new CodexAgent(ctx, session.id, { model: "gpt-native-default" }, session, client, undefined, {
+    launchFor: () => ({ argv: ["-c", 'model_provider="openai"'], env: {}, runtimeProvider: "openai" }),
+    systemPrompt: () => undefined,
+  });
+  t.after(() => agent.dispose());
+  agent.send(createUserMessage({ content: [{ type: "text", text: "cold route" }], source: { kind: "user" } }), "next-turn", true);
+  for (let i = 0; i < 100 && !created[0]?.calls.some(call => call.method === "turn/start"); i++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const thread = created[0]?.calls.find(call => call.method === "thread/start");
+  const turn = created[0]?.calls.find(call => call.method === "turn/start");
+  assert.ok(turn, "the real agent must reach the wire turn");
+  assert.equal(thread.params.modelProvider, "openai");
+  assert.equal(thread.params.model, "official-sol");
+  assert.equal(turn.params.model, "official-sol");
+});
+
 test("reattach kills the child, spawns the next provider, and resumes the SAME thread", async () => {
   const created = installFake();
   const client = makeClient({

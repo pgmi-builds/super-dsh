@@ -328,3 +328,11 @@ test("the paths footer names whichever native files the face actually has", () =
   assert.equal(nativePathsLine(parseProvidersView(claudeAnswer).paths), "/u/.claude/settings.json", "claude: one file, no blank slots");
   assert.equal(nativePathsLine({ store: "/s" }), undefined, "a store-only view renders no second line at all");
 });
+
+test('native OAuth provider is retained without an endpoint or editable credentials', () => {
+  const parsed = parseProvidersView({providers:[{id:'openai-oauth',label:'OpenAI OAuth',authKind:'oauth',hasKey:true,models:[{id:'official-sol'}]}],native:null,paths:{store:'/test/store.json'}});
+  assert.equal(parsed.providers.length, 1);
+  assert.equal(parsed.providers[0].authKind,'oauth');
+  assert.equal(parsed.providers[0].baseUrl,'');
+  assert.deepEqual(parsed.providers[0].models,[{id:'official-sol',label:'official-sol'}]);
+});

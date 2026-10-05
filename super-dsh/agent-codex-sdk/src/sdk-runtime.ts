@@ -55,8 +55,8 @@ export const SDK_PACKAGE = "@openai/codex-sdk";
 export const SDK_BINARY_PACKAGE = "@openai/codex";
 
 /**
- * Pin of BOTH packages — the same 0.154.0 the app-server (primary) line pins,
- * so the two Codex faces agree on the wire behaviour they bridge.
+ * Pin of BOTH SDK runtime packages; the optional SDK line keeps its tested 0.154.0 pair,
+ * while the primary app-server line independently discovers installed native cores.
  */
 export const SDK_PACKAGE_VERSION = "0.154.0";
 

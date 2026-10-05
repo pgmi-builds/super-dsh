@@ -7,7 +7,7 @@
  * `{"id":…,"result":…}` / `{"id":…,"error":{…}}`).
  *
  * This module owns exactly four things and nothing else:
- *   1. executable resolution (pin-faithful: the package's own `@openai/codex`),
+ *   1. runtime selection (override → installed desktop → CLI → pinned package),
  *   2. process spawn + line framing + per-id request/response correlation,
  *   3. dispatch of server-initiated notifications and server-requests,
  *   4. teardown (process GROUP kill — the app-server may spawn stdio MCP
@@ -22,7 +22,8 @@
  * process, and the client calls it on first real work.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { createRequire } from "node:module";
+import { resolveCodexRuntime } from "./codex-runtime.js";
+export { resolveCodexCommand, resolveCodexRuntime } from "./codex-runtime.js";
 
 /** One server-initiated notification (`{method, params}`, no id). */
 export interface WireNotification {
@@ -56,7 +57,7 @@ export class CodexWireError extends Error {
 export const SERVER_OVERLOADED_CODE = -32001;
 
 export interface CodexAppServerTransportOptions {
-  /** Explicit codex entry script; defaults to the pinned `@openai/codex`. */
+  /** Explicit native executable or JavaScript entry; otherwise discover the runtime. */
   readonly command?: string;
   /** Args after the command; defaults to `["app-server"]`. */
   readonly args?: readonly string[];
@@ -72,24 +73,6 @@ export interface CodexAppServerTransportOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-
-/** The codex entry script this package pins (`@openai/codex/bin/codex.js`). */
-export function resolveCodexCommand(): string {
-  const override = process.env.CODEX_BIN;
-  if (override !== undefined && override.trim() !== "") return override;
-  const require = createRequire(import.meta.url);
-  try {
-    // Pin-faithful: the SAME `@openai/codex` this package depends on, so the
-    // wire protocol and the binary version can never drift apart. Set
-    // CODEX_BIN to override (tests).
-    return require.resolve("@openai/codex/bin/codex.js");
-  } catch (error) {
-    throw new Error(
-      "cannot locate the pinned codex CLI (@openai/codex/bin/codex.js): "
-      + `${error instanceof Error ? error.message : String(error)}. Install the package or set CODEX_BIN.`,
-    );
-  }
-}
 
 /** True for a plain JSON object (never arrays/null). */
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -131,17 +114,21 @@ export class CodexAppServerTransport {
    */
   start(): void {
     if (this.#child !== undefined) return;
-    const command = this.#options.command ?? resolveCodexCommand();
+    const env = this.#options.env ?? { ...process.env };
+    const runtime = resolveCodexRuntime({
+      env: this.#options.command === undefined ? env : { ...env, CODEX_BIN: this.#options.command },
+    });
     const args = [...(this.#options.args ?? ["app-server"])];
     // `detached` gives the child its own process group so teardown can kill
     // the whole tree (stdio MCP descendants included), not just the root.
-    const child = spawn(process.execPath, [command, ...args], {
+    const child = spawn(runtime.nodeScript ? process.execPath : runtime.command, runtime.nodeScript ? [runtime.command, ...args] : args, {
       cwd: this.#options.cwd,
-      env: this.#options.env ?? { ...process.env },
+      env,
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });
     this.#child = child;
+    this.#options.onStderr?.(`codex runtime source=${runtime.source} command=${runtime.command} mode=${runtime.nodeScript ? "node" : "native"}\n`);
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => this.#onStdout(chunk));

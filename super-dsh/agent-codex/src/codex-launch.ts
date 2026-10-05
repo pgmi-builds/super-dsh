@@ -1,3 +1,4 @@
+import { officialCatalogForLaunch } from "./codex-oauth.js";
 /**
  * codex-launch.ts — how a provider reaches a `codex app-server` child
  * (2026-10-04 on-the-fly rework).
@@ -45,6 +46,8 @@ const SYNTHETIC_KEY_PREFIX = "SUPERD_CODEX_KEY_";
 export interface CodexLaunch {
   /** Arguments to place after `app-server`. */
   readonly argv: readonly string[];
+  /** Binary provider id when the UI route names a native identity. */
+  readonly runtimeProvider?: string;
   /** Additions to the child's environment (never replacements for `process.env`). */
   readonly env: Readonly<Record<string, string>>;
 }
@@ -70,6 +73,15 @@ export function providerLaunch(
   codexHome: string,
   provider: CodexProviderEntry,
 ): CodexLaunch {
+  if (provider.kind === "openai-oauth") {
+    const catalog = officialCatalogForLaunch(codexHome);
+    // Empty override is filtered to None by Codex, restoring its builtin
+    // endpoint without changing the user's native configuration.
+    const argv = ["-c", 'model_provider="openai"', "-c", 'openai_base_url=""'];
+    if (catalog !== undefined) argv.push("-c", `model_catalog_json=${tomlString(catalog)}`);
+
+    return {argv, env: {}, runtimeProvider: "openai"};
+  }
   const table = `model_providers.${provider.id}`;
   const argv: string[] = [
     "-c", `${table}.name=${tomlString(provider.label)}`,

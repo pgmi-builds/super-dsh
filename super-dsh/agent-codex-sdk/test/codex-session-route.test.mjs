@@ -25,6 +25,7 @@ import { Context } from "@deepseek-ai/cordis";
 const { CodexProvider } = await import("../dist/index.js");
 const { seedRoute, resolveRoute } = await import("../dist/codex-route.js");
 const { writeProviderStore } = await import("../dist/codex-providers.js");
+const { syncFromNative } = await import("../dist/codex-provider-gateway.js");
 
 const ZHIPU = {
   id: "zhipu-cn",
@@ -215,4 +216,55 @@ test("a session with its own logged selection is not re-seeded from the default"
     }),
     { provider: "deepseek", model: "deepseek-flash" },
   );
+});
+
+
+test("SDK persisted OAuth selection fails after logout instead of using native third-party config", () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.codexHome, "auth.json"), JSON.stringify({auth_mode:"chatgpt",tokens:{access_token:"test-token"}}));
+    // Discovery persists the native identity while credentials are available.
+    syncFromNative(f.worldHome, f.codexHome);
+    assert.ok(f.provider.providerEntry("openai-oauth"));
+    writeFileSync(join(f.codexHome, "auth.json"), "{}");
+    const route = resolveRoute({logged:{provider:"openai-oauth",model:"official-sol"},preferred:{provider:"zhipu-cn",model:"glm-5.3-flash"}});
+    const runtime = f.provider.agentRuntime({threadId:null}, "oauth-session");
+    assert.throws(() => runtime.launchFor(route.provider), /OAuth.*auth|authentication.*unavailable/i);
+    // Historical unknown routes still delegate to the native user configuration.
+    assert.equal(runtime.launchFor("codex"), undefined);
+  } finally {
+    f.restore();
+  }
+});
+
+for (const loggedIn of [true,false]) {
+ test(`an explicit OAuth request keeps its route with missing cache and loggedIn=${loggedIn}`,()=>{
+  const f=fixture();
+  try {
+   writeFileSync(join(f.codexHome,'auth.json'),JSON.stringify({auth_mode:'chatgpt',tokens:{access_token:'test-token'}}));
+   syncFromNative(f.worldHome,f.codexHome);
+   if (!loggedIn) writeFileSync(join(f.codexHome,'auth.json'),'{}');
+   const requested={provider:'openai-oauth',model:'official-model'};
+   assert.deepEqual(f.provider.sessionAgentOptions(requested),requested);
+  } finally {f.restore();}
+ });
+}
+test('a legacy third-party OAuth alias is not treated as the default builtin OAuth identity',()=>{
+ const f=fixture();
+ try {
+  writeProviderStore(f.worldHome,{version:1,providers:[{...DEEPSEEK,id:'openai-oauth'}],blockedNativeIds:['openai-oauth']});
+  writeFileSync(join(f.codexHome,'config.toml'),'model_provider = "openai"\nmodel = "official-default"\n');
+  assert.equal(f.provider.sessionAgentOptions(undefined).provider,undefined);
+ } finally {f.restore();}
+});
+
+test('scheduled sync does not register an ambiguous alias even when raw store carries models',()=>{
+ const f=fixture();
+ try {
+  writeProviderStore(f.worldHome,{version:1,providers:[{...DEEPSEEK,id:'openai-oauth'},{id:'openai-oauth',label:'OpenAI OAuth',kind:'openai-oauth',origin:'native'}]});
+  const registered=[];
+  f.provider.runtime.ctx.provide('llm',{registerAdapter(ids){registered.push(...ids);return {replace(next){registered.push(...next);}};}});
+  f.provider.syncNow();
+  assert.ok(!registered.includes('openai-oauth'));
+ } finally {f.restore();}
 });

@@ -22,7 +22,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@openai/codex": "0.154.0",
+    "@openai/codex": "0.160.0",
     "zod": "4.4.3"
   },
   "peerDependencies": {

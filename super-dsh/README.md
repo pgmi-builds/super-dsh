@@ -14,7 +14,7 @@ the foreign store.
 ## Install
 
 ```bash
-dsh plugin --profile <name> add super-dsh@0.1.0
+dsh plugin --profile <name> add super-dsh@0.1.11
 ```
 
 That single package composes the whole line (`@pgmi-builds/superd-hub` plus the
@@ -27,11 +27,27 @@ home under `<DSH_HOME>/agents/<label>/` on first boot.
 | Label | Runtime | Integration |
 |---|---|---|
 | OMP | OMP (`~/.omp`) | host `omp` binary over RPC (`omp --mode rpc`, NDJSON v1), lazy per session |
-| Codex | Codex CLI (`~/.codex`) | adapter world plugin |
+| Codex | Codex app-server (`~/.codex`) | desktop core first, CLI and bundled core fallback |
 | Claude | Claude Code (`~/.claude`) | standalone adapter, joined by the hub |
 | Pi | pi coding agent (`~/.pi`) | in-process SDK |
 | Hermes | Hermes (`~/.hermes`) | gateway child |
 | Antigravity | agy SDK | Python bridge (`bridge/agy_bridge.py`) |
+
+### Codex in 0.1.11
+
+Codex discovers the local OpenAI OAuth login as a read-only provider in the
+model selector. Selecting it explicitly overrides a third-party provider in the
+native config, while credentials and native configuration stay in the native
+home. Third-party providers remain selectable per session.
+
+The adapter prefers the installed desktop core, then the CLI, then the bundled
+0.160.0 core (`CODEX_BIN` overrides discovery). Desktop host browser and computer
+use services are separate and are not attached by this adapter.
+
+**Known limitation:** returning a session with third-party reasoning history to
+OpenAI OAuth can be rejected by the official endpoint. Use a separate official
+session for now. Compaction before switching was proven in an isolated probe;
+automatic compaction is not included in this release.
 
 ### Opt-in SDK halves
 

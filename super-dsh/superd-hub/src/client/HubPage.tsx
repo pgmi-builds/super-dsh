@@ -619,6 +619,7 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
           <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{provider.label}</span>
           {provider.authKind === 'env' && <span style={chip}>env {provider.envName}</span>}
           {provider.authKind === 'authToken' && <span style={chip}>token</span>}
+          {provider.authKind === 'oauth' && <span style={chip}>native OAuth</span>}
           {!provider.hasKey && <span style={chip}>no key</span>}
           <span
             style={{
@@ -636,8 +637,9 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
           </span>
           {/* A provider folded in from config.toml may carry no discoverable
               model list; say so instead of a bare " · " and an empty tail. */}
-          {provider.models.length === 0 && <span style={chipWarn}>no models yet — add one</span>}
+          {provider.models.length === 0 && <span style={chipWarn}>{provider.authKind === 'oauth' ? 'model cache unavailable — open Codex to refresh' : 'no models yet — add one'}</span>}
           {busy === `remove:${provider.id}` && <span style={chip}>removing…</span>}
+          {provider.authKind !== 'oauth' && <>
           <button type="button" style={buttonStyle} disabled={busy !== null}
             onClick={() => { openEdit(provider) }}>Edit</button>
           <button
@@ -649,6 +651,7 @@ function ProvidersPanel({ agent, namespace }: { agent: AgentLink; namespace: str
           >
             Delete
           </button>
+          </>}
         </div>
       ))}
 

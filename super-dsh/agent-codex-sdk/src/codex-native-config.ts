@@ -123,9 +123,10 @@ function slugOf(entry: Record<string, unknown>): string | undefined {
  * that we do not already hold, then upserts `models` by slug. Each upserted
  * entry is a CLONE of `template` — an existing entry for the same slug if there
  * is one, else the caller's template, else the first entry either side supplied
- * — with only the identity fields overridden. The other ~35 keys are Codex's
- * and are copied through untouched; see the plan's D5 for why we do not try to
- * synthesize them.
+ * — with identity and declared context window overridden. The other metadata
+ * is copied through except `comp_hash`: this optional opaque compatibility
+ * identifier belongs to the template's model, not an unrelated provider model.
+ * See the plan's D5 for why we do not synthesize the remaining fields.
  */
 export function mergeModelCatalog(
   existing: string | undefined,
@@ -164,6 +165,11 @@ export function mergeModelCatalog(
       slug: model.id,
       display_name: model.displayName ?? model.id,
     };
+    // A copied OpenAI hash falsely triggers previous-model compaction on
+    // provider switches in Codex 0.160. Our provider model declarations do not
+    // carry verified hashes; remove stale generated values too. Context-limit
+    // compaction and its window/threshold metadata remain unchanged.
+    delete entry["comp_hash"];
     if (model.contextWindow !== undefined) {
       // Codex reads context_window and caps against max_context_window; a stale
       // template value must not silently cap a larger real window.
@@ -435,4 +441,3 @@ export function writeProviderCatalog(
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
-

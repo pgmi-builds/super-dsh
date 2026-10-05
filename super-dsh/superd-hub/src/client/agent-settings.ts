@@ -202,7 +202,7 @@ export interface ProviderModelOption {
  * addition on save, which is why the form offers kinds per view
  * (`authKindOptions`) instead of one fixed list.
  */
-export type ProviderAuthKind = 'apiKey' | 'env' | 'authToken'
+export type ProviderAuthKind = 'apiKey' | 'env' | 'authToken' | 'oauth'
 
 /** One configured provider, listed but never carrying its key. */
 export interface ProviderOption {
@@ -286,7 +286,7 @@ function modelOption(raw: unknown): ProviderModelOption | undefined {
 function providerAuthKind(raw: unknown): ProviderAuthKind {
   // An unstated or unknown kind reads as the shared conservative default,
   // never as the other face's shape.
-  return raw === 'env' ? 'env' : raw === 'authToken' ? 'authToken' : 'apiKey'
+  return raw === 'oauth' ? 'oauth' : raw === 'env' ? 'env' : raw === 'authToken' ? 'authToken' : 'apiKey'
 }
 
 function providerOption(raw: unknown): ProviderOption | undefined {
@@ -294,7 +294,7 @@ function providerOption(raw: unknown): ProviderOption | undefined {
   const record = raw as Record<string, unknown>
   const id = nonEmpty(record.id)
   const label = nonEmpty(record.label)
-  const baseUrl = nonEmpty(record.baseUrl)
+  const baseUrl = nonEmpty(record.baseUrl) ?? (record.authKind === 'oauth' ? '' : undefined)
   if (id === undefined || label === undefined || baseUrl === undefined) return undefined
   const models = Array.isArray(record.models)
     ? record.models.map(modelOption).filter((entry): entry is ProviderModelOption => entry !== undefined)

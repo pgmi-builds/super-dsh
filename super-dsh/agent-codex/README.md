@@ -19,10 +19,10 @@ superd 外壳下的 **Codex adapter**（super-dsh 线）：把 Codex CLI 经由 
 
 ## 线别（2026-10-03 迁移）
 
-**app-server 线**取代了原 `@openai/codex-sdk` 线（SDK 依赖已从本包与主 pack 移除）。
+**app-server 线**是主路线（SDK 依赖已从本包与主 pack 移除）。SDK 另存为默认关闭的 `agent-codex-sdk`，拥有独立的按需 runtime 安装。
 SDK 线在 adapter 里登记的一整排降级被 app-server 协议面直接消掉：
 
-| 能力 | SDK 线（已退役） | app-server 线（现役） |
+| 能力 | SDK 可选线 | app-server 主路线 |
 |---|---|---|
 | 打断 | 只有 AbortSignal（掐断本轮 stream） | **`turn/interrupt`** |
 | steer | 无 → 排队 followUp 近似 | **`turn/steer`**（注入进行中的 turn） |
@@ -82,19 +82,31 @@ collab/subagent 项。
 | 变量 | 作用 |
 |---|---|
 | `CODEX_TRACE=1` | provider/agent/app-server 追踪（stderr） |
-| `CODEX_BIN` | 覆盖 codex 入口脚本（测试）；默认 = 本包 pin 的 `@openai/codex/bin/codex.js` |
+| `CODEX_BIN` | 显式覆盖 Codex 核心或 JS 入口；默认依序发现 desktop 核心、用户 CLI、包内 exact-pin fallback |
 | `CODEX_HOME` | Codex 原生 home 重定向（**测试专用**；生产路径零重定向） |
 | `CODEX_APPROVAL_MODE` | 覆盖审批档（`never`/`on-request`/`on-failure`/`untrusted`；非法值忽略） |
 | `CODEX_APPROVAL_TIMEOUT_MS` | 审批应答超时；`0` 关闭；默认 300000 |
 | `CODEX_IDLE_EXIT_MS` | 会话空闲后拆客户端；`0` 关闭；默认 600000 |
 
+## Binary 与官方 OAuth
+
+核心发现顺序是显式 `CODEX_BIN` → 已安装 desktop 核心 → 用户 CLI → 包内 `@openai/codex@0.160.0`。
+发现和启动仅发生在真正 prompt 时。JS 入口经 Node 启动，原生核心直接执行；认证或生成失败不会静默换 provider。
+desktop 优先选择核心版本，不代表复制 desktop 宿主：独立 app-server 使用 Super D 自有 clientInfo，
+不借用父任务的 desktop 工具 pipe。browser/computer use 仍需要对应宿主服务与工具接线。
+
+本地 `auth.json` 有 ChatGPT OAuth 时，模型选择器增加只读的 **OpenAI OAuth** provider。
+adapter 正本仅存其 native 身份，token 留在 Codex home；选择该 route 时通过子进程配置覆盖 builtin `openai`，
+不会改写用户的 config/auth。官方模型读取原生 `models_cache.json`，并保留原生配置的官方默认模型；第三方自定义目录不会当作官方目录。
+没有原生目录冲突时不强制注入静态 catalog，让实际选中的 binary 按版本、身份与有效期维护 cache；有目录冲突时仅注入可消费的官方 cache，缺失时明确报错。原生默认模型的 ID 不代表当前 binary 的访问权限。OAuth logout 后显式选择必须失败，不能落到本地第三方默认配置。
+
 ## 测试
 
 ```bash
-npm run build                                   # tsc strict
+node super-dsh/scripts/pack.mjs                  # 仓根执行，唯一构建打包入口
 DSH_HOME=<repo>/.tests \
-SUPERD_DSH_ANCHOR=<repo>/upstream/deepseek-harness/package.json \
-node --test test/*.test.mjs
+SUPERD_DSH_ANCHOR=<repo>/upstream/deepseek-harness/apps/cli/package.json \
+node --test super-dsh/agent-codex/test/*.test.mjs
 ```
 
 单测全部是 fake：`test/fixtures/fake-app-server.mjs` 是一个**可编程的 app-server 替身**

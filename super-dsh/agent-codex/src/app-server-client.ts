@@ -534,11 +534,17 @@ export class CodexAppServerClient {
       // crash still fails the client.
       const generation = ++this.#transportGeneration;
       const launch = this.#launch;
+      // This is an independent Super D consumer, including when its parent
+      // happens to be a desktop task. The desktop host's attribution and
+      // tools pipe belong to that host, not to this new app-server.
+      const childEnv = { ...process.env, ...launch.env };
+      delete childEnv.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+      delete childEnv.CODEX_APP_TOOLS_PIPE_PATH;
       transport = transportFactory({
         ...(this.#options.cwd === undefined ? {} : { cwd: this.#options.cwd }),
         ...(this.#options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: this.#options.requestTimeoutMs }),
         args: ["app-server", ...launch.argv],
-        env: { ...process.env, ...launch.env },
+        env: childEnv,
         onNotification: (notification) => this.#onNotification(notification),
         onServerRequest: (request) => this.#onServerRequest(request),
         onExit: (info) => {

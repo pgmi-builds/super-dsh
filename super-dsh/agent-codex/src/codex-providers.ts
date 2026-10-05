@@ -72,6 +72,8 @@ export type CodexProviderOrigin = "native" | "user";
 
 /** One configured provider. */
 export interface CodexProviderEntry {
+  /** Native identity: endpoint/auth/model fields are internal projections, never persisted. */
+  readonly kind?: "openai-oauth";
   /** Stable slug; it becomes the `[model_providers.<id>]` table name. */
   readonly id: string;
   readonly label: string;
@@ -100,6 +102,8 @@ export interface CodexProviderStore {
    * `remove` would silently undo itself within ten minutes.
    */
   readonly removed?: readonly string[];
+  /** Native ids occupied by historical third-party routes must never be recycled. */
+  readonly blockedNativeIds?: readonly string[];
 }
 
 /**
@@ -180,6 +184,9 @@ function model(value: unknown): CodexProviderModel | undefined {
 export function providerEntry(value: unknown): CodexProviderEntry | undefined {
   if (value === null || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
+  if (record["kind"] === "openai-oauth" && record["id"] === "openai-oauth") {
+    return {id: "openai-oauth", label: "OpenAI OAuth", kind: "openai-oauth", origin: "native", baseUrl: "", protocol: "responses", auth: {kind: "apiKey", value: ""}, models: []};
+  }
   const id = record["id"];
   const label = str(record["label"]);
   const baseUrl = str(record["baseUrl"]);
@@ -225,7 +232,9 @@ export function readProviderStore(worldHome: string): CodexProviderStore {
   const removed = (Array.isArray(rawRemoved) ? rawRemoved : [])
     .filter((value): value is string => typeof value === "string" && value.trim() !== "");
 
-  return { version: 1, providers, ...(removed.length === 0 ? {} : { removed }) };
+  const blockedNativeIds = Array.isArray(record["blockedNativeIds"])
+    ? [...new Set(record["blockedNativeIds"].filter((id): id is string => id === "openai-oauth"))] : [];
+  return { version: 1, providers, ...(removed.length === 0 ? {} : { removed }), ...(blockedNativeIds.length === 0 ? {} : { blockedNativeIds }) };
 }
 
 /**
@@ -237,7 +246,7 @@ export function writeProviderStore(worldHome: string, store: CodexProviderStore)
   const path = providerStorePath(worldHome);
   mkdirSync(dirname(path), { recursive: true });
   const temp = `${path}.tmp-${process.pid}`;
-  writeFileSync(temp, `${JSON.stringify(store, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  writeFileSync(temp, `${JSON.stringify({...store, providers: store.providers.map(entry => entry.kind === "openai-oauth" ? {id: entry.id, label: entry.label, kind: entry.kind, origin: "native"} : entry)}, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(temp, path);
 }
 
@@ -259,7 +268,8 @@ export function upsertProvider(store: CodexProviderStore, entry: CodexProviderEn
   // carry the tombstone forward, and the next sync would keep skipping the
   // endpoint the user just re-added.
   const { removed: _stale, ...rest } = store;
-  return { ...rest, providers, ...(removed.length === 0 ? {} : { removed }) };
+  const blockedNativeIds = [...new Set([...(store.blockedNativeIds ?? []), ...(entry.id === "openai-oauth" && entry.kind !== "openai-oauth" ? [entry.id] : [])])];
+  return { ...rest, providers, ...(removed.length === 0 ? {} : { removed }), ...(blockedNativeIds.length === 0 ? {} : {blockedNativeIds}) };
 }
 
 /**
@@ -276,7 +286,8 @@ export function removeProvider(store: CodexProviderStore, id: string): CodexProv
   if (entry === undefined) return { ...store, providers };
   const key = endpointKey(entry.baseUrl);
   const removed = store.removed?.includes(key) === true ? store.removed : [...store.removed ?? [], key];
-  return { ...store, providers, removed };
+  const blockedNativeIds = [...new Set([...(store.blockedNativeIds ?? []), ...(entry.id === "openai-oauth" && entry.kind !== "openai-oauth" ? [entry.id] : [])])];
+  return { ...store, providers, removed, ...(blockedNativeIds.length === 0 ? {} : {blockedNativeIds}) };
 }
 
 /**
@@ -438,8 +449,12 @@ export function syncNativeProviders(
     if (store.removed?.includes(key) === true) continue;
     const wantedId = incoming.nativeId !== undefined && isProviderId(incoming.nativeId) ? incoming.nativeId : undefined;
 
-    const at = providers.findIndex((entry) =>
-      (wantedId !== undefined && entry.id === wantedId) || endpointKey(entry.baseUrl) === key);
+    // A native identity is not an endpoint table. Never refresh it, rename a
+    // conflicting native table behind the user's back, or select a duplicate id.
+    if (wantedId === "openai-oauth" && (providers.some(entry => entry.id === wantedId && entry.kind === "openai-oauth")
+      || providers.filter(entry => entry.id === wantedId).length > 1)) continue;
+    const at = providers.findIndex((entry) => entry.kind !== "openai-oauth" &&
+      ((wantedId !== undefined && entry.id === wantedId) || endpointKey(entry.baseUrl) === key));
     if (at === -1) {
       const id = uniqueProviderId(wantedId ?? providerIdFromEndpoint(baseUrl), providers.map((entry) => entry.id));
       providers.push({
@@ -481,7 +496,7 @@ export function syncNativeProviders(
 
   const removed = store.removed ?? [];
   const next = removed.length === 0
-    ? { version: 1 as const, providers }
-    : { version: 1 as const, providers, removed };
+    ? { ...store, version: 1 as const, providers }
+    : { ...store, version: 1 as const, providers, removed };
   return { store: next, added, updated };
 }
