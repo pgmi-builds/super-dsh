@@ -47,16 +47,16 @@ Files: README / adapter contracts、Hub 已有 OAuth UI、package 版本、test 
 ## Task 4: 交付形态验证
 
 - [x] node super-dsh/scripts/pack.mjs，记录 tarball；targeted adapter/Hub suites 全绿；已有全面 tests 合理复用。
-- [ ] SUPERD_TEST_HTTP_PROXY=http://dev3.internal.test:7474 bash super-dsh/test/start-4999.sh；sole launcher 用 tarball 实装，保存日志水位和 URL。
+- [x] SUPERD_TEST_HTTP_PROXY=http://dev3.internal.test:7474 bash super-dsh/test/start-4999.sh；sole launcher 用 tarball 实装，保存日志水位和 URL。
 - [ ] 浏览器同版 NEW→prompt official→switch third-party→return official（实测真实 generation 与 next-turn routing）→切其他 world→回来 replay/resume。检查 child 实际 executable 是 desktop 核心与无 native config/auth 写入。
-- [ ] 落 docs/test-reports；保持 4999 运行供 user 测试。需要 dev3 实装交付时遵守 tarball + restart + mount/journal 策略；本轮优先 4999，跟 user 本轮指令。
+- [x] 落 docs/test-reports；测试阶段保持 4999 运行供 user 测试，收尾按用户最新指令停机。需要 dev3 实装交付时遵守 tarball + restart + mount/journal 策略；本轮优先 4999，跟 user 本轮指令。
 
 ## 实测新增修正（n / o）
 
 - [x] 普通官方配置不强制 static catalog，让 selected binary 维护 version/identity/TTL cache；保留原生官方配置的默认 model ID。RED→n GREEN，独立 review 通过。
 - [x] 移除第三方合成 catalog 中未经验证的 OpenAI comp_hash；旧生成条目再生也去除，原生 template 不改、context window/auto-compaction 参数保留。4 条 RED→o 两条 Codex 全部 451 GREEN；独立 review 通过。
 - [ ] o tarball 4999 同版新会话跑全 official→third-party→official→world handoff→replay/resume。
-- [ ] 更新验收报告与原生 config/auth 指纹核对，保持 4999，commit 最终阶段。
+- [x] 更新验收报告与原生 config/auth 指纹核对；用户关闭当前阶段后停 4999，commit 最终阶段。
 
 ## 阶段收尾（用户最新裁决）
 
@@ -64,3 +64,7 @@ Files: README / adapter contracts、Hub 已有 OAuth UI、package 版本、test 
 本次交付 OAuth selector、desktop 优先发现与已验证的 catalog 修复；保留测试记录中第三方历史回官方的失败，自动 compact 作为下一阶段候选，未实现。
 此前“不 publish / 保持 4999”约束由这次明确指令覆盖。未勾选的完整双向 provider 链不冒充通过。
 发布构建与全套回归、停机和发布结果见 docs/test-reports/2026-10-05-super-dsh-0.1.11-release.md。
+
+- [x] 0.1.11 唯一 pack、全套 1670 pass / 0 fail / 0 skip；与 o 的运行时代码逐字节一致。
+- [x] release commit 306a741、v0.1.11 标签已 push；npm latest=0.1.11，registry tarball 字节一致。
+- [x] 4999 停机、测试标签关闭、临时探针归档清理；长期 test home 保留。
