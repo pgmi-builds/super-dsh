@@ -19,6 +19,7 @@
  *     exact transcript it rendered before the restart. The OMP transcript is
  *     replayed (`get_messages`) only when no Dash log was persisted.
  */
+import { bindForeignHub, type ForeignHubBinding } from '@pgmi-builds/superd-hub/foreign-hub';
 import { realpathSync, statSync } from "node:fs";
 import { Context, Service } from "@deepseek-ai/cordis";
 import { homedir } from "node:os";
@@ -359,6 +360,14 @@ export class OmpProvider extends Service implements AgentFactory {
     llm.registerAdapter(providers, new OmpLlmAdapter());
   }
 
+  private hubFor(sessionId: string): ForeignHubBinding {
+    const fromBoot = this.runtime.ctx.get("dshHomePath");
+    const home = typeof fromBoot === "function" ? (fromBoot as () => string)() : fromBoot;
+    if (typeof home !== "string" || home === "") throw new Error("OMP world has no boot home path");
+    return bindForeignHub('omp', sessionId, home,
+      () => this.runtime.ctx.agents.get(sessionId as SessionId) as never);
+  }
+
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     const loopCtx = this.runtime.ctx;
     const id = options.sessionId;
@@ -401,7 +410,11 @@ export class OmpProvider extends Service implements AgentFactory {
     const session = preparation.session;
     const spawnPermission = (): { approvalMode: string; preset: string | undefined } =>
       resolveSpawnPermission(session.snapshotEvents(), defaultPermissionPreset(loopCtx), envApprovalMode());
-    const rpc = new LazyOmpRpc(() => ["--approval-mode", spawnPermission().approvalMode], cwd);
+    const hub = this.hubFor(id);
+    const rpc = new LazyOmpRpc(async () => {
+      const extension = await hub.extensionPath();
+      return ["--approval-mode", spawnPermission().approvalMode, ...(extension === undefined ? [] : ["-e", extension])];
+    }, cwd, () => hub.dispose());
     // The prepared header is the single source of truth for the row the
     // first-spawn adoption writes: v2 folds header identity across
     // live/listed/loaded observations, so created_at/cwd must be copied from
@@ -506,11 +519,19 @@ export class OmpProvider extends Service implements AgentFactory {
           envApprovalMode(),
         );
       if (ompFile === undefined) {
-        const lazy = new LazyOmpRpc(() => ["--approval-mode", spawnPermission().approvalMode], spawnCwd);
+        const hub = this.hubFor(id);
+        const lazy = new LazyOmpRpc(async () => {
+          const extension = await hub.extensionPath();
+          return ["--approval-mode", spawnPermission().approvalMode, ...(extension === undefined ? [] : ["-e", extension])];
+        }, spawnCwd, () => hub.dispose());
         lazy.onSpawned((client) => { void adoptSpawnedChild(id, stored.header, client, spawnPermission().preset); });
         rpc = lazy;
       } else {
-        rpc = new LazyOmpRpc(() => ["--approval-mode", spawnPermission().approvalMode, "--resume", ompFile], spawnCwd);
+        const hub = this.hubFor(id);
+        rpc = new LazyOmpRpc(async () => {
+          const extension = await hub.extensionPath();
+          return ["--approval-mode", spawnPermission().approvalMode, "--resume", ompFile, ...(extension === undefined ? [] : ["-e", extension])];
+        }, spawnCwd, () => hub.dispose());
       }
       const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "resume", { enterSession: true, preparation, stored: { handle: stored, written: coldRead.events.length } });
       return this.registerHeld(id, ompFile ?? "", handle, rpc);

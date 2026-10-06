@@ -46,7 +46,9 @@ else
   PNPM="pnpm --config.strict-dep-builds=false"  # Keep dependency builds disabled without pnpm 12 aborting.
 fi
 PNPM_STORE="$REPO/.npm-cache/pnpm-store-v10"
-ANCHOR="$REPO/upstream/deepseek-harness/apps/cli/package.json"  # repo-line contract: the checkout build IS the installation
+ANCHOR="${SUPERD_TEST_DSH_ANCHOR:-$REPO/upstream/deepseek-harness/apps/cli/package.json}"
+CLI="$(dirname "$ANCHOR")/lib/bin.js"
+[ -f "$ANCHOR" ] && [ -f "$CLI" ] || { echo "DSH installation missing: $ANCHOR" >&2; exit 1; }
 
 # ---- ONE credential seed for every test rig on this machine (2026-10-04 user
 # ruling). The browser cookie is HMAC-signed with the constant secret inside
@@ -114,8 +116,13 @@ fi
 WATERMARK=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 
 # ---- 1. build + pack the delivery artifact ----
-"$NODE_BIN" "$LINE/scripts/pack.mjs"
-TARBALL="$REPO/.scratch/superd-pack/super-dsh-$("$NODE_BIN" -p "require('$LINE/package.json').version").tgz"
+if [ -n "${SUPERD_TEST_TARBALL:-}" ]; then
+  TARBALL="$(realpath "$SUPERD_TEST_TARBALL")"
+  [ -f "$TARBALL" ] || { echo "delivery tarball missing: $TARBALL" >&2; exit 1; }
+else
+  "$NODE_BIN" "$LINE/scripts/pack.mjs"
+  TARBALL="$REPO/.scratch/superd-pack/super-dsh-$("$NODE_BIN" -p "require('$LINE/package.json').version").tgz"
+fi
 
 # ---- 2. fresh profile consuming the tarball (consumer manifest shape) ----
 # Plus the dev-only WebMCP injection bundle (super-dsh/dev-webmcp): built from
@@ -126,7 +133,11 @@ TARBALL="$REPO/.scratch/superd-pack/super-dsh-$("$NODE_BIN" -p "require('$LINE/p
 if [ ! -d "$LINE/dev-webmcp/node_modules" ]; then
   (cd "$LINE/dev-webmcp" && npm install --cache "$REPO/.npm-cache" --no-audit --no-fund --silent)
 fi
-(cd "$LINE/dev-webmcp" && npm run build --silent)
+if [ "${SUPERD_TEST_DEV_WEBMCP_PREBUILT:-0}" = "1" ]; then
+  [ -f "$LINE/dev-webmcp/dist/index.js" ] || { echo "prebuilt dev WebMCP bundle missing" >&2; exit 1; }
+else
+  (cd "$LINE/dev-webmcp" && npm run build --silent)
+fi
 PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
 rm -rf "$PROFILE_DIR"
 mkdir -p "$PROFILE_DIR"
@@ -232,7 +243,7 @@ systemd-run --user --unit="$UNIT" "${PROXY_ARGS[@]}" \
   --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
-  "$NODE_BIN" "$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js" \
+  "$NODE_BIN" "$CLI" \
     --profile "$PROFILE" --no-open
 
 ok=""

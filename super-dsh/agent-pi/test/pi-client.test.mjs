@@ -8,6 +8,19 @@ const models = await import("../dist/models.js");
 const { setPiModelRuntimeFactory, clearPiCatalogForTests } = models;
 const { PiSessionClient, setPiSessionFactory } = await import("../dist/pi-client.js");
 
+test('PI carries the session Hub binding lazily and disposes it with the client', async () => {
+  const hub = { disposed: 0, dispose() { this.disposed++ } };
+  let received;
+  const fake = fakeSession();
+  setPiSessionFactory(async config => { received = config.hub; return fake.session; });
+  const client = await PiSessionClient.spawn([], '/workspace', { kind: 'create' }, hub);
+  assert.equal(received, undefined);
+  await client.ensureStarted();
+  assert.equal(received, hub);
+  client.close();
+  assert.equal(hub.disposed, 1);
+});
+
 /** A controllable fake pi AgentSession. */
 function fakeSession(overrides = {}) {
   const listeners = new Set();

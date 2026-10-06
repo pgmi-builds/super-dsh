@@ -20,6 +20,7 @@ import { OPENAI_OAUTH_ID, readEffectiveProviderStore } from "./codex-oauth.js";
  * record and fails closed when the thread is unknown. The rollout scan, the
  * adapter-owned session list and the transcript replay are gone.
  */
+import { bindForeignHub, type ForeignHubBinding } from '@pgmi-builds/superd-hub/foreign-hub';
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { Context, Service } from "@deepseek-ai/cordis";
@@ -454,6 +455,11 @@ export class CodexProvider extends Service implements AgentFactory {
     trace(`routes replaced: ${ids.join(", ") || "none"}`);
   }
 
+  private hubFor(sessionId: string): ForeignHubBinding {
+    return bindForeignHub('codex', sessionId, this.home,
+      () => this.runtime.ctx.agents.get(sessionId as SessionId) as never);
+  }
+
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     const loopCtx = this.runtime.ctx;
     const id = options.sessionId;
@@ -493,7 +499,7 @@ export class CodexProvider extends Service implements AgentFactory {
     // app-server child is NOT spawned here (lazy-spawn gate, rules §14-i) —
     // create() is pure construction, and the process materializes on the first
     // real prompt.
-    const client = CodexAppServerClient.create({ cwd: spawnCwd, approvalPolicy, sandboxMode, worldHome: this.home });
+    const client = CodexAppServerClient.create({ cwd: spawnCwd, approvalPolicy, sandboxMode, worldHome: this.home, hub: this.hubFor(id) });
 
     // The session's route is NOT pinned here any more (2026-10-04): the agent
     // resolves it per turn from DSH's own model-selection state, and a launch
@@ -625,6 +631,7 @@ export class CodexProvider extends Service implements AgentFactory {
       approvalPolicy,
       sandboxMode,
       worldHome: this.home,
+      hub: this.hubFor(id),
     });
 
 

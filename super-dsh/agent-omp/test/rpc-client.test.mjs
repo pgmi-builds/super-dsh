@@ -241,3 +241,11 @@ test("close() rejects in-flight commands and is idempotent", TEST_OPTS, async (t
   client.close();
   await assert.rejects(() => client.send({ type: "get_state" }));
 });
+
+test('native array system prompts normalize to valid text instead of corrupting stored events', async () => {
+  const client = Object.create(OmpRpcClient.prototype);
+  for (const [raw, expected] of [['single','single'], [['head','body'],'head\n\nbody'], [undefined, undefined], [{text:'bad'}, undefined], [['head',42], undefined]]) {
+    client.getState = async () => ({ systemPrompt: raw });
+    assert.equal(await client.getSystemPrompt(), expected);
+  }
+});

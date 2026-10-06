@@ -22,6 +22,7 @@
 import { projectSessionEvent, type WireEvent } from "./pi-events.js";
 import { getPiModelRuntime } from "./models.js";
 import { trace } from "./knobs.js";
+import type { ForeignHubBinding } from '@pgmi-builds/superd-hub/foreign-hub';
 
 /** Structural shape of the pi AgentSession this client drives (duck-typed). */
 export interface PiSessionLike {
@@ -47,12 +48,13 @@ export type PiSessionMode = { kind: "create"; tools?: string[] } | { kind: "resu
 export interface PiSessionConfig {
   cwd: string;
   mode: PiSessionMode;
+  hub?: ForeignHubBinding;
 }
 
 export type PiSessionFactory = (config: PiSessionConfig) => Promise<PiSessionLike>;
 
 /** Default factory: the real SDK, over the shared ModelRuntime. */
-let sessionFactory: PiSessionFactory = async ({ cwd, mode }) => {
+let sessionFactory: PiSessionFactory = async ({ cwd, mode, hub }) => {
   const sdk = (await import("@earendil-works/pi-coding-agent")) as unknown as {
     createAgentSession: (options: unknown) => Promise<{ session: PiSessionLike }>;
     SessionManager: {
@@ -63,10 +65,19 @@ let sessionFactory: PiSessionFactory = async ({ cwd, mode }) => {
   const modelRuntime = await getPiModelRuntime();
   const sessionManager =
     mode.kind === "resume" ? sdk.SessionManager.open(mode.sessionFile) : sdk.SessionManager.create(cwd);
+  const extension = await hub?.extensionPath();
+  let resourceLoader: unknown;
+  if (extension !== undefined) {
+    const { DefaultResourceLoader, getAgentDir } = await import('@earendil-works/pi-coding-agent');
+    const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir(), additionalExtensionPaths: [extension] });
+    await loader.reload();
+    resourceLoader = loader;
+  }
   const { session } = await sdk.createAgentSession({
     modelRuntime,
     sessionManager,
     cwd,
+    ...(resourceLoader === undefined ? {} : { resourceLoader }),
     ...(mode.kind === "create" && mode.tools !== undefined && mode.tools.length > 0 ? { tools: mode.tools } : {}),
   });
   return session;
@@ -107,11 +118,11 @@ export class PiSessionClient {
    * `ensureStarted()`. `args` is accepted for omp-seam parity and must be
    * empty — unknown values fail loud (the SDK line has no spawn flags).
    */
-  static async spawn(args: string[], cwd: string, mode: PiSessionMode): Promise<PiSessionClient> {
+  static async spawn(args: string[], cwd: string, mode: PiSessionMode, hub?: ForeignHubBinding): Promise<PiSessionClient> {
     if (args.length > 0) {
       throw new Error(`PiSessionClient: unsupported spawn arg "${String(args[0])}" (SDK line)`);
     }
-    return new PiSessionClient({ cwd, mode });
+    return new PiSessionClient({ cwd, mode, ...(hub === undefined ? {} : { hub }) });
   }
 
   /** Register a wire event listener; returns the unsubscriber. */
@@ -244,6 +255,7 @@ export class PiSessionClient {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.config.hub?.dispose();
     try {
       this.#session?.dispose();
     } catch (error) {

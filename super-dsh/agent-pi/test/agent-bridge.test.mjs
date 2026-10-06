@@ -16,7 +16,7 @@ function fakeSession(requestHeaderConfig) {
     id: "s-test",
     header: {},
     append(type, data, opts) {
-      const event = { type, data, seq: ++seq, time: Date.now(), ...(opts ?? {}) };
+      const event = { type, data, seq: seq++, time: Date.now(), ...(opts ?? {}) };
       events.push(event);
       return event;
     },
@@ -155,7 +155,9 @@ test("a full prompt turn synthesizes turn/step/user/assistant/tool events with s
 });
 
 test("session titles mirror as provider-sourced session/title events, deduped", async () => {
-  const { client, events } = makeAgent();
+  const { agent, client, events } = makeAgent();
+  agent.followup({ id: "title-input", content: [{ type: "text", text: "fix the thing" }], source: { kind: "user" } });
+  await new Promise(resolve => setTimeout(resolve, 10));
   client.emit({ type: "session_title", name: "fix-thing" });
   client.emit({ type: "session_title", name: "fix-thing" });
   client.emit({ type: "session_title", name: undefined });
@@ -164,7 +166,7 @@ test("session titles mirror as provider-sourced session/title events, deduped", 
   assert.equal(titles.length, 1);
   assert.deepEqual(titles[0].data, {
     title: "fix-thing",
-    messageSeqs: [],
+    messageSeqs: [events.find(event => event.type === "user/message").seq],
     source: { kind: "provider", provider: "pi" },
   });
 });
@@ -271,4 +273,26 @@ test("request/context carries the runtime route for the full options pair", asyn
   client.emit({ type: "agent_start" });
   const context = events.find((e) => e.type === "request/context");
   assert.deepEqual(context.data, { provider: "deepseek", model: "v4-pro", contextWindow: 128000 });
+});
+
+test('a queued Hub reply opens its own turn before committing the next native step', async () => {
+  const { assertReleasedV4Relationships } = await import('@deepseek-ai/dsh-session-format-v3-to-v4');
+  const { agent, client, events } = makeAgent();
+  const message = id => ({ id, role: 'user', content: [{ type: 'text', text: id }], source: { kind: 'user' } });
+  agent.followup(message('original'));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  client.emit({ type: 'agent_start' });
+  client.emit({ type: 'turn_start' });
+  client.emit({ type: 'message_start', message: { role: 'user', content: 'original' } });
+  client.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ready' }] } });
+  agent.followup(message('hub-reply'));
+  client.emit({ type: 'turn_end' });
+  client.emit({ type: 'turn_start' });
+  client.emit({ type: 'message_start', message: { role: 'user', content: 'hub-reply' } });
+  client.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'received' }] } });
+  client.emit({ type: 'turn_end' });
+  client.emit({ type: 'agent_end' });
+  const lifecycle = new Set(['turn/start', 'turn/end', 'step/start', 'step/end']);
+  assert.doesNotThrow(() => assertReleasedV4Relationships({ header: { id: 's-test' }, inheritedEventCount: 0, events }, lifecycle));
+  assert.deepEqual(events.filter(e => e.type === 'turn/start').map(e => e.data.turn), [1, 2]);
 });

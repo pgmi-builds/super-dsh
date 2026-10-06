@@ -169,3 +169,11 @@ test("readNativeSelection does not mistake a provider-nested model for the top-l
   // the in-force model is the top-level key, and only that one.
   assert.equal(readNativeSelection(home).model, "glm-5.2");
 });
+
+test('third-party models do not inherit an OpenAI-only tool wire mode', () => {
+  const template = { ...TEMPLATE, tool_mode: 'code_mode_only' };
+  const stale = JSON.stringify({models:[{slug:'deepseek-flash',tool_mode:'code_mode_only'}]});
+  const model = JSON.parse(mergeModelCatalog(stale, undefined, [{id:'deepseek-flash'}], template)).models[0];
+  assert.equal(Object.hasOwn(model, 'tool_mode'), false);
+  assert.equal(template.tool_mode, 'code_mode_only');
+});

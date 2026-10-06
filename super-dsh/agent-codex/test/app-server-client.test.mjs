@@ -67,6 +67,46 @@ function collect(client) {
   return events;
 }
 
+test('Hub definition is added on start, not passive construction or resume', async () => {
+  const created = installFake();
+  let defined = 0;
+  const hub = { definition() { defined++; return { name: 'superd-hub', description: 'Hub facility', inputSchema: { type: 'object', properties: {} } }; }, dispose() {} };
+  const client = makeClient({ cwd: WORKSPACE, hub });
+  assert.equal(defined, 0);
+  await client.ensureStarted();
+  const { requests } = await created[0].request('test/requests', {});
+  assert.deepEqual(requests.find(x => x.method === 'thread/start').params.dynamicTools, [
+    { type: 'function', name: 'superd-hub', description: 'Hub facility', inputSchema: { type: 'object', properties: {} } },
+  ]);
+});
+
+test('Hub callback is session-bound and coexists with the approval handler', async () => {
+  const created = installFake();
+  const calls = [];
+  const hub = { definition: () => ({ name: 'superd-hub', description: 'Hub', inputSchema: {} }), async execute(args) { calls.push(args); return { action: 'agents' }; }, dispose() {} };
+  const client = makeClient({ cwd: WORKSPACE, hub });
+  client.setServerRequestHandler(() => ({ result: { decision: 'decline' } }));
+  await client.ensureStarted();
+  async function reply(count) {
+    for (let i = 0; i < 100; i++) {
+      const { answers } = await created[0].request('test/answers', {});
+      if (answers.length >= count) return answers[count - 1];
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    throw new Error('callback did not settle');
+  }
+  await created[0].request('test/request', { method: 'item/tool/call', params: { threadId: client.threadId, tool: 'superd-hub', arguments: { action: 'agents' } } });
+  const first = await reply(1);
+  assert.deepEqual(first.result, { success: true, contentItems: [{ type: 'inputText', text: '{"action":"agents"}' }] });
+  await created[0].request('test/request', { method: 'item/tool/call', params: { threadId: 'foreign-thread', tool: 'superd-hub', arguments: {} } });
+  const second = await reply(2);
+  assert.equal(second.result.success, false);
+  assert.deepEqual(calls, [{ action: 'agents' }]);
+  await created[0].request('test/request', { method: 'item/commandExecution/requestApproval', params: {} });
+  const third = await reply(3);
+  assert.deepEqual(third.result, { decision: 'decline' });
+});
+
 // ── lazy spawn (agent-adapter-dev-rules §14-i, hard gate) ────────────────────
 
 test("client: create() is zero-IO — no transport, no process, no thread", async () => {

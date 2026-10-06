@@ -289,7 +289,10 @@ export class OmpRpcClient {
   async getSystemPrompt(): Promise<string | undefined> {
     try {
       const state = await this.getState();
-      return (state as { systemPrompt?: string }).systemPrompt;
+      const prompt: unknown = (state as { systemPrompt?: unknown }).systemPrompt;
+      if (typeof prompt === "string") return prompt;
+      if (Array.isArray(prompt) && prompt.every(part => typeof part === "string")) return prompt.join("\n\n");
+      return undefined;
     } catch {
       return undefined;
     }
