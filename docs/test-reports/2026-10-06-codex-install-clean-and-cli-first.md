@@ -34,3 +34,10 @@
   `@openai/codex*` 目录属 pnpm/npm install 树，随消费者重装自然收敛。
 - 验收流水（4999 形态冒烟 → dev3 实装 → 报告 → 放行）待 user 指令后执行；
   `npm publish` 按 §〇.1.c 需单次明确放行。
+
+## 实装台账（2026-10-06，user 指令：tag → 4999 → dev3 → restart）
+
+- **git**：commit `3d90138`（fix: codex cli-first discovery and clean install…），tag **`v0.1.11-a`**（仓内惯例 v 前缀 + 连字符；`.claude/settings.local.json` 未入库）。
+- **4999 pack 线**：`start-4999.sh` 拉起 `superd-4999-test` + `superd-lan-4999-relay`；tarball 装入 **零 super-dsh build-script 提示**；冒烟 = shell(token→cookie) **200** + roster `native/pi/claude/codex/omp/agy/hermes` 全 `ready:true`（SDK 三行默认 disabled 不在册，正确）+ `/hub` 无参 401→语义正常、旧 `/<label>/` **404**、WAN 401（token 门）、`world failed` 计数 **0**。入口：`https://test.pc.internal.test/?token=…`（launcher 输出原样）。
+- **dev3 实装**：tarball → `~/.dsh/profiles/web`（`super-dsh: 0.1.11 → file:…0.1.11-a.tgz`，备份 `package.json.pre-0.1.11-a.bak`）→ `systemctl --user restart dsh.service`（20:49:46 CST active）→ **shell 200 @ 127.0.0.1:3080**、`world failed` **0**（5min 窗口）、装入零 build-script。registry 0.1.11（事故版）已被替换。
+- 待 user 亲手：2-machine hub 测试（本机 4999 ↔ dev3 3080）。
