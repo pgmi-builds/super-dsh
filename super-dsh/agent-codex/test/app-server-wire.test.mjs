@@ -25,7 +25,8 @@ test("native command is directly executable and receives unchanged app-server ar
   const transport = new CodexAppServerTransport({ command, args: ["app-server", "-c", "model_provider=openai"], requestTimeoutMs: 2000 });
   try {
     assert.equal(transport.pid, undefined, "construction must not spawn a process");
-    transport.start();
+    await transport.start();
+
     assert.deepEqual(await transport.request("initialize", {}), { args: ["app-server", "-c", "model_provider=openai"] });
   } finally {
     transport.close();
@@ -40,7 +41,8 @@ test("transport uses its supplied env CODEX_BIN only at start, preserving lazy c
     assert.equal(transport.pid, undefined);
     // Resolving in the constructor would fail on the original missing path.
     env.CODEX_BIN = FIXTURE;
-    transport.start();
+    await transport.start();
+
     assert.deepEqual(await transport.request("test/echo", { value: "env-override" }), { value: "env-override" });
   } finally {
     transport.close();
@@ -48,7 +50,7 @@ test("transport uses its supplied env CODEX_BIN only at start, preserving lazy c
 });
 
 /** Spawn a transport over the fake with one config, and collect diagnostics. */
-function makeTransport(config = {}, extra = {}) {
+async function makeTransport(config = {}, extra = {}) {
   const notifications = [];
   const stderr = [];
   const exits = [];
@@ -62,7 +64,8 @@ function makeTransport(config = {}, extra = {}) {
     onExit: (info) => exits.push(info),
     ...(extra.onServerRequest === undefined ? {} : { onServerRequest: extra.onServerRequest }),
   });
-  transport.start();
+  await transport.start();
+
   return { transport, notifications, stderr, exits };
 }
 
@@ -82,7 +85,7 @@ function waitForNotification(notifications, predicate, timeoutMs = 5_000) {
 }
 
 test("app-server wire: requests correlate by id and resolve with the server result", async () => {
-  const { transport } = makeTransport();
+  const { transport } = await makeTransport();
   try {
     const [first, second] = await Promise.all([transport.request("test/echo", { value: "a" }), transport.request("test/echo", { value: "b" })]);
     assert.deepEqual(first, { value: "a" });
@@ -94,7 +97,7 @@ test("app-server wire: requests correlate by id and resolve with the server resu
 });
 
 test("app-server wire: protocol errors surface as CodexWireError with the server's code", async () => {
-  const { transport } = makeTransport();
+  const { transport } = await makeTransport();
   try {
     await assert.rejects(
       () => transport.request("does/not/exist", {}),
@@ -111,7 +114,7 @@ test("app-server wire: protocol errors surface as CodexWireError with the server
 });
 
 test("app-server wire: the documented overload backpressure code is preserved verbatim", async () => {
-  const { transport } = makeTransport();
+  const { transport } = await makeTransport();
   try {
     await assert.rejects(
       () => transport.request("test/overloaded", {}),
@@ -127,7 +130,7 @@ test("app-server wire: the documented overload backpressure code is preserved ve
 });
 
 test("app-server wire: server notifications reach the listener with their params", async () => {
-  const { transport, notifications } = makeTransport();
+  const { transport, notifications } = await makeTransport();
   try {
     await transport.request("test/emit", { method: "turn/started", params: { turn: { id: "t1" } } });
     const seen = await waitForNotification(notifications, (n) => n.method === "turn/started");
@@ -139,7 +142,7 @@ test("app-server wire: server notifications reach the listener with their params
 
 test("app-server wire: server requests round-trip through the handler and write the answer back", async () => {
   const seen = [];
-  const { transport, notifications } = makeTransport(
+  const { transport, notifications } = await makeTransport(
     { serverRequest: { method: "item/commandExecution/requestApproval", params: { command: "rm -rf /" } } },
     {
       onServerRequest: (request) => {
@@ -161,7 +164,7 @@ test("app-server wire: server requests round-trip through the handler and write 
 });
 
 test("app-server wire: a THROWING server-request handler answers with a JSON-RPC error instead of hanging", async () => {
-  const { transport, notifications } = makeTransport(
+  const { transport, notifications } = await makeTransport(
     { serverRequest: { method: "item/fileChange/requestApproval", params: {} } },
     {
       onServerRequest: () => {
@@ -180,7 +183,7 @@ test("app-server wire: a THROWING server-request handler answers with a JSON-RPC
 });
 
 test("app-server wire: a server request with no handler is refused, never left pending", async () => {
-  const { transport, notifications } = makeTransport({ serverRequest: { method: "mcpServer/elicitation/request", params: {} } });
+  const { transport, notifications } = await makeTransport({ serverRequest: { method: "mcpServer/elicitation/request", params: {} } });
   try {
     await transport.request("turn/start", { threadId: "th", input: [] });
     const answered = await waitForNotification(notifications, (n) => n.method === "test/answered");
@@ -191,7 +194,7 @@ test("app-server wire: a server request with no handler is refused, never left p
 });
 
 test("app-server wire: a non-JSON stdout line is diagnostics, not protocol (framing survives)", async () => {
-  const { transport, notifications, stderr } = makeTransport({ nonJsonLine: "<html>gateway noise</html>" });
+  const { transport, notifications, stderr } = await makeTransport({ nonJsonLine: "<html>gateway noise</html>" });
   try {
     await transport.request("test/noise", {});
     // Framing must survive the garbage line: the next request still answers.
@@ -205,7 +208,7 @@ test("app-server wire: a non-JSON stdout line is diagnostics, not protocol (fram
 });
 
 test("app-server wire: a request times out with a method-named error", async () => {
-  const { transport } = makeTransport();
+  const { transport } = await makeTransport();
   try {
     await assert.rejects(
       () => transport.request("test/hang", {}, { timeoutMs: 150 }),
@@ -218,7 +221,7 @@ test("app-server wire: a request times out with a method-named error", async () 
 });
 
 test("app-server wire: child exit fails every pending request and reports the exit", async () => {
-  const { transport, exits } = makeTransport({ exitCode: 7 });
+  const { transport, exits } = await makeTransport({ exitCode: 7 });
   try {
     const hanging = transport.request("test/hang", {});
     await transport.request("test/exit", {});
@@ -235,7 +238,7 @@ test("app-server wire: child exit fails every pending request and reports the ex
 });
 
 test("app-server wire: close() is idempotent, kills the child, and rejects later requests", async () => {
-  const { transport } = makeTransport();
+  const { transport } = await makeTransport();
   await transport.request("initialize", {});
   const pid = transport.pid;
   assert.equal(typeof pid, "number");

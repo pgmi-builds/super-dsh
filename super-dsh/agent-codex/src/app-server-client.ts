@@ -38,6 +38,7 @@ import { CodexAppServerTransport, type ServerRequestOutcome, type WireNotificati
 import { NATIVE_LAUNCH, type CodexLaunch } from "./codex-launch.js";
 import { projectAppServerNotification, type WireContentBlock, type WireEvent, type WireMessage } from "./app-server-events.js";
 import { failClosedResponse } from "./app-server-approvals.js";
+import type { ForeignHubBinding } from '@pgmi-builds/superd-hub/foreign-hub';
 
 // ---------------------------------------------------------------------------
 // Shapes (ported from the retired SDK client so call sites keep compiling)
@@ -77,6 +78,8 @@ export type SandboxModeName = "read-only" | "workspace-write" | "danger-full-acc
 export type ApprovalPolicy = "never" | "on-request" | "untrusted";
 
 export interface CodexAppServerOptions {
+  /** Session-scoped Super D facility; never installs into the native Codex home. */
+  readonly hub?: ForeignHubBinding;
   /** Session working directory (the user's workspace — never a home, rules §5). */
   readonly cwd?: string;
   /** Existing Codex thread to re-attach, when resuming. */
@@ -97,7 +100,15 @@ export interface CodexAppServerOptions {
   readonly sandboxMode?: SandboxModeName;
   /** Per-request protocol timeout; `0` disables. */
   readonly requestTimeoutMs?: number;
+  /**
+   * The world's DSH home (`<dshHome>/agents/codex`). When set, the transport's
+   * last discovery tier may fetch the pinned `@openai/codex` package into it
+   * on first start (codex-runtime-fetch.ts) — absent in tests and fake
+   * transports, so resolution stays pure.
+   */
+  readonly worldHome?: string;
 }
+
 
 /** Per-turn policy override folded from the DSH session log. */
 export interface TurnPolicy {
@@ -500,6 +511,7 @@ export class CodexAppServerClient {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#options.hub?.dispose();
     this.#sessionEpoch += 1;
     this.#transport?.close();
     this.#transport = undefined;
@@ -543,7 +555,9 @@ export class CodexAppServerClient {
       transport = transportFactory({
         ...(this.#options.cwd === undefined ? {} : { cwd: this.#options.cwd }),
         ...(this.#options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: this.#options.requestTimeoutMs }),
+        ...(this.#options.worldHome === undefined ? {} : { worldHome: this.#options.worldHome }),
         args: ["app-server", ...launch.argv],
+
         env: childEnv,
         onNotification: (notification) => this.#onNotification(notification),
         onServerRequest: (request) => this.#onServerRequest(request),
@@ -555,7 +569,8 @@ export class CodexAppServerClient {
     }
     this.#transport = transport;
     if (first) {
-      transport.start();
+      await transport.start();
+
       const info = asRecord(
         await transport.request("initialize", {
           clientInfo: { name: "superd-agent-codex", title: "Super D agent-codex", version: "0.1.0" },
@@ -584,7 +599,13 @@ export class CodexAppServerClient {
     };
     const response = asRecord(
       resumeId === null
-        ? await transport.request("thread/start", shared)
+        ? await transport.request("thread/start", {
+          ...shared,
+          ...(() => {
+            const definition = this.#options.hub?.definition();
+            return definition === undefined ? {} : { dynamicTools: [{ type: 'function', ...definition }] };
+          })(),
+        })
         : await transport.request("thread/resume", { threadId: resumeId, ...shared }),
     );
     const thread = asRecord(response?.["thread"]);
@@ -752,7 +773,21 @@ export class CodexAppServerClient {
     void this.#startTurn(next).catch((error) => this.#fail(error));
   }
 
-  #onServerRequest(request: WireServerRequest): ServerRequestOutcome | Promise<ServerRequestOutcome> {
+  async #onServerRequest(request: WireServerRequest): Promise<ServerRequestOutcome> {
+    if (request.method === 'item/tool/call') {
+      const params = asRecord(request.params);
+      try {
+        const hub = this.#options.hub;
+        if (hub === undefined || params?.tool !== 'superd-hub' ||
+          params.threadId !== this.#threadId || (params.namespace !== undefined && params.namespace !== null)) {
+          throw new Error('[E_HUB_BINDING] Tool call does not belong to this Super D session; reconnect through Super D');
+        }
+        const result = await hub.execute(params.arguments);
+        return { result: { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] } };
+      } catch (error) {
+        return { result: { success: false, contentItems: [{ type: 'inputText', text: error instanceof Error ? error.message : String(error) }] } };
+      }
+    }
     const handler = this.#serverRequestHandler;
     if (handler === undefined) return failClosedResponse(request.method);
     try {

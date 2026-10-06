@@ -2,9 +2,13 @@
 
 2026-10-05 user 已批准继续实现 OpenAI official，并明确 desktop 优先、CLI fallback。以前的 User Default-only 方向被此裁决替代。
 
+**2026-10-06 user 裁决（修订 core discovery）**：① 发现顺序改为 **CLI 优先**——`CODEX_BIN` → PATH 用户 CLI → 已安装 desktop 核心 → world home 运行时 fallback；② exact-pin `@openai/codex@0.160.0` **永不为安装期依赖**（0.1.11 以 `dependencies` 形态随包拖下六个平台 binary，违背 2026-10-04「SDK 退居二线、运行时自取」规则，已回退），三层全部落空时在首个 prompt 经 `codex-runtime-fetch.ts` fetch 进 `<worldHome>/codex-runtime/`（marker/lock/error-log 同 omp-sdk/codex-sdk 形态，`--ignore-scripts`，预热 `npm run fetch-codex-runtime`）。安装面守卫：`agent-codex/test/package-contract.test.mjs` + `test/pack-contract.test.mjs`（全包禁 install hook、禁 codex binary/SDK 依赖声明）。
+
+
 - 在原生 Codex home 发现 ChatGPT OAuth，provider store 仅持久化 OpenAI OAuth 身份，不复制 token、不要求 URL 或手填模型。
 - UI 选择此 route 后，子进程覆盖 builtin model_provider=openai；第三方原生选择不得胜出。原生 config/auth 永不由 adapter 写入。
-- 桌面核心优先。显式 CODEX_BIN 保持最高优先以支持 operator/test override；其次发现已安装桌面核心；无可执行桌面核心才发现用户 CLI，再回落到包内 exact-pin npm Codex。JS 入口用 Node，ELF/原生程序直接 spawn。fallback 是启动来源选择，不得在官方认证/模型/生成失败后静默换 provider。
+- ~~桌面核心优先~~（2026-10-06 修订：CLI 优先，见上）。显式 CODEX_BIN 保持最高优先以支持 operator/test override；其次发现用户 CLI；无可执行 CLI 才发现已安装桌面核心；最后回落到 world home 运行时 fetch 的 exact-pin npm Codex（不再是安装期包）。JS 入口用 Node，ELF/原生程序直接 spawn。fallback 是启动来源选择，不得在官方认证/模型/生成失败后静默换 provider。
+
 - 不伪装官方客户端身份。Super D 继续以自有 initialize.clientInfo 归属；不因 desktop 路径宣称 browser/computer use 可用。桌面额外工具服务只有在确认可用且实现对应接线后才可声明。
 - 模型来源是原生官方 models_cache.json 与原生官方默认选择，不能读取第三方 custom catalog 当 official 目录。不得将 parseable 但 binary 无法消费的目录强行注入。原生 binary 自动维护 cache 属其自身行为。
 - 保留 lazy spawn：create() 不生成子进程；真正 prompt 才启动。用户默认配置 fallback 保持历史行为，显式 OAuth 选择在 logout 后必须失败，不能转第三方。

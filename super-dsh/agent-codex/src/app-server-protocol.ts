@@ -1,8 +1,12 @@
 /**
  * Narrow hand-written types for the codex `app-server` JSONL JSON-RPC wire.
  *
- * DERIVED FROM: the `codex app-server generate-ts --out <dir>` output for the
- * `@openai/codex` version this package pins (0.154.0). That tree is ~617 files;
+ * DERIVED FROM: the `codex app-server generate-ts --out <dir>` output for
+ * `@openai/codex@0.154.0` (the SDK line's tested pair). The app-server line's
+ * runtime target is the exact-pin `@openai/codex@0.160.0`, lazily fetched into
+ * the world home (codex-runtime-fetch.ts) — never an install-time dependency.
+ * That tree is ~617 files;
+
  * this module is a hand-written, deliberately narrow subset covering exactly
  * the envelopes, requests, notifications and item shapes
  * `src/app-server-client.ts` and `src/app-server-events.ts` consume. Each

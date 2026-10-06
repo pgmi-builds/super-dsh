@@ -39,6 +39,7 @@ let nextId = 1000;
 const pendingReplies = new Map(); // id → resolver for a server→client request
 let lineBuffer = "";
 const recorded = [];
+const answered = [];
 let turnCounter = 0;
 let currentTurnId = null;
 
@@ -132,6 +133,11 @@ async function handleServerRequest(id, method, params) {
   }
   if (method === "test/echo") return { value: params?.value };
   if (method === "test/requests") return { requests: recorded };
+  if (method === 'test/answers') return { answers: answered };
+  if (method === 'test/request') {
+    emitScriptStep({ request: params });
+    return {};
+  }
   if (method === "test/overloaded") throw { code: -32001, message: "Server overloaded; retry later." };
   if (method === "test/noise") {
     process.stdout.write(`${config.nonJsonLine ?? "this is not json"}\n`);
@@ -157,6 +163,7 @@ async function handleLine(line) {
   if (message.id !== undefined && message.method === undefined) {
     const method = pendingReplies.get(message.id);
     pendingReplies.delete(message.id);
+    answered.push({ method, result: message.result ?? null, error: message.error ?? null });
     notify("test/answered", { id: message.id, method, result: message.result ?? null, error: message.error ?? null });
     return;
   }

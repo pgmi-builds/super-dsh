@@ -7,7 +7,10 @@
  * `{"id":…,"result":…}` / `{"id":…,"error":{…}}`).
  *
  * This module owns exactly four things and nothing else:
- *   1. runtime selection (override → installed desktop → CLI → pinned package),
+ *   1. runtime selection (override → PATH CLI → desktop core → fetched world-home
+ *      runtime — codex-runtime-fetch.ts; the pinned package is NEVER an
+ *      install-time dependency, 2026-10-06 ruling),
+
  *   2. process spawn + line framing + per-id request/response correlation,
  *   3. dispatch of server-initiated notifications and server-requests,
  *   4. teardown (process GROUP kill — the app-server may spawn stdio MCP
@@ -22,7 +25,8 @@
  * process, and the client calls it on first real work.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { resolveCodexRuntime } from "./codex-runtime.js";
+import { createCodexRuntimeDeps, ensureCodexRuntime } from "./codex-runtime-fetch.js";
+import { resolveCodexRuntime, type CodexRuntime } from "./codex-runtime.js";
 export { resolveCodexCommand, resolveCodexRuntime } from "./codex-runtime.js";
 
 /** One server-initiated notification (`{method, params}`, no id). */
@@ -59,7 +63,15 @@ export const SERVER_OVERLOADED_CODE = -32001;
 export interface CodexAppServerTransportOptions {
   /** Explicit native executable or JavaScript entry; otherwise discover the runtime. */
   readonly command?: string;
+  /**
+   * The world's DSH home. Setting it arms the LAST discovery tier: when the
+   * override, PATH CLI and desktop core all miss, the pinned `@openai/codex`
+   * package is fetched into `<worldHome>/codex-runtime/` on first start
+   * (codex-runtime-fetch.ts) — never at install time (2026-10-06 ruling).
+   */
+  readonly worldHome?: string;
   /** Args after the command; defaults to `["app-server"]`. */
+
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -110,14 +122,14 @@ export class CodexAppServerTransport {
 
   /**
    * Spawn the child exactly once. Idempotent.
-   * @throws when the child cannot be spawned at all (bad executable).
+   * @throws when no runtime can be discovered or fetched, or the child cannot
+   *   be spawned at all (bad executable).
    */
-  start(): void {
+  async start(): Promise<void> {
     if (this.#child !== undefined) return;
     const env = this.#options.env ?? { ...process.env };
-    const runtime = resolveCodexRuntime({
-      env: this.#options.command === undefined ? env : { ...env, CODEX_BIN: this.#options.command },
-    });
+    const runtime = await this.#resolveRuntime(env);
+
     const args = [...(this.#options.args ?? ["app-server"])];
     // `detached` gives the child its own process group so teardown can kill
     // the whole tree (stdio MCP descendants included), not just the root.
@@ -139,6 +151,23 @@ export class CodexAppServerTransport {
     child.on("error", (error) => this.#onExit(null, null, error));
     child.on("exit", (code, signal) => this.#onExit(code, signal));
   }
+
+  /**
+
+   * Resolve the child's runtime. An explicit `command` and world-home-less
+   * calls stay on the pure sync ladder; only a world home arms the lazy fetch
+   * of the pinned package (2026-10-06 ruling — never an install-time dep).
+   */
+  async #resolveRuntime(env: NodeJS.ProcessEnv): Promise<CodexRuntime> {
+    if (this.#options.command !== undefined || this.#options.worldHome === undefined) {
+      return resolveCodexRuntime({
+        env: this.#options.command === undefined ? env : { ...env, CODEX_BIN: this.#options.command },
+      });
+    }
+    return ensureCodexRuntime(this.#options.worldHome, createCodexRuntimeDeps({ env }));
+  }
+
+
 
   /** Send a request and await its result. Rejects on protocol error, timeout, or EOF. */
   request(method: string, params: unknown, options: { readonly timeoutMs?: number } = {}): Promise<unknown> {

@@ -25,6 +25,7 @@
  * duplicated by design: pi's native JSONL stays pi's authority; the DSH log
  * is the WebUI copy.
  */
+import { bindForeignHub, type ForeignHubBinding } from '@pgmi-builds/superd-hub/foreign-hub';
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { Context, Service } from "@deepseek-ai/cordis";
@@ -329,6 +330,11 @@ export class PiProvider extends Service implements AgentFactory {
     });
   }
 
+  private hubFor(sessionId: string): ForeignHubBinding {
+    return bindForeignHub('pi', sessionId, this.home,
+      () => this.runtime.ctx.agents.get(sessionId as SessionId) as never);
+  }
+
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     const loopCtx = this.runtime.ctx;
     const id = options.sessionId;
@@ -362,7 +368,7 @@ export class PiProvider extends Service implements AgentFactory {
     const client = await PiSessionClient.spawn([], spawnCwd, {
       kind: "create",
       ...(toolset === undefined ? {} : { tools: toolset }),
-    });
+    }, this.hubFor(id));
 
     const preparation = SessionPreparation.create(loopCtx.sessions.prepare(id, {
       ...(options.seed === undefined ? {} : { seed: options.seed }),
@@ -462,7 +468,7 @@ export class PiProvider extends Service implements AgentFactory {
     // CREATE-shaped lazy shell — zero pi objects until the first prompt.
     const client = await PiSessionClient.spawn([], spawnCwd, blank
       ? { kind: "create", ...(toolset === undefined ? {} : { tools: toolset }) }
-      : { kind: "resume", sessionFile: record.sessionFile });
+      : { kind: "resume", sessionFile: record.sessionFile }, this.hubFor(id));
 
     let handle: SessionHandle | undefined;
     let stored: StoredSession | undefined;

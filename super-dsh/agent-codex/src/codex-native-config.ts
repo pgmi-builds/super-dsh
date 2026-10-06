@@ -159,7 +159,7 @@ export function mergeModelCatalog(
   for (const model of models) {
     if (seen.has(model.id)) continue;
     seen.add(model.id);
-    const base = bySlug.get(model.id) ?? fallback ?? {};
+    const base = { ...fallback, ...bySlug.get(model.id) };
     const entry: Record<string, unknown> = {
       ...base,
       slug: model.id,
@@ -170,6 +170,10 @@ export function mergeModelCatalog(
     // carry verified hashes; remove stale generated values too. Context-limit
     // compaction and its window/threshold metadata remain unchanged.
     delete entry["comp_hash"];
+    // OpenAI's code-mode-only catalog entry cannot establish another
+    // endpoint's tool protocol. Omit it so Codex uses its normal tool mode.
+    // Also repair stale provider entries previously cloned from that cache.
+    delete entry["tool_mode"];
     if (model.contextWindow !== undefined) {
       // Codex reads context_window and caps against max_context_window; a stale
       // template value must not silently cap a larger real window.
@@ -400,6 +404,7 @@ export function catalogTemplate(codexHome: string, worldHome: string): Record<st
     readIfExists(providerCatalogPath(worldHome, "superd-model-catalog")),
     absorbedPath === undefined ? undefined : readIfExists(absorbedPath),
     readIfExists(join(codexHome, SUPERD_CATALOG_FILE)),
+    readIfExists(join(codexHome, "models_cache.json")),
   ];
   for (const text of sources) {
     const first = catalogEntries(text)[0];

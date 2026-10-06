@@ -58,6 +58,7 @@ import type { RawTypertGatewayFace } from './a2a-host.js'
 import type { A2aAgentHandle, A2aDeliveryCtx } from './a2a-delivery.js'
 import type { A2aGateway } from './a2a-service.js'
 import { agentLinks } from './agent-roster.js'
+import { foreignAgentHandle, registerForeignHubHost } from './foreign-hub.js'
 
 /** Stable Cordis plugin (row) name. */
 export const name = 'superd-a2a'
@@ -129,7 +130,7 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     let ingestRef: A2aIngest | undefined
     const service = createA2aService({ home, gatewayFor, ingest: () => ingestRef, log: alog })
     const delivery: A2aDeliveryCtx = {
-      agents: { get: (sessionId) => liveAgentHandle(ctx, sessionId) },
+      agents: { get: (sessionId) => liveAgentHandle(ctx, sessionId) ?? foreignAgentHandle(home, sessionId) },
       buffer: (initiatorSessionId, message) => { service.buffer(initiatorSessionId, message) },
     }
     ingestRef = createA2aIngest({ home, gatewayFor, delivery, log: alog })
@@ -196,7 +197,7 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     }
     const execFaceFull: HubToolExecFace = { ...execFace, pty: execPty }
     // the a2a endpoints (POST /api/superd/a2a + GET /api/superd/a2a/outbox) ride the shared
-    t.tools.register(createSuperdHubTool({
+    const toolDeps = {
       service,
       delivery,
       exec: execFaceFull,
@@ -205,9 +206,11 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
       roster: () => rosterViewOf(home),
       // This row mounts in ctx0 only (header ruling): every caller is a
       // native DSH session, so the initiator's a6 is the 'native' row's.
-      initiatorOf: (sessionId) => localA2aInitiator(home, 'native', sessionId),
-      onWatch: (dispose) => { ctx.effect(() => dispose, 'superd-a2a: a2a completion watch') },
-    }))
+      initiatorOf: (sessionId: string) => localA2aInitiator(home, 'native', sessionId),
+      onWatch: (dispose: () => void) => { ctx.effect(() => dispose, 'superd-a2a: a2a completion watch') },
+    }
+    t.tools.register(createSuperdHubTool(toolDeps))
+    t.effect(() => registerForeignHubHost(home, toolDeps), 'superd-a2a: foreign session facility')
   })
 }
 

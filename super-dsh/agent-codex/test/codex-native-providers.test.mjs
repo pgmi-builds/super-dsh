@@ -197,3 +197,18 @@ test("the per-provider catalog lives in the world home and holds exactly that pr
     models: entry.models.map((id) => ({ id })),
   }), path);
 });
+
+test('official cached metadata repairs a sparse provider catalog on a fresh target home', () => {
+  const home = codexHome('', undefined);
+  const world = mkdtempSync(join(tmpdir(), 'superd-cache-world-'));
+  const metadata = { slug: 'native-model', supported_reasoning_levels: [{ effort: 'medium', description: 'Balanced' }], shell_type: 'unified_exec', truncation_policy: { mode: 'tokens', limit: 10000 } };
+  writeFileSync(join(home, 'models_cache.json'), JSON.stringify({ models: [metadata] }));
+  mkdirSync(join(world, 'codex-catalogs'));
+  writeFileSync(providerCatalogPath(world, 'deepseek'), JSON.stringify({ models: [{ slug: 'deepseek-flash', display_name: 'DeepSeek' }] }));
+  const path = writeProviderCatalog(world, home, { id: 'deepseek', models: [{ id: 'deepseek-flash' }] });
+  const actual = JSON.parse(readFileSync(path, 'utf8')).models[0];
+  assert.deepEqual(actual.supported_reasoning_levels, metadata.supported_reasoning_levels);
+  assert.deepEqual(actual.truncation_policy, metadata.truncation_policy);
+  assert.equal(actual.slug, 'deepseek-flash');
+  assert.equal(readFileSync(join(home, 'models_cache.json'), 'utf8'), JSON.stringify({ models: [metadata] }));
+});

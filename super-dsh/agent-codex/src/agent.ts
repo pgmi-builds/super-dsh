@@ -1,3 +1,4 @@
+import { ToolCallRecovery } from "@deepseek-ai/dsh-session";
 /**
  * CodexAgent — the Dash `Agent` shim over one `CodexAppServerClient` (a
  * `codex app-server` child process + one Codex thread).
@@ -390,6 +391,8 @@ export class CodexAgent implements Agent {
   #step = 0;
   #lastTurn = 0;
   #turnOpen = false;
+  #turnCommitted = false;
+  #stepOpen = false;
   #cancelCause: AgentCancelCause | null = null;
   /** Terminal model failure of the open turn (`message_end` stopReason "error"); consumed by `agent_end`. */
   #pendingFailure: { message: string; code: string } | null = null;
@@ -660,7 +663,7 @@ export class CodexAgent implements Agent {
     } catch (error) {
       trace(`#startTurn cold start failed: ${String(error)}`);
       if (this.#turnOpen) {
-        this.session.append("turn/start", { turn: this.#dashTurn });
+        this.#commitTurnStart();
         this.session.append("user/message", message, { surfaceOp: "append" });
         this.#closeTurn({ kind: "error", error: { message: String(error), code: "UNKNOWN" } });
       }
@@ -668,7 +671,7 @@ export class CodexAgent implements Agent {
       return;
     }
     if (this.#disposed) return;
-    this.session.append("turn/start", { turn: this.#dashTurn });
+    this.#commitTurnStart();
     if (route !== undefined) this.#commitRequestHeader(route);
     this.#emitRequestContext(route);
     this.session.append("user/message", message, { surfaceOp: "append" });
@@ -943,7 +946,7 @@ export class CodexAgent implements Agent {
     if (this.#turnOpen) return;
     this.#reserveTurn();
     this.#localUserPending = localUser;
-    this.session.append("turn/start", { turn: this.#dashTurn });
+    this.#commitTurnStart();
     // This path opens a turn for a message the CLIENT queued and is now
     // generating, so the child is already running: resolve the route for the
     // log's benefit only. It cannot have moved since the turn it belongs to
@@ -955,8 +958,30 @@ export class CodexAgent implements Agent {
     this.session.append("user/message", message, { surfaceOp: "append" });
   }
 
+  #commitTurnStart(): void {
+    if (this.#turnCommitted) return;
+    this.session.append("turn/start", { turn: this.#dashTurn });
+    this.#turnCommitted = true;
+  }
+
   #closeTurn(reason: TurnEndReason): void {
     if (!this.#turnOpen) return;
+    this.#commitTurnStart();
+    if (this.#stepOpen) {
+      const events = this.session.snapshotEvents();
+      const start = events.findLastIndex(event => event.type === "step/start");
+      const recovery = new ToolCallRecovery();
+      for (const event of events.slice(start)) recovery.observe(event);
+      for (const result of recovery.results()) {
+        this.session.append("tool/result", result.data, {
+          surfaceOp: "append",
+          ...(result.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: result.sourceEventSeqs }),
+        });
+      }
+      this.session.append("step/end", { turn: this.#dashTurn, step: this.#step });
+      this.#stepOpen = false;
+    }
+    this.#turnCommitted = false;
     this.#turnOpen = false;
     this.#localUserPending = false;
     this.session.append("turn/end", { turn: this.#dashTurn, reason });
@@ -977,6 +1002,7 @@ export class CodexAgent implements Agent {
     this.#stepStartPending = false;
     this.#step += 1;
     this.session.append("step/start", { turn: this.#dashTurn, step: this.#step });
+    this.#stepOpen = true;
     trace(`step/start turn=${this.#dashTurn} step=${this.#step}`);
   }
 
@@ -1110,10 +1136,6 @@ export class CodexAgent implements Agent {
         trace("event turn_start");
         this.#stepStartPending = true;
         this.#pendingFailure = null;
-        // Open the step immediately (the SDK may never send message_start)
-        // and try the system prompt now that the thread's rollout exists.
-        this.#commitStepStart();
-        this.#emitSystemMessage();
         break;
 
       case "message_start": {
@@ -1167,6 +1189,7 @@ export class CodexAgent implements Agent {
       }
 
       case "tool_execution_start": {
+        this.#flushDeferredAssistant();
         const callId = String(event.toolCallId ?? "");
         const name = String(event.toolName ?? "");
         const argumentsJson = String(event.argumentsJson ?? JSON.stringify(event.args ?? {}));
@@ -1236,8 +1259,9 @@ export class CodexAgent implements Agent {
         // DSH turn-token fold requires the sample on a message of the SAME
         // turn. Flushed inside the still-open step, BEFORE step/end.
         this.#flushDeferredAssistant(convertUsage((event.data as { usage?: unknown } | undefined)?.usage));
-        if (this.#turnOpen && this.#step > 0) {
+        if (this.#turnOpen && this.#stepOpen) {
           this.session.append("step/end", { turn: this.#dashTurn, step: this.#step });
+          this.#stepOpen = false;
         }
         break;
 

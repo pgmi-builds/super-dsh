@@ -82,7 +82,8 @@ collab/subagent 项。
 | 变量 | 作用 |
 |---|---|
 | `CODEX_TRACE=1` | provider/agent/app-server 追踪（stderr） |
-| `CODEX_BIN` | 显式覆盖 Codex 核心或 JS 入口；默认依序发现 desktop 核心、用户 CLI、包内 exact-pin fallback |
+| `CODEX_BIN` | 显式覆盖 Codex 核心或 JS 入口；默认依序发现用户 CLI、desktop 核心、world home 运行时 fallback（运行时 fetch） |
+
 | `CODEX_HOME` | Codex 原生 home 重定向（**测试专用**；生产路径零重定向） |
 | `CODEX_APPROVAL_MODE` | 覆盖审批档（`never`/`on-request`/`on-failure`/`untrusted`；非法值忽略） |
 | `CODEX_APPROVAL_TIMEOUT_MS` | 审批应答超时；`0` 关闭；默认 300000 |
@@ -90,9 +91,11 @@ collab/subagent 项。
 
 ## Binary 与官方 OAuth
 
-核心发现顺序是显式 `CODEX_BIN` → 已安装 desktop 核心 → 用户 CLI → 包内 `@openai/codex@0.160.0`。
+核心发现顺序是显式 `CODEX_BIN` → 用户 CLI → 已安装 desktop 核心 → world home 运行时 fallback（`codex-runtime-fetch.ts`）。
 发现和启动仅发生在真正 prompt 时。JS 入口经 Node 启动，原生核心直接执行；认证或生成失败不会静默换 provider。
-desktop 优先选择核心版本，不代表复制 desktop 宿主：独立 app-server 使用 Super D 自有 clientInfo，
+前三层全部落空时，才把 exact-pin `@openai/codex@0.160.0` 在**运行时** fetch 进 `<worldHome>/codex-runtime/`（marker/lock/error-log，预热 `npm run fetch-codex-runtime`）；
+该包**永不进安装期依赖**（2026-10-06 裁决：0.1.11 曾以 `dependencies` 形态随包拖下六个平台 binary，已回退）。
+CLI 优先选择核心版本，不代表复制 desktop 宿主：独立 app-server 使用 Super D 自有 clientInfo，
 不借用父任务的 desktop 工具 pipe。browser/computer use 仍需要对应宿主服务与工具接线。
 
 本地 `auth.json` 有 ChatGPT OAuth 时，模型选择器增加只读的 **OpenAI OAuth** provider。

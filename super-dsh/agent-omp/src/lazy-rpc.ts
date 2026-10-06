@@ -56,7 +56,7 @@ export interface OmpAgentRpc {
 const IDLE_STATE: OmpState = { isStreaming: false };
 
 export class LazyOmpRpc implements OmpAgentRpc {
-  readonly #spawnArgs: string[] | (() => string[]);
+  readonly #spawnArgs: string[] | (() => string[] | Promise<string[]>);
   readonly #cwd: string | undefined;
   #client: OmpRpcClient | undefined;
   #spawn: Promise<OmpRpcClient> | undefined;
@@ -73,7 +73,7 @@ export class LazyOmpRpc implements OmpAgentRpc {
    *   construction and the first prompt — the new-chat permission pick does.
    * @param cwd - the spawn cwd.
    */
-  constructor(spawnArgs: string[] | (() => string[]), cwd?: string) {
+  constructor(spawnArgs: string[] | (() => string[] | Promise<string[]>), cwd?: string, private readonly onClose?: () => void) {
     this.#spawnArgs = spawnArgs;
     this.#cwd = cwd;
   }
@@ -98,7 +98,10 @@ export class LazyOmpRpc implements OmpAgentRpc {
     if (this.#client !== undefined) return Promise.resolve(this.#client);
     if (this.#spawn === undefined) {
       const args = typeof this.#spawnArgs === "function" ? this.#spawnArgs() : this.#spawnArgs;
-      this.#spawn = OmpRpcClient.spawn(args, this.#cwd).then((client) => {
+      this.#spawn = Promise.resolve(args).then((resolved) => {
+        if (this.#closed) throw new Error('OMP client closed during extension preparation');
+        return OmpRpcClient.spawn(resolved, this.#cwd);
+      }).then((client) => {
         // A close() that raced the in-flight spawn wins: dispose immediately.
         if (this.#closed) {
           client.close();
@@ -220,7 +223,9 @@ export class LazyOmpRpc implements OmpAgentRpc {
   }
 
   close(): void {
+    if (this.#closed) return;
     this.#closed = true;
+    this.onClose?.();
     const client = this.#client;
     this.#client = undefined;
     client?.close();

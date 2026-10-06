@@ -1,7 +1,8 @@
 {
   "name": "@pgmi-builds/agent-codex",
   "version": "0.1.0",
-  "description": "Codex provider for DeepSeek Harness (dsh) — an AgentFactory that drives a `codex app-server` child process (stdio JSONL JSON-RPC) per session and bridges its thread/turn surface, approvals and permission policy into Dash Agent/Session contracts.",
+  "description": "Codex provider for DeepSeek Harness (dsh) — an AgentFactory that drives a `codex app-server` child process (stdio JSONL JSON-RPC) per session and bridges its thread/turn surface, approvals and permission policy into Dash Agent/Session contracts. Declares NO codex dependency and ships NO postinstall (2026-10-06 ruling): the operator's own CODEX_BIN / PATH CLI / desktop core is discovered at first prompt, and only when all three miss is the pinned `@openai/codex` package fetched at RUNTIME into the world home (src/codex-runtime-fetch.ts, `npm run fetch-codex-runtime`).",
+
   "type": "module",
   "exports": {
     ".": "./dist/index.js",
@@ -9,9 +10,11 @@
   },
   "files": [
     "dist",
+    "scripts",
     "cordis.patch.yml",
     "README.md"
   ],
+
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -19,12 +22,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "fetch-codex-runtime": "node scripts/fetch-codex-runtime.mjs"
   },
+
   "dependencies": {
-    "@openai/codex": "0.160.0",
     "zod": "4.4.3"
   },
+
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": ">=0.1.5-0 <0.3.0-0",

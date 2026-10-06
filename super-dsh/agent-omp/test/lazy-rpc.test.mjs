@@ -19,6 +19,32 @@ const cwd = mkdtempSync(join(tmpdir(), "omp-lazy-"));
 // wait itself never settles.
 const TEST_OPTS = { timeout: 30_000 };
 
+test('async extension preparation finishes before spawn and remains lazy', TEST_OPTS, async t => {
+  let prepared = 0;
+  const rpc = new LazyOmpRpc(async () => {
+    await Promise.resolve();
+    prepared++;
+    return ['--extension', '/shared/hub.mjs'];
+  }, cwd);
+  t.after(() => rpc.close());
+  assert.equal(prepared, 0);
+  await rpc.ensureStarted();
+  assert.equal(prepared, 1);
+  assert.equal(rpc.spawned, true);
+});
+
+test('closing while async extension preparation runs prevents child spawn', TEST_OPTS, async t => {
+  let release;
+  const rpc = new LazyOmpRpc(() => new Promise(resolve => { release = resolve; }), cwd);
+  t.after(() => rpc.close());
+  const pending = rpc.ensureStarted();
+  await Promise.resolve();
+  rpc.close();
+  release([]);
+  await assert.rejects(pending, /closed/);
+  assert.equal(rpc.spawned, false);
+});
+
 /** Poll until `predicate` holds (or fail loudly); frames arrive asynchronously. */
 async function waitFor(predicate, what, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;

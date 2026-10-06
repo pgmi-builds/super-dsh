@@ -1,3 +1,4 @@
+import { ToolCallRecovery } from "@deepseek-ai/dsh-session";
 /**
  * OmpAgent — the Dash `Agent` shim over one live OMP SDK sidecar session.
  *
@@ -334,6 +335,8 @@ export class OmpAgent implements Agent {
   #step = 0;
   #lastTurn = 0;
   #turnOpen = false;
+  #turnCommitted = false;
+  #stepOpen = false;
   #cancelCause: AgentCancelCause | null = null;
   /** Terminal model failure of the open turn (`message_end` stopReason "error"); consumed by `agent_end`. */
   #pendingFailure: { message: string; code: string } | null = null;
@@ -565,7 +568,7 @@ export class OmpAgent implements Agent {
     } catch (error) {
       trace(`#startTurn cold start failed: ${String(error)}`);
       if (this.#turnOpen) {
-        this.session.append("turn/start", { turn: this.#dashTurn });
+        this.#commitTurnStart();
         this.session.append("user/message", message, { surfaceOp: "append" });
         this.#closeTurn({ kind: "error", error: { message: String(error), code: "UNKNOWN" } });
       }
@@ -573,7 +576,7 @@ export class OmpAgent implements Agent {
       return;
     }
     if (this.#disposed) return;
-    this.session.append("turn/start", { turn: this.#dashTurn });
+    this.#commitTurnStart();
     this.session.append("user/message", message, { surfaceOp: "append" });
     void this.#rpc.prompt(userMessageText(message)).catch((error) => this.#fail(error));
   }
@@ -787,12 +790,34 @@ export class OmpAgent implements Agent {
     if (this.#turnOpen) return;
     this.#reserveTurn();
     this.#localUserPending = localUser;
-    this.session.append("turn/start", { turn: this.#dashTurn });
+    this.#commitTurnStart();
     this.session.append("user/message", message, { surfaceOp: "append" });
+  }
+
+  #commitTurnStart(): void {
+    if (this.#turnCommitted) return;
+    this.session.append("turn/start", { turn: this.#dashTurn });
+    this.#turnCommitted = true;
   }
 
   #closeTurn(reason: TurnEndReason): void {
     if (!this.#turnOpen) return;
+    this.#commitTurnStart();
+    if (this.#stepOpen) {
+      const events = this.session.snapshotEvents();
+      const start = events.findLastIndex(event => event.type === "step/start");
+      const recovery = new ToolCallRecovery();
+      for (const event of events.slice(start)) recovery.observe(event);
+      for (const result of recovery.results()) {
+        this.session.append("tool/result", result.data, {
+          surfaceOp: "append",
+          ...(result.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: result.sourceEventSeqs }),
+        });
+      }
+      this.session.append("step/end", { turn: this.#dashTurn, step: this.#step });
+      this.#stepOpen = false;
+    }
+    this.#turnCommitted = false;
     this.#turnOpen = false;
     this.#localUserPending = false;
     this.session.append("turn/end", { turn: this.#dashTurn, reason });
@@ -827,9 +852,12 @@ export class OmpAgent implements Agent {
     if (title === this.#mirroredTitle) return;
     this.#mirroredTitle = title;
     try {
+      const input = this.session.snapshotEvents().find(event =>
+        event.type === "user/message" && event.data.source.kind === "user");
+      if (input === undefined) return;
       (this.session.append as (type: string, data: unknown) => unknown)("session/title", {
         title,
-        messageSeqs: [],
+        messageSeqs: [input.seq],
         source: { kind: "provider", provider: "omp" },
       });
     } catch {
@@ -847,6 +875,7 @@ export class OmpAgent implements Agent {
     if (!this.#turnOpen) return;
     this.#step += 1;
     this.session.append("step/start", { turn: this.#dashTurn, step: this.#step });
+    this.#stepOpen = true;
   }
 
   /**
@@ -1051,8 +1080,9 @@ export class OmpAgent implements Agent {
 
       case "turn_end":
         trace("event turn_end");
-        if (this.#turnOpen) {
+        if (this.#turnOpen && this.#stepOpen) {
           this.session.append("step/end", { turn: this.#dashTurn, step: this.#step });
+          this.#stepOpen = false;
         }
         break;
 

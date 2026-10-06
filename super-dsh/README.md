@@ -45,11 +45,44 @@ and a LAN relay. The test launcher enables this mode without `--host` or
 | Label | Runtime | Integration |
 |---|---|---|
 | OMP | OMP (`~/.omp`) | host `omp` binary over RPC (`omp --mode rpc`, NDJSON v1), lazy per session |
-| Codex | Codex app-server (`~/.codex`) | desktop core first, CLI and bundled core fallback |
+| Codex | Codex app-server (`~/.codex`) | CLI first, desktop core and lazy world-home fetch fallback |
 | Claude | Claude Code (`~/.claude`) | standalone adapter, joined by the hub |
 | Pi | pi coding agent (`~/.pi`) | in-process SDK |
 | Hermes | Hermes (`~/.hermes`) | gateway child |
 | Antigravity | agy SDK | Python bridge (`bridge/agy_bridge.py`) |
+
+### Foreign-agent Hub facility
+
+Super D sessions in Pi, OMP, and Codex can use the same `superd-hub` facility
+for agent roster/status, messaging, and shell execution. Tool descriptions,
+argument validation, receipts, and reply guidance come from the existing Hub.
+Replies wake the initiating session automatically; do not poll for them.
+
+Pi and OMP share one native extension. It is loaded incrementally on the first
+prompt, preserving normal extension discovery and native tools. Its per-session
+wrapper lives under the Super D world home (`hub-extensions`, mode 0600), with a
+session capability for a loopback-only HTTP listener. No global extension is
+installed in `~/.pi` or `~/.omp`. Some OMP versions present registered extension
+tools as devices: read `xd://superd-hub` for instructions and write action JSON
+to that device.
+
+Codex uses the official experimental app-server `dynamicTools` interface on
+new threads. Callbacks bind to that thread and the Super D session; existing
+native tools/plugins remain available. No global plugin is installed in
+`~/.codex`. Resuming a thread created through this integration restores its
+saved tool definition. Older threads without that definition need a new
+Super D conversation to gain the facility. A native Codex client resuming one
+of these threads does not supply Super D's callback host.
+
+Pi/OMP extension closures cannot transparently renew an already-loaded listener
+capability when the Hub row is unmounted/remounted. Restart Super D and resume
+the conversation after that operation; the tool reports this recovery path
+when its connection becomes unavailable. Whole-app restart/resume is tested.
+
+Draft creation and passive history viewing create no extension file, listener,
+or agent process. Closing a session invalidates its capability. Interrupted
+tool operations retain conservative upstream recovery guidance about unknown
+outcomes rather than encouraging blind retries.
 
 ### Codex in 0.1.11
 
