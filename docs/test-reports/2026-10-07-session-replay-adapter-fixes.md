@@ -27,3 +27,6 @@
 - 当前 CUA 返回无浏览器可用；没有把 HTTP / 格式检查冒称为浏览器点击与视觉验收。AGY 真工具调用仍受认证 / billing 阻塞。
 
 继续测试：[4999](https://test.pc.internal.test/)、[dev3 4998](http://dev3.internal.test:4998/)。原 OMP / AGY 坏会话继续报 corrupted 是预期，验证修复请新建会话。registry latest 保持获准发布的 0.1.11-b。
+
+
+后续发布：本报告中的修复已随明确获准的 `0.1.12` 提交、发布及部署，详见 [发布部署报告](2026-10-07-super-dsh-0.1.12-publish-deploy.md)。此前“不发布”的叙述是修复验收当时的状态。
