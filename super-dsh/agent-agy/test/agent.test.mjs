@@ -8,8 +8,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Context } from "@deepseek-ai/cordis";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { assertReleasedV4Relationships } from "@deepseek-ai/dsh-session-format-v3-to-v4";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const { AgyAgent, classifyTurnError, looksLikeApiKey } = await import("../dist/agent.js");
+const { AgyCliClient } = await import("../dist/agy-cli-client.js");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -74,6 +79,53 @@ function makeUserMessage(text) {
 }
 
 const types = (events) => events.map((e) => e.type);
+
+test('split native tool frames keep released V4 relationships valid', async () => {
+  const home=mkdtempSync(join(tmpdir(),'agy-split-'));const saved=process.env.AGY_MOCK_SCRIPT;
+  process.env.AGY_MOCK_SCRIPT=JSON.stringify([{wait:true,lines:[{event:'init',conversation_id:'native-id',init:{tools:['superd-hub']}}]}]);
+  const client=new AgyCliClient({apiKey:'test',cwd:home,realHome:home,agyBin:new URL('../fixtures/mock_agy_bin.sh',import.meta.url).pathname});
+  const session=makeFakeSession();const agent=new AgyAgent(new Context(),'s1',{provider:'agy'},session,client);
+  const validate=()=>assertReleasedV4Relationships({header:{id:session.id},inheritedEventCount:0,events:session.events},new Set(session.events.map(e=>e.type)));
+  const frame=x=>client.consume(JSON.stringify(x)+'\n');
+  try {
+    agent.followup(makeUserMessage('call Hub'));for(let n=0;n<100&&!client.readyReceived;n++)await delay(5);assert.equal(client.readyReceived,true);
+    frame({event:'step_update',step_update:{step_type:'tool',state:'ACTIVE',step_index:1,tool_name:'superd-hub',tool_info:{parameters:{action:'exec'}}}});await delay(5);validate();
+    frame({event:'step_update',step_update:{step_type:'tool',state:'DONE',step_index:1,tool_name:'superd-hub',tool_info:{output:'actual'}}});
+    frame({event:'result',result:{conversation_id:'native-id',status:'SUCCESS'}});await agent.whenIdle();validate();
+    assert.equal(session.events.filter(e=>e.type==='tool/call').length,1);assert.equal(session.events.filter(e=>e.type==='tool/result').length,1);
+  } finally {await agent.dispose();if(saved===undefined)delete process.env.AGY_MOCK_SCRIPT;else process.env.AGY_MOCK_SCRIPT=saved;}
+});
+
+test('queued Hub input runs after a failed older turn', async () => {
+  const session=makeFakeSession();const client=makeFakeClient();let fail;
+  client.turn=async function*(text){this._calls.push(text);if(this._calls.length===1)await new Promise((_,reject)=>{fail=reject;});yield 'peer reply';return 'peer reply';};
+  const agent=new AgyAgent(new Context(),'s1',{provider:'agy'},session,client);
+  agent.send(makeUserMessage('old'), 'next-turn',true);await delay(5);
+  agent.followup(makeUserMessage('Hub incoming'));fail(new Error('older turn failed'));
+  await delay(25);assert.deepEqual(client._calls,['old','Hub incoming']);
+  assert.deepEqual(session.events.filter(e=>e.type==='turn/end').map(e=>e.data.reason.kind),['error','completed']);await agent.dispose();
+});
+
+test('deadline stops the old transport before opening queued Hub input', async () => {
+  const session=makeFakeSession();const client=makeFakeClient();let rejectOld,stopped=false;
+  client.turn=async function*(text){this._calls.push(text);if(this._calls.length===1)await new Promise((_,reject)=>rejectOld=reject);else assert.equal(stopped,true);yield 'peer reply';return 'peer reply';};
+  client.interrupt=async()=>{await delay(10);stopped=true;rejectOld(new Error('deadline stopped CLI'));};
+  const agent=new AgyAgent(new Context(),'s1',{provider:'agy'},session,client);
+  agent.send(makeUserMessage('old'), 'next-turn',true);await delay(5);
+  agent.followup(makeUserMessage('Hub incoming'));agent.turnDeadlineTimer._onTimeout();
+  assert.equal(session.events.some(e=>e.type==='turn/end'),false,'old execution owns its turn until stopped');
+  await delay(30);assert.deepEqual(client._calls,['old','Hub incoming']);await agent.dispose();
+});
+
+test('a buffered success during deadline shutdown cannot reuse the stopping CLI', async () => {
+  const session=makeFakeSession();const client=makeFakeClient();let finishOld,finishStop,stopped=false;
+  client.turn=async function*(text){this._calls.push(text);if(this._calls.length===1)await new Promise(resolve=>finishOld=resolve);else assert.equal(stopped,true);yield 'reply';return 'reply';};
+  client.interrupt=()=>new Promise(resolve=>finishStop=()=>{stopped=true;resolve();});
+  const agent=new AgyAgent(new Context(),'s1',{provider:'agy'},session,client);
+  agent.send(makeUserMessage('old'),'next-turn',true);await delay(5);agent.followup(makeUserMessage('Hub incoming'));
+  agent.turnDeadlineTimer._onTimeout();finishOld();await delay(5);assert.deepEqual(client._calls,['old']);
+  finishStop();await delay(20);assert.deepEqual(client._calls,['old','Hub incoming']);await agent.dispose();
+});
 
 test("turn projection: bridge chunks → stream records → assistant/message → completed turn", async () => {
   const session = makeFakeSession();

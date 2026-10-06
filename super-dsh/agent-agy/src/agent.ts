@@ -46,7 +46,7 @@ import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index
 export type LiveAgyClient = Pick<
   AgyCliClient,
   "conversationId" | "lastUsage" | "onThinkingDelta" | "onToolEvent" | "setApprovalHandler" | "turn" | "close"
-> & { setSystemMessageHandler?(handler: (text: string) => void): void };
+> & { setSystemMessageHandler?(handler: (text: string) => void): void; interrupt?: () => Promise<void> };
 
 
 /** v2 live assistant-stream publication (same frame protocol as hermes). */
@@ -380,6 +380,8 @@ export class AgyAgent implements Agent {
         this.ensureStreamBridge().push({ type: "text-delta", index: full.length, text: chunk });
         full += chunk;
       }
+      await this.stopInFlight;
+      this.stopInFlight = undefined;
       this.clearTurnDeadline();
       // SDK 0.1.17 streams ToolCall but NEVER ToolResult (verified live and
       // in SDK source: receive_chunks yields Thought/Text/ToolCall only; the
@@ -412,6 +414,8 @@ export class AgyAgent implements Agent {
       this.endActivity();
       this.flushFollowUps();
     } catch (error) {
+      await this.stopInFlight;
+      this.stopInFlight = undefined;
       this.clearTurnDeadline();
       this.abandonStreamBridge();
       const failure = classifyTurnError(error);
@@ -429,8 +433,10 @@ export class AgyAgent implements Agent {
       this.unpairedCalls = [];
       if (this.turnOpen && this.step > 0) this.closeStep();
       this.closeTurn({ kind: "error", error: failure });
+      this.cancelCause = null;
       this.markIdle();
       this.endActivity();
+      this.flushFollowUps();
     }
   }
 
@@ -547,6 +553,7 @@ export class AgyAgent implements Agent {
   }
 
   private pendingThinking: string[] = [];
+  private stopInFlight?: Promise<void>;
   /** Calls from this turn still lacking a result (SDK 0.1.17 exposes none). */
   private unpairedCalls: Array<{ callId: string; name: string }> = [];
 
@@ -556,6 +563,13 @@ export class AgyAgent implements Agent {
     this.turnDeadlineTimer = setTimeout(() => {
       if (!this.turnOpen) return;
       trace(`turn deadline exceeded after ${AGY_TURN_DEADLINE_MS}ms — failing open turn`);
+      if (this.client.interrupt !== undefined) {
+        // Keep ownership until the old CLI stops. Its catch pairs unresolved
+        // calls and only then starts the next queued message.
+        this.cancelCause = { kind: "hook", reason: `agy turn deadline exceeded after ${AGY_TURN_DEADLINE_MS}ms` };
+        this.stopInFlight = this.client.interrupt().catch(error => trace(`deadline interrupt failed: ${String(error)}`));
+        return;
+      }
       this.abandonStreamBridge();
       if (this.step > 0) this.closeStep();
       this.closeTurn({ kind: "error", error: { message: `agy turn deadline exceeded after ${AGY_TURN_DEADLINE_MS}ms`, code: "UNKNOWN" } });

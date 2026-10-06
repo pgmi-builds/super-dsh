@@ -17,6 +17,10 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import type { ForeignHubBinding } from "@pgmi-builds/superd-hub/foreign-hub";
+import { prepareAgyNativePlugin } from "@pgmi-builds/superd-hub/foreign-agy";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -61,6 +65,9 @@ export interface AgyCliOptions {
   authMode?: AgyAuthMode;
   spawnAttempts?: number;
   trace?: (...parts: unknown[]) => void;
+  hubBinding?: ForeignHubBinding;
+  hubStagingDirectory?: string;
+  prepareHub?: () => Promise<string | undefined>;
 }
 
 export type CliEvent =
@@ -125,6 +132,27 @@ export class AgyCliClient {
   private dead = false;
   private conversationIdValue = "";
   private toolsSeen = 0;
+  private hubPreparation?: Promise<void>;
+  private hubSession?: string;
+
+  private async prepare(): Promise<void> {
+    if (this.dead) throw new Error("agy client is closed");
+    this.hubPreparation ??= (async () => {
+      if (this.opts.hubBinding === undefined) return;
+      this.hubSession = await (this.opts.prepareHub?.() ?? prepareAgyNativePlugin(
+        this.opts.hubBinding,
+        join(this.realHome(), ".gemini", "antigravity-cli"),
+        this.opts.hubStagingDirectory!,
+        async directory => {
+          const exec = promisify(execFile);
+          await exec(this.opts.agyBin ?? "agy", ["plugin", "install", directory], { timeout: 60_000 });
+          await exec(this.opts.agyBin ?? "agy", ["plugin", "enable", "superd-hub"], { timeout: 60_000 });
+        },
+      ));
+    })();
+    await this.hubPreparation;
+    if (this.dead) throw new Error("agy client is closed");
+  }
 
   onThinkingDelta?: (text: string) => void;
   onToolEvent?: (ev: { event: "tool_call"; id: string; name: string; args: string } | { event: "tool_result"; id: string; name: string; is_error: boolean; result: string }) => void;
@@ -157,6 +185,8 @@ export class AgyCliClient {
 
   private spawnCli(): void {
     if (this.child || this.dead) return;
+    this.pending.length = 0;
+    this.buffer = "";
     const mode: AgyAuthMode = this.opts.authMode ?? "apiKey";
     // Only key mode patches settings (`modelProvider: "gemini"`); ADC and OAuth
     // need the DEFAULT backend, where that key must be ABSENT — the binary
@@ -174,7 +204,8 @@ export class AgyCliClient {
       "--input-format=stream-json", "--output-format=stream-json",
       "--disable-slash-commands",
     ];
-    if (this.opts.conversationId) args.push(`--conversation=${this.opts.conversationId}`);
+    const conversationId = this.conversationIdValue || this.opts.conversationId;
+    if (conversationId) args.push(`--conversation=${conversationId}`);
     if (this.opts.model) args.push(`--model=${this.opts.model}`);
     if (this.opts.effort) args.push(`--effort=${this.opts.effort}`);
     if (this.opts.skipPermissions) args.push("--dangerously-skip-permissions");
@@ -189,6 +220,8 @@ export class AgyCliClient {
         // ADC, the key for key mode, and the auto-update pin on EVERY mode.
         // NO_PROXY keeps the dev3 loopback bridge reachable.
         const env: NodeJS.ProcessEnv = { ...process.env, NO_PROXY: "127.0.0.1,localhost", ...authChildEnv(mode, key) };
+        delete env.SUPERD_HUB_SESSION;
+        if (this.hubSession !== undefined) env.SUPERD_HUB_SESSION = this.hubSession;
         // No HOME override, ever: the settings we just maintained live at
         // `$HOME/.gemini`, ADC at `$HOME/.config/gcloud`, and the sign-in token
         // in the keyring — isolating HOME destroys all three. That was the
@@ -212,6 +245,8 @@ export class AgyCliClient {
     });
     child.on("exit", (code) => {
       this.child = undefined;
+      this.readyReceived = false;
+      this.buffer = "";
       // The CLI reports its refusals on stderr / as non-JSON stdout lines and
       // then exits non-zero. Those lines ARE the diagnosis ("--effort is not
       // supported for model …", "Eligibility check failed: …"), so the exit
@@ -262,6 +297,7 @@ export class AgyCliClient {
         continue;
       }
       if (parsed.event === "init") {
+        if (typeof parsed.conversation_id === "string") this.conversationIdValue = parsed.conversation_id;
         const init = parsed.init as { tools?: string[]; permission_mode?: string } | undefined;
         this.toolsSeen = Array.isArray(init?.tools) ? init.tools.length : 0;
         this.dispatch({ event: "ready", tools: this.toolsSeen, permissionMode: init?.permission_mode });
@@ -315,15 +351,10 @@ export class AgyCliClient {
           event: "tool_call", id, name,
           args: JSON.stringify(su.tool_info?.parameters ?? {}),
         });
-        this.onToolEvent?.({ event: "tool_call", id, name, args: JSON.stringify(su.tool_info?.parameters ?? {}) });
       } else if (su.state === "DONE" || su.state === "ERROR") {
         const output = su.tool_info?.output ?? "";
         const isError = su.state === "ERROR";
         this.dispatch({
-          event: "tool_result", id, name, is_error: isError,
-          result: output || (isError ? "tool failed" : "[agy CLI reported no output summary]"),
-        });
-        this.onToolEvent?.({
           event: "tool_result", id, name, is_error: isError,
           result: output || (isError ? "tool failed" : "[agy CLI reported no output summary]"),
         });
@@ -350,6 +381,7 @@ export class AgyCliClient {
 
   /** One turn. First call spawns the CLI (lazy per §14-i) and keeps it resident. */
   async *turn(text: string): AsyncGenerator<string, string, void> {
+    await this.prepare();
     this.spawnCli();
     await this.expectReady();
     this.send({ event: "user", message: { content: text } });
@@ -391,13 +423,28 @@ export class AgyCliClient {
   }
 
   async ping(): Promise<void> {
+    await this.prepare();
     this.spawnCli();
     await this.expectReady();
   }
 
+  /** Stop one CLI execution, preserving its conversation and Hub capability. */
+  async interrupt(): Promise<void> {
+    const child = this.child;
+    if (child === undefined) return;
+    this.readyReceived = false;
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+    child.kill("SIGTERM");
+    const timer = setTimeout(() => child.kill("SIGKILL"), 2000);
+    timer.unref();
+    try { await exited } finally { clearTimeout(timer) }
+  }
+
   async close(): Promise<void> {
-    if (!this.child) return;
+    if (this.dead) return;
     this.dead = true;
+    await this.opts.hubBinding?.dispose();
+    if (!this.child) return;
     const child = this.child;
     try { child.stdin.end(); } catch { /* already gone */ }
     setTimeout(() => {
@@ -407,4 +454,3 @@ export class AgyCliClient {
     this.child = undefined;
   }
 }
-

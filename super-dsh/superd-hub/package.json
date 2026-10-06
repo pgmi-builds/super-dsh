@@ -12,7 +12,8 @@
     "./a2a": "./dist/a2a-row.js",
     "./foreign-hub": "./dist/foreign-hub.js",
     "./foreign-native": "./dist/foreign-native.js",
-    "./foreign-claude": "./dist/foreign-claude.js"
+    "./foreign-claude": "./dist/foreign-claude.js",
+    "./foreign-agy": "./dist/foreign-agy.js"
   },
   "files": [
     "dist",

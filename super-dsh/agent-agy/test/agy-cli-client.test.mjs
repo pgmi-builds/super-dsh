@@ -33,6 +33,31 @@ const INIT = [{ lines: [{ event: "init", init: { tools: [] } }] }];
 
 const AMBIENT_HOME = process.env.HOME;
 
+test('a native tool call and result reach the actor exactly once', async () => {
+  const fx=fixture();const saved=process.env.AGY_MOCK_SCRIPT;
+  process.env.AGY_MOCK_SCRIPT=JSON.stringify([
+    {wait:true,lines:[{event:'init',init:{tools:['superd-hub']}}]},
+    {lines:[{event:'step_update',step_update:{step_type:'tool',step_index:1,state:'ACTIVE',tool_name:'superd-hub',tool_info:{parameters:{action:'agents'}}}},{event:'step_update',step_update:{step_type:'tool',step_index:1,state:'DONE',tool_name:'superd-hub',tool_info:{output:'actual'}}},{event:'result',result:{conversation_id:'native-id',status:'SUCCESS'}}]},
+  ]);
+  const client=new AgyCliClient({apiKey:'test',cwd:fx.home,realHome:fx.home,agyBin:join(fixtures,'mock_agy_bin.sh')});const events=[];client.onToolEvent=e=>events.push(e);
+  try {for await(const _ of client.turn('call tool')){}assert.deepEqual(events.map(e=>e.event),['tool_call','tool_result']);}
+  finally {await client.close();if(saved===undefined)delete process.env.AGY_MOCK_SCRIPT;else process.env.AGY_MOCK_SCRIPT=saved;}
+});
+
+test('Hub native delivery is lazy, prepares once, and close revokes even a draft binding', async () => {
+  const fx = fixture(); let prepared = 0, disposed = 0;
+  const saved = process.env.AGY_MOCK_SCRIPT;
+  process.env.AGY_MOCK_SCRIPT = JSON.stringify(INIT);
+  const binding = {dispose: async () => { disposed++; }};
+  const client = new AgyCliClient({apiKey:'test-key',cwd:fx.home,realHome:fx.home,agyBin:join(fixtures,'mock_agy_bin.sh'),hubBinding:binding,prepareHub:async () => {prepared++;return JSON.stringify({url:'http://127.0.0.1:9/tool',token:'private'});}});
+  assert.equal(prepared,0);
+  try {await client.ping();await client.ping();assert.equal(prepared,1);} finally {await client.close();if(saved===undefined)delete process.env.AGY_MOCK_SCRIPT;else process.env.AGY_MOCK_SCRIPT=saved;}
+  assert.equal(disposed,1);
+  const draft = new AgyCliClient({apiKey:'x',cwd:fx.home,hubBinding:binding,prepareHub:async()=>assert.fail('draft installs')});
+  await draft.close();await draft.close();assert.equal(disposed,2);
+  await assert.rejects(draft.ping(),/closed/);
+});
+
 function fixture(settings) {
   const home = mkdtempSync(join(tmpdir(), "agy-spawn-"));
   const trace = join(home, "trace.jsonl");

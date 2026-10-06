@@ -19,6 +19,7 @@
  */
 
 import { realpathSync, statSync } from "node:fs";
+import { bindForeignHub, type ForeignHubBinding } from "@pgmi-builds/superd-hub/foreign-hub";
 import { join } from "node:path";
 import { Context, Service } from "@deepseek-ai/cordis";
 import type {
@@ -208,6 +209,7 @@ export class AgyProvider extends Service implements AgentFactory {
    */
   private hasAuthEvidence(): boolean {
     if (this.resolveApiKey() !== undefined) return true;
+    if (hasSigninCredential(this.opts.realHome ?? process.env.HOME ?? "")) return true;
     return hasAdcEvidence(process.env, process.env.HOME ?? "");
   }
 
@@ -329,7 +331,9 @@ export class AgyProvider extends Service implements AgentFactory {
 
     // Full-lazy (§14-i): construct the client (spawns NOTHING); the bridge
     // child materializes on the first real prompt.
-    const client = this.createLiveClient(spawnCwd, agentOptionsModel(options.agentOptions), options.agentOptions?.reasoningEffort);
+    const agentRef: { current?: AgyAgent } = {};
+    const client = this.createLiveClient(spawnCwd, agentOptionsModel(options.agentOptions), options.agentOptions?.reasoningEffort,
+      bindForeignHub("agy", id, this.home, () => agentRef.current as never));
 
     const preparation = SessionPreparation.create(loopCtx.sessions.prepare(id, {
       ...(options.seed === undefined ? {} : { seed: options.seed }),
@@ -357,6 +361,7 @@ export class AgyProvider extends Service implements AgentFactory {
         stored,
         this.agentRuntime(spawnCwd),
         () => this.followConversationId(id, client),
+        agentRef,
       );
     } catch (error) {
       trace(`create ${id} THREW: ${String(error)}`);
@@ -404,7 +409,9 @@ export class AgyProvider extends Service implements AgentFactory {
           return verified;
         })();
 
-    const client = this.createLiveClient(spawnCwd, agentOptionsModel(options.agentOptions), options.agentOptions?.reasoningEffort);
+    const agentRef: { current?: AgyAgent } = {};
+    const client = this.createLiveClient(spawnCwd, agentOptionsModel(options.agentOptions), options.agentOptions?.reasoningEffort,
+      bindForeignHub("agy", id, this.home, () => agentRef.current as never), blank ? undefined : record!.conversationId!);
 
     let handle: SessionHandle | undefined;
     let stored: StoredSession | undefined;
@@ -440,6 +447,7 @@ export class AgyProvider extends Service implements AgentFactory {
         stored,
         this.agentRuntime(spawnCwd),
         () => this.followConversationId(id, client),
+        agentRef,
       );
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)}`);
@@ -460,8 +468,8 @@ export class AgyProvider extends Service implements AgentFactory {
    * environment for free while the SDK is an opt-in extra. Auth-form selection
    * still rides the agy-auth ladder.
    */
-  private createLiveClient(cwd: string, modelId?: string, reasoningEffort?: string): LiveAgyClient {
-    return new AgyCliClient(this.cliOptions(cwd, modelId, reasoningEffort));
+  private createLiveClient(cwd: string, modelId?: string, reasoningEffort?: string, hubBinding?: ForeignHubBinding, conversationId?: string): LiveAgyClient {
+    return new AgyCliClient({ ...this.cliOptions(cwd, modelId, reasoningEffort), conversationId, hubBinding, hubStagingDirectory: join(this.home, "hub-native-agy") });
   }
 
   /**
@@ -579,6 +587,7 @@ async function setupAndPublish(
   stored: StoredSession,
   runtimeInfo: AgyAgentRuntimeInfo,
   onTurnDone: () => void,
+  agentRef: { current?: AgyAgent },
 ): Promise<AgentHandle> {
   const runtime: AgyAgentRuntimeInfo = { ...runtimeInfo, onTurnDone };
   let detachSession: (() => void) | undefined;
@@ -587,6 +596,7 @@ async function setupAndPublish(
   let idleExit: (() => void) | undefined;
   try {
     agent = new AgyAgent(loopCtx, id, agentOptions, session, client, () => idleExit?.(), runtime);
+    agentRef.current = agent;
 
     // Pin THIS session to the agy route (static resolution — synchronous).
     try {

@@ -7,7 +7,7 @@
 //  - a MISSING record with conversation-bearing DSH log content is a genuine
 //    orphan → fail closed (CONVERSATION_NOT_FOUND), never scan ~/.gemini.
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -46,6 +46,23 @@ const CONVERSATION_EVENTS = [
   { type: "turn/start", seq: 2, time: 2, data: { turn: 1 } },
   { type: "user/message", seq: 3, time: 3, data: { source: { kind: "user" } } },
 ];
+
+test('native OAuth evidence bypasses API-key onboarding', () => {
+  const home=mkdtempSync(join(tmpdir(),'agy-oauth-gate-'));
+  mkdirSync(join(home,'.gemini','antigravity-cli'),{recursive:true});
+  writeFileSync(join(home,'.gemini','antigravity-cli','antigravity-oauth-token'),'test credential');
+  const provider=new AgyProvider(providerContext(home),{realHome:home});
+  assert.equal(provider.hasAuthEvidence(),true);
+});
+
+test('resume passes the mapped native conversation to the lazy CLI client', async () => {
+  const home=mkdtempSync(join(tmpdir(),'agy-resume-route-'));
+  upsertSession(home,'session-mapped',{conversationId:'native-mapped',cwd:home,createdAt:Date.now(),preset:null});
+  const ctx=providerContext(home);const provider=new AgyProvider(ctx);let args;
+  provider.createLiveClient=(...input)=>{args=input;throw new Error('captured client options');};
+  await assert.rejects(provider.resume(ctx,{resumeSessionId:'session-mapped'}),/captured client options/);
+  assert.equal(args[4],'native-mapped');
+});
 
 test("blank resume: no record at all → tolerated as fresh (mapping gate must not throw)", async () => {
   const home = mkdtempSync(join(tmpdir(), "superd-agy-provider-"));

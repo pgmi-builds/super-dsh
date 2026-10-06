@@ -63,6 +63,7 @@ import { agentLinks } from './agent-roster.js'
 import { foreignAgentHandle, registerForeignHubHost, foreignHubEndpoint } from './foreign-hub.js'
 import { refreshHermesNativeEndpoint } from './foreign-native.js'
 import { refreshClaudeNativeEndpoint } from './foreign-claude.js'
+import { refreshAgyNativeEndpoint } from './foreign-agy.js'
 
 /** Stable Cordis plugin (row) name. */
 export const name = 'superd-a2a'
@@ -219,6 +220,7 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
       const publication = Promise.all([
         refreshHermesNativeEndpoint(() => foreignHubEndpoint(home), join(homedir(), '.hermes')),
         refreshClaudeNativeEndpoint(() => foreignHubEndpoint(home), process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')),
+        refreshAgyNativeEndpoint(() => foreignHubEndpoint(home), join(homedir(), '.gemini', 'antigravity-cli')),
       ])
         .catch(error => ctx.logger.warn(`superd-a2a: native plugin endpoint refresh failed: ${String(error)}`))
       return () => publication
