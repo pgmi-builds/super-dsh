@@ -97,7 +97,15 @@ export interface CodexAppServerOptions {
   readonly sandboxMode?: SandboxModeName;
   /** Per-request protocol timeout; `0` disables. */
   readonly requestTimeoutMs?: number;
+  /**
+   * The world's DSH home (`<dshHome>/agents/codex`). When set, the transport's
+   * last discovery tier may fetch the pinned `@openai/codex` package into it
+   * on first start (codex-runtime-fetch.ts) — absent in tests and fake
+   * transports, so resolution stays pure.
+   */
+  readonly worldHome?: string;
 }
+
 
 /** Per-turn policy override folded from the DSH session log. */
 export interface TurnPolicy {
@@ -543,7 +551,9 @@ export class CodexAppServerClient {
       transport = transportFactory({
         ...(this.#options.cwd === undefined ? {} : { cwd: this.#options.cwd }),
         ...(this.#options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: this.#options.requestTimeoutMs }),
+        ...(this.#options.worldHome === undefined ? {} : { worldHome: this.#options.worldHome }),
         args: ["app-server", ...launch.argv],
+
         env: childEnv,
         onNotification: (notification) => this.#onNotification(notification),
         onServerRequest: (request) => this.#onServerRequest(request),
@@ -555,7 +565,8 @@ export class CodexAppServerClient {
     }
     this.#transport = transport;
     if (first) {
-      transport.start();
+      await transport.start();
+
       const info = asRecord(
         await transport.request("initialize", {
           clientInfo: { name: "superd-agent-codex", title: "Super D agent-codex", version: "0.1.0" },

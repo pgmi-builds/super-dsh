@@ -177,7 +177,7 @@ const LOCK_STALE_MS = 30 * 60 * 1000;
 export function sdkInstallArgv(packageVersion: string = SDK_PACKAGE_VERSION): string[] {
   return [
     "install",
-    "--exact",
+    "--save-exact",
     "--ignore-scripts",
     "--omit=dev",
     `${SDK_PACKAGE}@${packageVersion}`,

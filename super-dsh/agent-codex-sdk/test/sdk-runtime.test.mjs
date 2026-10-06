@@ -105,7 +105,7 @@ test("sdkRuntimeLayout pins the runtime, the entry, the marker and the lock", ()
 test("the install argv installs BOTH pins exactly, with scripts and dev deps off", () => {
   assert.deepEqual(sdkInstallArgv("0.154.0"), [
     "install",
-    "--exact",
+    "--save-exact",
     "--ignore-scripts",
     "--omit=dev",
     "@openai/codex-sdk@0.154.0",

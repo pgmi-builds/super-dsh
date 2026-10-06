@@ -4,7 +4,7 @@ import * as wire from "../dist/app-server-wire.js";
 
 // Inject the filesystem/installation boundary so a desktop on the test host
 // cannot hide a broken fallback. The production selection algorithm stays real.
-function discovery({ platform = "linux", env = {}, files = [], executables = [], cli, packageEntry, desktopCandidates, realpaths = {} } = {}) {
+function discovery({ platform = "linux", env = {}, files = [], executables = [], cli, packageEntries = [], desktopCandidates, realpaths = {} } = {}) {
   return {
     platform,
     env,
@@ -13,16 +13,15 @@ function discovery({ platform = "linux", env = {}, files = [], executables = [],
     isExecutable: (path) => executables.includes(path),
     realpath: (path) => realpaths[path] ?? path,
     findCommand: () => cli,
-    resolvePackageEntry: () => {
-      if (packageEntry === undefined) throw new Error("package absent");
-      return packageEntry;
-    },
+    packageEntryCandidates: packageEntries,
+
     ...(desktopCandidates === undefined ? {} : { desktopCandidates }),
   };
 }
 
 function resolve(options) {
-  assert.equal(typeof wire.resolveCodexRuntime, "function", "transport must expose the desktop-first runtime resolver");
+  assert.equal(typeof wire.resolveCodexRuntime, "function", "transport must expose the cli-first runtime resolver");
+
   return wire.resolveCodexRuntime(options);
 }
 
@@ -40,14 +39,15 @@ test("an invalid explicit override fails instead of silently choosing another ru
   assert.throws(() => resolve(discovery({ env: { CODEX_BIN: "/missing/codex" }, cli: "/user/bin/codex" })), /CODEX_BIN.*\/missing\/codex/);
 });
 
-test("an executable Linux desktop core wins over a user CLI", () => {
+test("a user CLI wins over an installed desktop core (2026-10-06: cli-first)", () => {
   const result = resolve(discovery({
-    files: ["/usr/lib/chatgpt/resources/codex"],
-    executables: ["/usr/lib/chatgpt/resources/codex"],
+    files: ["/usr/lib/chatgpt/resources/codex", "/user/bin/codex"],
+    executables: ["/usr/lib/chatgpt/resources/codex", "/user/bin/codex"],
     cli: "/user/bin/codex",
   }));
-  assert.deepEqual(result, { command: "/usr/lib/chatgpt/resources/codex", nodeScript: false, source: "desktop" });
+  assert.deepEqual(result, { command: "/user/bin/codex", nodeScript: false, source: "cli" });
 });
+
 
 test("a missing or non-executable desktop falls back to the user CLI", () => {
   for (const files of [[], ["/usr/lib/chatgpt/resources/codex"]]) {
@@ -64,10 +64,23 @@ test("an npm CLI symlink to JavaScript runs through Node", () => {
   assert.deepEqual(result, { command: "/user/bin/codex", nodeScript: true, source: "cli" });
 });
 
-test("without desktop or CLI the exact-pin package JavaScript entry is selected", () => {
-  const result = resolve(discovery({ packageEntry: "/package/@openai/codex/bin/codex.js", files: ["/package/@openai/codex/bin/codex.js"] }));
-  assert.deepEqual(result, { command: "/package/@openai/codex/bin/codex.js", nodeScript: true, source: "package" });
+test("without override, CLI or desktop the fetched world-home runtime entry is selected", () => {
+  const entry = "/home/codex-runtime/node_modules/@openai/codex/bin/codex.js";
+  const result = resolve(discovery({ packageEntries: [entry], files: [entry] }));
+  assert.deepEqual(result, { command: entry, nodeScript: true, source: "package" });
 });
+
+test("the fetched entry never outranks the operator's own CLI", () => {
+  const entry = "/home/codex-runtime/node_modules/@openai/codex/bin/codex.js";
+  const result = resolve(discovery({
+    packageEntries: [entry],
+    files: [entry, "/user/bin/codex"],
+    executables: [entry, "/user/bin/codex"],
+    cli: "/user/bin/codex",
+  }));
+  assert.deepEqual(result, { command: "/user/bin/codex", nodeScript: false, source: "cli" });
+});
+
 
 test("a readable JS override needs no executable bit because Node launches it", () => {
   const result = resolve(discovery({ env: { CODEX_BIN: "/override/fake.mjs" }, files: ["/override/fake.mjs"] }));
@@ -75,8 +88,9 @@ test("a readable JS override needs no executable bit because Node launches it", 
 });
 
 test("missing runtimes produce installation and override guidance", () => {
-  assert.throws(() => resolve(discovery()), /cannot locate.*Codex.*desktop.*CLI.*@openai\/codex.*CODEX_BIN/i);
+  assert.throws(() => resolve(discovery()), /cannot locate.*Codex.*CODEX_BIN.*@openai\/codex.*world home/i);
 });
+
 
 test("desktop discovery accepts macOS app resources and Windows LocalAppData", () => {
   for (const entry of [
@@ -128,7 +142,7 @@ test("Windows PATH with only cmd/bat wrappers falls back to package JS", () => {
   const options = discovery({
     platform: "win32", env: { PATH: "C:\\wrappers", PATHEXT: ".CMD;.BAT" },
     files: ["C:\\wrappers\\codex.CMD", "C:\\package\\bin\\codex.js"], executables: ["C:\\wrappers\\codex.CMD"],
-    packageEntry: "C:\\package\\bin\\codex.js",
+    packageEntries: ["C:\\package\\bin\\codex.js"],
   });
   delete options.findCommand;
   assert.deepEqual(resolve(options), { command: "C:\\package\\bin\\codex.js", nodeScript: true, source: "package" });

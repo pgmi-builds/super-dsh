@@ -80,8 +80,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.2",
-    "@openai/codex": "0.160.0",
-    "ws": "^8.21.0",
+
     "zod": "4.4.3",
     "@modelcontextprotocol/sdk": "^1.29.0"
   },

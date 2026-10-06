@@ -493,7 +493,8 @@ export class CodexProvider extends Service implements AgentFactory {
     // app-server child is NOT spawned here (lazy-spawn gate, rules §14-i) —
     // create() is pure construction, and the process materializes on the first
     // real prompt.
-    const client = CodexAppServerClient.create({ cwd: spawnCwd, approvalPolicy, sandboxMode });
+    const client = CodexAppServerClient.create({ cwd: spawnCwd, approvalPolicy, sandboxMode, worldHome: this.home });
+
     // The session's route is NOT pinned here any more (2026-10-04): the agent
     // resolves it per turn from DSH's own model-selection state, and a launch
     // costs nothing until the first real prompt. `setupAndPublish` still seeds a
@@ -623,7 +624,9 @@ export class CodexProvider extends Service implements AgentFactory {
       resumeThreadId: record.threadId,
       approvalPolicy,
       sandboxMode,
+      worldHome: this.home,
     });
+
 
     let handle: SessionHandle | undefined;
     let stored: StoredSession | undefined;
