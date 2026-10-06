@@ -114,11 +114,12 @@ export function applyAgySettings(realHome: string, mutation: AgySettingsMutation
 }
 
 interface StepUpdate {
+  conversation_id?: string;
   step_index?: number;
   state?: string;
   step_type?: string;
   text_delta?: string;
-  tool_name?: string;
+  tool_name?: string | number;
   tool_info?: { name?: string; parameters?: Record<string, unknown>; output?: string };
   usage?: { input_tokens?: number; output_tokens?: number; thinking_tokens?: number; total_tokens?: number };
 }
@@ -132,6 +133,9 @@ export class AgyCliClient {
   private dead = false;
   private conversationIdValue = "";
   private toolsSeen = 0;
+  private toolCalls = new Set<string>();
+  private toolResults = new Set<string>();
+  private stepFailure?: string;
   private hubPreparation?: Promise<void>;
   private hubSession?: string;
 
@@ -306,8 +310,8 @@ export class AgyCliClient {
       } else if (parsed.event === "result") {
         const r = parsed.result as { conversation_id?: string; status?: string; error?: string } | undefined;
         if (r?.conversation_id) this.conversationIdValue = r.conversation_id;
-        if (r?.status !== "SUCCESS") {
-          this.dispatch({ event: "error", error: this.withDiagnostics(r?.error ?? `agy result status=${r?.status}`), recoverable: false });
+        if (r?.status !== "SUCCESS" || this.stepFailure !== undefined) {
+          this.dispatch({ event: "error", error: this.withDiagnostics(r?.error ?? this.stepFailure ?? `agy result status=${r?.status}`), recoverable: false });
         } else {
           this.dispatch({ event: "done", conversation_id: this.conversationIdValue, turn_ms: 0 });
         }
@@ -317,6 +321,11 @@ export class AgyCliClient {
 
   private consumeStep(su: StepUpdate): void {
     const st = su.step_type;
+    if (su.conversation_id) this.conversationIdValue = su.conversation_id;
+    if (st === "error_message") {
+      this.stepFailure = su.text_delta || "Antigravity reported an error without details";
+      return;
+    }
     if (st === "system_message") {
       this.onSystemMessage?.(su.text_delta ?? "");
       return;
@@ -344,14 +353,21 @@ export class AgyCliClient {
       return;
     }
     if (st === "tool") {
-      const name = su.tool_name ?? su.tool_info?.name ?? "unknown";
+      const wireName = String(su.tool_name ?? "");
+      const name = su.tool_info?.name || (/^\d+$/.test(wireName) ? "unknown" : wireName) || "unknown";
       const id = `${this.conversationIdValue}:${su.step_index ?? 0}`;
-      if (su.state === "ACTIVE") {
+      if (su.state === "ACTIVE" && !this.toolCalls.has(id)) {
+        this.toolCalls.add(id);
         this.dispatch({
           event: "tool_call", id, name,
           args: JSON.stringify(su.tool_info?.parameters ?? {}),
         });
-      } else if (su.state === "DONE" || su.state === "ERROR") {
+      } else if ((su.state === "DONE" || su.state === "ERROR") && !this.toolResults.has(id)) {
+        if (!this.toolCalls.has(id)) {
+          this.toolCalls.add(id);
+          this.dispatch({event:"tool_call", id, name, args:JSON.stringify(su.tool_info?.parameters ?? {})});
+        }
+        this.toolResults.add(id);
         const output = su.tool_info?.output ?? "";
         const isError = su.state === "ERROR";
         this.dispatch({
@@ -384,6 +400,10 @@ export class AgyCliClient {
     await this.prepare();
     this.spawnCli();
     await this.expectReady();
+    this.toolCalls.clear();
+    this.toolResults.clear();
+    this.stepFailure = undefined;
+    this.diagnostics = [];
     this.send({ event: "user", message: { content: text } });
     let full = "";
     for (;;) {

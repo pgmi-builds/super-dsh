@@ -571,7 +571,9 @@ export class CodexProvider extends Service implements AgentFactory {
         `cannot resume session "${id}": no Codex thread is recorded for this Dash session id`,
       );
     }
-    if (record.threadId === null) {
+    if (record.threadId === null && (await readStoredEvents(persistence, id, options.signal)).some(event =>
+      event.type === "turn/start" || event.type === "user/message" || event.type === "assistant/message"
+    )) {
       // C2: never auto-start a fresh thread — the session's history is in the
       // (missing) native thread, not in a blank one.
       throw new CodexResumeError(
@@ -592,7 +594,7 @@ export class CodexProvider extends Service implements AgentFactory {
     // `<worldHome>/.codex` home (never migrated) and pruned rollouts alike.
     // Without this gate the failure would surface only at the first turn
     // (resumeThread is zero-IO).
-    if (readRolloutHead(resolveCodexHome(), record.threadId) === undefined) {
+    if (record.threadId !== null && readRolloutHead(resolveCodexHome(), record.threadId) === undefined) {
       throw new CodexResumeError(
         "ROLLOUT_MISSING",
         `cannot resume session "${id}": no rollout for Codex thread ${record.threadId} exists in the current Codex home (${resolveCodexHome()})`,
@@ -627,7 +629,7 @@ export class CodexProvider extends Service implements AgentFactory {
     // rollout). No process is spawned here — lazy-spawn gate, rules §14-i.
     const client = CodexAppServerClient.create({
       cwd: spawnCwd,
-      resumeThreadId: record.threadId,
+      ...(record.threadId === null ? {} : { resumeThreadId: record.threadId }),
       approvalPolicy,
       sandboxMode,
       worldHome: this.home,

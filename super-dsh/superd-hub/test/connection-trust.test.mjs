@@ -2,6 +2,10 @@ import { Context } from '@deepseek-ai/cordis'
 import * as nativeConnection from '@deepseek-ai/dsh-client-connection'
 import { afterEach, describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+const require = createRequire(new URL('../../../upstream/deepseek-harness/vendor/loader/package.json', import.meta.url))
+const { load } = require('js-yaml')
 import { apply as applyTrust } from '../dist/web-trust.js'
 
 const roots = []
@@ -66,6 +70,19 @@ describe('authentication-only connection admission', () => {
     const now = Date.now()
     mock.method(Date, 'now', () => now + 2 * 24 * 60 * 60 * 1000)
     assert.equal(connection.requestRejection({ headers: { host, cookie } }), 401)
+  })
+
+  it('the shipped bundle admits any authenticated serving authority without a deployment override', async () => {
+    const patch = load(readFileSync(new URL('../../cordis.patch.yml', import.meta.url), 'utf8'))
+    const row = patch.flatMap(entry => entry.insert ?? []).find(entry => entry.id === 'superd-web-trust')
+    const { root, connection } = await mounted()
+    const host = 'new-production-authority.example:3080'
+    const trust = root.plugin({ apply: applyTrust }, row.config ?? {})
+    await trust.await()
+    assert.equal(connection.requestRejection({ headers: {
+      host, cookie: cookieFor(connection, host), origin: 'https://unlisted-page.example',
+    } }), undefined)
+    assert.equal(connection.requestRejection({ headers: { host } }), 401)
   })
 
   it('keeps native admission when the mode is not enabled', async () => {

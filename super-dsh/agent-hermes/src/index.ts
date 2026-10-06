@@ -436,7 +436,11 @@ export class HermesProvider extends Service implements AgentFactory {
     if (record === undefined) {
       throw new Error(`cannot resume session "${id}": no Hermes gateway session is recorded for this Dash session id`);
     }
-    if (record.gatewayStoredSessionId === null || record.gatewayStoredSessionId === undefined) {
+    const persistence = this.requirePersistence("resume");
+    if ((record.gatewayStoredSessionId === null || record.gatewayStoredSessionId === undefined)
+      && (await readStoredEvents(persistence, id, options.signal)).some(event =>
+        event.type === "turn/start" || event.type === "user/message" || event.type === "assistant/message"
+      )) {
       throw new Error(`cannot resume session "${id}": no durable gateway session id is recorded (this record predates durable-id capture; re-create the session)`);
     }
 
@@ -446,7 +450,6 @@ export class HermesProvider extends Service implements AgentFactory {
       throw new Error(`cannot resume session "${id}": its recorded working directory no longer exists`);
     }
 
-    const persistence = this.requirePersistence("resume");
 
     // Preset (record-only): env override, else the recorded preset, else the
     // persisted session log, else the permission service's default.
@@ -496,7 +499,7 @@ export class HermesProvider extends Service implements AgentFactory {
         "resume",
         { enterSession: true, preparation },
         stored,
-        this.agentRuntime(client, spawnCwd, record.gatewayStoredSessionId),
+        this.agentRuntime(client, spawnCwd, record.gatewayStoredSessionId ?? undefined),
       );
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)} | stack=${error instanceof Error ? error.stack?.slice(0, 400) : "n/a"}`);

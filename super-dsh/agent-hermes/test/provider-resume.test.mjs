@@ -42,7 +42,8 @@ test("resume fails closed when the DSH session id has no recorded Hermes gateway
 test("resume fails closed when the record has no durable gateway session id (predates durable-id capture)", async () => {
   const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
   upsertSession(home, "session-blank", { gatewaySessionId: null, gatewayStoredSessionId: null, cwd: home, createdAt: Date.now(), preset: null });
-  const ctx = providerContext(home);
+  const ctx = providerContext(home, {persistence:false});
+  ctx.provide("sessionPersistence", { open: async () => ({ read: async () => ({events:[{type:"user/message",data:{}}]}), close: async()=>{} }) });
   const provider = new HermesProvider(ctx);
   await assert.rejects(
     () => provider.resume(ctx, { resumeSessionId: "session-blank" }),
@@ -171,3 +172,12 @@ test("followGatewaySessionId unsubscribes after the first adoption (one material
   const record = sessionRecord(home, "session-unsub");
   assert.equal(record.gatewayStoredSessionId, "stored-1");
 });
+
+ test("persisted blank draft without native id reaches lazy write adoption", async () => {
+ const home=mkdtempSync(join(tmpdir(),"blank-adopt-"));
+ upsertSession(home,"session-draft",{gatewaySessionId:null, gatewayStoredSessionId:null,cwd:home,createdAt:Date.now(),preset:null});
+ const ctx=providerContext(home,{persistence:false});
+ ctx.provide("sessionPersistence",{open:async (_id,access)=>{if(access==="write")throw new Error("blank write adoption reached");return {read:async()=>({events:[{type:"model/selection",data:{provider:"p",model:"m"}}]}),close:async()=>{}};}});
+ const provider=new HermesProvider(ctx);
+ await assert.rejects(provider.resume(ctx,{resumeSessionId:"session-draft"}),/blank write adoption reached/);
+ });

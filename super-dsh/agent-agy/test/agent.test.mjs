@@ -193,10 +193,10 @@ test("onboarding (§17 minimal): awaitingKey turn never touches the bridge", asy
   assert.deepEqual(client._calls, [], "bridge never invoked without a key");
   const t = types(session.events);
   assert.ok(t.includes("system/message"), "onboarding notice emitted");
-  const notice = session.events.find((e) => e.type === "system/message" && e.data.message.content.length > 0);
+  const notice = session.events.find((e) => e.type === "assistant/message" && e.data.message.content.length > 0);
   assert.match(notice.data.message.content[0].text, /Gemini API key/);
   const turnEnd = session.events.find((e) => e.type === "turn/end");
-  assert.equal(turnEnd.data.reason.kind, "completed");
+  assert.equal(turnEnd.data.reason.kind, "error");
   assert.equal(agent.status, "idle");
 });
 
@@ -299,4 +299,32 @@ test("every tool_call gets the transparency placeholder result in DSH storage", 
   // every call's callId got a paired result
   const callIds = new Set(calls.map((e) => JSON.stringify(e.data.callId)));
   for (const r of results) assert.ok(callIds.has(JSON.stringify(r.data.message.toolCallId)), "pairing by callId");
+});
+
+test('parallel tool calls and repeated ACTIVE frames preserve a valid step until results', async()=>{
+ const session=makeFakeSession();const client=makeFakeClient();
+ client.turn=async function*(){
+  const call=(id)=>this.onToolEvent({event:'tool_call',id,name:'read',args:'{}'});
+  const result=(id)=>this.onToolEvent({event:'tool_result',id,name:'read',is_error:false,result:'actual'});
+  call('one');call('one');call('two');result('two');result('one');result('one');yield 'done';
+ };
+ const agent=new AgyAgent(new Context(),'s1',{provider:'agy'},session,client);
+ agent.followup(makeUserMessage('parallel'));await agent.whenIdle();
+ assertReleasedV4Relationships({header:{id:session.id},inheritedEventCount:0,events:session.events},new Set(session.events.map(e=>e.type)));
+ assert.equal(session.events.filter(e=>e.type==='tool/call').length,2);
+ assert.equal(session.events.filter(e=>e.type==='tool/result').length,2);await agent.dispose();
+});
+
+test('missing authentication ends visibly as AUTH failure instead of silent completed',async()=>{
+ const session=makeFakeSession();const agent=new AgyAgent(new Context(),'s1',{provider:'agy'},session,makeFakeClient(),undefined,makeRuntimeInfo({awaitingKey:true}));
+ agent.followup(makeUserMessage('hello'));await agent.whenIdle();
+ const end=session.events.find(e=>e.type==='turn/end');assert.equal(end.data.reason.kind,'error');assert.equal(end.data.reason.error.code,'AUTH');assert.match(end.data.reason.error.message,/key|认证/i);await agent.dispose();
+});
+
+test('local key-save onboarding closes its step before ending the turn',async()=>{
+ const session=makeFakeSession();const agent=new AgyAgent(new Context(),'s1',{provider:'agy'},session,makeFakeClient(),undefined,makeRuntimeInfo({awaitingKey:true}));
+ agent.followup(makeUserMessage('AIza'+'x'.repeat(36)));await agent.whenIdle();
+ agent.followup(makeUserMessage('follow-up without credential refresh'));await agent.whenIdle();
+ assertReleasedV4Relationships({header:{id:session.id},inheritedEventCount:0,events:session.events},new Set(session.events.map(e=>e.type)));
+ await agent.dispose();
 });

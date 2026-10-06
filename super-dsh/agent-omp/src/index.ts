@@ -34,7 +34,7 @@ import type {
   ResumeAgentOptions,
 } from "@deepseek-ai/dsh-agent";
 import type { LlmRuntime } from "@deepseek-ai/dsh-llm";
-import { SessionPreparation, SessionLogOffset, type Session, type SessionEvent, type SessionHeader, type SessionId } from "@deepseek-ai/dsh-session";
+import { interruptedTurnClosers, SessionPreparation, SessionLogOffset, type Session, type SessionEvent, type SessionHeader, type SessionId } from "@deepseek-ai/dsh-session";
 import type { SessionHandle } from "@deepseek-ai/dsh-session-persistence";
 import { LazyOmpRpc, type OmpAgentRpc } from "./lazy-rpc.js";
 import type { OmpRpcClient } from "./rpc-client.js";
@@ -499,11 +499,13 @@ export class OmpProvider extends Service implements AgentFactory {
     let rpc: OmpAgentRpc | undefined;
 
     try {
+      const closers = interruptedTurnClosers(coldRead.events);
+      if (closers.length > 0) await stored.append(closers);
       // Fresh attach: seed the dsh session from the dsh log (native replay),
       // header identity folded from the stored header verbatim.
       const preparation = SessionPreparation.create(
         loopCtx.sessions.prepare(id, {
-          seed: [...coldRead.events],
+          seed: [...coldRead.events, ...closers],
           meta: structuredClone(stored.header),
           inheritedEventCount: stored.inheritedEventCount,
           eventState: coldRead.eventState,
@@ -533,7 +535,7 @@ export class OmpProvider extends Service implements AgentFactory {
           return ["--approval-mode", spawnPermission().approvalMode, "--resume", ompFile, ...(extension === undefined ? [] : ["-e", extension])];
         }, spawnCwd, () => hub.dispose());
       }
-      const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "resume", { enterSession: true, preparation, stored: { handle: stored, written: coldRead.events.length } });
+      const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "resume", { enterSession: true, preparation, stored: { handle: stored, written: coldRead.events.length + closers.length } });
       return this.registerHeld(id, ompFile ?? "", handle, rpc);
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)} | stack=${error instanceof Error ? error.stack?.slice(0, 400) : "n/a"}`);

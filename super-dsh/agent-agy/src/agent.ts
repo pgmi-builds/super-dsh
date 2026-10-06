@@ -97,7 +97,7 @@ const trace = (...parts: unknown[]): void => {
 /** Classify a bridge turn failure into the stable {message, code} UI chip. */
 export function classifyTurnError(error: unknown): { message: string; code: string } {
   const text = error instanceof Error ? error.message : String(error);
-  if (/429|prepayment|quota|rate limit/i.test(text)) return { message: text, code: "QUOTA" };
+  if (/429|prepayment|quota|rate limit|billing/i.test(text)) return { message: text, code: "QUOTA" };
   if (/api key|authentication|unauthenticated|API_KEY/i.test(text)) return { message: text, code: "AUTH" };
   if (/bridge exited/.test(text)) return { message: text, code: "BRIDGE_CRASH" };
   return { message: text, code: "UNKNOWN" };
@@ -192,8 +192,13 @@ export class AgyAgent implements Agent {
     this.client.onToolEvent = (ev) => {
       if (!this.turnOpen) return;
       if (ev.event === "tool_call") {
-        if (this.step > 0) this.closeStep();
-        this.commitStepStart();
+        if (this.seenToolCalls.has(ev.id)) return;
+        this.seenToolCalls.add(ev.id);
+        // Concurrent tools share their originating step until every call resolves.
+        if (this.unpairedCalls.length === 0) {
+          if (this.step > 0) this.closeStep();
+          this.commitStepStart();
+        }
         const callId = ToolCallId(ev.id || `agy-${this.dashTurn}-${this.step}`);
         const argumentsJson = ev.args || "{}";
         // Advertisement-before-execution (validator invariant, 2026-10-04 dev3
@@ -221,6 +226,7 @@ export class AgyAgent implements Agent {
       } else {
         // ToolResult chunks: the SDK yields none today; if a future version
         // does, pair them off immediately so no placeholder is written.
+        if (!this.unpairedCalls.some(c => c.callId === ev.id)) return;
         this.unpairedCalls = this.unpairedCalls.filter((c) => c.callId !== (ev.id || ""));
         this.session.append("tool/result", {
           turn: this.dashTurn, step: this.step,
@@ -339,6 +345,8 @@ export class AgyAgent implements Agent {
   }
 
   private sessionIdentityCommitted = false;
+  private seenToolCalls = new Set<string>();
+  private stepOpen = false;
 
   /** Stamp the single-preset selection once per session (projection seed). */
   private bootstrapSessionIdentity(): void {
@@ -350,6 +358,7 @@ export class AgyAgent implements Agent {
   }
 
   private async startTurn(message: UserMessage): Promise<void> {
+    this.seenToolCalls.clear();
     this.bootstrapSessionIdentity();
     this.session.append("turn/start", { turn: this.dashTurn });
     this.session.append("user/message", message, { surfaceOp: "append" });
@@ -363,7 +372,13 @@ export class AgyAgent implements Agent {
         this.appendSystemNotice("Gemini API key 已保存到本会话配置，现在开始。");
         trace("onboarding: key stored");
       } else {
-        this.appendSystemNotice(ONBOARDING_PROMPT);
+        this.appendAssistantMessage(ONBOARDING_PROMPT);
+        this.closeStep();
+        this.closeTurn({ kind: "error", error: { code: "AUTH", message: ONBOARDING_PROMPT } });
+        this.markIdle();
+        this.endActivity();
+        this.flushFollowUps();
+        return;
       }
       this.closeTurn({ kind: "completed" });
       this.markIdle();
@@ -503,18 +518,21 @@ export class AgyAgent implements Agent {
 
   private closeTurn(reason: TurnEndReason): void {
     if (!this.turnOpen) return;
+    this.closeStep();
     this.turnOpen = false;
     this.clearTurnDeadline();
     this.session.append("turn/end", { turn: this.dashTurn, reason });
   }
 
   private closeStep(): void {
-    if (!this.turnOpen || this.step <= 0) return;
+    if (!this.turnOpen || !this.stepOpen) return;
+    this.stepOpen = false;
     this.session.append("step/end", { turn: this.dashTurn, step: this.step });
   }
 
   private commitStepStart(): void {
-    if (!this.turnOpen) return;
+    if (!this.turnOpen || this.stepOpen) return;
+    this.stepOpen = true;
     this.step += 1;
     this.session.append("step/start", { turn: this.dashTurn, step: this.step });
   }

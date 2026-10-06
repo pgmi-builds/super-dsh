@@ -96,7 +96,8 @@ test("resume fails closed when the DSH session id has no recorded Codex thread",
 test("resume fails closed when the recorded thread never materialized", async () => {
   const home = mkdtempSync(join(tmpdir(), "superd-codex-provider-"));
   upsertSession(home, "session-blank", { threadId: null, cwd: home, createdAt: Date.now(), preset: null });
-  const ctx = providerContext(home);
+  const ctx = providerContext(home, {persistence:false});
+  ctx.provide("sessionPersistence", { open: async () => ({ read: async () => ({events:[{type:"user/message",data:{}}]}), close: async()=>{} }) });
   const provider = new CodexProvider(ctx);
   await assert.rejects(
     () => provider.resume(ctx, { resumeSessionId: "session-blank" }),
@@ -247,3 +248,12 @@ test("followThreadId ignores repeats (idempotent upserts)", () => {
   assert.equal(sessionRecord(home, "session-null").threadId, "01a0a5cb-e919-7480-81ee-7dcf758aa0d1");
   assert.ok(existsSync(join(home, "dsh-sessions.json")));
 });
+
+ test("persisted blank draft without native id reaches lazy write adoption", async () => {
+ const home=mkdtempSync(join(tmpdir(),"blank-adopt-"));
+ upsertSession(home,"session-draft",{threadId: null,cwd:home,createdAt:Date.now(),preset:null});
+ const ctx=providerContext(home,{persistence:false});
+ ctx.provide("sessionPersistence",{open:async (_id,access)=>{if(access==="write")throw new Error("blank write adoption reached");return {read:async()=>({events:[{type:"model/selection",data:{provider:"p",model:"m"}}]}),close:async()=>{}};}});
+ const provider=new CodexProvider(ctx);
+ await assert.rejects(provider.resume(ctx,{resumeSessionId:"session-draft"}),/blank write adoption reached/);
+ });

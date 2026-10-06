@@ -145,3 +145,18 @@ test("an absent authMode defaults to key mode (the §17 onboarding path)", async
   assert.equal(spawn.env.AGY_ADC_AUTH, null);
   assert.equal(settingsOf(fx.home).modelProvider, "gemini");
 });
+
+test('numeric wire tool code uses semantic tool_info name and repeated lifecycle is emitted once',()=>{
+ const client=new AgyCliClient({apiKey:'x',cwd:'/tmp'});
+ const tool={step_index:4,state:'ACTIVE',step_type:'tool',tool_name:'1234567',tool_info:{name:'run_command',parameters:{cmd:'true'}}};
+ client.consume(JSON.stringify({event:'step_update',step_update:tool})+'\n');
+ client.consume(JSON.stringify({event:'step_update',step_update:tool})+'\n');
+ assert.equal(client.pending.length,1);assert.equal(client.pending[0].name,'run_command');
+});
+
+test('native error_message is a failure even if trailing result claims SUCCESS',()=>{
+ const client=new AgyCliClient({apiKey:'x',cwd:'/tmp'});
+ client.consume(JSON.stringify({event:'step_update',step_update:{step_type:'error_message',state:'DONE',text_delta:'billing must be enabled'}})+'\n');
+ client.consume(JSON.stringify({event:'result',result:{status:'SUCCESS'}})+'\n');
+ assert.equal(client.pending[0]?.event,'error');assert.match(client.pending[0].error,/billing/);
+});

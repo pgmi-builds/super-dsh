@@ -14,7 +14,7 @@ the foreign store.
 ## Install
 
 ```bash
-dsh plugin --profile <name> add super-dsh@0.1.11
+dsh plugin --profile <name> add super-dsh@0.1.12
 ```
 
 That single package composes the whole line (`@pgmi-builds/superd-hub` plus the
@@ -24,21 +24,16 @@ home under `<DSH_HOME>/agents/<label>/` on first boot.
 
 ## Remote web access
 
-To use the same authenticated UI through a reverse proxy or LAN relay, enable
-this profile patch:
+The shipped bundle enables `superd-web-trust` with `trustAllHosts: true`.
+Authenticated requests may use any serving Host or Origin, and the browser's
+native trusted-host / loopback checks see the page as Host-owned. No `--host`,
+`--trusted-host`, or trusted-host environment variables are needed for trust.
+Native token-to-cookie login, cookie expiry, and authority binding remain in effect.
 
-```yaml
-- id: superd-web-trust
-  config:
-    trustAllHosts: true
-```
-
-This skips Host/Origin restrictions and enables browser ownership for every
-hostname. Native token-to-cookie login, cookie expiry, and authority binding
-remain in effect. The default is `false`, preserving declared-authority mode.
-It does not change the server's listening address: keep loopback behind Caddy
-and a LAN relay. The test launcher enables this mode without `--host` or
-`--trusted-host` and starts the relay on every test port, including 4999.
+This does not change the listening address: use the native loopback listener
+behind your reverse proxy or LAN relay. Remove older manual host/trusted-host
+patches and any profile override disabling `superd-web-trust`. To restore the
+native address fence, explicitly set this row's `trustAllHosts: false`.
 
 ## Runtimes
 

@@ -166,9 +166,6 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
 - id: credentials
   config:
     path: ${SHARED_CREDENTIALS}
-- id: superd-web-trust
-  config:
-    trustAllHosts: true
 EOF
 echo "--- pnpm install (first run downloads the runtime SDKs into the store; later runs reuse it)"
 (cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$LINE/dev-webmcp" --config.store-dir="$PNPM_STORE" --prefer-offline)
@@ -180,8 +177,8 @@ echo "--- pnpm install (first run downloads the runtime SDKs into the store; lat
 #      launcher's env layering is inherited > invoking-dir > HOME .env; an
 #      inherited EMPTY value would BLOCK the file layer, so we deliberately
 #      do NOT pass DEEPSEEK_API_KEY through the unit env);
-#   2. web-trust: the test profile opts into authentication-only admission
-#      for both the ctx0 server gate and browser ownership.
+#   2. web-trust: the shipped bundle owns authentication-only admission
+#      for both the ctx0 server gate and browser; no launcher override.
 if [ ! -f "$HOME/.dsh/.env" ]; then
   echo "refusing: $HOME/.dsh/.env missing — test preparation cannot provide provider keys" >&2
   exit 1

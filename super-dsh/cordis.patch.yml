@@ -12,15 +12,14 @@
 #                              zero-port sibling root, mounted under /<label>
 #   - super-dsh/join           the generic hub joiner for the standalone
 #                              claude adapter (R2)
-#   - super-dsh/web-trust      the page-trust component (ported from
-#                              better-dsh web-trust, authorities leg): the
-#                              browser-side twin of the server trustedHosts
-#                              fence — declares trusted page authorities so
-#                              the Web UI treats a non-loopback page (Caddy
-#                              domain / LAN IP) as loopback-equivalent.
-#                              On/off: row `disabled: true`, or config
-#                              `trustedPageAuthorities: []` (inert). Default
-#                              derives from the trusted-hosts env.
+#   - super-dsh/web-trust      authentication-only admission (aligned with
+#                              dashr): every serving Host/Origin is accepted
+#                              after native cookie authentication, and the
+#                              browser owns its Host on any authority. No
+#                              trusted-host CLI flags or environment required.
+#                              Set trustAllHosts: false to retain the native
+#                              fence / declared-authorities mode, or disable
+#                              this row explicitly.
 #   - super-dsh/a2a            the agent-facing A2A tool face (mesh P3): the
 #                              single `superd-hub` model tool on ctx0's tools
 #                              service (dormant without tools; world trees
@@ -36,6 +35,8 @@
       name: 'super-dsh'
     - id: superd-web-trust
       name: 'super-dsh/web-trust'
+      config:
+        trustAllHosts: true
     # Native UI fusion transport (plan Task 3): the ctx0 page-level state atom
     # + five call-time patches. Composing this row IS the switch — there is no
     # environment variable in the decision (2026-09-27 user ruling: a release

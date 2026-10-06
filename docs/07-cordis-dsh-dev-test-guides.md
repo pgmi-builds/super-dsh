@@ -209,7 +209,7 @@
 > 2026-09-24 user 裁决：测试线必须「看到被测者看到的世界」，否则测的是别的东西。三条：
 
 1. **provider keys**：把 prod home 的 `~/.dsh/.env` **copy 进线 home**（`$DSH_HOME/.env`；launcher 的 env 分层 = 继承 env > 调用目录 `.env` > home `.env`，接受值不覆盖继承值）。**禁止** `--property=Environment="DEEPSEEK_API_KEY=…"` 形式的透传——从 agent shell 拉起时该值是**空串但已设置**，继承层会**挡掉** home `.env` 层的值，比不传更糟（2026-09-24 实证：create+prompt 拿不到模型回复的根因）。`.env` 缺失时脚本 fail-loud 拒绝起线。
-2. **trusted authorities**：一条 `SUPERD_TRUSTED_HOSTS` 声明同时喂两侧——世界 fence 腿（spawnWorld 的 `--trusted-host`，收端口形 entry）与 page-trust 组件的默认 authorities（`super-dsh/web-trust`，只收 bare hostname，端口形自动丢弃）。CLI 另带 `--trusted-host` ×2 喂 ctx0 的 /api + /hub fence。当前值：`test.pc.internal.test 192.0.2.130`（+ 端口形）。
+2. **web trust（2026-10-07 user 裁决）**：整包自身的 `superd-web-trust` row 以 `trustAllHosts: true` 启用与 dashr 同源的认证委托：移除 Host / Origin fence，保留原生 cookie 认证；head 注入 `__DSH_TRANSPORT__.ownsHost` 恢复 UI trusted-host / loopback surface。launcher 不再通过 profile override、CLI `--host` / `--trusted-host` 或 trust 环境变量帮被测包补能力。监听地址与信任分开，loopback + reverse proxy / relay 保持现行形态。
 3. **环境自身觉察**：agent 会话 env 自带 `DSH_HOME=~/.dsh`（跑在 prod dsh.service 里）——任何「我看到的环境变量」都是 **prod instance 的**，不是测试线的；拉线脚本必须显式设置全部 env（`DSH_HOME` / `SUPERD_DSH_ANCHOR` / `SUPERD_KEEP` / `PATH` / `UnsetEnvironment`），不依赖继承。
 
 ---
