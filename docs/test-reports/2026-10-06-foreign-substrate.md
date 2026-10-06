@@ -2,6 +2,14 @@
 
 日期：2026-10-06。状态：实现、整包自动行为验收完成；人工 Web 验收与发布放行待 user。无 commit / tag / push / npm publish。
 
+## 合并收尾补记
+
+user 随后明确授权 commit、合并主工作区并清理本 worktree。实现提交 `59c72f2`，合并提交 `18c3687`；合并保留主线 Codex runtime-fetch 的 `--save-exact` 和绝对路径 smoke 修复，没有回退刚发布的主线修正。
+
+合并后重建消费者包 `0.1.11-h`，SHA256 `9cf21793a66bf02e6e8ba239c8f5050b25e4656d60c049a5e0eda9dd0b33124c`。本机和 dev3 安装一致，三个 runtime 均 cold resume 后真实执行 Hub exec：本机 `MERGED-H-{pi,omp,codex}`，dev3 `DEV3-MERGED-H-{pi,omp,codex}`，最终 turn 4 completed。合并后同组 950 项回归通过。
+
+本机测试服务 WorkingDirectory / ExecStart 已迁到主工作区；两端测试线继续运行。旧 `foreign-substrate` worktree、分支与 Git registration 已删除。必要 scratch 证据保存在主目录 `.scratch/foreign-substrate-evidence/`，会话夹具迁到 `.tests/foreign-substrate-fixtures/`，长寿命 `.tests/superd` 不删除。下文路径、版本与“无 commit”是首次验收时的历史状态；本补记是当前收尾状态。仍无 push / tag / npm publish。
+
 ## 结果与交付
 
 PI / OMP 使用同一个原生扩展主体；PI 经 SDK `additionalExtensionPaths`，OMP 经增量 `-e`。Codex 使用已获 user 同意的 app-server `dynamicTools`，工具执行交回 Super D callback。三者均不安装全局插件、不改原生插件目录，不重定向原生 runtime home。普通 native 新会话不会因此出现 Hub facility。运行时正常保存自身会话不等同于全局插件安装。
