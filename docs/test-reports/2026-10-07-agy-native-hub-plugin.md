@@ -1,6 +1,6 @@
 # Antigravity native Hub plugin — 2026-10-07
 
-状态：代码、整包构建及自动回归完成，真实模型行为验收尚未通过。user 已明确要求补齐 Antigravity 后再发布 B；因此没有发布 B，也不把六个 runtime 全部标为通过。
+状态：代码、整包构建及自动回归完成，真实模型行为验收尚未通过。user 最新指令已放行并发布 B（见文末裁决与发布报告）；不把六个 runtime 全部标为通过。
 
 ## 合并与现场保留
 
@@ -8,7 +8,7 @@
 
 4999 的真实长期 home 原本就是主目录 `.tests/superd`；启动 WorkingDirectory、CLI anchor、安装 profile 和日志路径已切回主目录。共用凭据 seed 保留。Web 继续提供 [本机](https://test.pc.internal.test/) / [dev3](http://dev3.internal.test:4998/)，未触碰生产 3080 / 3081、生产 home 或 Caddy。
 
-`h` 到 `t` 是本轮 tarball 迭代，不是 Git tag。核对时仅有 `v0.1.11` 和 `v0.1.11-a`；它们对应已有发布，不删除。registry latest 为 `0.1.11-a`，未变更。
+`h` 到 `t` 是本轮 tarball 迭代，不是 Git tag。核对时仅有 `v0.1.11` 和 `v0.1.11-a`；它们对应已有发布，不删除。发布前 registry latest 为 `0.1.11-a`；B 发布结果见[发布报告](2026-10-07-super-dsh-0.1.11-b-publish.md)。
 
 ## 接入形态
 
@@ -33,7 +33,7 @@ MCP 不承载收信。create / resume 已独立登记 live handle；Hub 来信�
 
 本机缺少原生 OAuth credential 文件、ADC 文件或 Gemini API key；真实消费者 prompt 因无认证停在 onboarding，未被算作模型回复。dev3 已有原生 OAuth / ADC 证据，但真实 CLI session `71000e0a-0014-47d7-b24f-fb900dfb45cd` 返回 Google 项目 `crafty-run-501613-m0` 未启用 billing 的 403。没有修改项目计费、购买额度或更换身份。重复安装验证发现本轮 marker 多写一个换行，导致误判非自有目录并跳过 endpoint 刷新；已修正 canonical 写入，识别确切旧测试 marker，并补重复安装 / 刷新回归。没有强行接管非自有目录。
 
-待现场认证和计费恢复后：两端 create / prompt / resume，真实 Hub exec / send / 自动回信，Pi 向零工具调用的新 Antigravity 投信，并核验原生模型 Surface。完成这些后才能称六个 foreign runtime 全部通过，再使用本次已授权的 B 发布指令；不需要重复索取同一次发布授权。
+待现场认证和计费恢复后：两端 create / prompt / resume，真实 Hub exec / send / 自动回信，Pi 向零工具调用的新 Antigravity 投信，并核验原生模型 Surface。完成这些后才能称六个 foreign runtime 全部通过；B 已按 user 最新指令放行，此剩余验收缺口随版本明确记录。
 
 本机用真实交付包及官方 CLI 独立完成 native 插件安装和格式验证（不依赖模型认证）。t 轮本机已安装 helper 直接调用真实 loopback 邮局，实际返回 E_HUB_ADDRESS_REQUIRED；这是 helper / 邮局验证，不冒称原生模型调用。dev3 同形复验曾因上述 marker 刷新缺陷返回 E_HUB_UNAVAILABLE；u 轮两端均已实际返回 E_HUB_ADDRESS_REQUIRED，证明重启 endpoint 刷新恢复。原生模型调用仍未验证。
 
