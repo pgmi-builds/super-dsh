@@ -46,6 +46,7 @@ import type { } from "@deepseek-ai/dsh-session-projection";
 import { ClaudeAgent, type ClaudeAgentRuntimeInfo } from "./agent.js";
 import { ClaudeLlmAdapter, CLAUDE_PROVIDER_ID, routeIds } from "./adapter.js";
 import { resolveClaudeHome } from "./claude-home.js";
+import { bindForeignHub } from "../../superd-hub/dist/foreign-hub.js";
 import { resetProjectionState } from "./claude-events.js";
 import { claudeSessionIdFromDsh } from "./session-id.js";
 import {
@@ -367,6 +368,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
       cwd: spawnCwd,
       worldHome: this.home,
       canUseTool,
+      hub: bindForeignHub("claude", String(id), this.home, () => agentRef.current as never),
       allowDangerouslySkipPermissions: claudeMode === "bypassPermissions",
       ...overrides,
     });
@@ -497,6 +499,7 @@ export class ClaudeProvider extends Service implements AgentFactory {
       cwd: spawnCwd,
       worldHome: this.home,
       canUseTool,
+      hub: bindForeignHub("claude", String(id), this.home, () => agentRef.current as never),
       allowDangerouslySkipPermissions: claudeMode === "bypassPermissions",
       ...overrides,
     });

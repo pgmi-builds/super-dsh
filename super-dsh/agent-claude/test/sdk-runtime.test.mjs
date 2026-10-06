@@ -49,11 +49,13 @@ test("layout paths sit under worldHome", () => {
 });
 
 test("install argv: host-binary mode omits optional, bundled keeps it", () => {
-  const host = sdkInstallArgv("0.3.263", "host-binary");
+  const host = sdkInstallArgv("0.3.291", "host-binary");
   assert.ok(host.includes("--omit=optional"));
   assert.ok(host.includes("--ignore-scripts"));
-  assert.ok(host.includes("@anthropic-ai/claude-agent-sdk@0.3.263"));
-  const bundled = sdkInstallArgv("0.3.263", "bundled-payload");
+  assert.ok(host.includes("@anthropic-ai/claude-agent-sdk@0.3.291"));
+  assert.ok(host.includes("--save-exact"));
+  assert.ok(!host.includes("--exact"));
+  const bundled = sdkInstallArgv("0.3.291", "bundled-payload");
   assert.ok(!bundled.includes("--omit=optional"));
 });
 
@@ -65,7 +67,7 @@ test("ensureSdkRuntime host-binary mode: installs without optional, writes marke
     now: () => 1234,
   });
   assert.equal(rec.mode, "host-binary");
-  assert.equal(rec.sdkVersion, "0.3.263");
+  assert.equal(rec.sdkVersion, "0.3.291");
   assert.equal(calls.length, 1);
   assert.ok(calls[0].args.includes("--omit=optional"));
   assert.equal(calls[0].cwd, join(h, "sdk-runtime"));
@@ -89,7 +91,7 @@ test("ensureSdkRuntime reinstalls when mode flips (binary appeared)", async () =
   });
   // simulate marker written as bundled-payload, then binary mode requested
   const l = sdkRuntimeLayout(h);
-  writeFileSync(l.marker, JSON.stringify({ sdkPackage: "@anthropic-ai/claude-agent-sdk", sdkVersion: "0.3.263", mode: "bundled-payload", createdAt: 1 }));
+  writeFileSync(l.marker, JSON.stringify({ sdkPackage: "@anthropic-ai/claude-agent-sdk", sdkVersion: "0.3.291", mode: "bundled-payload", createdAt: 1 }));
   const calls = [];
   await ensureSdkRuntime(h, { install: async (c, a, opts) => { calls.push(a); materializeEntry(opts.cwd); }, now: () => 2 });
   assert.equal(calls.length, 1);
@@ -182,7 +184,7 @@ test("a failed mode flip wipes the tree, and the next matching-mode call heals w
   materializeEntry(l.dir);
   writeFileSync(l.marker, JSON.stringify({
     sdkPackage: "@anthropic-ai/claude-agent-sdk",
-    sdkVersion: "0.3.263",
+    sdkVersion: "0.3.291",
     mode: "host-binary",
     createdAt: 1,
   }));

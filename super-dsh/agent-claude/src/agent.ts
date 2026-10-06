@@ -399,6 +399,8 @@ export class ClaudeAgent implements Agent {
 
   /** Deliveries parked while idle without a wakeup; flushed at the next prompt. */
   private remoteQueue: { message: UserMessage; sent: boolean; transport: "followUp" | "steer" }[] = [];
+  /** Busy peer deliveries start their own turn inside the native Mod. */
+  private pendingHubTurns: { message: UserMessage; id?: string; started: boolean }[] = [];
   /** Serialization chain for async prompt deliveries (attachment prefetch). */
   private deliveryChain: Promise<void> = Promise.resolve();
   private sessionIdentityCommitted = false;
@@ -586,12 +588,19 @@ export class ClaudeAgent implements Agent {
 
   // ── internals ────────────────────────────────────────────────────────────
 
+  private isHubMessage(message: UserMessage): boolean {
+    const source = message.source as { kind: string; rpcId?: string };
+    return source?.kind === "a2a-relay" || source?.kind === "a2a-notice"
+      || ((source?.kind === "user" || source?.kind === "user-rpc") && source.rpcId?.startsWith("a2a-") === true);
+  }
+
   private deliver(message: UserMessage, target: InboxTarget, wakeup: boolean): void {
     if (this.disposed) return;
     const busy = this.turnOpen || this.streaming;
     trace(`deliver target=${target} wakeup=${wakeup} busy=${busy}`);
     if (busy) {
-      this.appendUserMessage(message);
+      const peer = this.isHubMessage(message);
+      if (!peer) this.appendUserMessage(message);
       this.scheduleDelivery(async () => {
         const payload = await this.promptContent(message);
         if (payload.kind === "empty") {
@@ -602,8 +611,17 @@ export class ClaudeAgent implements Agent {
           trace(`busy ${target} delivery for turn ${this.dashTurn} has no attachable content — not pushed`);
           return;
         }
-        const sent = target === "next-turn" ? this.client.followUp(payload.content) : this.client.steer(payload.content);
-        await sent;
+        if (peer) {
+          const entry = { message, id: undefined as string | undefined, started: false };
+          this.pendingHubTurns.push(entry);
+          try { entry.id = await this.client.receiveHub(payload.content); } catch (error) {
+            const index = this.pendingHubTurns.indexOf(entry);
+            if (index >= 0) this.pendingHubTurns.splice(index, 1);
+            throw error;
+          }
+        } else {
+          await (target === "next-turn" ? this.client.followUp(payload.content) : this.client.steer(payload.content));
+        }
       });
       return;
     }
@@ -814,7 +832,7 @@ export class ClaudeAgent implements Agent {
       this.fail(new Error(payload.reason));
       return;
     }
-    void this.client.prompt(payload.content).catch((error) => this.fail(error));
+    void (this.isHubMessage(message) ? this.client.receiveHub(payload.content) : this.client.prompt(payload.content)).catch((error) => this.fail(error));
   }
 
   /**
@@ -1295,8 +1313,41 @@ export class ClaudeAgent implements Agent {
     this.prompt(createUserMessage({ content: [{ type: "text", text: line }], source: { kind: "user" } }));
   }
 
+  private openStartedHubTurn(): void {
+    if (this.turnOpen) return;
+    const index = this.pendingHubTurns.findIndex(entry => entry.started);
+    if (index < 0) return;
+    const { message } = this.pendingHubTurns.splice(index, 1)[0]!;
+    this.openNativeTurn(message);
+  }
+
+  private openNativeTurn(message?: UserMessage): void {
+    this.reserveTurn();
+    clearTimeout(this.idleExitTimer);
+    this.idleExitTimer = undefined;
+    this.beginActivity();
+    this.markRunning();
+    this.session.append("turn/start", { turn: this.dashTurn });
+    if (this.turnRoute !== undefined) this.commitRequestHeader(this.turnRoute);
+    this.emitRequestContext(this.turnRoute);
+    if (message !== undefined) this.appendUserMessage(message);
+  }
+
   private handleEvent(event: WireEvent): void {
+    // Any native plugin may start a model turn without an SDK input. Keep its
+    // observed output inside a valid turn even if its input is absent from
+    // the SDK stream. An explicit Hub receipt alone establishes peer source.
+    if (!this.turnOpen && (event.parentToolUseId ?? null) === null
+      && ["assistant_reasoning", "assistant_text", "assistant_message"].includes(event.type)) {
+      this.openStartedHubTurn();
+      if (!this.turnOpen) this.openNativeTurn();
+    }
     switch (event.type) {
+      case "hub_turn_start": {
+        const entry = this.pendingHubTurns.find(item => item.id === event.messageId);
+        if (entry !== undefined) { entry.started = true; this.openStartedHubTurn(); }
+        break;
+      }
       case "session_init":
         trace(`session_init model=${String(event.model)}`);
         this.observeModelCatalog(event);
@@ -1376,6 +1427,7 @@ export class ClaudeAgent implements Agent {
         );
         this.markIdle();
         this.endActivity();
+        this.openStartedHubTurn();
         break;
       }
 

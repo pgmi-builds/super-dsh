@@ -406,3 +406,36 @@ test("module top-level has no bare claude-agent-sdk import", async () => {
   assert.ok(!src.includes('from "@anthropic-ai/claude-agent-sdk"'), "bare specifier must not survive");
 });
 
+
+test("Hub preparation stays lazy, installs once, and peer input bypasses the SDK user stream", async () => {
+  setup();
+  const calls = [], received = [];
+  let installs = 0, disposed = 0;
+  setClaudeFactory(o => { calls.push(o); return fakeQuery([], { prompt: o.prompt }); });
+  const client = new ClaudeSdkClient({
+    hub: { enqueue: async text => { received.push(text); return "id"; }, onTurnStarted: () => () => {}, dispose: () => disposed++ },
+    prepareHub: async () => { installs++; return 'private-binding'; },
+  });
+  assert.equal(installs, 0);
+  await Promise.all([client.ensureStarted(), client.ensureStarted()]);
+  assert.equal(installs, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.env.SUPERD_HUB_SESSION, 'private-binding');
+  await client.receiveHub('Peer message');
+  assert.deepEqual(received, ['Peer message']);
+  client.close(); client.close();
+  assert.equal(disposed, 1);
+});
+
+test("closing during native plugin preparation prevents a late child spawn", async () => {
+  setup();
+  let release, spawned = 0;
+  setClaudeFactory(() => { spawned++; return fakeQuery([]); });
+  const pending = new Promise(resolve => { release = resolve; });
+  const client = new ClaudeSdkClient({ prepareHub: () => pending });
+  const start = client.ensureStarted();
+  client.close();
+  release('binding');
+  await assert.rejects(start, /closed/);
+  assert.equal(spawned, 0);
+});

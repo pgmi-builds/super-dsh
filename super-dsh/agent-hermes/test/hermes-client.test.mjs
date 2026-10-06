@@ -1021,3 +1021,37 @@ test("adoptSession defensive: resume returning only the durable key adopts it as
     restoreFactory();
   }
 });
+
+test('Hub preparation is deferred to first start, preserves env and close cancels pending spawn',async t=>{
+ installFake();t.after(restoreFactory)
+ const before=factoryCalls.length
+ let resolve,prepared=0,disposed=0
+ const deferred=new Promise(r=>resolve=r)
+ const hub={dispose(){disposed++}}
+ const client=HermesGatewayClient.spawn({lazy:true,hub,env:{KEEP_NATIVE:'yes'},prepareHub:async()=>{prepared++;return deferred}})
+ t.after(()=>client.close())
+ assert.equal(prepared,0)
+ assert.equal(factoryCalls.length,before)
+ const pending=client.ensureStarted();pending.catch(()=>{})
+ assert.equal(prepared,1)
+ client.close()
+ resolve('{"token":"capability"}')
+ await assert.rejects(pending,/closed/)
+ assert.equal(disposed,1)
+ assert.equal(factoryCalls.length,before)
+})
+
+test('Hub preparation supplies only session binding additions to the real child factory',async t=>{
+ installFake();t.after(restoreFactory)
+ let disposed=0
+ const client=HermesGatewayClient.spawn({lazy:true,hub:{dispose(){disposed++}},env:{KEEP_NATIVE:'yes'},prepareHub:async()=>'{"token":"capability"}'})
+ t.after(()=>client.close())
+ const pending=client.ensureStarted()
+ await delay(5)
+ assert.equal(factoryCalls.at(-1).env.SUPERD_HUB_SESSION,'{"token":"capability"}')
+ assert.equal(factoryCalls.at(-1).env.KEEP_NATIVE,'yes')
+ lastChild.emitEvent('gateway.ready',undefined,{})
+ await pending
+ client.close()
+ assert.equal(disposed,1)
+})

@@ -279,3 +279,67 @@ test("resume semantics: the log fold decides the preset; a usable mode cache sta
   const folded = presetFromEvents(coldEvents) ?? undefined;
   assert.equal(claudePermissionMode(broken.claudeMode !== undefined && ["default", "acceptEdits", "bypassPermissions", "plan", "auto", "dontAsk"].includes(broken.claudeMode) ? broken.claudeMode : folded), "default");
 });
+
+test("Hub RPC input uses native Mod delivery and preserves its request correlation", async () => {
+  const session = recordingSession(), client = fakeClient(), received = [];
+  client.receiveHub = async content => { received.push(content); return 'native-peer-id'; };
+  const agent = new ClaudeAgent(new Context(), 'session-hub-input', {}, session, client);
+  agent.prompt(createUserMessage({content:[{type:'text',text:'Peer message'}],source:{kind:'user',rpcId:'a2a-real-request'}}));
+  await settle();
+  assert.equal(received.length, 1);
+  assert.equal(client.calls.prompts.length, 0);
+  assert.equal(session.events.find(e => e.type === 'user/message').data.source.rpcId, 'a2a-real-request');
+  await agent.dispose();
+});
+
+test("Hub message queued during a user turn opens its own native Mod turn after the old result", async () => {
+  const session = recordingSession(), client = fakeClient(), received = [];
+  client.receiveHub = async content => { received.push(content); return 'native-peer-id'; };
+  const agent = new ClaudeAgent(new Context(), 'session-busy-hub-input', {}, session, client);
+  agent.prompt(userMessage()); await settle(); client.emit(SESSION_INIT);
+  agent.prompt(createUserMessage({content:[{type:'text',text:'Busy peer'}],source:{kind:'user',rpcId:'a2a-busy'}}));
+  await settle();
+  assert.equal(received.length, 1);
+  assert.equal(session.events.filter(e => e.type === 'user/message').length, 1, 'peer correlation must not arm on the old turn');
+  client.emit({type:'assistant_text',text:'Old result'});
+  client.emit({type:'turn_end',isError:false});
+  client.emit(SESSION_INIT);
+  assert.equal(session.events.filter(e=>e.type==='user/message').length, 1, 'unrelated native init cannot claim the peer');
+  client.emit({type:'hub_turn_start',messageId:'native-peer-id'});
+  client.emit({type:'assistant_text',text:'Peer result'});
+  client.emit({type:'turn_end',isError:false});
+  assert.deepEqual(session.events.filter(e=>e.type==='turn/start').map(e=>e.data.turn), [1,2]);
+  assert.deepEqual(session.events.filter(e=>e.type==='turn/end').map(e=>e.data.turn), [1,2]);
+  const peerIndex=session.events.findIndex(e=>e.type==='user/message'&&e.data.source.rpcId==='a2a-busy');
+  assert.ok(peerIndex > session.events.findIndex(e=>e.type==='turn/start'&&e.data.turn===2));
+  await agent.dispose();
+});
+
+test("an unrelated queued user turn cannot claim the pending Hub correlation", async () => {
+  const session=recordingSession(),client=fakeClient();
+  client.receiveHub=async()=> 'exact-peer-id';
+  const agent=new ClaudeAgent(new Context(),'session-mixed-input',{},session,client);
+  agent.prompt(userMessage()); await settle(); client.emit(SESSION_INIT);
+  agent.prompt(createUserMessage({content:[{type:'text',text:'Peer'}],source:{kind:'user',rpcId:'a2a-mixed'}}));
+  await settle(); agent.followUp(userMessage()); await settle();
+  client.emit({type:'turn_end',isError:false});
+  client.emit(SESSION_INIT); client.emit({type:'assistant_text',text:'Unrelated user result'}); client.emit({type:'turn_end',isError:false});
+  assert.equal(session.events.some(e=>e.type==='user/message'&&e.data.source.rpcId==='a2a-mixed'),false);
+  client.emit({type:'hub_turn_start',messageId:'exact-peer-id'});
+  client.emit({type:'assistant_text',text:'Exact peer result'}); client.emit({type:'turn_end',isError:false});
+  const peerIndex=session.events.findIndex(e=>e.type==='user/message'&&e.data.source.rpcId==='a2a-mixed');
+  assert.ok(peerIndex>session.events.findIndex(e=>e.type==='turn/start'&&e.data.turn===3));
+  assert.equal(session.events.findLast(e=>e.type==='turn/end').data.turn,3);
+  await agent.dispose();
+});
+
+test("a native plugin's unsolicited assistant starts a valid turn without an SDK user echo", async()=>{
+  const session=recordingSession(),client=fakeClient();
+  const agent=new ClaudeAgent(new Context(),'session-native-output',{},session,client);
+  client.emit({type:'assistant_text',text:'Native plugin turn'});
+  client.emit({type:'turn_end',isError:false});
+  assert.deepEqual(session.events.filter(e=>e.type==='turn/start').map(e=>e.data.turn),[1]);
+  assert.deepEqual(session.events.filter(e=>e.type==='turn/end').map(e=>e.data.turn),[1]);
+  assert.ok(session.events.some(e=>e.type==='assistant/message'));
+  await agent.dispose();
+});

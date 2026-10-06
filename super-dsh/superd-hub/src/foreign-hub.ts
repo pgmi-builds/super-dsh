@@ -18,8 +18,17 @@ export interface ForeignToolDefinition {
 export interface ForeignHubBinding {
   definition(): ForeignToolDefinition | undefined
   execute(args: unknown, signal?: AbortSignal): Promise<unknown>
+  transport(): Promise<ForeignHubTransport | undefined>
+  enqueue(text: string): Promise<string>
+  onTurnStarted(listener: (id: string) => void): () => void
   extensionPath(): Promise<string | undefined>
   dispose(): void
+}
+
+export interface ForeignHubTransport {
+  url: string
+  token: string
+  definition: ForeignToolDefinition
 }
 
 interface BoundSession {
@@ -27,6 +36,10 @@ interface BoundSession {
   runtime: string
   getAgent(): A2aAgentHandle | undefined
   execute(args: unknown, signal?: AbortSignal): Promise<unknown>
+  inbox: Array<{ id: string; text: string }>
+  unstarted: Set<string>
+  started: Set<string>
+  onTurnStarted(id: string): void
 }
 
 interface Host {
@@ -77,9 +90,14 @@ async function listen(host: Host): Promise<string> {
       response.end(JSON.stringify(body))
     }
     const token = request.headers.authorization?.replace(/^Bearer /, '')
+    if (token === undefined) {
+      send(403, { error: '[E_HUB_ADDRESS_REQUIRED] This native session has no Substrate Hub address. Open or resume the conversation through Super D; a plugin alone does not register a mailbox.' })
+      return
+    }
     const bound = token === undefined ? undefined : host.sessions.get(token)
     if (host.closed || bound === undefined) { send(401, { error: '[E_HUB_BINDING] Unknown or expired Super D Hub session binding' }); return }
-    if (request.method !== 'POST' || request.url !== '/tool') { send(405, { error: 'Use POST /tool' }); return }
+    if (request.method === 'GET' && request.url === '/inbox') { send(200, { message: bound.inbox[0] ?? null }); return }
+    if (request.method !== 'POST' || !['/tool', '/inbox'].includes(request.url ?? '')) { send(405, { error: 'Use POST /tool, GET /inbox or POST /inbox' }); return }
     const controller = new AbortController()
     response.on('close', () => { if (!response.writableEnded) controller.abort() })
     try {
@@ -88,7 +106,23 @@ async function listen(host: Host): Promise<string> {
         body += chunk.toString()
         if (Buffer.byteLength(body) > 65_536) { send(413, { error: 'Super D Hub arguments exceed 64 KiB' }); return }
       }
-      send(200, { result: await bound.execute(JSON.parse(body), controller.signal) })
+      const args = JSON.parse(body)
+      if (request.url === '/inbox') {
+        if (typeof args?.started === 'string') {
+          if (!bound.unstarted.has(args.started) && !bound.started.has(args.started)) { send(409, { error: '[E_HUB_INBOX_START] Unknown message' }); return }
+          if (bound.unstarted.has(args.started)) {
+            bound.onTurnStarted(args.started)
+            bound.unstarted.delete(args.started)
+            bound.started.add(args.started)
+            if (bound.started.size > 128) bound.started.delete(bound.started.values().next().value!)
+          }
+          send(200, { started: true })
+          return
+        }
+        if (typeof args?.ack !== 'string' || args.ack !== bound.inbox[0]?.id) { send(409, { error: '[E_HUB_INBOX_ACK] Message is not the current inbox item' }); return }
+        bound.inbox.shift()
+        send(200, { acknowledged: true })
+      } else send(200, { result: await bound.execute(args, controller.signal) })
     } catch (error) {
       if (!response.writableEnded) send(400, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -104,6 +138,12 @@ async function listen(host: Host): Promise<string> {
     })
   })
   return host.listening
+}
+
+/** Public native-plugin endpoint; publishing it never grants a caller identity. */
+export async function foreignHubEndpoint(home: string): Promise<string | undefined> {
+  const host = hosts.get(resolve(home))
+  return host === undefined || host.closed ? undefined : listen(host)
 }
 
 export function bindForeignHub(
@@ -122,6 +162,10 @@ export function bindForeignHub(
   let path: string | undefined
   let preparing: Promise<string | undefined> | undefined
   let disposed = false
+  const inbox: BoundSession['inbox'] = []
+  const unstarted = new Set<string>()
+  const started = new Set<string>()
+  const turnListeners = new Set<(id: string) => void>()
 
   const attach = (): ToolDefinition | undefined => {
     if (disposed) throw new Error('[E_HUB_BINDING] Super D Hub session binding is closed')
@@ -132,7 +176,7 @@ export function bindForeignHub(
       attached = host
       token = randomUUID()
       tool = createSuperdHubTool({ ...host.deps, initiatorOf: () => localA2aInitiator(host.home, runtime, sessionId) })
-      host.sessions.set(token, { runtime, sessionId, getAgent, execute: binding.execute })
+      host.sessions.set(token, { runtime, sessionId, getAgent, execute: binding.execute, inbox, unstarted, started, onTurnStarted: id => { for (const listener of turnListeners) listener(id) } })
     }
     return tool
   }
@@ -153,6 +197,24 @@ export function bindForeignHub(
       } as unknown as ToolRunContext
       return current.execute(args, exec)
     },
+    async transport() {
+      const definition = binding.definition()
+      if (definition === undefined) return undefined
+      const host = attached!
+      const capability = token!
+      const url = await listen(host)
+      if (disposed) throw new Error('[E_HUB_BINDING] Super D Hub session binding is closed')
+      return { url, token: capability, definition }
+    },
+    async enqueue(text) {
+      if (attach() === undefined) throw new Error('[E_HUB_UNAVAILABLE] Super D Hub is not running for this session')
+      if (Buffer.byteLength(text) > 65_536 || inbox.length >= 128 || unstarted.size >= 128) throw new Error('[E_HUB_INBOX_FULL] Hub inbox is full or the message exceeds 64 KiB')
+      const id = randomUUID()
+      unstarted.add(id)
+      inbox.push({ id, text })
+      return id
+    },
+    onTurnStarted(listener) { turnListeners.add(listener); return () => turnListeners.delete(listener) },
     async extensionPath() {
       if (preparing !== undefined) return preparing
       const definition = binding.definition()
@@ -176,6 +238,10 @@ export function bindForeignHub(
     },
     dispose() {
       disposed = true
+      inbox.length = 0
+      unstarted.clear()
+      started.clear()
+      turnListeners.clear()
       deliveryBindings.delete(deliveryKey)
       if (attached !== undefined && token !== undefined) attached.sessions.delete(token)
       if (path !== undefined) rmSync(path, { force: true })
