@@ -46,3 +46,10 @@
 
 - **清理（user 指令：测试环境 + PC production + dev3）**：本地 prod profile `@openai/codex` 回归沉积 **427M**（0.1.11 装机带入；prod 仍跑 0.1.11，其 codex 兜底落 desktop/CLI 层不受影响）；4999 测试 home `codex-sdk/sdk-runtime` **324M** + `omp-sdk/sdk-runtime` **975M** + `claude/sdk-runtime` **54M**；repo pnpm store 剪枝 **557M**（581M→7.7M）；dev3 孤儿 `@openai/` 4K（pnpm 升级时已自剪 binary）。**合计 ≈2.34 GB**。保留：prod/dev3 `agents/claude/sdk-runtime` 各 54M（agent-claude 自有运行时 lazy 缓存，纯 JS 无 binary，按需自愈重取；要清零说一声）；pi（user 豁免）；原生 home（~/.codex、~/.omp、/usr/lib desktop core、~/.local/bin/codex）非插件携带，未动。清理后 4999/dev3 服务探针正常。
 - **发布（user 指令 push + publish，2026-10-06 二次澄清后执行）**：registry 版本 = **0.1.11-a**。澄清记录：2026-09-23「npm 不是 git」裁决的本体是 **registry 不可删除、不可回滚**（GitHub tag 可删可逆，npm 发了就发了），**不限制版本号形态**；字母后缀版本按 user 发布指令直接进 registry（本条为首次，取代 agent 此前「字母不进 registry」的错误推断——该推断曾短暂把版本抬到 0.1.12，未发布即回退，tag v0.1.12 已删）。
+
+## 发布实录（user 二次澄清后）
+
+- 执行链：git push（`master 1939714..9c631e1` + tag `v0.1.11-a` → github.com:pgmi-builds/super-dsh）→ `npm publish <已验证 tarball> --access public --tag latest`（凭据 = `~/workspaces/base/secrets/npm.env` 的 `NPM_ACCESS_TOKEN`，显式 authToken 旗标；与 0.1.10-e / 0.1.11 同一通道）。命令返回 `+ super-dsh@0.1.11-a`。
+- 版本形态：registry 版本 = **0.1.11-a**（2026-10-06 user 澄清裁决：npm-不是-git 讲的是不可删除/不可回滚，不限制版本形态；registry 既有 `next: 0.1.5-a` 字母 dist-tag 先例）。tarball 与 4999/dev3 验收物同源同内容。
+- 澄清前的错误推断（短暂把版本抬到 0.1.12、tag v0.1.12）未接触 registry，本地回退并记录在案；教训已写入根 AGENTS §〇.1.d。
+- registry 传播：publish 返回后 `npm view`/packument 有分钟级 CDN 延迟（0.1.11 同现象），按先例不重复 publish，后台轮询确认。
