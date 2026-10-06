@@ -41,3 +41,8 @@
 - **4999 pack 线**：`start-4999.sh` 拉起 `superd-4999-test` + `superd-lan-4999-relay`；tarball 装入 **零 super-dsh build-script 提示**；冒烟 = shell(token→cookie) **200** + roster `native/pi/claude/codex/omp/agy/hermes` 全 `ready:true`（SDK 三行默认 disabled 不在册，正确）+ `/hub` 无参 401→语义正常、旧 `/<label>/` **404**、WAN 401（token 门）、`world failed` 计数 **0**。入口：`https://test.pc.internal.test/?token=…`（launcher 输出原样）。
 - **dev3 实装**：tarball → `~/.dsh/profiles/web`（`super-dsh: 0.1.11 → file:…0.1.11-a.tgz`，备份 `package.json.pre-0.1.11-a.bak`）→ `systemctl --user restart dsh.service`（20:49:46 CST active）→ **shell 200 @ 127.0.0.1:3080**、`world failed` **0**（5min 窗口）、装入零 build-script。registry 0.1.11（事故版）已被替换。
 - 待 user 亲手：2-machine hub 测试（本机 4999 ↔ dev3 3080）。
+
+## 清理与发布台账（2026-10-06 续）
+
+- **清理（user 指令：测试环境 + PC production + dev3）**：本地 prod profile `@openai/codex` 回归沉积 **427M**（0.1.11 装机带入；prod 仍跑 0.1.11，其 codex 兜底落 desktop/CLI 层不受影响）；4999 测试 home `codex-sdk/sdk-runtime` **324M** + `omp-sdk/sdk-runtime` **975M** + `claude/sdk-runtime` **54M**；repo pnpm store 剪枝 **557M**（581M→7.7M）；dev3 孤儿 `@openai/` 4K（pnpm 升级时已自剪 binary）。**合计 ≈2.34 GB**。保留：prod/dev3 `agents/claude/sdk-runtime` 各 54M（agent-claude 自有运行时 lazy 缓存，纯 JS 无 binary，按需自愈重取；要清零说一声）；pi（user 豁免）；原生 home（~/.codex、~/.omp、/usr/lib desktop core、~/.local/bin/codex）非插件携带，未动。清理后 4999/dev3 服务探针正常。
+- **发布（user 指令 push + publish，2026-10-06 二次澄清后执行）**：registry 版本 = **0.1.11-a**。澄清记录：2026-09-23「npm 不是 git」裁决的本体是 **registry 不可删除、不可回滚**（GitHub tag 可删可逆，npm 发了就发了），**不限制版本号形态**；字母后缀版本按 user 发布指令直接进 registry（本条为首次，取代 agent 此前「字母不进 registry」的错误推断——该推断曾短暂把版本抬到 0.1.12，未发布即回退，tag v0.1.12 已删）。
