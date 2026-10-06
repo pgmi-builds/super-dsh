@@ -82,3 +82,12 @@ test('schema default derives from the trusted-hosts env single source', () => {
   // An explicit configured value always wins over the derived default.
   assert.deepEqual(resolve({ trustedPageAuthorities: ['x.example'] }).trustedPageAuthorities, ['x.example'])
 })
+
+
+test('authentication-only pages own any hostname and preserve an existing transport', () => {
+  const text = buildTrustScript([], true)
+  assert.deepEqual(runScript(text, { window: {}, location: { hostname: 'unlisted.example' } }).__DSH_TRANSPORT__, { ownsHost: true })
+  const transport = { fetch() {} }
+  assert.equal(runScript(text, { window: { __DSH_TRANSPORT__: transport }, location: { hostname: 'unlisted.example' } }).__DSH_TRANSPORT__, transport)
+  assert.equal(Config({}).trustAllHosts, false)
+})

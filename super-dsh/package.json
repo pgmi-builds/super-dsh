@@ -1,6 +1,6 @@
 {
   "name": "super-dsh",
-  "version": "0.1.11",
+  "version": "0.1.11-a",
   "description": "Super D for the DeepSeek Harness (DSH) \u2014 one dsh plugin that mounts the superd hub (runtime selector, roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
   "type": "module",
   "license": "MIT",
@@ -100,7 +100,8 @@
     "@deepseek-ai/dsh-tools": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-user-approval": ">=0.1.5-0 <0.3.0-0",
-    "@deepseek-ai/dsh-user-questions": ">=0.1.5-0 <0.3.0-0"
+    "@deepseek-ai/dsh-user-questions": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.5-0 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -146,6 +147,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-user-questions": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
       "optional": true
     }
   },

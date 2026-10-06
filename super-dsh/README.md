@@ -22,6 +22,24 @@ six primary `@pgmi-builds/agent-*` packages and three OPTIONAL SDK halves).
 Restart the profile and the
 home under `<DSH_HOME>/agents/<label>/` on first boot.
 
+## Remote web access
+
+To use the same authenticated UI through a reverse proxy or LAN relay, enable
+this profile patch:
+
+```yaml
+- id: superd-web-trust
+  config:
+    trustAllHosts: true
+```
+
+This skips Host/Origin restrictions and enables browser ownership for every
+hostname. Native token-to-cookie login, cookie expiry, and authority binding
+remain in effect. The default is `false`, preserving declared-authority mode.
+It does not change the server's listening address: keep loopback behind Caddy
+and a LAN relay. The test launcher enables this mode without `--host` or
+`--trusted-host` and starts the relay on every test port, including 4999.
+
 ## Runtimes
 
 | Label | Runtime | Integration |

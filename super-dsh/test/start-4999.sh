@@ -34,11 +34,17 @@ UNIT="superd-${PORT}-test"
 # hardcoded path: a worktree checkout must pack and boot its OWN branch state.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LINE="$REPO/super-dsh"
+# Components reuse the checkout compiler when a component has no local bin.
+export PATH="$LINE/superd-hub/node_modules/.bin:$PATH"
 DSH_HOME_DIR="${SUPERD_HOME_DIR:-$REPO/.tests/superd}"
 PROFILE="${SUPERD_PROFILE:-superd-pub}"
 LOG="$REPO/.scratch/superd-${PORT}.log"
 NODE_BIN="/usr/bin/node"
-PNPM="corepack pnpm@10.33.2"   # consumer-parity installer (store v10)
+if command -v corepack >/dev/null 2>&1; then
+  PNPM="corepack pnpm@10.33.2"
+else
+  PNPM="pnpm --config.strict-dep-builds=false"  # Keep dependency builds disabled without pnpm 12 aborting.
+fi
 PNPM_STORE="$REPO/.npm-cache/pnpm-store-v10"
 ANCHOR="$REPO/upstream/deepseek-harness/apps/cli/package.json"  # repo-line contract: the checkout build IS the installation
 
@@ -62,6 +68,11 @@ case "$DSH_HOME_DIR" in
 esac
 
 RELAY="superd-lan-${PORT}-relay"
+SOCAT_BIN="${SUPERD_SOCAT_BIN:-$(command -v socat || true)}"
+if [ -z "$SOCAT_BIN" ] && [ -x "$REPO/.scratch/socat-runtime/usr/bin/socat" ]; then
+  SOCAT_BIN="$REPO/.scratch/socat-runtime/usr/bin/socat"
+fi
+[ -x "$SOCAT_BIN" ] || { echo "socat missing: install it or set SUPERD_SOCAT_BIN" >&2; exit 1; }
 LAN_IP=$(hostname -I | awk '{print $1}')
 
 # Idempotent restart of THIS rig's own named units; then, per the 2026-09-27
@@ -144,6 +155,9 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
 - id: credentials
   config:
     path: ${SHARED_CREDENTIALS}
+- id: superd-web-trust
+  config:
+    trustAllHosts: true
 EOF
 echo "--- pnpm install (first run downloads the runtime SDKs into the store; later runs reuse it)"
 (cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$LINE/dev-webmcp" --config.store-dir="$PNPM_STORE" --prefer-offline)
@@ -155,10 +169,8 @@ echo "--- pnpm install (first run downloads the runtime SDKs into the store; lat
 #      launcher's env layering is inherited > invoking-dir > HOME .env; an
 #      inherited EMPTY value would BLOCK the file layer, so we deliberately
 #      do NOT pass DEEPSEEK_API_KEY through the unit env);
-#   2. trusted authorities: one SUPERD_TRUSTED_HOSTS declaration feeds the server
-#      fence legs (worlds' --trusted-host) AND the page-trust component's
-#      default authorities (bare hostnames only — the portful entry below
-#      covers the fence, the bare ones cover the pages).
+#   2. web-trust: the test profile opts into authentication-only admission
+#      for both the ctx0 server gate and browser ownership.
 if [ ! -f "$HOME/.dsh/.env" ]; then
   echo "refusing: $HOME/.dsh/.env missing — test preparation cannot provide provider keys" >&2
   exit 1
@@ -201,12 +213,6 @@ env ${SEED_ENV[@]+"${SEED_ENV[@]}"} \
 env ${SEED_ENV[@]+"${SEED_ENV[@]}"} \
   "$NODE_BIN" "$LINE/test/seed-codex-providers.mjs" "$DSH_HOME_DIR/agents/codex" || true
 
-# ctx0's native /api + /hub fences read the CONNECTION service's trustedHosts
-# (= webRuntime: bind-derived loopback literals + EXPLICIT --trusted-host
-# extras). SUPERD_TRUSTED_HOSTS above feeds only the world fence leg and the
-# page-trust leg — 2026-09-26 user LAN round: without these extras every
-# non-loopback Host 403s (WS stuck on "reconnecting", RPC transport failures).
-# Port-less entries match any port (api-request-trust canonicalAuthority).
 # Explicit test-only proxy; adapter/business code knows no proxy endpoint.
 # Local UI/RPC stays direct. Native Codex children inherit these standard vars.
 PROXY_ARGS=()
@@ -222,15 +228,12 @@ systemd-run --user --unit="$UNIT" "${PROXY_ARGS[@]}" \
   --property=Environment="SUPERD_DSH_ANCHOR=$ANCHOR" \
   --property=Environment="SUPERD_KEEP=1" \
   --property=Environment="SUPERD_TRACE=${SUPERD_TRACE:-0}" \
-  --property="Environment=\"SUPERD_TRUSTED_HOSTS=test.pc.internal.test 192.0.2.130 192.0.2.130:${PORT}\"" \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
   --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
   "$NODE_BIN" "$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js" \
-    --profile "$PROFILE" --no-open \
-    --trusted-host "$LAN_IP" \
-    --trusted-host test.pc.internal.test
+    --profile "$PROFILE" --no-open
 
 ok=""
 for _ in $(seq 1 90); do
@@ -240,17 +243,14 @@ for _ in $(seq 1 90); do
 done
 [ -n "$ok" ] || { echo "timeout waiting for ${PORT}" >&2; exit 1; }
 
-# ---- LAN relay (2026-09-26 user ruling): user visits via LAN; every non-4999
-# port MUST carry one (4999 is Caddy-backed). Bind the LAN IP only — never
-# 0.0.0.0 (repo port discipline; webserver startup hard-refuses it anyway).
-# Fence note: the LAN Host passes the /api fences via the CLI --trusted-host
-# extras above (port-less entry matches any port), not via SUPERD_TRUSTED_HOSTS
-# (that env only feeds the world fence leg + page-trust authorities).
-if [ "$PORT" != "4999" ]; then
+# LAN relay on every test port, including the Caddy-backed 4999.
+# The web server stays on loopback; web-trust retains authentication and
+# removes address fences, so neither host nor trusted-host CLI flags are needed.
+if [ -n "$LAN_IP" ]; then
   systemd-run --user --unit="$RELAY" \
     --property=StandardOutput=append:"$LOG" \
     --property=StandardError=append:"$LOG" \
-    /usr/bin/socat TCP-LISTEN:"${PORT}",fork,reuseaddr,bind="${LAN_IP}" TCP:127.0.0.1:"${PORT}"
+    "$SOCAT_BIN" TCP-LISTEN:"${PORT}",fork,reuseaddr,bind="${LAN_IP}" TCP:127.0.0.1:"${PORT}"
   lan_ok=""
   for _ in $(seq 1 10); do
     ss -tln | grep -q "${LAN_IP}:${PORT} " && { lan_ok=1; break; }
@@ -284,9 +284,8 @@ if [ -n "$found" ]; then
   echo "  local: http://127.0.0.1:${PORT}/?token=$found"
   if [ "$PORT" = "4999" ]; then
     echo "  wan:   https://test.pc.internal.test/?token=$found"
-  else
-    echo "  lan:   http://${LAN_IP}:${PORT}/?token=$found   (socat relay: $RELAY)"
   fi
+  echo "  lan:   http://${LAN_IP}:${PORT}/?token=$found   (LAN relay: $RELAY)"
 else
   echo "  WARN: no token authenticated against the index — inspect $LOG" >&2
 fi
