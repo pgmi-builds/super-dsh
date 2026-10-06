@@ -51,7 +51,7 @@ import { promisify } from "node:util";
 export const SDK_PACKAGE = "@anthropic-ai/claude-agent-sdk";
 
 /** The pin, written here rather than in `package.json` — the marker carries it. */
-export const SDK_PACKAGE_VERSION = "0.3.263";
+export const SDK_PACKAGE_VERSION = "0.3.291";
 
 /**
  * How the CLI behind the SDK is obtained:
@@ -166,7 +166,7 @@ export function resolveClaudeBinary(): string | undefined {
 export function sdkInstallArgv(version: string, mode: SdkRuntimeMode): string[] {
   const argv = [
     "install",
-    "--exact",
+    "--save-exact",
     "--ignore-scripts",
     "--omit=dev",
     "--no-audit",

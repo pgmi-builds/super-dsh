@@ -60,10 +60,13 @@
  * as are `HERMES_CWD`/`HERMES_TUI_GATEWAY_URL`/`HERMES_TUI_SIDECAR_URL`
  * (keep the spawned stdio transport the only transport).
  */
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { delimiter, resolve, join } from "node:path";
+import { promisify } from "node:util";
+import type { ForeignHubBinding } from "@pgmi-builds/superd-hub/foreign-hub";
+import { prepareHermesNativePlugin } from "@pgmi-builds/superd-hub/foreign-native";
 import { createInterface } from "node:readline";
 import { projectGatewayEvent, type ProjectionCtx, type WireEvent } from "./hermes-events.js";
 
@@ -122,6 +125,9 @@ export interface GatewaySessionInfo {
 export interface HermesClientSpawnOptions {
   cwd?: string;
   env?: Record<string, string>;
+  hub?: ForeignHubBinding;
+  /** Native plugin delivery seam, replaced by fixtures without changing HOME. */
+  prepareHub?: (binding: ForeignHubBinding) => Promise<string | undefined>;
   readyTimeoutMs?: number;
   requestTimeoutMs?: number;
   approvalTimeoutMs?: number;
@@ -311,13 +317,18 @@ export class HermesGatewayClient {
    * materialized within the grace. Agent-held clients never arm it (ruling 4).
    */
   #spawnGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  #hubPreparation: Promise<void> | undefined;
+  #hubSession: string | undefined;
 
   private constructor(opts: HermesClientSpawnOptions) {
     this.#requestTimeoutMs = opts.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
     this.#approvalTimeoutMs = opts.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS;
     this.#lazy = opts.lazy === true;
     this.#spawnOpts = opts;
-    if (!this.#lazy) this.#materializeChild();
+    if (!this.#lazy) {
+      if (opts.hub === undefined) this.#materializeChild();
+      else void this.ensureStarted().catch(() => {});
+    }
   }
 
   /** Captured spawn options for deferred materialization (lazy clients). */
@@ -333,6 +344,8 @@ export class HermesGatewayClient {
     const root = resolveHermesRoot();
     const python = resolveHermesPython(root);
     const env: Record<string, string> = { ...(opts.env ?? process.env) } as Record<string, string>;
+    if (this.#hubSession !== undefined) env.SUPERD_HUB_SESSION = this.#hubSession;
+    else delete env.SUPERD_HUB_SESSION;
     // Native `.env` fill (dotenv convention: existing env WINS). The omp and
     // pi runtimes load their own native `.env`; the hermes gateway child does
     // not, and the harness env carries no provider keys — without this fill
@@ -514,6 +527,22 @@ export class HermesGatewayClient {
    *  A lazy client materializes its python child HERE (full-lazy ruling:
    *  view-time resume spawns nothing). */
   ensureStarted(): Promise<void> {
+    const hub = this.#spawnOpts.hub;
+    if (hub !== undefined) {
+      if (this.#hubPreparation === undefined) {
+        this.#hubPreparation = (async () => {
+          if (this.#closed) throw new Error('hermes gateway client closed');
+          const prepare = this.#spawnOpts.prepareHub ?? prepareHermesHub;
+          this.#hubSession = await prepare(hub);
+          if (this.#closed) throw new Error('hermes gateway client closed');
+        })().catch(error => { this.#fail(error instanceof Error ? error : new Error(String(error))); throw error; });
+      }
+      return this.#hubPreparation.then(() => this.#startPrepared());
+    }
+    return this.#startPrepared();
+  }
+
+  #startPrepared(): Promise<void> {
     if (this.#readyPromise === null) {
       if (this.#closed || this.#failure !== null) {
         return Promise.reject(this.#failure ?? new Error("hermes gateway client closed"));
@@ -644,6 +673,7 @@ export class HermesGatewayClient {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#spawnOpts.hub?.dispose();
     this.#clearSpawnGrace();
     // Fire-and-forget best effort: write the request directly (the RPC path
     // would refuse under #closed and nothing will read the response anyway).
@@ -1048,7 +1078,7 @@ export class HermesGatewayClient {
       clearTimeout(this.#readyTimer);
       this.#readyTimer = null;
     }
-    if (!this.#readySettled) {
+    if (!this.#readySettled && this.#readyPromise !== null) {
       this.#readySettled = true;
       this.#readyReject(error);
     }
@@ -1109,4 +1139,14 @@ export class HermesGatewayClient {
       process.stderr.write(`[hermes-client] ${line}\n`);
     }
   }
+}
+
+async function prepareHermesHub(binding: ForeignHubBinding): Promise<string | undefined> {
+  const root = resolveHermesRoot();
+  const python = resolveHermesPython(root);
+  return prepareHermesNativePlugin(binding, join(homedir(), '.hermes'), async key => {
+    const env: NodeJS.ProcessEnv = { ...process.env, PYTHONPATH: root };
+    delete env.HERMES_HOME;
+    await promisify(execFile)(python, ['-m', 'hermes_cli.main', 'plugins', 'enable', key], { cwd: root, env, timeout: 30_000 });
+  });
 }

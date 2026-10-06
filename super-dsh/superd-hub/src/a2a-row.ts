@@ -38,6 +38,8 @@
  * (a2a-host.ts), and FEDERATED wire adapters pass through unwrapped.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { createSuperdHubTool } from './hub-tool.js'
 import { createA2aIngest, type A2aIngest } from './a2a-ingest.js'
@@ -58,7 +60,9 @@ import type { RawTypertGatewayFace } from './a2a-host.js'
 import type { A2aAgentHandle, A2aDeliveryCtx } from './a2a-delivery.js'
 import type { A2aGateway } from './a2a-service.js'
 import { agentLinks } from './agent-roster.js'
-import { foreignAgentHandle, registerForeignHubHost } from './foreign-hub.js'
+import { foreignAgentHandle, registerForeignHubHost, foreignHubEndpoint } from './foreign-hub.js'
+import { refreshHermesNativeEndpoint } from './foreign-native.js'
+import { refreshClaudeNativeEndpoint } from './foreign-claude.js'
 
 /** Stable Cordis plugin (row) name. */
 export const name = 'superd-a2a'
@@ -211,6 +215,14 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     }
     t.tools.register(createSuperdHubTool(toolDeps))
     t.effect(() => registerForeignHubHost(home, toolDeps), 'superd-a2a: foreign session facility')
+    t.effect(() => {
+      const publication = Promise.all([
+        refreshHermesNativeEndpoint(() => foreignHubEndpoint(home), join(homedir(), '.hermes')),
+        refreshClaudeNativeEndpoint(() => foreignHubEndpoint(home), process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')),
+      ])
+        .catch(error => ctx.logger.warn(`superd-a2a: native plugin endpoint refresh failed: ${String(error)}`))
+      return () => publication
+    }, 'superd-a2a: native post office discovery')
   })
 }
 

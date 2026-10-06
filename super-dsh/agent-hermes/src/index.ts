@@ -44,6 +44,7 @@ import {
   type SessionId,
 } from "@deepseek-ai/dsh-session";
 import type { SessionHandle, SessionPersistence } from "@deepseek-ai/dsh-session-persistence";
+import { bindForeignHub, type ForeignHubBinding } from "@pgmi-builds/superd-hub/foreign-hub";
 import { HermesGatewayClient, HERMES_SPAWN_GRACE_MS } from "./hermes-client.js";
 import { HermesAgent, type HermesAgentRuntimeInfo } from "./agent.js";
 import { HermesLlmAdapter, HERMES_PROVIDER_ID } from "./adapter.js";
@@ -348,6 +349,11 @@ export class HermesProvider extends Service implements AgentFactory {
   }
 
 
+  private hubFor(sessionId: string): ForeignHubBinding {
+    return bindForeignHub('hermes', sessionId, this.home,
+      () => this.runtime.ctx.agents.get(sessionId as SessionId) as never);
+  }
+
   async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     const loopCtx = this.runtime.ctx;
     const id = options.sessionId;
@@ -374,7 +380,7 @@ export class HermesProvider extends Service implements AgentFactory {
     // Agent-held client: the spawn-grace reaper is NEVER armed here (2026-09-17
     // ruling 4 — the session may legitimately materialize far beyond any
     // grace; disposal is the agent lifecycle's job, not a timer's).
-    const client = HermesGatewayClient.spawn({ cwd: spawnCwd, lazy: true }) // full-lazy ruling 2026-09-18: view/create-time spawns NOTHING;
+    const client = HermesGatewayClient.spawn({ cwd: spawnCwd, lazy: true, hub: this.hubFor(id) }) // full-lazy ruling 2026-09-18: view/create-time spawns NOTHING;
 
     const preparation = SessionPreparation.create(loopCtx.sessions.prepare(id, {
       ...(options.seed === undefined ? {} : { seed: options.seed }),
@@ -455,7 +461,7 @@ export class HermesProvider extends Service implements AgentFactory {
 
     // Spawn the gateway child (no session bound); the FIRST prompt re-attaches
     // via resumeSession(record.gatewayStoredSessionId) — the DURABLE key.
-    const client = HermesGatewayClient.spawn({ cwd: spawnCwd, lazy: true }) // full-lazy ruling 2026-09-18: view/create-time spawns NOTHING;
+    const client = HermesGatewayClient.spawn({ cwd: spawnCwd, lazy: true, hub: this.hubFor(id) }) // full-lazy ruling 2026-09-18: view/create-time spawns NOTHING;
 
     let handle: SessionHandle | undefined;
     let stored: StoredSession | undefined;

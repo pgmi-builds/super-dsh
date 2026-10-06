@@ -67,6 +67,9 @@ import { loadClaudeQuery, resolveClaudeBinary } from "./sdk-runtime.js";
 import { InputQueue, type ClaudeInputContent } from "./input-queue.js";
 import { projectClaudeEvent, type WireEvent } from "./claude-events.js";
 import { NATIVE_LAUNCH, type ClaudeLaunchSpec } from "./claude-launch.js";
+import { resolveClaudeHome } from "./claude-home.js";
+import type { ForeignHubBinding } from "../../superd-hub/dist/foreign-hub.js";
+import { prepareClaudeNativePlugin } from "../../superd-hub/dist/foreign-claude.js";
 
 // ---------------------------------------------------------------------------
 // Structural seams (duck-typed so tests inject plain fakes)
@@ -210,6 +213,9 @@ export interface ClaudeClientConfig {
   /** The provider-pinning launch slice merged into the SDK `Options` at spawn
    * (env/model/binary). Defaults to {@link NATIVE_LAUNCH} (no injection). */
   launch?: ClaudeLaunchSpec;
+  hub?: ForeignHubBinding;
+  /** Native delivery seam; production uses prepareClaudeNativePlugin. */
+  prepareHub?: () => Promise<string | undefined>;
 }
 
 /**
@@ -234,6 +240,10 @@ export class ClaudeSdkClient {
   private launch: ClaudeLaunchSpec;
   /** True while a user turn is in flight (set on push, cleared on `turn_end`/`agent_end`). */
   private turnActive = false;
+  private readonly hub: ForeignHubBinding | undefined;
+  private readonly prepareHub: (() => Promise<string | undefined>) | undefined;
+  private preparation: Promise<void> | undefined;
+  private hubSession: string | undefined;
 
   private queue: InputQueue | undefined;
   private query: ClaudeQueryLike | undefined;
@@ -255,6 +265,14 @@ export class ClaudeSdkClient {
     this.canUseTool = config.canUseTool;
     this.allowDangerouslySkipPermissions = config.allowDangerouslySkipPermissions;
     this.launch = config.launch ?? NATIVE_LAUNCH;
+    this.hub = config.hub;
+    this.hub?.onTurnStarted(id => {
+      if (!this.closed) {
+        this.turnActive = true;
+        for (const listener of this.listeners) listener({ type: "hub_turn_start", messageId: id });
+      }
+    });
+    this.prepareHub = config.prepareHub ?? (config.hub === undefined ? undefined : () => prepareClaudeNativePlugin(config.hub!, resolveClaudeHome()));
     refcount += 1;
   }
 
@@ -342,7 +360,13 @@ export class ClaudeSdkClient {
    */
   async ensureStarted(): Promise<void> {
     if (this.query !== undefined) return;
+    this.ensureUsable();
+    if (this.prepareHub !== undefined) {
+      this.preparation ??= this.prepareHub().then(value => { this.hubSession = value; });
+      await this.preparation;
+    }
     const f = await resolveFactory(this.worldHome); // await BEFORE the sync section
+    this.ensureUsable();
     if (this.query !== undefined) return; // lost the race to a concurrent first prompt — reuse its query
     const queue = new InputQueue();
     const query = f({ prompt: queue, options: this.buildOptions() });
@@ -364,6 +388,22 @@ export class ClaudeSdkClient {
     this.ensureUsable();
     await this.ensureStarted();
     this.push(content, undefined);
+  }
+
+  /** Peer messages enter the real Claude runtime through the native Mod inbox. */
+  async receiveHub(content: ClaudeInputContent): Promise<string | undefined> {
+    this.ensureUsable();
+    await this.ensureStarted();
+    if (this.hub === undefined || this.hubSession === undefined) {
+      // Standalone adapter has no Hub host and keeps its usual input channel.
+      this.push(content, undefined);
+      return;
+    }
+    const text = typeof content === "string" ? content : content.map(block => block.type === "text" ? block.text : "").join("\n\n");
+    if (!text) throw new Error("[E_HUB_INPUT] Hub messages require text");
+    const id = await this.hub.enqueue(text);
+    this.turnActive = true;
+    return id;
   }
 
   /** Surface parity with prompt: a plain queued user turn. */
@@ -416,6 +456,7 @@ export class ClaudeSdkClient {
     this.closed = true;
     this.queue?.close();
     this.query?.close();
+    this.hub?.dispose();
     refcount = Math.max(0, refcount - 1);
   }
 
@@ -424,12 +465,15 @@ export class ClaudeSdkClient {
   private buildOptions(): Record<string, unknown> {
     const launchExecutable = this.launch.pathToClaudeCodeExecutable;
     const executable = launchExecutable !== undefined && launchExecutable !== "" ? launchExecutable : executableResolver();
+    const env = { ...process.env, ...this.launch.env };
+    delete env.SUPERD_HUB_SESSION;
+    if (this.hubSession !== undefined) env.SUPERD_HUB_SESSION = this.hubSession;
     return {
       cwd: this.cwdPath,
       // The launch env holds ADDITIONS only; spreading process.env first keeps
       // PATH/HOME and the user's own key alive (NATIVE_LAUNCH carries an empty
       // env, so the native shape is exactly `{ ...process.env }`).
-      env: { ...process.env, ...this.launch.env },
+      env,
       // The `--settings` command-line tier (a JSON string) outranks the user's
       // native settings.json env, so a provider-pinned launch rides it here
       // (2026-10-04 F-B: without it the native env pins the endpoint).
@@ -476,6 +520,8 @@ export class ClaudeSdkClient {
           if (event.type === "session_init" && typeof event.sessionId === "string") {
             this.threadIdValue = event.sessionId;
           }
+          if ((event.parentToolUseId ?? null) === null
+            && ["assistant_text", "assistant_reasoning", "assistant_message"].includes(event.type)) this.turnActive = true;
           if (event.type === "turn_end") this.turnActive = false;
           this.emit(event);
         }

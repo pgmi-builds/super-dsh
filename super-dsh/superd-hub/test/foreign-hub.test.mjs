@@ -81,13 +81,16 @@ test('unbound HTTP callers cannot impersonate a live session', async t => {
 
 test('live delivery handle is visible before any tool materialization or draft IO', t => {
   const { home } = setup(t)
-  const agent = { status: 'idle' }
-  const world = join(home, 'agents/codex')
-  const binding = module.bindForeignHub('codex', 'resumed', world, () => agent)
-  assert.equal(module.foreignAgentHandle(home, 'resumed'), agent)
-  assert.equal(existsSync(world), false)
-  binding.dispose()
-  assert.equal(module.foreignAgentHandle(home, 'resumed'), undefined)
+  for (const runtime of ['pi', 'omp', 'codex', 'hermes']) {
+    const agent = { status: 'idle' }
+    const world = join(home, 'agents', runtime)
+    const sessionId = `resumed-${runtime}`
+    const binding = module.bindForeignHub(runtime, sessionId, world, () => agent)
+    assert.equal(module.foreignAgentHandle(home, sessionId), agent)
+    assert.equal(existsSync(world), false)
+    binding.dispose()
+    assert.equal(module.foreignAgentHandle(home, sessionId), undefined)
+  }
 })
 
 
@@ -100,4 +103,22 @@ test('host shutdown gives the model an explicit restart-and-resume recovery path
   ;(await import(new URL(`file://${path}`))).default({ registerTool: value => { tool = value } })
   await close()
   await assert.rejects(tool.execute('after-shutdown', { action: 'agents' }), /Restart Super D, then resume/)
+})
+
+test('native plugins use session transport; addressless native calls reach the post office error', async t => {
+  const { home, calls } = setup(t)
+  const binding = module.bindForeignHub('hermes', 'hermes-bound', join(home, 'agents/hermes'), () => ({status:'idle'}))
+  t.after(() => binding.dispose())
+  assert.equal(existsSync(join(home,'agents/hermes')),false)
+  const config = await binding.transport()
+  assert.equal(config.definition.name,'superd-hub')
+  const native = await fetch(config.url,{method:'POST',body:JSON.stringify({action:'send',agent:'m123-a12345',message:'unbound'})})
+  assert.equal(native.status,403)
+  assert.match((await native.json()).error,/E_HUB_ADDRESS_REQUIRED/)
+  assert.equal(calls.length,0)
+  const valid = await fetch(config.url,{method:'POST',headers:{authorization:`Bearer ${config.token}`},body:JSON.stringify({action:'agents'})})
+  assert.equal(valid.status,200)
+  binding.dispose()
+  const expired = await fetch(config.url,{method:'POST',headers:{authorization:`Bearer ${config.token}`},body:'{}'})
+  assert.equal(expired.status,401)
 })

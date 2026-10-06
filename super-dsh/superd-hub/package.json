@@ -10,7 +10,9 @@
     "./join": "./dist/world-join.js",
     "./web-trust": "./dist/web-trust.js",
     "./a2a": "./dist/a2a-row.js",
-    "./foreign-hub": "./dist/foreign-hub.js"
+    "./foreign-hub": "./dist/foreign-hub.js",
+    "./foreign-native": "./dist/foreign-native.js",
+    "./foreign-claude": "./dist/foreign-claude.js"
   },
   "files": [
     "dist",
