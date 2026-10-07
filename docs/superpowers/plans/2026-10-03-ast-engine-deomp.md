@@ -576,7 +576,6 @@ describe('engine/match', () => {
 > `pi_natives.linux-x64-modern.node` 的实测输出（spike 的 `ab-native.mjs` / `cjk.mjs` /
 > `subst.mjs` / `multi.mjs`）：`byteStart: 34`、`startColumn: 11`、`bar(42)`、`log(1, 2, 3)`、
 > `[1, ,, 2, ,, 3]`、C/CSS 的 0 命中。回归时这些断言就是那场 A/B。
-```
 
 Run: `npx vitest run test/surface-devices/ast-engine-match.spec.ts`
 Expected: FAIL

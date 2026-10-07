@@ -1,137 +1,123 @@
-# 开发环境拓扑与历史记录（根 AGENTS.md 迁出）
+# SuperD 开发环境与历史记录（根 AGENTS.md 迁出）
 
-本文件按需阅读，不是自动加载的行为总纲。以下保留 2026-10-06 迁出时的原文，包含已退役路径、旧版本验证与待勘误事项，不能当作当前操作手册照抄。
+本文件按需阅读，不是自动加载的行为总纲。以下保留 2026-10-06 迁出时的原文，包含版本快照、历史路径、已退役机制及旧计划状态；不能作为当前操作手册照抄。
 
-现行通用开发与测试规范以 [Cordis-dsh-dev-test-guides.md](../Cordis-dsh-dev-test-guides.md) 为准；rig、启动和测试资产以 [.test/README.md](../.test/README.md) 及对应 seed 文档为准。遇到冲突先核实当前脚本和上游官方入口，不将历史 workaround 当作必需机制。
+现行通用规范以 [Cordis / DSH 开发测试指南](07-cordis-dsh-dev-test-guides.md) 为准，整包与 adapter 局部规则以 [super-dsh/AGENTS.md](../super-dsh/AGENTS.md) 及对应子目录指引为准。启动参数以现行 `super-dsh/test/start-4999.sh` 为入口核实；上游版本以物理 checkout 和本轮对齐报告确认，不能据历史台账推断当前值。
 
-## 二、Dev/Test 1：源码级 4999 实例（upstream checkout + 内嵌 dashr）— 推荐回归路径
+## 〇、Development Operation Contract — 红线
 
-整个 harness 从源码跑，dashr 作为 workspace 成员内嵌其中，与 prod 完全隔离。**2026-09-02 已全链路验证。**
-插件开发与测试环境的现行规范见仓库根 `Cordis-dsh-dev-test-guides.md`（两层文档制的第二层，2026-09-27 起；冲突以其为准）；本节记录本仓拓扑事实，rig 清单（含 bun distro 产物 rig `bun-test`）见 `.test/README.md`。
-
-### 组成（2026-09-24 重构：干净 harness + plugin-add 交付形态；旧 monorepo 内嵌流已退役）
-
-- Harness: `./upstream/deepseek-harness`，git tag **`dsh-v0.1.7-rc.1`**（2026-09-24 全新 clone 重建；本地 patch：unrun devDep / root vite devDep（rc.1 新增，apps/desktop tsdown config 运行时 import vite，unrun 缓存目录解析不到）/ storeDir+verifyDeps+zeromq+ssh2 / tsdown `resolveRepositoryRoot` / vite preact 三件套，重放流程与坑见 `docs/50_test-reports/2026-09-24-v0.1.7-rc.1对齐轮-compaction与failover设置面修复实测报告.md` §四）。**upstream 内不允许出现 better-dsh 的任何内容**（旧 `packages/better-dsh/` 内嵌副本 + devDeps 手术 + sync 脚本已于本轮废除）。
-- better-dsh **独立开发**：devDependencies 不含任何 `@deepseek-ai/*`（范围符号在 peerDependencies = 发布契约）；`node_modules/@deepseek-ai/*` 由 `scripts/link-upstream.mjs` 生成 symlink 农场指向 upstream 物理包——upstream 换 tag 后 farm 自动跟随（目录级 symlink），package.json 零改动。`.npmrc` `legacy-peer-deps=true` 防 npm 自动装 optional peers（tuple 规则会解析到三代前的 0.1.5-rc.3）。开发循环：`npm run build` → `tsc --noEmit`（0 错基线）→ `npx vitest run`（600/601）。
-- 测试 rig **`.test/seed/test123/`**（现行，README 有完整种子再生步骤）：home 在 `.test/home/`（2026-09-27 裁决：**home 复用不换场**——`compat/` = 默认长寿命 home，user data 与 `.credentials.yaml` 是测试资产跨重置保留；`RIG_HOME=clean` 仅在专门验证首次行为时临时建一个、用完即删；gitignored）；~~`profiles/node_modules/@deepseek-ai/*` symlink 农场~~ **已于 2026-09-26 删除**（user 指令；0.1.7 安装域拦截供给全部 harness 面——无农场 boot 实证：shell 200 + boot graph 含 better-dsh + client.js 200 + zoom-guard/`__DASHR_MOBILE__` host 半注入在位、日志零解析错误；rig 与 prod 解析模型现完全同构）；profile `web` 的 better-dsh 是 **`dsh plugin add <tarball>` 物理安装**（入场一律走 plugin add；`npm pack` 出交付物 → add → 重启；remove→add 一个来回才能刷新 file: tarball 内容）。旧 `.tests/dsh-test1/` 与 `.dsh-test/` 已删除（2026-09-24 清理，`.test/` 布局落地）。**0.1.7 settings 模型**：namespace = Loader entry id（如 `dashr-failover`），`installSection` 已删；volatile 字段 + `settings.configure({auto:false})` + configEditor 落 profile patch 用户层（upstream `agent-default-model` 范式）。
-
-### harness 本地 patch（该环境必须，缺一 build 即挂）
-
-1. `packages/client/tsdown.client.ts`: `REPOSITORY_ROOT` 由 `resolveRepositoryRoot()` 推导（`pnpm-workspace.yaml` 锚定，`process.cwd()` 兜底）。原因: 本机 Node 22.22.1 `process.features.typescript=false` → tsdown auto loader 选 unrun，unrun 的 bundle 级 define 把内联 preset 的 `import.meta.url` 改写成各包入口 config 的 URL，`packages/*/*` 深度下 `../..` 落到 `<repo>/packages/`，manifest glob 全空 → `no packages/*/*/package.json declares the name …`。upstream CI 的新 Node 走 native loader，看不到此问题。
-2. `pnpm-workspace.yaml`: `storeDir: /home/u1/workspaces/dashr/.scratch/pnpm-store` + `verifyDepsBeforeRun: false` + allowBuilds `zeromq: true`（better-dsh 自 0.2.2-a 起零 lifecycle script，无自身 allowBuilds 条目）。原因: pnpm 11 不读 `.npmrc`；默认 deps-check 会 spawn `pnpm install`，向只读的用户级 store 注册 project → EROFS；strictDepBuilds 下未列 build script = install 硬错。
-   （**另记 2026-09-13**：`pnpm add` 之后 `npx vite` 会从根解析到 vite 8/rolldown——web 构建一律走 `pnpm run build:web`（workspace 内 vite 6.4.3），勿用 npx 直呼。）
-3. **（2026-09-13，change `2026-09-13-preact-ui-shell`）** `apps/web/vite.config.ts`: `resolve.alias` 增 react 家族五条 → `preact/compat`（regex 锚定）+ `resolve.dedupe` 增 `'preact'`（dedupe 条目从本包 node_modules 解析——缺它则 `packages/client/web/lib` 的 seed 解析不到 apps/web 里的 preact）；`apps/web` devDeps 加 `preact@10.29.8` 精确 pin。效果：shell 平台种子物化 preact 实例，全部 ui-* 插件 bundle 的 `require("react")` 零改动获得 Preact；shell index chunk 555,959 → 434,173 B（−21.9%），A/B 实测挂载面一致、console 零错。**同一 patch 顺带根除了 `vendor/CLAUDE.md` ENOTDIR/exit 236 老坑**：`vendor/` 根下的三个文档文件（AGENTS/CLAUDE/README.md）撞 `vendor/*` workspace glob——**0.1.6 起 `vendor/docs/` 也不行**（tsdown root tsdown.config 的 `vendor/*` workspace glob 会把无 package.json 的目录当幻影包，整 build 死，见对齐轮 §七），三个文件现放 **`.scratch/vendor-docs/`**（vendor 根下不允许存在任何子目录缺 package.json）。
-### 构建（setup 或 harness 变更后）
-
-```bash
-cd ~/workspaces/dashr/upstream/deepseek-harness
-pnpm install        # store 已重定向到 .scratch/pnpm-store
-pnpm run build      # tsc lib/types + tsdown host/client + vite web + client build record（0.1.5-rc.2: 234 client artifacts，含 build:native-system）
-```
-
-### 启动 / 重启
-
-```bash
-# 2026-09-24 起：测试实例一律用 `bash .test/seed/test123/start.sh`（PORT=xxxx 可覆盖，默认 4999；
-# LAN 中继默认开——socat 只绑 LAN IP 转发 loopback；webserver 只收 127.0.0.1|0.0.0.0 字面量
-# 且 startup 硬拒 0.0.0.0，直接绑 LAN IP 不可能）。脚本自带：停旧+等端口真释放、
-# 测试口无主化接管（2026-09-27 裁决：占口者属测试 unit 即停掉接管，非测试监听才拒绝）、
-# seed 感知输出（seed 持久时明说 cookie 仍有效）、本 boot token 轮询提取（append 日志防串台）。
-# 脚本内部即下面的 canonical 命令（unit dsh-4999-test123 + test123-lan-4999-relay）：
-systemctl --user stop dsh-4999-test123 test123-lan-4999-relay 2>/dev/null
-systemd-run --user --unit=dsh-4999-test123 \
-  -p WorkingDirectory=/home/u1/workspaces/dashr/upstream/deepseek-harness \
-  -p Environment=DSH_HOME=/home/u1/workspaces/dashr/.test/home/compat \
-  -p 'Environment="DSH_TRUSTED_HOSTS=test.pc.internal.test pc.internal.test 192.0.2.130"' \
-  -p 'UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
-  -p StandardOutput=append:/home/u1/workspaces/dashr/.scratch/dsh-4999-test123.log \
-  -p StandardError=append:/home/u1/workspaces/dashr/.scratch/dsh-4999-test123.log \
-  "$(which node)" apps/cli/lib/bin.js web --no-open --port 4999
-# ⚠⚠ 2026-09-22 双平面修复起：boot 必须走**构建产物** `apps/cli/lib/bin.js` + 裸 node，
-#   勿再用 `node --import tsx/esm apps/cli/src/bin.ts`（tsx 源码启动）！
-#   根因（dual-plane symbol split）：tsx 源码启动下 TS 文件经 tsconfig.base.json `paths`
-#   落 src/，而 plugin loader 把组合行解析到构建 lib 的 file URL → 同进程两份
-#   dsh-tools/cordis 模块实例 → `Symbol('@deepseek-ai/dsh-tools.scheduler')` 键在
-#   lib 侧 ToolRuntime 与 src 侧 agent-loop 之间错位 → 每个 session 的**第一个工具调用**
-#   必崩 `Cannot read properties of undefined (reading 'prepare')`（UNKNOWN），孤儿
-#   tool/call 事件毒化 session log → 后续每轮 DeepSeek INVALID_REQUEST "tool calls
-#   need immediate results"。const enum（如 cordis `FiberState`）使 paths-less 收敛
-#   不可行——唯一正解 = 产物面启动（与 prod 同构）。lib/bin.js 前置条件：改动 src 后先
-#   `pnpm run build` 全量。A/B + 真 session 证据见
-#   `docs/50_test-reports/2026-09-22-4988双平面启动修复实测报告.md`。
-# ⚠ 与 prod 对齐的两行必须带：DSH_TRUSTED_HOSTS（fence + web-trust authorities 单源，
-#   覆盖 test.pc… / pc.internal.test / LAN）与 UnsetEnvironment=DISPLAY WAYLAND_DISPLAY
-#   （prod dsh.service 同款——否则 directory-picker auto 在图形 env 下选 native，zenity
-#   弹在宿主桌面，经 Caddy 远端访问时 Add workspace 表现为无响应后置灰；2026-09-08 实证）
-# user 终端（非沙箱）等价简式:
-# cd ~/workspaces/dashr/upstream/deepseek-harness && DSH_HOME=~/workspaces/dashr/.test/home/compat node apps/cli/lib/bin.js web --no-open --port 4999
-# ⚠ 旧简式 `npm run dsh -- web …`（内部 tsx 源码启动）自 2026-09-22 起禁止用于回归验收——同上双平面必崩
-#   （`--dump-config` 这类 config 面检查不受影响，仍可用 tsx 形态）。
-```
-
-> **勿从 agent 沙箱化 bash 直接拉 daemon（2026-09-03 实证）**：沙箱内启动的 daemon 继承嵌套沙箱环境，其 bwrap 功能探测（`sandbox-local defaultProbeBwrap`）报 `No permissions to create a new namespace` → `SANDBOX_UNAVAILABLE`（agent bash 无沙箱后端）。systemd-run --user 在沙箱外启动（对齐 prod 形态）；沙箱内连 user bus 会被拒，需单命令 `danger-full-access` 升级。stop/日志：`systemctl --user ... dsh-4999-test` / `.scratch/dsh-4999.log`。
-
-- token（`?token=`）是 per-boot 进程内随机 launch token，只负责首铸 cookie；**认证 seed 持久在 `$DSH_HOME/.credentials.yaml`**——home 不换则 seed 不变，**浏览器 cookie 30 天内跨重启直接可用，重启 rig 不需要换 token / 重注 cookie**（2026-09-27 裁决；机制见 guide §3.3）。从 `.scratch/dsh-4999-test123.log`（或 start.sh 输出）取 token URL；curl 冒烟需 cookie jar: `curl -c jar -L '<token-url>'`（303 重定向靠 cookie 保认证）。
-- 数据只落 `.test/home/compat/`（sessions/storages），与 prod 隔离；重置只动 `profiles/web`，user data 保留。
-
-### 日常回归循环（recurring，2026-09-24 起：交付形态）
-
-canonical 构建 → 验收走 tarball；快速迭代走 profile 内物理 lib 替换（**只碰 profile，永不碰 upstream**）：
-
-```bash
-cd ~/workspaces/dashr/better-dsh && npm run build        # tsdown + build-client
-# 快路径（client 半边改动）：直接覆盖 profile 里的物理安装，刷新页面即生效
-rsync -a --delete lib/ ~/workspaces/dashr/.test/home/compat/profiles/web/node_modules/better-dsh/lib/
-# host 半边改动：同上覆盖后重启（start.sh）
-# 阶段性验收（发布前必走）：npm pack → remove → add → 重启
-cd ~/workspaces/dashr && DSH_HOME=$PWD/.test/home/compat node upstream/deepseek-harness/apps/cli/lib/bin.js \
-  plugin --profile web remove better-dsh
-DSH_HOME=$PWD/.test/home/compat node upstream/deepseek-harness/apps/cli/lib/bin.js \
-  plugin --profile web add $PWD/better-dsh/better-dsh-<version>.tgz
-bash .test/seed/test123/start.sh
-```
-
-- **⚠ file: tarball 内容更新 pnpm 不自动刷新**（同版本同路径 → `added 0`）：改完包必须 remove → add 一个来回，别信 add 幂等。
-- **⚠ lib/client 清洗陷阱仍在**：tsdown 清空 lib/ 会抹掉 lib/client/，`npm run build`（= tsdown && build-client）已串好两步，勿单跑 tsdown。
-- 验证：boot graph 含 `"id":"better-dsh"`；`/plugins/??better-dsh/client.js&rev=…` 200；Settings/General 两行在（compaction stepper + failover selects）。
-- `--dump-config`：`DSH_HOME=… node upstream/deepseek-harness/apps/cli/lib/bin.js web --dump-config | grep -A2 dashr-repl`。
-
-### 已验证 / 未验证
-
-- ✅ `dashr-repl` 工具行 + `DASHR_KERNEL_PYTHON` config 注入；web shell + assets HTTP 200；`.dsh-test/storages/workspace.json` 落盘。
-- ✅ **kernel 三级供给**（2026-09-03，change `kernel-provisioning-completeness`）：postinstall/spin-up/首用 lazy 全 fail-open；冷启动 spin-up 自动重建 venv（pinned ipykernel 7.3.0 / dill 0.4.1 / CPython 3.11，无 uv 时 python3-venv 兜底 3.14.4 实测兼容）；uv cache 重定向包内 `.uv-cache`，只读 HOME 实测无碍；一页文档 `docs/kernel-provisioning.md`。
-- ✅ **client 卡片半边已通**（2026-09-03，change `model-failover-settings-surface`；2026-09-03 npm 改名后 id 为 `better-dsh`）：副本内构建用 **`tsx scripts/build-client.ts` 直跑**（33ms；⚠ `npm run build-client` 在 monorepo 副本必死——npm 自身 pre-script 的 workspace 枚举读 pnpm-workspace `vendor/*` glob 匹配到普通文件 CLAUDE.md → ENOTDIR/exit 236，与脚本无关）；验证法：鉴权拉 shell 页 → boot graph 应含 `"id":"better-dsh"` 与 `/plugins/??better-dsh/client.js&rev=…` URL → curl 该 URL 200 且与 `lib/client/index.js` 字节一致（服务端仅追加 sourceMappingURL 行）。原生注册路径已核实：settings 行 = client bundle 内 `ctx.slots.inject('settings.general.item', …)`（与 locale/ui-chat 原生行同构）。
-- ✅ **web-trust 双腿 + mobile-layout 随插件发布**（2026-09-03，change `plugin-shipped-ui-patches`，v0.2.1-f；**round-4 手势整体重写为 z_dsh-alpha `1706b81` 逐条照搬**，commit `0676811`）：**fence 腿** = bundle patch 整行重述 `connection` 行（`trustedHosts: !!js (process.env.DSH_TRUSTED_HOSTS ?? '').split(/\s+/).filter(Boolean).concat(ctx.webRuntime.trustedHosts)`；⚠ `!!js` 是 scalar tag，表达式**不能以 `[` 开头**否则 yaml 按 flow-seq 拒收）；**isLoopback 腿** = host 半 `webserver/index-inject` 内联 boot script（trusted hostname → `window.__DSH_TRANSPORT__={ownsHost:true}`；mobile 阈值 → `__DASHR_MOBILE__`——client 半无 config，页面全局即配置通道）；**mobile 手势 = 旧 ui-layout 补丁 exact port**：X120 左缘带 / 右 3/4 起点区（viewport/4）/ 距离 40px / 水平占优 ×1.3 / 断点 <768 / **pointermove 中途一次性触发**（pointerup 判定被浏览器滚动手势 pointercancel 吃掉 = "必须快划"的根因）/ document 捕获监听 / 右面板 = Better Sidebar 浮层，经 `[data-dsh-toggle-cluster]` 末按钮 DOM click、状态读 `body[data-dsh-sidebar-collapsed]`、会话门槛读 `[data-slot="conversation.session.header"]`；**唯一增量** = 速率门 `swipeVelocityPxPerMs` 默认 0.15（0=关闭）。round-2 发明的 48/28 值已废弃。425/425 + tsc 0；4999 经用户真实 URL `https://test.pc.internal.test` CDP 实证（开/关左栏 + 开/关右栏 + Models provider 列表全过；该域名已入 trustedPageAuthorities）。报告 `docs/50_test-reports/v0.2.1f-plugin-shipped-ui-patches实测报告.md`。
-
-- ✅ **iOS focus 放大抑制 zoomGuard**（2026-09-03，change `ios-focus-zoom-suppression`，v0.2.4，commit `59870fc`；纯 host 半，client 零改动）：boot script 增 zoomGuard 段 —— iOS 系 UA（iPhone|iPod|iPad + iPadOS 桌面冒充 Macintosh&&maxTouchPoints>1）∧ 窄视口（`matchMedia('(max-width:'+(breakpoint-0.02)+'px)')`，断点复用 mobile.breakpoint）双门控下 token 级合并 viewport meta `maximum-scale=1, user-scalable=no`（幂等、可还原、resize + MQ change 双通道复评 + **早期载入重评梯子** ~10ms×200tick —— 引擎载入期应用 viewport 不派发 resize 的实测缺口，deferred focus 可先于事件补评）；**mobile 配置面新增 `zoomGuard`**：`'meta'`（默认，**v0.2.5 起自动双形态**：browser=meta 改写 / standalone=字号地板）| `'off'`（逃生门，'off' = 整段不发射），`'font'` 值位预留不进 enum（未实现值 fail-loud）。五个纯函数（`src/mobile/zoom-guard.ts`，ES5 自包含）经 `Function.prototype.toString` 嵌入 boot script = 单测源即发布源。**关键机制发现**：head 注入 splice 在 `<head>` 开标签紧后 = stock viewport meta 后于脚本解析 → provisional meta + MutationObserver reconcile（stock 插入时改写其本体并移除 provisional，单 meta 文档，S7 查表第 8 条盯两查点）。**v0.2.5 display-mode 分流**（2026-09-03，change `zoomguard-standalone-font-floor`，tag `v0.2.5`；真机实证：standalone PWA 态引擎尊重 `user-scalable=no` → pinch 失效）：iOS 门后、meta 机器前一次性判定 standalone（`(display-mode: standalone)` MQ ∨ `navigator.standalone===true`，严格 `=== true` 双源 OR）→ 注入 `<style id="ios-zoom-font-floor" data-plugin="better-dsh" data-plugin-css="better-dsh/zoom-font-floor">`（16px 字号地板，`@media (max-width:{bp-0.02}px)` 与 meta 腿同派生 768→767.98；**注入不设宽度门**，宽度由 CSS media query 表达）后 return —— 零 meta 机器/零监听/零 timer/零窄带 MQ 探针，meta 字节不动；browser 态 v0.2.4 机器原样，'off' 两形态都不发射（web-trust 门不变零改动）。478/478 + tsc 0。466/466 + tsc 0（v0.2.4）；**4999 已验**（CDP 矩阵 9/9 + off 逃生门 live + 桌面 user 复验，报告 §八；v0.2.5 双形态 CDP 待 lead，报告 §九）；真机 PWA 复验待 user（报告 `docs/50_test-reports/v0.2.4-ios-focus-zoom-suppression实测报告.md`，键盘遮蔽自愈判定驱动 follow-up 取舍）。CLI 注：`web` 子命令不认 `--patch`，config 覆盖走 home 层 `cordis.patch.yml`。**发布定格（2026-09-03 user 裁决）**：本地过程版本 0.2.4/0.2.5 的 tag（v0.2.3~v0.2.5）已清，npm/GitHub 发布为 **`0.2.2-b` / tag `v0.2.2b`**（0.2.2 系列顺延；真机全过后 user 以普通用户身份从 npm 装 prod 实测）。
-
-- ✅ **hashline content-locator**（2026-09-08，change `2026-09-08-v0-2-3b-hashline-content-locator`，v0.2.3-b）：served 账本去 session 化（schema v7，**path 主键**，`E_RANGE_UNVERIFIED` 跨会话类消灭）、集中存储 **`$DSH_HOME/storages/dsh-better-edit/`**（`configDir()` 无参化，终结 12 个 workspace 点目录——"到处拉屎"裁决落地）、verifyServedRange 内容快道（账本双界未见→内容放行；STALE/UNSERVED 保留；retryHint 改 read-once-then-resubmit）、write-hook 删除（write 仅上游确认信封，无锚点回放）。单测 `test/hashline-store.spec.ts` 12/12；全量 491/2（2 挂经 stash 基线证实先于本改动）；4999 第一人称实测通过（write 无回放 / 中心库无 session_id 列 / 无点目录 / read-then-edit 落盘）。实测定性：宿主 `dsh-fs-observation-policy` 的 `E_NOT_OBSERVED`（read-before-edit）为跨会话 edit 的**另一道设计内守卫，保留**。报告 `docs/50_test-reports/v0.2.3b-hashline-content-locator实测报告.md`。**新坑**：副本构建必须 `pnpm --filter better-dsh exec tsdown`——裸跑 `node_modules/.bin/tsdown` 产出 `.mjs` 形态，boot 即 `ERR_MODULE_NOT_FOUND lib/index.js`。已发布 **v0.2.3-b**（npm registry 2026-09-08 18:15 UTC+8，dist-tag `latest`）并部署 prod（18:19 装机、18:44 重启上线，中央 v7 库活体——本 3080 实例即运行其上）。
-
-- ✅ **mobile wave：官方寻址 + 状态驱动响应式**（2026-09-11，对齐 0.1.5-rc.2；**已发布 `0.2.3-c` / tag `v0.2.3c`**，npm dist-tag latest，含随批的 0.1.5 对齐移植；prod 3080 未部署——user 未指令，待 user 以普通用户身份自装实测）：①**手势状态输入只认官方面**（红线，起因：旧实现把 readRightOpen 挂在第三方 Better Sidebar 的 body 属性上，插件移除后恒 true 毒死整个状态机——左滑右滑全灭）；左栏 = `ctx.layout.toggleSidebar()` + AppFrame `[data-sidebar-collapsed]`，右栏 = 官方控件 `[data-sidebar-right-expand]`（会话头角落，开）/`[data-sidebar-right-toggle]`（dock chrome，关；store 动作 setExpanded/toggleExpanded 为 slot-store 内部，跨插件硬边界 → 原生按钮即正规入口）+ 状态读双 facet：`[data-rightbar-fullscreen]` 在场即开（手机全屏右栏不占轨道、`data-rightbar-collapsed` 同场在场——单 facet 读法致右滑误开左栏，user 真机诊断后修复）。②**响应式零自设像素阈值**：CSS 键纯 `[data-sidebar-collapsed]`（无 @media）——上游 auto-collapse（今日 1024）为真收 56px rail 时我们压成 0px，上游改阈值自动跟随；手势 band = 粗指针（`pointer: coarse`）∨ 任一面板处于窄态，细指针全静息（桌面文本拖选永不误触）。③**`mobile.breakpoint` 配置删除**（schema+boot payload+client），zoomGuard 自带内部 768 兜底不受影响；所谓"mobile 配置卡"从未存在过（client 半唯一设置行是 failover）——MOBILE_CONFIG 一直是纯配置文件面。425→492 tests + tsc 0（monorepo 0.1.5-rc.2 手术环境）；4988 已部署活体 + user iPhone 真机确认（"没有问题，是成功的"）；0.1.3-alpha.2 prod host 兼容矩阵源码核验通过（stat/open、sendMessage、ptc-dispatch-log 均在；`tool/ptc-dispatch` 事件 vocabulary-growth 容忍 = 降级不破坏，host 升 0.1.5 自愈），报告 `docs/50_test-reports/v0.2.3c-mobile-wave实测报告.md`。
-
-
-- ✅ **REPL 指引单源化：control prompt 并入 eval description**（2026-09-11，change `2026-09-11-control-prompt-into-eval-description`，**已发布 `0.2.3-d` / tag `v0.2.3d`**）：`dashr:control-prompt` + `dashr:tool-catalog` 两 system-prompt section 整体删除，全部 REPL 指引改由 **`eval` 的 wire description** 承载（内容 = 包根 `dashr/eval-description.md`，`package.json files` 同步——坑：漏列即模块期 readFileSync ENOENT、插件加载即死，实测已修）；`src/py-sdk.ts` 渲染器整体拆除只留 `isFlatBindableName`；桥接口径 = 统一调用形一句话（`await tool.<name>(args)` 单位置参数对象，`true/false/null`→`True/False/None`），**对返回值形态零陈述**（user 裁决：明写"不保证/试错"抑制使用）；示例键 `path`（D1 修正——注意 vendored `normalizeRequest` 的 `file_path→path` 别名仍在，旧键侥幸可用，见报告 §5.1）。提示面 A/B：两 section **−8,759 chars**（本 change 净 −52.6%，残余 +1,944 为 v0.2.3-b hashline 指引）。实测报告 `docs/50_test-reports/2026-09-11-control-prompt-into-eval-description实测报告.md`；遗留：非 flat 名无真实 MCP 端到端样本（本 runtime 无 MCP 工具）、prod 3080 未部署（待 user 以普通 user 自装实测）。
+0. **生态即产品（Ecosystem-is-the-product；2026-09-22 user 裁决，最高优先）**：在 Node 生态里，写代码 ≠ 开发完成。依赖图、包管理器行为（npm pack 规则、pnpm store/linker/`file:` 语义）、解析算法（exports、node_modules 走查、symlink realpath）、交付通道（registry → 消费者安装），全部是产品本体的一部分。三条铁律：
+   - a. **验收必须走交付形态、上目标环境**——本地源码树跑通只是冒烟；插件类改动一律目标机实装验证（dev3：tarball `corepack pnpm@10.33.2 add file:` → restart → journalctl `world failed` 计数 + mount 探针）。
+   - b. **dev 脚手架不得含有交付物将不具备的任何机制**——凡是 farm、链接、硬编码路径曾替代码遮过丑的地方，就是埋雷清单；开发形态 = 交付形态（4999 线跑 pack 出来的 tarball，见 `super-dsh/AGENTS.md`）。
+   - c. **业务代码永不迁就开发流程**——测试纪律（test home、禁碰 prod home）由 launcher/测试夹具强制执行；出现在 `src/` 里就是缺陷（先例：13 处 `assertNotProdHome` 守卫杀死 home 为 `~/.dsh` 的消费者，2026-09-22 已全数删除）。
+1. **npm publish 前置条件，缺一不可，顺序不可换**（先例：npm 发了就发了，撤不回）：
+   - a. **第一人称实测通过**：真实运行时里走通改动路径（起 4999 实例 + 浏览器/curl 实测）。进程没崩、单测绿、tsc 0——这些是构建卫生，**不是验收**。
+   - b. 实测结果落报告（`docs/test-reports/` 惯例）。
+   - c. **user 明确确认放行**（实测通过 ≠ 放行，两道独立闸门）。
+   - d. **版本纪律（2026-09-22/23 user 裁决）**：测试/修复迭代一律字母后缀（`0.1.3-a/b/c…`，better-dsh 先例 `0.2.3-g`）；补丁号（`0.1.4`）与新 minor 只留给**真实 feature 发布**。pnpm 对同名同版本 `file:` 依赖静默 no-op——每次迭代必须换字母。**npm 不是 git（2026-09-23 user 裁决，最高优先）**：`npm publish` 只在 user 明确下令发版时执行；一切迭代经 tarball 通道（本地 4999 + dev3 `corepack pnpm@10.33.2 add file:`），registry 里的 `latest` 冻结在最近一次获准发版。
+2. **验收标准与改动点同类**：改「运行时行为」就用「运行时行为」验收，不得降级为进程活性或静态证据。
+3. **未经 user 单次明确同意，不得 `npm publish`**；授权粒度单次有效。
+4. GitHub 侧（commit/tag/push）可逆，跟随上述节奏，不抢跑。
+5. **上游源码零修改**：依赖全部 exact-pin，改动一律走 patch 层（`cordis.patch.yml`）/自有插件；vendor 保护机制（`superd vendor verify/restore`，蓝图 §5）落地后强制启用。
 
 ---
 
-## 三、Dev/Test 2：wire the prod core（prod 核 + dev 插件）— 未实操，细节待勘误
+## 二、上游基线与对齐（Upstream Baseline & Alignment）
 
-prod npm CLI 当 harness 核，只把插件本体和它的 harness 依赖换成 dev 版。
+- **版本台账（动态；格式 = `值 [updated 日期, provenance]`，尾部 `[]` 为下次更新位）**：
+  - **dev 时点的上游版本**（`upstream/deepseek-harness` checkout，本仓唯一测试基准）：`dsh-v0.2.0-rc.2` [updated 2026-10-02 rebase 轮，**物理 checkout**：detached 到该 tag、浅克隆；npm dist-tag `latest`=`next`=`0.2.0-rc.2`（本仓 registry 的 super-dsh 冻结在 0.1.9，npm 不是 git）。三个 sanctioned 补丁在新 tag 上原样重放（`git apply`，全 hunk 命中、零冲突）。**2026-10-02 实测**：`git checkout -f dsh-v0.2.0-rc.2` + `git clean -xdf` → `pnpm install`（18.8s，store 复用）→ `pnpm run build` 全绿，`node apps/cli/lib/bin.js --version` = `0.2.0-rc.2`；`sync-dsh-farm.mjs` 同步 farm（主 worktree kept 316 / relinked 9 / total 325；mesh-p1 relinked 325）；super-dsh 0.1.9 源码在新 base 上 tsc/tsdown 零错、全测 **948 pass / 0 fail**（7 包）；**同一份 0.1.9 源码在新 base 上重编的 tarball 与 registry 0.1.9 内容逐字节相同**（227 文件全等，只差 gzip 容器）——base 切换对 super-dsh 产物零影响；4996 线在新 base 上 boot 的警告集与旧 base（0.1.7-rc.1）逐行相同（零新增）。报告：`docs/test-reports/2026-10-02-super-dsh-upstream-rebase-0.2.0-rc.2.md`。旧基准 `dsh-v0.1.7-rc.1` 的记录见下（仅作历史）。**⚠️ 换 tag 前必须清旧构建产物**：残留 `lib/` 会以 stale 产物喂 rolldown（实证：settings-file 旧 lib 引已改名的 SettingsProvider → `Missing export` 崩 build）；`git clean -xdf` + `pnpm install && pnpm run build` 全绿。super-dsh 编译 farm（`super-dsh/node_modules/@deepseek-ai/*`，316 links）用 **`super-dsh/scripts/sync-dsh-farm.mjs`** 幂等同步（0.1.7: 51 relink / 20 removed；vendor/* 平铺 + packages/*/* 两层布局都要收割）。**0.1.7 破坏面（已移植，super-dsh 0.1.3-l；现役 **0.1.3-q = 品牌轮**）**：① **插件兼容门**（plugin-compatibility preflight，硬 enforcement）——每个 row/bundle 的 `@deepseek-ai/dsh-*` peerDependencies 过 `semver.satisfies(runtime, range, {includePrerelease: true})`，不满足 → row `disabled`（"dsh: disabling profile plugin …"）/ bundle skipped；双检查点 = `loadProfileDirectory` 判 bundle + `prepareProfileEntries` 判 row（含 Include 展开与 group 递归）；super-dsh 全部 packs 的 dsh-* pin 依 user 裁决换 **`>=0.1.5-0 <0.3.0-0`**（better-dsh 同款；13 个 semver 边界用例验证）。② **heal 家族全删**（`healProfilesModuleFallback`/`createProfileResolutionGeneration`/`healIsolatedProfileModuleFallback`/`unlinkProfileModuleFallback`）→ `createRuntimeResolution`（纯解析表、零磁盘写）+ `PluginPackages` 进程内拦截（`{ resolution }` 取代 `{generation, behavior}`）；launcher 不再维护 profiles 级 `@deepseek-ai` farm——**测试若走 `boot()` 直调或裸 URL farm，必须自己投影 resolution entries 到 farm**（spawn-world / world-mount / world-plugin 测试已改）。③ **`dsh-agent-presets` 拆包**：`dsh-agent-preset`（AgentPreset 类）+ `dsh-agent-preset-registry`（宿主 `AgentPresetRegistry`，service 名仍 `agentPresets`）——roster/selection/document RPC/`agentPreset` projection/`agent-preset/*` typed 错误与事件增广全归宿主；6 个 adapter 的 `Single*PresetRoster` + 自有 projection 退役 → `register{X}Preset(ctx)` 向宿主 registry 注册固定 `PresetDefinition {id,name,description,plugins:[]}`；patch 行 `agent-presets: disabled` → `agent-preset-registry` 保持挂载 + `config.default` 钉单 preset（副产：`pluginInventory/list` 的 `compositionInventory is not a function` 随 registry 挂载消失）。④ **流协议上行帧**（2026-09-24 补录，先漏掉的一处）：`RemoteStreamClientMessage` 新增 `item`（上行项）与 `end`（上行半关闭），mux 服务端须丢弃已出表 stream 的迟到帧、有界 uplink inbox（默认 256KiB）、心跳 2s——super-dsh 自有 wire-compatible mux（`world-mux.ts`）已全面对齐，且 carrier 对世界网关的调用必须用规范参数序 `openWireStream(endpoint, payload, uplink, peer, signal, control)`（0.1.3-j 曾 3-4 参错位 → 世界页永远 Reconnecting，报告 §七）。⑤ 小 drift：`MessageSourceMap` 废共享 `plugin` kind（producer 各自 declare；user-approval 有专属 kind）→ `source.kind === "user-approval"`；`createSystemMessage` 单参；`announce(agent, source: 'startup'|'resume'|'clear'|'compact')`；`resolveBundleDir` 只认 anchor + profile 自身目录（world provision 已补 profile-local `@pgmi-builds` links）；`browser-auth` 认证后重定向 `./` 且 token URL 保留 mount 路径、frontend-static `<base href="./">`（per-world mount 亲和）；vendored `@deepseek-ai/cordis` 4.0.2→4.0.4。**环境坑**：本 agent 会话 env 自带 `DSH_HOME=/home/u1/.dsh`（跑在 dsh.service 里）——读 `process.env.DSH_HOME ?? 测试home` 的测试会静默落 prod home（omp/hermes world-plugin 测试已加 prod 值视为未设的守卫）。**品牌轮 0.1.3-q（2026-09-24 user 裁决）**：`agent-worlds`/`aw` 临时名全剥——hub 包 `@pgmi-builds/superd-hub`（旧 `agent-hub`，目录 `super-dsh/superd-hub/`）、per-runtime 包 `@pgmi-builds/agent-<runtime>`（旧 `agent-adapter-*`）、主 pack exports `./hub` / `./agents/<runtime>`（旧 `./world/*`） / `./join` / `./web-trust`、cordis 插件名 `superd-hub` / `superd-web-trust` / `superd-join` / `agent-<runtime>`、服务键 `superd.world.*`、env 家族 `AW_*` → `SUPERD_*`、测试 home `.tests/aw` → `.tests/superd`、tarball 目录 `.scratch/superd-pack/`、unit `superd-4999-test`；`OMP_WEB`/`omp-web` 血统名同轮并入 `agent-omp`（浏览器 loader id、DOM tag、页面 global `__AGENT_OMP_MOBILE__`、sidecar 前缀）。`@pgmi-builds` scope（org 名）与 internal 概念「world」（mount/mux/provision 等）保留。报告：`docs/test-reports/2026-09-24-superd-rebrand.md`。原报告：`docs/test-reports/2026-09-24-dsh-0.1.7-rc.1-alignment.md`] []
+  - 上游 checkout 的**产物边界与 sanctioned 补丁集**：源 = **纯 src**（`apps/cli/{src,config,reference,tests}`、`packages/*/*/src`、`vendor/*`）+ 配置；构建产物 `lib/`/`dist/`、`node_modules/` 都在 `.gitignore` 里，只有 `pnpm install && pnpm run build` 之后才存在。它是 **pnpm monorepo**（`packageManager: pnpm@11.7.0` + `pnpm-workspace.yaml` + `pnpm-lock.yaml`；无 package-lock）。**三个允许的本地补丁（2026-09-14 user 放行；镜像 dsh-omp/dashr，除此之外零修改）**：① `pnpm-workspace.yaml` += `storeDir: /home/u1/workspaces/superd/.npm-cache/pnpm-store` + `verifyDepsBeforeRun: false`（pnpm 11 不读 `.npmrc`，用户级 store 在沙箱外只读）；② 根 `package.json` devDeps += `unrun@^0.3.1`（tsdown 0.22 config loader 需要，上游未声明）；③ `packages/client/tsdown.client.ts` 的 `REPOSITORY_ROOT` 改 `resolveRepositoryRoot()`（锚 `pnpm-workspace.yaml`，cwd 回退；unrun 会改写 `import.meta.url`）。跑源码 = `pnpm install`（**不是 `npm install`**）→ `pnpm run build`（`tsx scripts/build.ts` = native-system + lib(host/client) + web）→ `pnpm run dsh`；build 后也可直接 `node apps/cli/lib/bin.js`。node 引擎用系统的（`/opt/node-v22.23.2/bin/node`）[updated 2026-10-02：三补丁在 0.2.0-rc.2 上原样重放、全 hunk 命中] []。
+  - 声明 pin：**仓根 `package.json` 已无 dsh 依赖声明**（2026-09-22 housekeeping 后仅占位）；dsh 版 pin 的活体在 **super-dsh 各包的 `peerDependencies`**：`@deepseek-ai/dsh-*` = `>=0.1.5-0 <0.3.0-0`（2026-09-24 user 裁决 "v0.1.5 ~ v0.3.0"，0.1.7 兼容门-compatible）[updated 2026-09-24] []。
+  - 框架伴生：`@deepseek-ai/cordis@4.0.4`（vendored，随 checkout；0.1.7 起 4.0.4，0.2.0-rc.2 未变）、`cordis-plugin-loader/include` 等 vendor 同 checkout、`schemastery@3.18.x`、`commander@15.0.0` [updated 2026-10-02：随 0.2.0-rc.2 checkout 复核，cordis 4.0.4 / schemastery 3.18.4 未变] []。
+- **install 树 = 谁跑 launcher，谁就是解析源（2026-09-14 实测；0.1.7 改版）**：`apps/cli/src/profile-boot.ts` 的 `INSTALL_ANCHOR = <运行中 dsh 的 package.json>`；0.1.7 起 launcher 用 `createRuntimeResolution({installAnchor, profile})` 计算**纯内存解析表**，经 `PluginPackages` 进程内拦截导入——**不再写任何磁盘 symlink**（`healProfilesModuleFallback` 家族已从上游删除；launcher 也不再维护 `$DSH_HOME/profiles/node_modules/@deepseek-ai` farm）。**同一 DSH_HOME 换 installation 的三条路**：① **自包含 dev base**：在 checkout 里 `pnpm install && pnpm run build`（带三个 sanctioned 补丁）→ checkout 成为 installation（锚 = 其 `apps/cli/package.json`）；② 另一前缀装一份预编译包（`npm install -g --prefix ~/.local-dsh-<ver> @deepseek-ai/dsh@<ver>`）跑 `~/.local-dsh-<ver>/bin/dsh`；③ profile 本地 pnpm 树物理装 `@deepseek-ai/*`（解析更近，但**违反单实例纪律**，仅当清楚后果时用）。**注意**：一个 DSH_HOME 只服务一种 installation（拦截表按 anchor 算；**表 = 重定向 + 原生兜底、按 importer 生效、installation scope 进程内冻结、profile `node_modules` 物理包即装即解析**——实测语义见 `docs/07` §5.3；进程内 `boot()` 的 world **无表**，故世界树必须自带 farm）；super-dsh 世界树仍需裸 URL farm（`worldHome/profiles/node_modules`），由 `provisionWorldProfile` 自己维护（`@pgmi-builds` 逐包 links + profile-local links，`@deepseek-ai` 侧 sources = install tree scope ∪ 工作区枚举——**home farm 源料 2026-09-24 退役**：user 删 prod `~/.dsh/profiles/node_modules` 并重启 3080 实证无害，该层只是同一 install 树的冗余投影）。
+- **版本事实（2026-09-14）**：alpha.2→rc.2 = 3170 文件、+104k/-18k（大周期）。`--host 0.0.0.0` 在 rc.2 被 CLI 硬拒（`packages/bundle/web-app/src/startup.ts`，RCE 安全门），但 webserver config schema 仍收 `0.0.0.0`（见 §三端口纪律）。
+- **对齐轮程序（上游每发一版必跑）**：
+  - **两条轨并行（2026-10-02 user 裁决）**：① **实机轨**——直接在目标机（dev3）装 registry 上的最新上游版本实装跑兼容：上游是 core 系统，不匹配基本自愈，成本低且等于真实消费者现场；② **源码轨**——本仓 `upstream/` checkout 仍必须跟到同一最新 tag：registry 装的是**预编译 JS**，coding agent 的参考基准只能是源码。两轨都要，缺一不可（首次实做：0.1.9 × DSH 0.2.0-rc.2，见上条台账）。
+  1. `git fetch --depth 1 origin tag <new-tag>` → checkout；
+  2. diff 关键文件清单：`packages/boot/app-boot/src/{index,profile}.ts`、`packages/bundle/web-app/{cordis.patch.yml,src/*}`、`packages/boot/cmdline/src/index.ts`、`packages/client/connection/src/{browser-auth,rpc-host}.ts`、`packages/host/{frontend-static,webserver}/src/index.ts`、`packages/util/home-paths/src/index.ts`、`apps/cli/src/profile-boot.ts`、`vendor/*/package.json`；
+  3. 无破坏 → 全仓 sed 换 pin（每包一行）→ `npm install --cache .npm-cache` → `npm test`；有破坏 → 更新受影响代码块与计划文档后再换 pin；
+  4. 记录对齐结论（commit message 或 docs）；
+  5. **对齐验收含 per-runtime 会话面（2026-09-23 教训）**：boot 级全绿（world-failed 0 / mount 200 / 零降级）只是入场券——每个 runtime 至少跑一次 create+prompt（+resume），否则 0.1.6 的 `announce(agent, source)` 类签名断裂只会在用户点开会话时爆炸（先例：codex "resume failed for session"，根因是 5 个 adapter 被 vendored rc.2 假类型遮蔽编译通过、运行时炸）。**vendored 类型存根（`agent-*/types/@deepseek-ai`）已全数拔除**——tsconfig `paths` 钉假类型 = 脚手架遮丑，永远禁止回潮。
+  6. **换 pin / 装依赖后查 `@deepseek-ai` 单实例**：`npm install`（尤其子包内）会把 install 树符号链接重新物化为物理副本 → 双模块实例 → `dsh-scope` `kScope` 分裂（scope 全家桶症状）。检查命令见 §三（现役 scope = `super-dsh/node_modules/@deepseek-ai`，`scripts/sync-dsh-farm.mjs` 维护；旧 heal 修复脚本已随 2026-09-22 housekeeping 移除，出错时手工重链 symlink）。
 
-- 核: `~/.local` npm 全局 `@deepseek-ai/dsh` 0.1.7-rc.1（2026-09-23/24 user 升级）；profile `web` 在 `~/.dsh/profiles/web`（pnpm hoisted 物理 tree）。
-- 插件线: `./better-dsh` `npm run build`（= `tsdown && npm run build-client`）→ md5 核对同步 `lib/` 到 `~/.dsh/profiles/web/node_modules/better-dsh/lib`（v0.2.1c 的部署方式）→ 重启 `dsh.service`。
-- harness 依赖线: **已退役**（原 `better-dsh/node_modules/@deepseek-ai/*` symlink 到 dsh-alpha 源码的方案，2026-09-02 已删——实测 host ②③ 层全量自供，嵌套 symlink 无一必需，且 alpha.1 指向对 alpha.3 host 是版本偏斜负债）。
-- 解析即第一节 ①→④ 分层；现已验证插件运行期只依赖 ②③（host 自供）+ ① 的 schemastery/cosmokit。
-- ~~剩余待验证~~ **已收敛（2026-09-02）**: `./better-dsh` 构建产物 md5 同步线的 prod 冒烟已跑（v0.2.1c 同步态活体 4 探针 4/4）；profile 锁/lockfile/部署位已统一为 `0.2.1-d`（经 `dsh plugin add @pgmi-builds/better-dsh@0.2.1-d`，见第一节供应链年龄门）。**发布态部署的正道是 pnpm add 精确版本**，手工 md5 同步仅限未发布的本地迭代。
+---
+
+## 三、Dev/Test 约定
+
+- **依赖解析 = 单一 install 树（2026-09-24 修订：home 级 farm 退役；2026-09-26 物理清零）**：0.1.7 起 launcher 解析走进程内表（§二），`<home>/profiles/node_modules` **不再被任何机制维护**——heal 已死、世界 provision 源料亦不再吃它（2026-09-24 user 裁决 + prod 实证）。**2026-09-26 全仓清扫（user 指令）**：11 处历史残留 farm 物理删除（`.tests/profiles/node_modules`、`.tests/superd/profiles/node_modules`、`.tests/hub-test-home/profiles/node_modules`、`.tests/plugin-acc2/profiles/node_modules`、`.tests/agents/hermes/profiles/node_modules`、`.tests/superd/agents/{agy,claude,codex,hermes,omp,pi}/profiles/node_modules`）——含旧"夹具自投影"残留（world-mount 测试的 profiles 级投影已随 0.1.7 对齐删除，`world-mount.test.mjs` 明注 "the profiles-level farm projection is gone"；`provisionWorldProfile` 自 2026-09-25 起每次运行自清 worldHome 级 stale farm——stale links 会 shadow 安装表条目）。清扫后验证：pack 线交付形态全链 boot（4995，compat home）shell 200 + 6 world 全 mount（`/claude/`、`/omp/` mount 200）+ 日志零解析错误。dev base = **repo 内 checkout build**（`upstream/deepseek-harness/{packages,vendor}/*`）——2026-09-14 起；更早是全局 install（`/home/u1/.local/lib/node_modules/@deepseek-ai/dsh/...`）。**仓根 `node_modules` farm 已于 2026-09-22 housekeeping 删除**（原 heal 维护的 symlink farm，`scripts/heal-modules.mjs` 亦已删）。**这是必需态，不是违规**（本文旧版「repo 本地 node_modules 是唯一依赖来源 / 禁止 symlink 全局树」已被 2026-09-10 实测推翻）。禁止的只是 NODE_PATH 顶替安装树。**单实例纪律**：任何 `npm install`（尤其子包内）都会把 `@deepseek-ai/*` 重新物化成物理副本 → 双模块实例 → `dsh-scope` `kScope` Symbol 分裂（症状：`file-upload: operation requires the Agent's own scope`、`agent-presets: refusing to compose an unscoped context`）。每次 install 后必查现存 scope：
+  ```bash
+  find super-dsh/node_modules/@deepseek-ai -maxdepth 1 -mindepth 1 ! -type l   # 只应剩历史物理遗留，新条目应为 symlink
+  ```
+  **`~/.dsh` 的 scope 除非有意，绝不指**。**仓根 `package.json` 刻意不声明 dependencies**：各线依赖由各线自己的 `package.json` / `node_modules` 负责（super-dsh 各 adapter 包自包含）。仓内缓存安装用 `npm install --cache .npm-cache`（默认 `~/.npm` 在沙箱下 EROFS）；exact-pin，无 `^`。
+- **Test home / profile 路径（2026-09-27 user 裁决：home 复用不换场）**：dev/test 一律 `DSH_HOME=<仓根>/.tests`（gitignored；2026-09-22 由 `.superd-test` 改名）或 tmpdir。**测试现场不需要换 test home**：一个测试线一个长寿命 home（整包线 = `.tests/superd`），**隔离单位 = profile**——`$DSH_HOME/profiles/<name>/` 自带 `package.json`（`dsh.profile.bundles` 顺序 + `dependencies` 的 `file:` tarball）与 `node_modules`（tarball 物理安装），被测件与 home 其余部分天然隔离；换被测版本 = 重建 profile（launcher 脚本幂等，只动 profile 目录）。**user data 是测试资产**：`sessions/`、`storages/`、`.credentials.yaml`、`agents/<label>/` 跨重置保留，已创建会话直接拿来测。全新 home 只在专门验证首次行为（first boot / provision / 首会话）时经 `SUPERD_HOME_DIR=` 临时指一个，用完即删。**绝不触碰 `~/.dsh`（Dash Agent prod）与 `~/.superd`**。bootstrap 写死在 `super-dsh/test/start-4999.sh`（唯一；旧 `scripts/profiles/{ma,ctx0,ctx1-omp,m0}.mjs` 集中目录已随仓重排移除）。用户的 `DSH_HOME` 环境变量**永不被 superd 继承**（`src/home.ts` 契约）。
+- **上游源码（upstream src）**：`upstream/deepseek-harness` @ **`dsh-v0.2.0-rc.2`**（gitignored checkout，见 §二）；需要 diff 上游行为时进入，跑源码 = `pnpm install && pnpm run build && pnpm run dsh`（pnpm monorepo，**不是 `npm install`**）。**repo-local home（现 `.tests`，旧名 `.superd-test`）的线自 2026-09-14 起吃 repo 内 build**（checkout 已 install+build，`apps/cli/lib/bin.js` 即 installation）；⚠️ 带 `DSH_HOME=$HOME/.dsh` / `$HOME/.omp/omp-web` 的线（`archive/ui-preact`、`archive/react-codemod-to-lit`、`archive/multi-agent/agent-omp-sdk`，均已入库 `archive/`）**必须继续用机器全局 dsh，绝不可指向 repo build**——那个 installation 会把 prod home 的 fallback 重写成自己（触碰 `~/.dsh`，红线）。
+- **端口纪律（2026-09-27 user 裁决：测试口无主化；user 恒以非 loopback 实测）**：
+  - **499x 一族全是测试口，没有谁占用谁（4999 也是）**。起线前 `ss -tln` 动态探测；占用者经 `/proc/<listener-pid>/cgroup` 判定归属——属测试基建（user unit 名 `superd-*` / `dsh-*` / `*-test` / `*-relay`，含姊妹仓 dashr 的 rig）→ **停掉接管**；非测试监听 → 拒绝换口。`super-dsh/test/start-4999.sh` 已内置此逻辑。
+  - **4999 = live Caddy `test.pc.internal.test → 127.0.0.1:4999`**（`header_up Host` 重写 + 剥 `Origin`，无 gate）：绑 4999 的实例用户随时可见（`https://test.pc.internal.test/?token=…`）——这是**通道事实**，不是占用特权。
+  - **非 Caddy 端口**：用户主要经 LAN 访问，由 launcher 脚本自动拉 **socat 中继**（unit `superd-lan-<port>-relay`）：`/usr/bin/socat TCP-LISTEN:<port>,fork,reuseaddr,bind=<LAN_IP> TCP:127.0.0.1:<port>`，只绑 LAN IP、**绝不绑 0.0.0.0**，并把 `--trusted-host <域名/LAN-IP>` / `SUPERD_TRUSTED_HOSTS` 带上（LAN Host 才过 /api fence）。Caddy 加域名段**未经明确批准勿改 live Caddyfile**。
+  - **勿用 config `host: 0.0.0.0` 当 LAN 手段**：CLI `--host 0.0.0.0` 在 rc.2 被硬拒（RCE 门），patch 层字面量 `0.0.0.0` 虽能绕过（schema 仍收），但那是 off-label 的 RCE 暴露面——优先 Caddy / socat。
+  - **永不触碰 3080（Dash Agent prod）/ 3081（omp-web prod）**；prod 3080 的重启/关停只凭 user 明确下令（§三·拉起关停红线）。
+- **拉起 / 关停（sandbox-safe）**：**勿从 agent 沙箱 bash 直拉 daemon**（继承嵌套沙箱 → bwrap 探测失败 `SANDBOX_UNAVAILABLE`）。一律 `systemd-run --user`（沙箱内连 user bus 被拒，单命令 `danger-full-access` 升级）。配方：`WorkingDirectory`=仓根、`Environment=DSH_HOME=<仓根>/.tests`、`UnsetEnvironment=DISPLAY WAYLAND_DISPLAY`、日志 append 到 `.scratch/<unit>.log`、unit 名 `<线名>-<port>-test`。ExecStart 的 launcher：**repo-local home 的线 = repo build**（`/opt/node-v22.23.2/bin/node <仓根>/upstream/deepseek-harness/apps/cli/lib/bin.js --profile <name> --no-open [--trusted-host <h>]`）；**prod-home 的线 = `/home/u1/.local/bin/dsh`**（见上条红线）。**优先复用既有脚本，勿手搓**：现役模板 = `super-dsh/test/start-4999.sh`（唯一；端口预检 + token 提取 + rig 旋钮——per-agent standalone 线已随 2026-09-24「场景退役」删除，场景级验证只走整包 pack 线）；历史模板在 `archive/*/test/`。关停 `systemctl --user stop <unit>`（**勿 kill**）。**prod 3080（`dsh.service`，Dash Agent 本体）的重启/关停只凭 user 明确下令**（2026-09-25 红线：该实例承载其他 agent 的在役任务；`dsh plugin add` 类安装操作可做，重启不可自决——含延时 timer 等变相手段）。
+- **典型启动链（历史参考：`archive/multi-agent/test/start-4999.sh`，ma 线已存档；现役以 `super-dsh/test/start-4999.sh` 为准）**：`bash start-<port>.sh` → ① `ss` 预检占用即拒 → ② 线自带 bootstrap 幂等生成 `.tests/profiles/<name>/`（`package.json` 的 `dsh.profile.bundles` + `cordis.patch.yml` 端口/host + `pnpm-workspace.yaml`）并 `pnpm install`（hoisted；`@deepseek-ai/*` 靠 fallback 不在 profile 树里）→ ③ `systemd-run --user --unit=<线>-<port>-test -p WorkingDirectory=<仓根> -p Environment=DSH_HOME=<仓根>/.tests -p Environment=PATH=… -p StandardOutput/Error=append:<log> <node> <dsh> --profile <name> --no-open [--trusted-host …]`——argv = **`node <dsh launcher js>`**（`node=/opt/node-v22.23.2/bin/node`；`dsh` = **repo build** `$REPO/upstream/deepseek-harness/apps/cli/lib/bin.js`，`SUPERD_DSH` 可覆盖，缺 build 才回落 `/home/u1/.local/bin/dsh`；shebang 被显式 node 调用绕过）→ ④ 轮询 `ss` 等监听 + 只取本次日志水位后的 token → 打印 local/lan/wan URL。（历史链中的 `scripts/profiles/ma.mjs` 与 `scripts/heal-modules.mjs` 重链步骤已随 2026-09-22 housekeeping 移除。）**进程内接着**：`runCli()` → `runProfile()` → `loadProfile()`（读每个 bundle 的 `dsh.bundle.patch`；0.1.7 起此处**零磁盘写**——`createRuntimeResolution({installAnchor, profile})` 算纯内存表，`PluginPackages` 进程内拦截导入；旧 `healProfilesModuleFallback` 钉 `$DSH_HOME/profiles/node_modules` 的步骤已随该家族消亡）→ `composeEntries()`（bundle patch 依序拍平 + profile patch + `--patch`）→ `boot()` 挂**唯一的 `cordis:include` 根** → Loader 按 `name` 逐个 import/apply → `webserver` 行绑定端口并打印 token（`--no-open` 抑制开浏览器）。
+- **token / 认证（2026-09-27 user 裁决：免 token 仪式）**：认证签名 **seed 持久在 `$DSH_HOME/.credentials.yaml`**——home 不换则 seed 不变，**浏览器 cookie 30 天内（`connection.cookieMaxAgeDays` 默认）跨重启直接可用，重启测试线不需要换 token、不需要重注 cookie**。URL 里的 `?token=` 是 per-boot 进程内随机 launch token，只负责「铸 cookie」第一次；需要重走 token 的仅三种情况：home 被删/换、访问 authority 变了（cookie 按 Host 绑定）、cookie 过 30 天窗口。机制细节见 `docs/07` §3.3。操作技巧：从 append 日志取 token 先记 `wc -l` 水位、只在水位之后 grep `?token=…`（否则抓到上一轮）；curl 冒烟 `curl -c jar -L '<token-url>'`（303 靠 cookie 保认证）；存活探针：GET `/` 无 token/cookie → 401 `dsh web authentication required`。
+- **验收模式（2026-09-09 user 裁决）**：起了 Web 服务器就停下来交给用户——给出 token URL（+ LAN/WAN URL）、**保持运行**，等用户亲手测完再收尾；不得自行 kill 完才报告。
+- 测试/调试：各线 `npm test`；组合查看 `dsh --profile <name> --dump-config`（与 boot 共用同一 patch 算法）。**插件开发/测试的一切机制细节见 [`docs/07-cordis-dsh-dev-test-guides.md`](07-cordis-dsh-dev-test-guides.md)（唯一通用指引，两层文档制的第二层）**；§七只留速记。
 
 ---
 
-## ✅ prod 插件嵌套 symlink 悬空 — 已清理（2026-09-02），重启安全
+## 四、规划与执行工作流（Superpowers）
 
-`dsh-alpha` 改名 `z_dsh-alpha` 后，`~/.dsh/profiles/web/node_modules/better-dsh/node_modules/@deepseek-ai/*` 的 17 条 symlink 曾全部悬空。**实测: daemon 重启不会崩** —— 运行期实际 import 的 14 个 `@deepseek-ai/*` 包全部从 ②③ 层解析（host 自带）；`dsh-client-ui-slots` 不是运行期 import（只在 `scripts/build-client.ts` 的 client external 列表，浏览器侧经 shell module table / `.dsh-module-fallback` 解析）。
-
-**为什么声明 58 个 peerDeps**: 全是 dev-time 需要 —— `tsc --noEmit` 类型检查、`tsdown` dts、以及 vitest 单测（在 dsh host 之外直接 import harness 包；dev workspace 靠 pnpm `autoInstallPeers` 装上）。部署副本里它们是 `peerDependencies` 且 `peerDependenciesMeta` 全部 `optional: true`，pnpm-lock.yaml 对嵌套路径 0 引用 —— pnpm 从不要求它们在场。真正的 `dependencies` 只有 `@deepseek-ai/schemastery`（非 harness API，是插件自用的 Schema 描述符库；描述符是结构化数据、宿主 cordis 当数据解释，故可以自带副本，与 cordis 必须 peer 的身份要求相反）+ cosmokit（schemastery 的传递依赖）。
-
-**已执行**: 删除 17 条悬空 symlink，保留 `schemastery`+`cosmokit`；清理后 14/14 运行期 import 解析复测通过。曾考虑的 A（重指 z_dsh-alpha，alpha.1 与 alpha.3 host 版本偏斜、「两份 cordis」身份风险）与 B（重指 upstream checkout）均已否决。另: ~~profile package.json 锁 `0.2.1-a` 而部署实为 `0.2.1-c`~~ 漂移已于 2026-09-02 收敛——锁/lockfile/部署位统一 `0.2.1-d`（pnpm add 精确版本线）。
+- **入口纪律**：任何任务开始前先读 `.agents/skills/superpowers/using-superpowers/SKILL.md` 并遵循其路由——**只要存在可能适用的技能（哪怕 1% 可能），先调用再行动**。常用路由：「做/设计 X」→ `brainstorming` 先行；「修 bug」→ `systematic-debugging` 先行；带计划执行 → `writing-plans` → `executing-plans`（配 `test-driven-development` + `verification-before-completion`）；分支收尾 → `finishing-a-development-branch`；评审 → `requesting-code-review` / `receiving-code-review`。**优先级：user 指令 > 本仓 AGENTS.md > 技能 > 默认行为**。
+- **规格落盘**：变更规格写 `docs/specs/<topic>/spec.md`（纯文档、格式自明，按需创建）；历史提案底稿在 dashr 仓 `openspec/changes/archive/`。
+- 流程链：brainstorming（已完成：grilling 4 轮 → 蓝图 v0.4a + ADR 0001–0007）→ **writing-plans**（当前）→ executing-plans / subagent-driven-development。
+- 计划落位：`docs/superpowers/plans/YYYY-MM-DD-<feature>.md`；TDD bite-size 任务，每任务独立可测交付 + commit。
+- M1 计划序列：**P1 骨架+宿主（计划就绪）** → P2 Machine/Pairing/Selector → P3 DSH adapter 全透传 → P4 OMP adapter → P5 DEV3 remote + 半构建验收。
+- 决策落档纪律：设计裁决进蓝图 §9 决策表/ADR；开放问题关闭用蓝图 §11 划掉格式；计划内决策记录在任务 Interfaces。
 
 ---
+
+## 五、Repo 状态（2026-09-22 快照，apps/ 退役重排）
+
+- **主线 + 存档布局（2026-09-22 housekeeping，user 四项裁决落地；2026-10-04 补 SDK 半）**：`super-dsh/` = **主线**（原 `apps/agent-worlds`；单一 pack `super-dsh` = `superd-hub` + `agent-{agy,claude,codex,hermes,omp,pi}` adapter 兄弟目录 + **三个可选 SDK 半目录 `agent-{agy,omp,codex}-sdk`**（默认 `disabled: true`、零依赖声明、运行时自取；见 `super-dsh/AGENTS.md`）+ `test/` 启动脚本族；局部规则见 `super-dsh/AGENTS.md` 与 `agent-adapter-dev-rules.md`）；`archive/` = **存档线**（`multi-agent/`（git-tracked）、`multi-agent-ctx/`（冻结）、`ui-preact/`、`ui-lit-compile/`、`react-codemod-to-lit/`）——**`apps/` 目录退役删除**（连带清除 `apps/.npm-cache` 469M 旧缓存）；`.tests/` = **dev/test home**（原 `.superd-test` 改名，809M，gitignored；其中 `superd/` = 4999 pack 线专属 home，内含 `agents/<label>/` world home 与 `profiles/<label>/`）；`.worktrees/` = 未来 dev worktree 落位（git 排除）；`upstream/` = 上游 checkout（dev base）；`docs/` 设计正本齐备（blueprint / boundaries / adr / superpowers plans / test-reports）。**已删**：根 `node_modules/`（heal farm 1.2M）、`scripts/`（profiles bootstrap + heal-modules.mjs，bootstrap 回归各线 `test/`）。根 `package.json` 仅占位（无 dependencies、无 scripts）。git 排除分工：`.gitignore` = `.tests/`、`node_modules/`、`upstream/`、`.npm-cache/`、`.dsh_better_edit/`；`.git/info/exclude` = `.scratch/`、`.worktrees/`、`archive/`、`super-dsh/`（exclude 不影响已 tracked 的 `archive/multi-agent`）。
+- **运行态（2026-09-22 快照）**：housekeeping 时点 ps 未见本仓 dsh/bin.js 实例（4990/4999 端口有监听、归属未确认；起线前照旧 `ss` 预检）；3080 = Dash Agent prod、3081 = omp-web prod（同机其它仓，勿动）；4999 的 Caddy `test.pc` 指向保持。
+- **上游 checkout @ `dsh-v0.2.0-rc.2` 为 dev base**（2026-10-02 rebase 轮，清产物重建全绿）：`upstream/deepseek-harness/apps/cli/lib/bin.js` 即 installation。**`@deepseek-ai` 现役 scope 仅剩编译/测试 farm**（`super-dsh/node_modules/@deepseek-ai/*`，`scripts/sync-dsh-farm.mjs` 维护）+ provision 的 profile 级 `@pgmi-builds` links；一切 `<home>/profiles/node_modules` farm 已于 2026-09-26 物理清零（§三清扫记录；launcher 级 farm 随 heal 家族消亡，夹具/世界 home 级残留亦全删）。参考源 dsh-omp（OMP adapter 蓝本）与 dashr 仓在同机 `~/workspaces/`。
+- 待决：`.agents/`（superpowers 技能目录）入库与否——user 裁决搁置（ignore）。
+
+---
+
+## 七、通用插件开发 / 测试规范（速记 + 指针；2026-09-27 两层文档制）
+
+> **唯一指引 = [`docs/07-cordis-dsh-dev-test-guides.md`](07-cordis-dsh-dev-test-guides.md)**（两层文档制的第二层：根 AGENTS = 总纲红线，docs/07 = 全部机制细节；各子目录 AGENTS 只放局部规则与指针，不复制其内容）。本节只留铁律速记，细节一律看 docs/07；§〇 红线优先。
+> 2026-09-27 user 四裁决（已落 docs/07 与 `super-dsh/test/start-4999.sh`）：**测试口无主化**（§三）/ **test home 复用不换场**（§三）/ **seed 持久 ⇒ cookie 30 天免重注入**（§三·token）/ **per-agent 场景测试退役永续**（docs/07 §6.2）。
+
+**组合与插件面**
+
+- **一切皆插件行**：patch 行按 id **整行重述**（非深合并）；插件顺序由 **`inject`** 决定，不看 YAML 位置。
+- **两个平面**：跨会话共享放 **host composition**；单 session 贡献放 **agent preset**。发布服务的行不得裸放 preset（进程全局 realm，第二个 session 挂载即硬错）；preset 自有服务必须把提供者与消费者包进同一 `isolate` realm group。
+- **供给三分桶**：被组合替换的服务 = **`inject`**；宿主 API 库函数/类型 = **`import`** + optional peer；自带真依赖 = **`import`** + `dependencies`。
+- **override 三条硬边界**：① 浏览器 module table 同 id = 双侧硬错；② cordis 同 scope 同名 service = 硬错（仅祖先 / `isolate` 可遮蔽）；③ 官方 UI 组件遮蔽 = slot 同 cell 更低 priority 注册。
+
+**client 半边**
+
+- 纯逻辑层写成可脱离浏览器单测的纯函数；UI 注入层只寻址官方表面（服务方法 / 语义 `data-*` / 官方控件），第三方插件 DOM 永不作状态输入。
+- `CLIENT_EXTERNALS` 名单只决定「内联 or 留 `require`」，不是 `declare`；官方 UI 原语与宿主同一模块实例，**绝不自行 vendor**（名单 + purity gate 在 `superd-hub/scripts/build-client.mjs`）。
+- **client lane 门**：client 半边不得被 tsconfig `exclude` 到零类型检查（已立：`superd-hub/tsconfig.client.json` + `agent-omp/tsconfig.client.json`，串进各自 build）。
+
+**依赖与版本**
+
+- 归属三分：消费者会装 = `dependencies`；宿主提供 = `peerDependencies` + `optional:true`；仅开发期 = `devDependencies`。
+- **版本同源门** + ⚠ 预发布 tuple 坑：`>=0.1.5-0 <0.3.0-0` 在 pnpm 解析时不匹配 `0.1.7-rc.1`，auto-install 会回落 `0.1.5-rc.3`——**永不子包内 `npm install @deepseek-ai/*`**（物化物理副本 → 双模块实例 → `kScope` 分裂）。
+
+**命令与热插拔**
+
+- `dsh plugin --profile <n> …` = pnpm 透传（子命令是 `remove` 不是 `delete`；成功后 `reconcile()` 自动维护 `dsh.profile.bundles`；失败自动回滚）；tarball / 本地路径一等支持（相对路径锚调用者 cwd）。
+- **热插拔 Comply or Explain**：行为改动应能用「client bundle 重建 + 刷新」「配置热重载」「`plugin add`/`remove` 热装卸」验证而不重启——profile 依赖面热生效 ≈5–15s（窗口读数宁长勿短）；**不热的只有** `node_modules` 内代码替换与 installation-scope 表变更。**remove→add 循环不是重启替代**（add 不回装 rows）。结论必须在刷新链窗口（**≥15s**）后下。重启后必须复验：端口 + boot graph（`--dump-config`）+ 挂载/认证探针。
+- 启动一律走**产物面**（`apps/cli/lib/bin.js` + 裸 node；tsx 源码启动 = 双平面 symbol split）；daemon 一律 `systemd-run --user`。
+
+**测试环境**
+
+- **端口无主化**：499x 全是测试口（4999 也是），起线前 `ss` 动态探测，测试 unit 占口自动接管（§三端口纪律）。
+- **home 复用**：长寿命 home 是常态，user data 是测试资产；全新 home 只为验证首次行为临时指（§三·Test home）。
+- **seed 持久**：`.credentials.yaml` 不随重启/重装 profile 变，cookie 30 天免重注入（§三·token；docs/07 §3.3）。
+- **种子/运行分离**：seed = `super-dsh/test/start-4999.sh`（入库幂等），运行 home = `.tests/*`（gitignored）。
+- **场景级验证唯一入口 = 整包 pack 线 + dev3 实装**；per-agent 场景测试退役不回潮（docs/07 §6）。

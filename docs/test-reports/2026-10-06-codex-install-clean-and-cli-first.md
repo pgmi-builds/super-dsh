@@ -1,0 +1,55 @@
+# 2026-10-06 — codex CLI-first + 安装面零二进制 验证报告
+
+对应计划：`docs/superpowers/plans/2026-10-06-codex-cli-first-runtime-fetch.md`。
+状态：**代码/测试/整包完成；4999 重启与 dev3 实装待安排；未 publish。**
+
+## 验证矩阵
+
+| 层 | 结果 |
+|---|---|
+| agent-codex 单元/契约 | 260/260（含新 `codex-runtime-fetch.test.mjs` 9 项、`package-contract.test.mjs` 4 项、发现顺序改写后 12 项） |
+| superd-hub | 526/526 |
+| 其余组件回归（omp 77 / omp-sdk 76 / agy 74 / agy-sdk 40 / claude 248 / pi 56 / hermes 135 / codex-sdk 205） | 全绿（codex-sdk 含 `--save-exact` 同修后的 sdk-runtime 套件） |
+| pack 级契约 `test/pack-contract.test.mjs` | 3/3（全 pack 无 install hook、无 codex binary/SDK 依赖声明、root 无 optionalDependencies） |
+| 整包 pack（唯一入口 `scripts/pack.mjs`） | `super-dsh-0.1.11-a.tgz`；tarball `dependencies` = `['@earendil-works/pi-coding-agent','zod','@modelcontextprotocol/sdk']`，无 optionalDependencies、无 scripts |
+| **真路径探针 ①**（本机有 PATH CLI） | `npm run fetch-codex-runtime` → `source:"cli"`，`command:/home/u1/.local/bin/codex`，**零下载**（CLI 优先实证） |
+| **真路径探针 ②**（PATH 置空 + desktop 清空，模拟裸机用户） | 真实 `npm install --save-exact --ignore-scripts --omit=dev @openai/codex@0.160.0` → 4s 完成；marker `{packageVersion:"0.160.0", smokeVersion:"codex-cli 0.160.0"}`；smoke 真跑 `codex-cli 0.160.0`；复跑 1ms 零网络（幂等） |
+
+## 探针抓出并修复的两个真 bug
+
+1. **npm 12 移除 `--exact` 别名**（`EUNKNOWNCONFIG`）：`codexInstallArgv` 与
+   `agent-codex-sdk` 的 `sdkInstallArgv` 同改 `--save-exact`（`agent-omp-sdk` 用
+   `bun add --exact`，bun 原生旗标，不受影响）。此前两条 codex 线的真 fetch 在
+   npm ≥12 的机器上会直接失败。
+2. **smoke 步相对路径陷阱**：entry 在 cwd 切换到 runtime dir 后 re-resolve。
+   生产 worldHome 恒为绝对路径，但按 `model_catalog_json` 同款教训改为
+   `resolve(layout.entry)` 显式绝对化。
+
+## 边界与遗留
+
+- fetch 属 last-resort：仅当 `CODEX_BIN`、PATH CLI、desktop 三层全空才发生；
+  本机探针①证明有 CLI 时零下载。fetch 只在首个 prompt 的 start 路径（lazy spawn 铁律不变）。
+- 0.1.11（已发布版）的安装期下载行为随本次修复消除；**用户侧升级到含本修复的
+  下一个字母迭代后**，新装/升级不再拖 binary；旧安装树里已落盘的
+  `@openai/codex*` 目录属 pnpm/npm install 树，随消费者重装自然收敛。
+- 验收流水（4999 形态冒烟 → dev3 实装 → 报告 → 放行）待 user 指令后执行；
+  `npm publish` 按 §〇.1.c 需单次明确放行。
+
+## 实装台账（2026-10-06，user 指令：tag → 4999 → dev3 → restart）
+
+- **git**：commit `3d90138`（fix: codex cli-first discovery and clean install…），tag **`v0.1.11-a`**（仓内惯例 v 前缀 + 连字符；`.claude/settings.local.json` 未入库）。
+- **4999 pack 线**：`start-4999.sh` 拉起 `superd-4999-test` + `superd-lan-4999-relay`；tarball 装入 **零 super-dsh build-script 提示**；冒烟 = shell(token→cookie) **200** + roster `native/pi/claude/codex/omp/agy/hermes` 全 `ready:true`（SDK 三行默认 disabled 不在册，正确）+ `/hub` 无参 401→语义正常、旧 `/<label>/` **404**、WAN 401（token 门）、`world failed` 计数 **0**。入口：`https://test.pc.internal.test/?token=…`（launcher 输出原样）。
+- **dev3 实装**：tarball → `~/.dsh/profiles/web`（`super-dsh: 0.1.11 → file:…0.1.11-a.tgz`，备份 `package.json.pre-0.1.11-a.bak`）→ `systemctl --user restart dsh.service`（20:49:46 CST active）→ **shell 200 @ 127.0.0.1:3080**、`world failed` **0**（5min 窗口）、装入零 build-script。registry 0.1.11（事故版）已被替换。
+- 待 user 亲手：2-machine hub 测试（本机 4999 ↔ dev3 3080）。
+
+## 清理与发布台账（2026-10-06 续）
+
+- **清理（user 指令：测试环境 + PC production + dev3）**：本地 prod profile `@openai/codex` 回归沉积 **427M**（0.1.11 装机带入；prod 仍跑 0.1.11，其 codex 兜底落 desktop/CLI 层不受影响）；4999 测试 home `codex-sdk/sdk-runtime` **324M** + `omp-sdk/sdk-runtime` **975M** + `claude/sdk-runtime` **54M**；repo pnpm store 剪枝 **557M**（581M→7.7M）；dev3 孤儿 `@openai/` 4K（pnpm 升级时已自剪 binary）。**合计 ≈2.34 GB**。保留：prod/dev3 `agents/claude/sdk-runtime` 各 54M（agent-claude 自有运行时 lazy 缓存，纯 JS 无 binary，按需自愈重取；要清零说一声）；pi（user 豁免）；原生 home（~/.codex、~/.omp、/usr/lib desktop core、~/.local/bin/codex）非插件携带，未动。清理后 4999/dev3 服务探针正常。
+- **发布（user 指令 push + publish，2026-10-06 二次澄清后执行）**：registry 版本 = **0.1.11-a**。澄清记录：2026-09-23「npm 不是 git」裁决的本体是 **registry 不可删除、不可回滚**（GitHub tag 可删可逆，npm 发了就发了），**不限制版本号形态**；字母后缀版本按 user 发布指令直接进 registry（本条为首次，取代 agent 此前「字母不进 registry」的错误推断——该推断曾短暂把版本抬到 0.1.12，未发布即回退，tag v0.1.12 已删）。
+
+## 发布实录（user 二次澄清后）
+
+- 执行链：git push（`master 1939714..9c631e1` + tag `v0.1.11-a` → github.com:pgmi-builds/super-dsh）→ `npm publish <已验证 tarball> --access public --tag latest`（凭据 = `~/workspaces/base/secrets/npm.env` 的 `NPM_ACCESS_TOKEN`，显式 authToken 旗标；与 0.1.10-e / 0.1.11 同一通道）。命令返回 `+ super-dsh@0.1.11-a`。
+- 版本形态：registry 版本 = **0.1.11-a**（2026-10-06 user 澄清裁决：npm-不是-git 讲的是不可删除/不可回滚，不限制版本形态；registry 既有 `next: 0.1.5-a` 字母 dist-tag 先例）。tarball 与 4999/dev3 验收物同源同内容。
+- 澄清前的错误推断（短暂把版本抬到 0.1.12、tag v0.1.12）未接触 registry，本地回退并记录在案；教训已写入根 AGENTS §〇.1.d。
+- registry 传播：publish 返回后 `npm view`/packument 有分钟级 CDN 延迟（0.1.11 同现象），按先例不重复 publish，后台轮询确认。

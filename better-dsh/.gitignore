@@ -8,3 +8,9 @@ lib/
 .vendor/
 __pycache__/
 *.pyc
+
+# Vendored real upstream build inputs must survive a clean clone.
+!third_party/**/lib/
+!third_party/**/lib/**
+!third_party/**/dist/
+!third_party/**/dist/**

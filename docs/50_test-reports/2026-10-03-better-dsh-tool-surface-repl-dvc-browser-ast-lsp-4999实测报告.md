@@ -137,7 +137,7 @@ ast_edit / ast_grep available — write dvc://ast_edit (structured rewrite) or d
 - `dvc://lsp` 的 `references` / `definition` / `format` / `rename` / `code_actions` / `reload` 未在本轮复测
   （2026-09-27 报告已全绿；本轮只补 `status`/`on`/`diagnostics`/`hover`）。
 - LSP **nag 路径**与 AST 提醒 **cap 边界**未覆盖（见 §7）。
-- `dvc://ast_edit` 相对路径未复测（F1 已在 `ast_grep` 上定位）。
+- ~~`dvc://ast_edit` 相对路径未复测（F1 已在 `ast_grep` 上定位）。~~ → **2026-10-04 已在 trimmed 安装位（4998, better-dsh 0.2.5-c）复测：F1 修复生效，`ast_grep` 与 `ast_edit` 的相对路径均按会话 workspace 解析，本轮无回归**；契约与边界面另见 `2026-10-04-ast_grep与ast_edit契约与边界实测报告.md`。
 - `agent` / `agent_message` / `agent_workflow` / `remote` / 各 URL scheme（`ctx://` `skill://` `dsh://`）
   本轮未测（不属本次指定的工具面；`ctx://` 另有 2026-10-02 专项报告）。
 - 生产 3080 **未部署验证**（本轮纯 4999，未触碰 prod）。

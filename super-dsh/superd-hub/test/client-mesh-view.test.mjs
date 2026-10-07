@@ -1,0 +1,226 @@
+// Client mesh view (mesh P1 Task 5): the pure halves of mesh-api.ts —
+// wire-body → row-view coercion, the token-URL pre-check, and the import-time
+// inertness contract. mesh-api.ts is node-safe by construction (no DOM, no
+// react, no @deepseek-ai imports) and the host tsc emits it to
+// dist/client/mesh-api.js precisely so this file can mirror the
+// client-switch precedent: pure functions under `node --test`, no jsdom, and
+// the fetch wrappers stay the browser's business (no network here).
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+// Import-time network trap: loading the module must not touch fetch. The
+// dynamic import below is the FIRST load of the module in this process, so
+// the trap genuinely guards module-evaluation time.
+const fetchCalls = []
+const realFetch = globalThis.fetch
+globalThis.fetch = (...args) => { fetchCalls.push(args); return realFetch(...args) }
+const mesh = await import('../dist/client/mesh-api.js')
+globalThis.fetch = realFetch
+
+test('import is inert — no fetch happens at module load', () => {
+  assert.equal(fetchCalls.length, 0)
+  for (const name of ['fetchMachines', 'addMachine', 'removeMachine', 'reprobeMachine']) {
+    assert.equal(typeof mesh[name], 'function', `${name} is exported as a function`)
+  }
+})
+
+// ---- coerceMachineList: the wire answer → panel rows ------------------------
+
+const FULL_BODY = {
+  self: { id: 'a1b2', label: 'local' },
+  machines: [
+    {
+      id: 'm4x9', name: 'dev3', origin: 'http://192.0.2.130:4999',
+      enabled: true, addedAt: 123, status: 'reachable', lastProbeAt: 456,
+    },
+    {
+      id: 'm7q1', name: 'lab2', origin: 'https://lab2.example.com:4999',
+      enabled: true, addedAt: 234, status: 'auth-expired',
+    },
+  ],
+}
+
+test('coercion: a complete body maps to rows; self rides alongside, never per-row', () => {
+  const view = mesh.coerceMachineList(FULL_BODY)
+  assert.deepEqual(view.self, { id: 'a1b2', label: 'local' })
+  assert.equal(view.machines.length, 2)
+  assert.deepEqual(view.machines[0], {
+    id: 'm4x9', name: 'dev3', origin: 'http://192.0.2.130:4999',
+    status: 'reachable', self: false,
+  })
+  // every status of the union survives the coercion untouched
+  assert.equal(view.machines[1].status, 'auth-expired')
+})
+
+test('coercion: the name is the sole display identity; lastProbeAt is not a view field', () => {
+  const view = mesh.coerceMachineList(FULL_BODY)
+  // 退役的 label 列不上视图（spec hub-roster-identity §4）：name 即标识
+  assert.equal('label' in view.machines[1], false, 'a legacy wire label is dropped, never rendered')
+  assert.equal('lastProbeAt' in view.machines[0], false, 'lastProbeAt stays a server-side fact, not a panel field')
+})
+
+test('coercion: self is DERIVED — a machines row whose id is the self id flags true', () => {
+  const view = mesh.coerceMachineList({
+    self: { id: 'a1b2', label: 'local' },
+    machines: [{ id: 'a1b2', name: 'me', label: 'me', origin: 'http://here', status: 'reachable' }],
+  })
+  assert.equal(view.machines[0].self, true)
+  // and the self flag never leaks from the raw row shape itself
+  const view2 = mesh.coerceMachineList({ machines: [{ id: 'a1b2', name: 'x', origin: 'http://x', self: true }] })
+  assert.equal(view2.machines[0].self, false, 'no self block on the wire → self:false even if the row claims otherwise')
+})
+
+test('coercion: missing required fields drop the row; missing status means pending', () => {
+  const view = mesh.coerceMachineList({
+    machines: [
+      { name: 'no-id', origin: 'http://x' },
+      { id: 'm1', origin: 'http://x' },
+      { id: 'm2', name: 'no-origin' },
+      { id: '', name: 'empty-id', origin: 'http://x' },
+      { id: 'm3', name: 'ok', origin: 'http://x' },
+      { id: 'm4', name: 'bogus-status', label: 'b', origin: 'http://x', status: 'on-fire' },
+      { id: 'm5', name: 'bad-probe', label: 'b', origin: 'http://x', status: 'reachable', lastProbeAt: 'yesterday' },
+    ],
+  })
+  assert.deepEqual(view.machines.map((m) => m.id), ['m3', 'm4', 'm5'])
+  assert.equal(view.machines.find((m) => m.id === 'm3').status, 'pending', 'no status on the wire → pending')
+  assert.equal(view.machines.find((m) => m.id === 'm4').status, 'pending', 'unknown status string → pending, row kept')
+  assert.equal('lastProbeAt' in view.machines.find((m) => m.id === 'm5'), false, 'non-number lastProbeAt dropped')
+  assert.equal(view.self, undefined, 'no usable self block → self omitted, rows still render')
+})
+
+test('coercion: bad types degrade — never a crash, never a partial row', () => {
+  for (const raw of [null, undefined, 42, 'nope', [], [{ id: 'm1', name: 'x', origin: 'http://x' }], true]) {
+    assert.deepEqual(mesh.coerceMachineList(raw), { machines: [] }, `raw ${JSON.stringify(raw)} → the empty list`)
+  }
+  // object shapes with a broken machines field
+  assert.deepEqual(mesh.coerceMachineList({}), { machines: [] })
+  assert.deepEqual(mesh.coerceMachineList({ machines: 'nope' }), { machines: [] })
+  assert.deepEqual(mesh.coerceMachineList({ machines: {} }), { machines: [] })
+  // entries that are not objects are skipped, valid siblings survive
+  const mixed = mesh.coerceMachineList({ machines: [42, null, 'x', FULL_BODY.machines[0]] })
+  assert.equal(mixed.machines.length, 1)
+  assert.equal(mixed.machines[0].id, 'm4x9')
+})
+
+test('coercion: a broken self block is dropped while machines still coerce', () => {
+  for (const bad of ['self', 42, {}, { id: 'a1b2' }, { id: '', label: 'local' }, { id: 7, label: 'local' }, []]) {
+    const view = mesh.coerceMachineList({ self: bad, machines: FULL_BODY.machines })
+    assert.equal(view.self, undefined, `self ${JSON.stringify(bad)} → omitted`)
+    assert.equal(view.machines.length, 2)
+    assert.equal(view.machines.every((m) => m.self === false), true)
+  }
+})
+
+test('coercion: the legitimate empty body — self present, machines empty', () => {
+  assert.deepEqual(mesh.coerceMachineList({ self: { id: 'a1b2', label: 'local' }, machines: [] }), {
+    self: { id: 'a1b2', label: 'local' },
+    machines: [],
+  })
+})
+
+test('coercion: the self tokenPreview rides only when the wire sent a usable string', () => {
+  const view = mesh.coerceMachineList({
+    self: { id: 'a1b2', label: 'local', tokenPreview: 'd_3txYKhc_…' },
+    machines: [],
+  })
+  assert.equal(view.self.tokenPreview, 'd_3txYKhc_…')
+  const bad = mesh.coerceMachineList({ self: { id: 'a1b2', label: 'local', tokenPreview: 42 }, machines: [] })
+  assert.equal('tokenPreview' in bad.self, false, 'a non-string preview is dropped, never coerced')
+  const bare = mesh.coerceMachineList({ self: { id: 'a1b2', label: 'local' }, machines: [] })
+  assert.equal('tokenPreview' in bare.self, false, 'an absent preview stays absent')
+})
+
+// ---- validTokenUrl: the client-side pre-check -------------------------------
+
+test('validTokenUrl: absolute http(s) URLs with a non-empty token param pass', () => {
+  for (const good of [
+    'http://192.0.2.130:4999/?token=abc123',
+    'https://test.pc.internal.test/?token=xyz',
+    'https://host.example.com/hub/?token=t&other=1',
+    'http://user:pw@h:4999/?token=zzz',
+  ]) {
+    assert.equal(mesh.validTokenUrl(good), true, good)
+  }
+})
+
+test('validTokenUrl: everything else is rejected before the wire', () => {
+  for (const bad of [
+    '',                                   // empty
+    'not a url',                         // junk
+    '/relative?token=1',                 // relative — no authority
+    'relative?token=1',                  // relative
+    'localhost:4999/?token=1',           // parses, but scheme 'localhost:' not http(s)
+    'ftp://h/?token=1',                  // wrong scheme
+    'mailto:a@b?token=1',                // wrong scheme
+    'http://',                           // no authority at all
+    'https://host:4999/',                // no token param
+    'https://host:4999/?TOKEN=x',        // param name is case-sensitive
+    'https://host:4999/?token',          // bare param → empty value
+    'https://host:4999/?token=',         // empty value
+  ]) {
+    assert.equal(mesh.validTokenUrl(bad), false, bad)
+  }
+})
+
+// ---- I2: version-warning coercion + chip presence --------------------------
+
+test('coercion: versionWarning rides the row only when the wire carried a usable string', () => {
+  const view = mesh.coerceMachineList({
+    self: { id: 'a1b2', label: 'local' },
+    machines: [
+      {
+        id: 'm4x9', name: 'dev3', label: 'Dev 3', origin: 'http://192.0.2.130:4999',
+        enabled: true, addedAt: 123, status: 'reachable', lastProbeAt: 456,
+        versionWarning: 'version 0.3.0 ≠ ours 0.1.0',
+      },
+      { id: 'm7q1', name: 'lab2', label: '', origin: 'https://lab2.example.com:4999', enabled: true, addedAt: 234, status: 'pending' },
+      { id: 'm8k2', name: 'lab3', label: '', origin: 'https://lab3.example.com:4999', enabled: true, addedAt: 345, status: 'reachable', versionWarning: 42 },
+    ],
+  })
+  assert.equal(view.machines[0].versionWarning, 'version 0.3.0 ≠ ours 0.1.0')
+  assert.equal('versionWarning' in view.machines[1], false, 'an absent warning stays absent (additive wire field)')
+  assert.equal('versionWarning' in view.machines[2], false, 'a non-string warning is dropped, never coerced to garbage')
+})
+
+test('chip presence: machineVersionChip exists exactly when the row carries a warning', () => {
+  const warned = mesh.coerceMachineList({
+    machines: [{ id: 'm4x9', name: 'dev3', origin: 'http://x:1', status: 'reachable', versionWarning: 'version unknown ("x.y")' }],
+  })
+  const clean = mesh.coerceMachineList({
+    machines: [{ id: 'm7q1', name: 'lab2', origin: 'http://x:2', status: 'reachable' }],
+  })
+  assert.deepEqual(mesh.machineVersionChip(warned.machines[0]), { text: 'version unknown ("x.y")' }, 'a warned row renders a chip carrying the warning text')
+  assert.equal(mesh.machineVersionChip(clean.machines[0]), undefined, 'a clean row renders NO chip')
+})
+
+// ---- R7: the D18 cadence copy ----------------------------------------------
+
+test('AUTO_REFRESH_NOTE is the standing 5-minute cadence copy', () => {
+  assert.equal(mesh.AUTO_REFRESH_NOTE, 'auto-refreshes every 5 min')
+})
+
+test('fetchPairingUrl POSTs the tokenUrl op and answers the minted URL', async () => {
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init])
+    return new Response(JSON.stringify({ tokenUrl: 'https://x.app/?token=T' }), { status: 200 })
+  }
+  try {
+    const url = await mesh.fetchPairingUrl('https://x.app')
+    assert.equal(url, 'https://x.app/?token=T')
+    assert.equal(calls.length, 1)
+    assert.deepEqual(JSON.parse(calls[0][1].body), { op: 'tokenUrl', origin: 'https://x.app' })
+  } finally { globalThis.fetch = realFetch }
+})
+
+test('fetchPairingUrl surfaces the wire error; a body without tokenUrl throws', async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'no face' }), { status: 400 })
+  try {
+    await assert.rejects(() => mesh.fetchPairingUrl('https://x.app'), /no face/)
+  } finally { globalThis.fetch = realFetch }
+  globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 })
+  try {
+    await assert.rejects(() => mesh.fetchPairingUrl('https://x.app'), /answered no tokenUrl/)
+  } finally { globalThis.fetch = realFetch }
+})

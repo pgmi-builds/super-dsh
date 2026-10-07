@@ -1,0 +1,56 @@
+# @pgmi-builds/agent-agy bundle patch (pi/hermes form).
+# The `dsh.bundle.patch` layer of the adapter package: mounts the agy provider
+# and disables the native components it replaces. Port/webserver posture is
+# NOT here (worldMountPatches owns it); the world profile patch pins the home.
+#
+# Auth (2026-10-02 ruling 「拥抱用户自己的使用环境」): the adapter drives the
+# user's OWN Antigravity CLI and shares their real native configuration —
+# settings.json, ADC, keyring. Ladder: Gemini API key → OAuth (placeholder) →
+# ADC. The opt-in Python SDK transport is the sibling package
+# @pgmi-builds/agent-agy-sdk (its own bundle, delivered disabled).
+
+
+- insert:
+    - id: agy-provider
+      name: '@pgmi-builds/agent-agy'
+
+# The SDK bridge owns the live transcript; disable the built-in loop so it
+# does not double-run alongside the bridge session.
+- id: agent-loop
+  disabled: true
+
+# The agy provider registers the single `agy` route on ctx.llm; leaving the
+# native deepseek row mounted would advertise foreign models in this world.
+- id: llm-deepseek
+  disabled: true
+
+# Single-preset roster like pi: launch-only permission mapping (headless bridge
+# has no per-action approval channel). Full 3-preset restatement per §4.1.
+# 0.1.7: the host AgentPresetRegistry row (renamed `agent-presets` ->
+# `agent-preset-registry`) stays MOUNTED — the adapter registers its one
+# fixed preset into it (src/agent-preset-agy.ts); pin only the default.
+- id: agent-preset-registry
+  config:
+    default: agy
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+
+# Directory picker: pin both faces of `browse`, unmount the auto row (§4.1).
+- insert:
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: directory-picker-browse-surface
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: directory-picker
+  disabled: true

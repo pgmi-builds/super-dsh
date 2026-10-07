@@ -1,0 +1,142 @@
+# super-dsh — the Super D composite bundle (one `dsh plugin add` face).
+#
+# better-dsh shape: ONE package, components are this package's own subpath
+# exports, so every row below is individually toggleable on the plugin page
+# (cordis hmr; docs/06 §二.5 — insert rows = the "Components" lines).
+#
+#   - super-dsh/hub            the hub: selector + roster + per-world mount
+#                              carrier + V5 gateway delegation (wraps the live
+#                              typertGateway; upstream dispatch untouched)
+#   - super-dsh/agents/<label>  one world plugin per adapter (activation IS
+#                              roster membership, S2) — each spawns its own
+#                              zero-port sibling root, mounted under /<label>
+#   - super-dsh/join           the generic hub joiner for the standalone
+#                              claude adapter (R2)
+# DSH-only WebTrust, WebServer and onboarding policies belong to the bundled
+# Better Dash package, whose own YAML is loaded before this patch.
+#   - super-dsh/a2a            the agent-facing A2A tool face (mesh P3): the
+#                              single `superd-hub` model tool on ctx0's tools
+#                              service (dormant without tools; world trees
+#                              never compose this row — see a2a-row.ts).
+#
+# Profile-layer values (webserver port/host, settings path) stay in the USER's
+# profile patch layer, never here.
+- insert:
+    # BARE package row: subpath rows (…/agents/omp) are permanently not client
+    # rows in client-modules' scan (exactPackageSpecifier), so THIS row is
+    # what registers the package's client half — the sidebar selector.
+    - id: superd-hub
+      name: 'super-dsh'
+    # Native UI fusion transport (plan Task 3): the ctx0 page-level state atom
+    # + five call-time patches. Composing this row IS the switch — there is no
+    # environment variable in the decision (2026-09-27 user ruling: a release
+    # gate living in an env var is deployment state no patch layer can see).
+    # ROW ORDER IS LOAD ORDER: the bundle loads Better Dash's web-trust first.
+    # the trust script's non-merging `if(!window.__DSH_TRANSPORT__)` verdict
+    # must be evaluated before the fusion script could own that global
+    # (spec §3.4, hard; precedent world-web-server.ts renderIndex).
+    # To turn the fused surface off: restate this row (same id, same name) with
+    # `config: {enabled: false}` or `disabled: true`, or drop it from the
+    # composition. Off = the component registers nothing: no script, no global.
+    - id: superd-fusion-transport
+      name: 'super-dsh/fusion-transport'
+    # A2A tool face (mesh P3 Task 4): composes the single model-facing
+    # `superd-hub` tool onto ctx0's tools service and closes the a2a-host
+    # nativeGateway seam with the hub process's own typertGateway. Subpath row
+    # BY RULING (a2a-row.ts header): world trees provide a tools service too,
+    # so riding the bare superd-hub row would mount a mis-wired tool inside
+    # every world; this row lives only HERE, which world profiles never
+    # compose — ctx0 only, exactly the P3 initiator surface (foreign runtimes
+    # get their own injection in P5, spec §10). Dormant without tools.
+    # Off: restate with `disabled: true` or drop the row — nothing else
+    # registers the tool.
+    - id: superd-a2a
+      name: 'super-dsh/a2a'
+    - id: agent-omp
+      name: 'super-dsh/agents/omp'
+    - id: agent-codex
+      name: 'super-dsh/agents/codex'
+    - id: agent-pi
+      name: 'super-dsh/agents/pi'
+    - id: agent-hermes
+      name: 'super-dsh/agents/hermes'
+    - id: agent-agy
+      name: 'super-dsh/agents/agy'
+    # Opt-IN SDK half of the Antigravity split (2026-10-02 user ruling). The
+    # CLI row above is the PRIMARY path: the user already runs Antigravity, so
+    # the CLI reuses that environment (their ~/.gemini, ADC and keyring) for
+    # free, while this row drives the Python `google-antigravity` SDK instead.
+    #
+    # DISABLED BY DEFAULT — turning the row on IS the switch
+    # (`plugin-presence IS the roster`): no env var, no config key. It runs as
+    # world key `agy-sdk` (roster label "Antigravity (SDK)", world home
+    # `agents/agy-sdk`), deliberately distinct from `agy` because the hub's
+    # registerAgent hard-throws on a duplicate key and this row ships beside
+    # the CLI row — the two can therefore both be enabled harmlessly.
+    #
+    # No Python is installed at `dsh plugin add` time and this package declares
+    # no SDK dependency: the durable venv is fetched into that world home on
+    # first real use (agent-agy-sdk/src/sdk-venv.ts).
+    - id: agent-agy-sdk
+      name: 'super-dsh/agents/agy-sdk'
+      disabled: true
+    # Opt-IN SDK transport for OMP (2026-10-03 user ruling). `agent-omp` is the
+    # PRIMARY path: it drives the operator's own `omp` binary, so the plugin
+    # ships no runtime at all. This row drives the SAME agent through the
+    # package's in-process SDK face instead — one bun sidecar hosting every
+    # session (shared authStorage/modelRegistry), which is the cheaper memory
+    # shape for many concurrent sessions, at the cost of fetching a ~900 MB
+    # runtime tree.
+    #
+    # DISABLED BY DEFAULT — turning the row on IS the switch
+    # (`plugin-presence IS the roster`): no env var, no config key. It runs as
+    # world key `omp-sdk` (roster label "OMP (SDK)", world home
+    # `agents/omp-sdk`), deliberately distinct from `omp` because the hub's
+    # registerAgent hard-throws on a duplicate key and this row ships beside
+    # the RPC row — the two can therefore both be enabled harmlessly.
+    #
+    # Nothing is installed at `dsh plugin add` time and this package declares no
+    # dependency: the durable bun runtime + `@oh-my-pi/pi-coding-agent` tree is
+    # fetched into that world home on first real use
+    # (agent-omp-sdk/src/sdk-runtime.ts).
+    - id: agent-omp-sdk
+      name: 'super-dsh/agents/omp-sdk'
+      disabled: true
+    # PRESERVED SDK line for Codex (2026-10-04 user ruling). `agent-codex` is the
+    # PRIMARY path — it drives a `codex app-server` child process, so the plugin
+    # bundles no SDK: the CLI the operator already has is the runtime. This row
+    # drives the SAME agent through the older in-process `@openai/codex-sdk` face
+    # instead, kept because the code was already written and it is a real option
+    # (no child process per session, and it works with no `codex` binary on PATH
+    # once its runtime is fetched).
+    #
+    # DISABLED BY DEFAULT — turning the row on IS the switch (`plugin-presence IS
+    # the roster`): no env var, no config key. It runs as world key `codex-sdk`
+    # (roster label "Codex (SDK)", world home `agents/codex-sdk`), deliberately
+    # distinct from `codex` because the hub's registerAgent hard-throws on a
+    # duplicate key and this row ships beside the app-server row — the two can
+    # therefore both be enabled harmlessly.
+    #
+    # Nothing is installed at `dsh plugin add` time and this package declares NO
+    # dependency — not a dependency, not an optionalDependency, not a peer: the
+    # SDK tree (`@openai/codex-sdk` + the codex binary package, pinned together)
+    # is fetched into that world home on the first real prompt and is durable
+    # there (agent-codex-sdk/src/sdk-runtime.ts; pre-warm with
+    # `npm run fetch-sdk-runtime`). Zero-spawn, zero-download window before it.
+    - id: agent-codex-sdk
+      name: 'super-dsh/agents/codex-sdk'
+      disabled: true
+    # R2 (2026-09-16): the claude adapter ships STANDALONE only — its /world
+    # entry is inert. The HUB side joins it: one generic joiner row with the
+    # key; spawn/roster/mount wiring lives in super-dsh/join.
+    - id: superd-join-claude
+      name: 'super-dsh/join'
+      config:
+        key: claude
+        label: Claude
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: directory-picker-browse-surface
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+- id: directory-picker
+  disabled: true

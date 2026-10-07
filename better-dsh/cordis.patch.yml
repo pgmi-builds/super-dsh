@@ -42,6 +42,8 @@
     # config — they survive every overlay layer; an explicit value still wins).
     - id: dashr-web-trust
       name: 'better-dsh/web-trust'
+      config:
+        trustAllHosts: true
 
     # Mobile responsiveness leg of the boot script (gestures payload +
     # zoomGuard section). All knobs default ON; `enabled: false` opts out.
@@ -65,6 +67,11 @@
     # door. The password is the row's own credential record, seeded to `admin`.
     - id: dashr-web-password
       name: 'better-dsh/web-password'
+
+    # Automatically acknowledge the installed Host's current welcome version.
+    # Single-row opt-out: dashr-welcome-notice: disabled.
+    - id: dashr-welcome-notice
+      name: 'better-dsh/welcome-notice'
 
 # Native compaction at the host plane: the base bundle ships the engine, the
 # `/compact` command, and the tool-result pruner as host rows; dsh-web-app
@@ -93,3 +100,24 @@
   inject: [webRuntime]
   config:
     trustedHosts: !!js (process.env.DSH_TRUSTED_HOSTS ?? '').split(/\s+/).filter(Boolean).concat(ctx.webRuntime.trustedHosts)
+
+# Replacement uses the public patch mechanism: disable the native provider,
+# then insert a distinct row providing the same native webServer service.
+- id: webserver
+  name: '@deepseek-ai/dsh-host-webserver'
+  disabled: true
+- insert:
+    - id: dashr-webserver
+      name: 'better-dsh/webserver'
+      inject: [webStartup]
+      config:
+        host: !!js ctx.webStartup.host ?? '0.0.0.0'
+        port: !!js ctx.webStartup.port ?? 3080
+        compression: gzip
+        compressionLevel: 1
+        compressionThresholdBytes: 1024
+
+- id: ui-settings-models
+  name: '@deepseek-ai/dsh-client-ui-settings-models'
+  config:
+    credentialOnboarding: false

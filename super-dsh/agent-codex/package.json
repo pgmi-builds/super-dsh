@@ -1,0 +1,85 @@
+{
+  "name": "@pgmi-builds/agent-codex",
+  "version": "0.1.0",
+  "description": "Codex provider for DeepSeek Harness (dsh) — an AgentFactory that drives a `codex app-server` child process (stdio JSONL JSON-RPC) per session and bridges its thread/turn surface, approvals and permission policy into Dash Agent/Session contracts. Declares NO codex dependency and ships NO postinstall (2026-10-06 ruling): the operator's own CODEX_BIN / PATH CLI / desktop core is discovered at first prompt, and only when all three miss is the pinned `@openai/codex` package fetched at RUNTIME into the world home (src/codex-runtime-fetch.ts, `npm run fetch-codex-runtime`).",
+
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./world": "./dist/world-plugin.js"
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "fetch-codex-runtime": "node scripts/fetch-codex-runtime.mjs"
+  },
+
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-agent-presets": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-scope": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session-persistence": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0",
+    "@pgmi-builds/superd-hub": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent-presets": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-scope": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-persistence": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@pgmi-builds/superd-hub": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=22.18"
+  }
+}

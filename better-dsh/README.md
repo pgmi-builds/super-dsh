@@ -1,3 +1,5 @@
+> Part of [Super D](../README.md). This is the independently installable `better-dsh` package. Super Dash embeds the same local build; both versions advance together toward0.3.0. Active source is this directory, with shared specifications and references under root `docs/`.
+
 # Better Dsh — Dashr
 
 DASHR is a persistent-kernel REPL for the DeepSeek Harness (dsh): a
@@ -44,6 +46,30 @@ dsh runtime package dependencies**: only `@deepseek-ai/cordis` (peer),
   published shape instead of reaching into sources. The declaration keeps
   dependency imports external (`dts: { resolve: false }`): bundled copies
   would create duplicate type identities in a consumer's program.
+
+## Native Web defaults
+
+The bundle owns native DSH Web policies as independently toggleable components.
+`dashr-web-trust` accepts authenticated serving Host/Origin values while retaining
+native cookie authentication. `dashr-webserver` inherits the native server and
+waits for welcome confirmation before listening; its default address is
+`0.0.0.0`, with the native port and CLI override behavior preserved.
+Automatic credential onboarding is disabled; users can still configure models.
+
+`dashr-welcome-notice` reads the current `WELCOME_NOTICE_VERSION` from the Models
+client belonging to the actual DSH installation and acknowledges it through the
+original General settings namespace before the first HTTP read. No version is
+pinned in the plugin. Ordinary version bumps adapt at startup; changed private
+symbols or build layouts fail explicitly. Restore native welcome behavior with:
+
+```yaml
+- id: dashr-welcome-notice
+  disabled: true
+```
+
+The sibling Super Dash pack builds this repository locally and embeds its actual
+tarball. Better Dash remains independently installable. `../dev-webmcp` is an
+unshipped development-only bundle owned by this repository.
 
 ## Install
 
@@ -204,9 +230,7 @@ the host runtime's business, not the REPL's).
 
 ## Install
 
-The canonical path is the repo-root one-click installer (`install.sh`): it
-installs the plugin from the npm registry and notes the restart. The
-equivalent manual steps, for reference:
+Install this package independently with the native plugin command. Use Super Dash instead when you also want the Foreign Agent Hub:
 
 ```sh
 # 1. plugin — the pnpm registry-metadata cache can lag a fresh npm publish

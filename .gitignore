@@ -1,48 +1,29 @@
-# --- dependencies ---
-node_modules/
-
-# --- python venv ---
-.venv/
-
-# --- upstream sources (tracked in their own git repos) ---
-upstream/
-
-# --- dashr distro fork (own git repo; outer repo tracks only its contract files) ---
-dashr/*
-!dashr/AGENTS.md
-!dashr/README.md
-
-# --- graphify knowledge-graph output ---
-graphify-out/
-.graphifyignore
-
-# --- scratch notes / disposable artifacts ---
-.scratch/
-
-# --- internal dev artifacts ---
-dev/
-
-# "./docs/" is assets, references, any others sit along with the repo
-
-# --- internal exploration & research (never publish) ---
-docs/60_exploration-and-research/
-# --- build output ---
-dist/
-build/
-lib/
-*.tsbuildinfo
-*.tsbuildinfo.*
-
-# --- OS / editor ---
-.DS_Store
-Thumbs.db
-
-# --- local agent tooling (keep on disk, never commit) ---
-.agents/
-.pi/
-
-# --- dsh-better-edit runtime artifact (hash store written into cwd) ---
+# runtime / build / cache (machine-local)
+.tests/
+# Bare `node_modules` (no trailing slash) matches a directory AND a symlink, at
+# any depth. The slash form matches directories only — which is how six
+# self-referential `super-dsh/agent-*/node_modules` symlinks got committed in
+# 0ff0322 (2026-09-26) and then let every checkout clobber the real installs.
+node_modules
+# Same trap for the vendored checkout: the main repo holds a real directory
+# while a `.worktrees/*` checkout carries a symlink into it, so a trailing
+# slash silently exempted the symlink form. A bare `/upstream` matches both,
+# and `upstream` must never be a repo artifact at all.
+/upstream
 .dsh_better_edit/
+.npm-cache/
 
-# --- test rig runtime homes (.test/seed is tracked; .test/home is runtime state) ---
+# SDD working notes inside the main line
+super-dsh/.superpowers/
+graphify-out/
+
+# Unified workspace: runtime/build inputs and original private research
+.scratch/
+.agents/
 .test/home/
+.venv/
+*.tgz
+docs/60_exploration-and-research/
+docs/legacy/better-dash-local/
+
+.uv-cache/

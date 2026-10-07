@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "source": "PNG set: ORCA (stablyai/orca) src/shared/agent-icons @ c8dcffce46d92ddbb1f511baf88df60d322f4ac1; SVGs: hand-collected marks this line curated before the pack existed (omp/pi match ORCA's inline agent-icon-glyphs.tsx artwork); dsh-fish.svg: Super D's own FishLogo redraw (not an ORCA asset)",
+  "tiles": {
+    "codex.svg": "#FFFFFF",
+    "pi.svg": "#000000"
+  },
+  "map": {
+    "native": "dsh-fish.svg",
+    "agent-agy": "antigravity.png",
+    "agent-agy-sdk": "antigravity.png",
+    "agent-claude": "claude.svg",
+    "agent-codex": "codex.svg",
+    "agent-codex-sdk": "codex.svg",
+    "agent-hermes": "hermes.png",
+    "agent-omp": "omp.svg",
+    "agent-omp-sdk": "omp.svg",
+    "agent-pi": "pi.svg"
+  }
+}

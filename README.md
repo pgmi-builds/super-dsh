@@ -1,76 +1,41 @@
-# Better Dsh — Dashr
+# Super D
 
-<p align="center">
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/plugin%20for-dsh-blueviolet.svg?style=flat-square" alt="dsh plugin" /></a>
-  <a href="https://npmjs.com/package/better-dsh"><img src="https://img.shields.io/npm/v/better-dsh?style=flat-square&logo=npm" alt="npm package" /></a>
-  <a href="https://github.com/pgmi-builds/better-dsh"><img src="https://img.shields.io/badge/github-pgmi--builds%2Fbetter--dsh-black.svg?style=flat-square&logo=github" alt="Repository" /></a>
-  <a href="https://github.com/pgmi-builds/better-dsh/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" /></a>
-</p>
+Super Dash combines native [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) tools with a Foreign Agent Hub: Codex, Claude, OMP, Pi, Hermes and Antigravity in the same DSH Web UI.
 
-**Dashr** (*/ˈdæʃ.ɚ/*) makes your native [`dsh`](https://github.com/deepseek-ai/deepseek-harness) ready for serious coding.
+This repository develops and releases two packages together:
 
----
+| Package | Source | What installing it provides |
+| --- | --- | --- |
+| `super-dsh` | [Super Dash](./super-dsh/) | Better Dash tools and native Web policies, plus the Hub and foreign-agent adapters |
+| `better-dsh` | [Better Dash](./better-dsh/) | Native DSH tools and Web policies independently |
 
-## Why
+Super Dash embeds the **locally built Better Dash package** in its own npm tarball. Installing Super Dash alone provides both; no separate Better Dash activation is needed. Both packages keep their own YAML and exports.
 
-- **$(\text{Tools} \times \text{URL schemas})^{\text{REPL}}$** - a concise, cognitively frictionless setup delivering maximal capacity.
-- Universal **Tools** - `read`, `write`, `grep`, `glob`.
-- **URL schemas** - `skill://`, `ctx://`, `agent://`, `dvc://`, `dsh://`, an intuitive, unified interface for runtime resources.
-- **Persistent REPL Kernel** - IPython (compared with the native ephemeral TS REPL).
-- (20+ tools × 5 schemas) ^ REPL free composition = **∞**
+The unified release target is **0.3.0**. Current acceptance artifacts use synchronized letter versions;0.3.0 has not yet been published. Existing npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
 
-- **Context as Variables** - full session transcripts are accessible as variables, even cross compactions.
-- **Full Context Revive** — full-namespace `dill` snapshots save and restore kernel state across restarts.
+## Development
 
-
-```json
-{ "cell": "
-  scout = await agent('agent://ralph', 'graph-analyze this codebase; scout the breaking points to add tests')
-  ui    = await read('dvc://browser/127.0.0.1:3080')
-  me    = await read('ctx://transcript')",
-  "description": "one cell: agents × devices × session" }
+```sh
+npm run version:release -- 0.3.0-a  # synchronize both packages and their exact edge
+npm run pack                      # always build both from this repository
+npm test
+npm run test:4999                  # native consumer, delivered Super Dash tarball
 ```
 
----
+The existing upstream checkout and real development dependencies are required. Test homes and artifacts are ignored. Never substitute source links or a registry Better Dash for delivery acceptance. See [the development guide](docs/07-cordis-dsh-dev-test-guides.md) for setup, native-peer alignment and target-machine testing.
 
-## ✨ Other Features
+| Path | Role |
+| --- | --- |
+| `super-dsh/` | Hub, adapters and full pack |
+| `better-dsh/` | Independently installable native tool pack |
+| `dev-webmcp/` | Test-only browser tools; excluded from both release tarballs |
+| `scripts/`, `test/` | Version coordination and artifact-pair delivery checks |
+| `docs/` | Shared design, specs, references and reports; [navigation](docs/README.md) |
+| `upstream/`, `.tests/`, `.scratch/` | Local upstream, test homes and artifacts; ignored |
+| `archive/` | Frozen earlier experiments |
 
-- **Agent swarm as resources** — sub-agents, workflows, and Ralph loops are first-class calls (`subagent`, `workflow`, `ralph`, `message`).
-- **KeepRecency context compactions** - preserve recent relevancy. Resets the default 80% compaction threshold to 50% as "usable" context max.
-- A simplistic global LLM-endpoint failover, absent in the native build (a safeguard for long-range, unattended tasks).
-- keeps the system prompt to ~3–4K tokens.
-- **`dvc://browser`** - browser use ready.
-- All `host plane` wired — you do not even see any difference from your `dsh` UI; it just silently fuels up the `dsh` base.
-- **iOS PWA Ready** - minor UI twists that make the webUI a decent PWA for iOS `Add to Home Screen`.
+GitHub uses this repository as the product root; Better Dash has its [own directory URL](https://github.com/pgmi-builds/super-dsh/tree/master/better-dsh). Historical branches/tags are kept with their source prefixes; the migration preserves both original Git roots.
 
-## Recommended Companion Plugin(s)
+[Domain glossary](CONTEXT.md) · [Super Dash details](super-dsh/README.md) · [Better Dash details](better-dsh/README.md)
 
-- [`dsh-better-sidebar`](https://github.com/omdsh-dev/DSH-better-sidebar)
-- [`corti`](https://github.com/pgmi-builds/corti) multi-agent memory plugin
-
----
-
-## ⚡ Quick Install
-
-
-```bash
-dsh plugin --profile web add --config.auto-install-peers=false better-dsh@latest
-```
-
----
-
-## 📚 Inspiration & Attribution
-
-`better-dsh` is an open-source plugin for [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness) (MIT). It stands on the shoulders of earlier open-source work:
-
-- **[BetterEdit](https://github.com/Rianico/dsh-better-edit)** (`dsh-better-edit`, by Rianico) — the hash-anchored `read` → `edit` → `undo_last_edit` editing model. Dashr adopts this toolchain (itself a lineage of `pi-hashline-edit` → `pi-hashline-edit-lsz` → `dsh-better-edit`) with attribution, and re-wires it natively.
-- **[omp-agent](https://github.com/can1357/oh-my-pi)** (oh-my-pi, by Can Bölük) — the `dvc://` device framework and its `ast_edit` / `ast_grep` / `browser` / `lsp` devices, adopted under its MIT license.
-- **[Prime Agent](https://github.com/primeintellect-ai/prime)** (Prime Intellect) — the *Context as Variables* paradigm that shapes the persistent-kernel model.
-
-All upstream dependencies carry their original MIT licenses, recorded in the source tree.
-
----
-
-## 📄 License
-
-MIT. See [LICENSE](./LICENSE).
+MIT

@@ -15,8 +15,9 @@
  * pi-and-omp 第三方资料与 src-scripts 抓取工具，一律不进发布副本。
  * repo 的 docs/ 树一字不动——本脚本 rmSync/cpSync 只作用于包内副本。
  */
-import { cpSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { join, dirname, resolve } from 'node:path';
 
 /** Path fragments excluded from the shipped copy (matched against source path). */
 export const EXCLUDE = [
@@ -36,33 +37,36 @@ export function excluded(srcPath) {
   return EXCLUDE.some((re) => re.test(srcPath));
 }
 
-// cpSync's filter receives ABSOLUTE source paths; normalise a leading
-// "../" (and Windows "..\\") so both absolute and repo-relative forms match.
-const relativeSrc = (src) => src.replace(/^\.\.\//, '').replace(/^\.\.\\/, '');
-
-const invokedAsCli =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
-
-if (invokedAsCli) {
-  rmSync('docs', { recursive: true, force: true });
-  cpSync('../docs', 'docs', {
-    recursive: true,
-    filter: (src) => !excluded(relativeSrc(src)),
-  });
-
-  const walk = (dir) =>
-    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-      e.isDirectory() ? walk(`${dir}/${e.name}`) : [`${dir}/${e.name}`],
-    );
-
+/** Copy only the native/shared documentation explicitly selected by the monorepo. */
+export function copyDocs(source, target) {
+  const catalog = JSON.parse(readFileSync(join(source, 'package-catalog.json'), 'utf8'))['better-dsh'];
+  if (!Array.isArray(catalog)) throw new Error('Better Dash documentation catalog is missing');
+  const valid = file => typeof file === 'string' && file.length > 0 && !file.startsWith('/') && !file.split('/').some(part => part === '..' || part === '.' || part === '');
+  const planned = catalog.map(entry => typeof entry === 'string' ? { source: entry, target: entry } : entry);
+  const outputs = new Set();
+  for (const entry of planned) {
+    if (!valid(entry?.source) || !valid(entry?.target)) throw new Error('Invalid documentation catalog path');
+    if (outputs.has(entry.target)) throw new Error('Duplicate documentation catalog target');
+    outputs.add(entry.target);
+  }
+  const selected = planned.filter(entry => !excluded(`docs/${entry.source}`) && !excluded(`docs/${entry.target}`));
+  // Validate every source before clearing the previous output.
+  for (const entry of selected) readFileSync(join(source, entry.source));
+  rmSync(target, { recursive: true, force: true });
   let redacted = 0;
-  for (const file of walk('docs').filter((f) => f.endsWith('.md'))) {
-    const text = readFileSync(file, 'utf8');
-    const clean = text.replace(/token=[A-Za-z0-9_-]{20,}/g, 'token=<redacted>');
-    if (clean !== text) {
-      writeFileSync(file, clean);
-      redacted += 1;
+  for (const entry of selected) {
+    const output = join(target, entry.target);
+    mkdirSync(dirname(output), { recursive: true });
+    cpSync(join(source, entry.source), output);
+    if (entry.target.endsWith('.md')) {
+      const text = readFileSync(output, 'utf8');
+      const clean = text.replace(/token=[A-Za-z0-9_-]{20,}/g, 'token=<redacted>');
+      if (clean !== text) { writeFileSync(output, clean); redacted++; }
     }
   }
-  console.log(`copy-docs: shipped doc tree ready (${redacted} file(s) token-redacted)`);
+  return { files: selected.length, redacted };
+}
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const result = copyDocs(resolve('../docs'), resolve('docs'));
+  console.log(`copy-docs: ${result.files} selected native/shared files (${result.redacted} token-redacted)`);
 }

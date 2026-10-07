@@ -1,0 +1,169 @@
+{
+  "name": "super-dsh",
+  "version": "0.3.0-c",
+  "description": "Super D for the DeepSeek Harness (DSH) — one dsh plugin that mounts the superd hub (runtime selector, roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pgmi-builds/super-dsh.git",
+    "directory": "super-dsh"
+  },
+  "exports": {
+    ".": "./superd-hub/dist/index.js",
+    "./hub": "./superd-hub/dist/index.js",
+    "./join": "./superd-hub/dist/world-join.js",
+    "./agents/omp": "./agent-omp/dist/world-plugin.js",
+    "./agents/codex": "./agent-codex/dist/world-plugin.js",
+    "./agents/claude": "./agent-claude/dist/world-plugin.js",
+    "./agents/pi": "./agent-pi/dist/world-plugin.js",
+    "./agents/hermes": "./agent-hermes/dist/world-plugin.js",
+    "./agents/agy": "./agent-agy/dist/world-plugin.js",
+    "./agents/agy-sdk": "./agent-agy-sdk/dist/world-plugin.js",
+    "./agents/omp-sdk": "./agent-omp-sdk/dist/world-plugin.js",
+    "./agents/codex-sdk": "./agent-codex-sdk/dist/world-plugin.js",
+    "./client": "./client/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./fusion-transport": "./superd-hub/dist/fusion-transport.js",
+    "./a2a": "./superd-hub/dist/a2a-row.js"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "client",
+    "README.md",
+    "superd-hub/dist",
+    "superd-hub/lib",
+    "superd-hub/assets",
+    "superd-hub/package.json",
+    "superd-hub/cordis.patch.yml",
+    "agent-omp/dist",
+    "agent-omp/package.json",
+    "agent-omp/cordis.patch.yml",
+    "agent-omp-sdk/dist",
+    "agent-omp-sdk/sidecar",
+    "agent-omp-sdk/package.json",
+    "agent-omp-sdk/cordis.patch.yml",
+    "agent-codex/dist",
+    "agent-codex/package.json",
+    "agent-codex/cordis.patch.yml",
+    "agent-codex-sdk/dist",
+    "agent-codex-sdk/scripts",
+    "agent-codex-sdk/package.json",
+    "agent-codex-sdk/cordis.patch.yml",
+    "agent-claude/dist",
+    "agent-claude/package.json",
+    "agent-claude/cordis.patch.yml",
+    "agent-pi/dist",
+    "agent-pi/package.json",
+    "agent-pi/cordis.patch.yml",
+    "agent-hermes/dist",
+    "agent-hermes/package.json",
+    "agent-hermes/cordis.patch.yml",
+    "agent-agy/dist",
+    "agent-agy/package.json",
+    "agent-agy/cordis.patch.yml",
+    "agent-agy-sdk/dist",
+    "agent-agy-sdk/package.json",
+    "agent-agy-sdk/cordis.patch.yml",
+    "agent-agy-sdk/bridge"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./node_modules/better-dsh/cordis.patch.yml",
+        "./cordis.patch.yml"
+      ]
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "better-dsh": "0.3.0-c",
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "zod": "4.4.3",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-agent-presets": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-api-gateway": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-commands": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-scope": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session-persistence": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-user-approval": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-user-questions": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.5-0 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent-presets": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-api-gateway": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-home-paths": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-scope": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-persistence": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-user-approval": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-user-questions": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bundledDependencies": [
+    "better-dsh"
+  ],
+  "homepage": "https://github.com/pgmi-builds/super-dsh",
+  "bugs": {
+    "url": "https://github.com/pgmi-builds/super-dsh/issues"
+  }
+}

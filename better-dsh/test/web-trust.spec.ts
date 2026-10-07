@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMobileScript, buildTrustScript, Config } from '../src/web-trust.ts'
+import { buildMobileScript, buildTrustScript, Config, apply } from '../src/web-trust.ts'
 import { Config as MobileRowConfig } from '../src/mobile/plugin.ts'
 
 /** Evaluate the built script exactly as a page would (head inline script). */
@@ -127,5 +127,18 @@ describe('derived default authorities (v0.2.2a single-source)', () => {
     expect(deriveDefaultPageAuthorities('a.example 127.0.0.1:3080 //b.example c.example/p')).toEqual(['a.example'])
     expect(deriveDefaultPageAuthorities(undefined)).toEqual([])
     expect(deriveDefaultPageAuthorities('')).toEqual([])
+  })
+})
+
+
+describe('head injection order', () => {
+  it('places the ownership verdict before already registered application scripts', () => {
+    const listeners: ((table: { kind: string; placement: string; text: string }[]) => void)[] = [table => { table.push({ kind: 'script', placement: 'head', text: 'application-before-trust' }) }]
+    const ctx = { inject(_names: string[], mount: () => void) { mount() }, on(_event: string, listener: typeof listeners[number]) { listeners.push(listener) } }
+    apply(ctx as unknown as Parameters<typeof apply>[0], { trustedPageAuthorities: ['test.example'] })
+    const table: { kind: string; placement: string; text: string }[] = []
+    for (const listener of listeners) listener(table)
+    expect(table[0]!.text).toContain('__DSH_TRANSPORT__')
+    expect(table[1]!.text).toBe('application-before-trust')
   })
 })

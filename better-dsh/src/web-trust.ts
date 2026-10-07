@@ -208,7 +208,8 @@ export function apply(ctx: Context, config: TrustConfig | undefined): void {
   ctx.inject(['webServer'], () => {
     ctx.on('webserver/index-inject', (table) => {
       const text = buildTrustScript(authorities, config?.trustAllHosts)
-      if (text !== undefined) table.push({ kind: 'script', placement: 'head', text })
+      // Ownership must precede application scripts even when modules mount asynchronously.
+      if (text !== undefined) table.unshift({ kind: 'script', placement: 'head', text })
     })
   })
 }

@@ -1,0 +1,70 @@
+{
+  "name": "@pgmi-builds/agent-agy",
+  "version": "0.1.0",
+  "description": "Google Antigravity provider for DeepSeek Harness (dsh) — drives the user's own Antigravity CLI headless (`agy --input-format stream-json`). 2026-10-02 ruling 「拥抱用户自己的使用环境」: the adapter shares the real ~/.gemini settings.json, ADC and keyring instead of isolating a HOME. Auth ladder: Gemini API key → OAuth (placeholder) → ADC. The heavy Python SDK transport lives in the opt-in sibling @pgmi-builds/agent-agy-sdk.",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./world": "./dist/world-plugin.js"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "zod": "3.25.76"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-scope": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-session-persistence": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0",
+    "@pgmi-builds/superd-hub": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-scope": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-persistence": {
+      "optional": true
+    },
+    "@pgmi-builds/superd-hub": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "dist/index.js"
+}

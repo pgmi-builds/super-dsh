@@ -1,3 +1,5 @@
+> Historical Better Dash rig preserved during migration. Active joint and standalone testing uses `super-dsh/test/start-4999.sh`; see root `docs/07-cordis-dsh-dev-test-guides.md`.
+
 # .test/ — 测试资产布局（seed 与 home 分离）
 
 规范来源：仓库根 `Cordis-dsh-dev-test-guides.md` §3（冲突以该文件为准）。

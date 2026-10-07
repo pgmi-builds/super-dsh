@@ -41,6 +41,8 @@ export default defineConfig({
     'src/compaction/index.ts',
     'src/web-trust.ts',
     'src/web-password.ts',
+    'src/welcome-notice.ts',
+    'src/webserver.ts',
     'src/mobile/plugin.ts',
     'src/remote/plugin.ts',
   ],

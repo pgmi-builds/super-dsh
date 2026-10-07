@@ -1,6 +1,6 @@
 {
   "name": "better-dsh",
-  "version": "0.2.5-e",
+  "version": "0.3.0-c",
   "description": "Make your dsh ready for serious coding tasks. (Tools x Schemas)^REPL. `skill://`, `ctx://`, `agent://`, `dvc://`, `dsh://`, IPython REPL, Context as Variables, cross compactions recallable, full context revive. `hash-edit`, `dvc://browser`, subagent as function, workflow as function.",
   "type": "module",
   "main": "lib/index.js",
@@ -51,6 +51,14 @@
     "./client": {
       "types": "./lib/client/index.d.ts",
       "default": "./lib/client/index.js"
+    },
+    "./welcome-notice": {
+      "types": "./lib/welcome-notice.d.ts",
+      "default": "./lib/welcome-notice.js"
+    },
+    "./webserver": {
+      "types": "./lib/webserver.d.ts",
+      "default": "./lib/webserver.js"
     }
   },
   "imports": {
@@ -158,7 +166,8 @@
     "@deepseek-ai/dsh-user-approval": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-web-app": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-workflow-worker-thread": ">=0.1.5-0 <0.3.0-0",
-    "react": "^18.2.0"
+    "react": "^18.2.0",
+    "@deepseek-ai/dsh-app-boot": ">=0.1.5-0 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -337,6 +346,9 @@
     },
     "react": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-app-boot": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -373,7 +385,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pgmi-builds/better-dsh.git"
+    "url": "git+https://github.com/pgmi-builds/super-dsh.git",
+    "directory": "better-dsh"
   },
   "keywords": [
     "dsh",
@@ -384,5 +397,9 @@
     "kernel",
     "agent",
     "plugin"
-  ]
+  ],
+  "homepage": "https://github.com/pgmi-builds/super-dsh/tree/master/better-dsh",
+  "bugs": {
+    "url": "https://github.com/pgmi-builds/super-dsh/issues"
+  }
 }

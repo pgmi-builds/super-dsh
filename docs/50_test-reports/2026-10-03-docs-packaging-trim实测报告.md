@@ -54,7 +54,7 @@
 3. `PORT=4998 bash .test/seed/test123/start.sh` 重启：监听正常。
 4. HTTP 实测（密码闸，seeded 口令登录）：shell 200（39,772 B）；boot graph 含 `"id":"better-dsh"`；`/plugins/??better-dsh/client.js&rev=98a2110f16da` 200（29,700 B ≈ 本地 lib/client 29,632 B + sourceMappingURL 行）。
 5. **技能面等价证据**：`skill-filesystem` 扫描根（project/user/agent-preset/custom）静态配置均不指向插件 docs；本会话（prod，仍在 pre-trim 安装位）技能目录实时列出 `dsh-dev-skill`，其描述与该 SKILL.md frontmatter 逐字一致 → 技能目录确从该文件取得；trim 保持该文件与章节、`src/docs/`、`site-pages-map.txt` 字节不变（sha256 同上），只移除正文零引用的兄弟目录。
-6. **未执行项（记录在案）**：rig 上的活会话技能目录读取（`skill://dsh-dev-skill` 现场解析）未驱动——需要经密码闸 GUI 发起真实 LLM 会话，超出本批范围；按编排方预授权口径记录跳过理由。rig 自身干净 boot（boot graph + client.js 200）已实证插件装载无损。
+6. ~~**未执行项（记录在案）**：rig 上的活会话技能目录读取（`skill://dsh-dev-skill` 现场解析）未驱动——需要经密码闸 GUI 发起真实 LLM 会话，超出本批范围；按编排方预授权口径记录跳过理由。~~ → **已于 2026-10-04 由本 batch 之外的终审轮现场闭环，见 §七**。原文保留：rig 自身干净 boot（boot graph + client.js 200）已实证插件装载无损。
 
 ### `dsh://docs` 拓扑澄清（brief Step 4 子项修正）
 
@@ -64,3 +64,19 @@
 
 - Task 1 + Task 2 全部落地：发布副本 89 MB→6.6 MB 磁盘、21.22→4.84 MB tarball（−77%），外来材料（77 MB Hermes 镜像 + 59 MB api-skills.json 所在树）、未引用第三方资料、抓取工具全部离场；承重技能面字节不变；rig 在 trimmed 安装上干净 boot。
 - **`npm publish` 不在本 change 内**——按根 AGENTS.md 〇节，发包需第一人称实测通过 + user 单次明确放行，两道闸缺一不可。
+
+## 七、终审人为条件闭环：`skill://dsh-dev-skill` 活会话实测（2026-10-04）
+
+§五.6 记录的唯一未执行项（trimmed rig 上的活会话技能目录读取）已于本批之外驱动并通过。**执行方式**：在 trimmed 安装位（本 rig，端口 4998，密码闸 GUI 之后的真实 LLM 会话）现场执行 `read skill://dsh-dev-skill`，且由**两个互相独立的主体**各跑一次——(a) 编排会话本体；(b) **冷上下文子 agent**（不带任何预热/继承的技能目录状态，独立 session）。
+
+| 检查 | 结果 |
+|---|---|
+| `read skill://dsh-dev-skill` 返回 SKILL.md 正文 | ✅ 完整正文：H1 + `**Source**` 行 + How to Use This Skill + 8 条 Core Mental Models + 章索引 ch01–ch22 + ~55 条 Topic Index + Supporting Files + Scope & Limits 收尾。无错误信封、无 `[truncated]`、无缺路径标记；结尾句完整，非截断 |
+| 冷上下文子 agent 独立复现 | ✅ 与 (a) 逐字一致（含前 20 行原文引用）；两通道均 PASS、均零错误文本 |
+| 技能目录**树**承重面（不只在 router 层） | ✅ `read skill://dsh-dev-skill/chapters/ch15-subsystems-tool-execution.md:1-15` 返回真实章正文（Core Idea / Frameworks Introduced），非空、非错误 —— 证明解析穿透到章文件，router 之外的目录亦在位 |
+| 解析源确为 **trimmed 安装位**（非 repo 旁路） | ✅ 安装位 `…/profiles/web/node_modules/better-dsh/docs/80_upstream-docs-and-skills/` 顶层**仅 `dsh-dev-skill`**（无 `hermes-dev-skill`/`pi-and-omp`/`src-scripts`）；`skill/chapters` = **22** 项；`skill/SKILL.md` sha256 = `552cbc9c5efcc418e8e10eb85e8628a61174a283bf2b8df9b5180d184ea3d375`，与 repo 副本**逐字节一致**，亦即 §三.3 记录的那一枚 |
+| 与 §五.5 静态等价证据的关系 | 本轮为**活会话动态解析证据**，补上 §五.5 静态等价链缺的那一环；两者路径独立、结论一致 |
+
+**结论：技能面在 trimmed 安装位上现场可用，`docs/` 瘦身未打断技能目录解析。§五.6 未执行项关闭。** 证据边界（诚实记录）：`read` 面返回的是 SKILL.md 正文，**未显示 YAML frontmatter**（`---` 包裹的 `name`/`description`）——与该 face 的既有呈现方式一致，不影响正文完整性判定；§五.5 已用 frontmatter 描述逐字比对另行取证。
+
+**附（同批顺带执行，非本 change 验收项）**：`write dvc://ast_grep {"patterns":["export function $NAME($$$ARGS)"],"path":"better-dsh/src/devices/ast"}` 实测 `totalMatches: 0`、`filesSearched: 11`。根因非工具故障：该 pattern 非完整 AST 节点（缺函数体），ast-grep 抛 `Multiple AST nodes are detected`，而 `src/devices/ast/engine/match.ts:68` 对该错误**静默回落为空结果**（`return { matches: [], unavailable: false }`）。交叉验证：同目录 grep 实测 10 处 `export function`；改用完整节点 pattern（`export function $NAME($$$ARGS) { $$$BODY }` 等三条）当场得 `totalMatches: 13 / filesWithMatches: 8`。记录为**已知行为面（错误静默）**，不影响本 change 结论，另见 ast 设备契约条目。

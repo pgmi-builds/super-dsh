@@ -1,0 +1,16 @@
+# AW-A world (spec S4, audited form): keep the full web/app row set so every
+# dependency chain activates; bind the world's listener to an EPHEMERAL
+# loopback port (0) — loopback-only, never user-facing, never 0.0.0.0.
+# True zero-listener surgery (disable webserver/web-runtime + webRuntime shim)
+# is a recorded AW-B follow-up: audit finding 2026-09-15 — disabling them
+# cascades 9 pending entries (connection/fileUploads chains).
+# 0.1.7: hmr arms wherever a profileContext exists; its reload recomposes
+# from the profile layers alone (spawn patches lost) — persist the
+# zero-listener posture here so recomposition cannot re-open a port.
+- id: webserver
+  disabled: true
+  config:
+    host: 127.0.0.1
+    port: 0
+- id: hmr
+  disabled: true

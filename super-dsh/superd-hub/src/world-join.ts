@@ -1,0 +1,122 @@
+/**
+ * Hub-side world joiner (AW-B DL1–DL5) — `@pgmi-builds/superd-hub/join`.
+ *
+ * Ruling R2 (2026-09-16): an adapter may ship STANDALONE only — joining the
+ * super-dsh hub is the HUB side's job. This plugin is that job, generic:
+ * the ctx0 composition inserts one row with `{ key }` and the hub does the
+ * spawn/roster/mount wiring the adapter's own world plugin would otherwise
+ * carry (the omp/codex adapters ship active per-adapter plugins; the claude
+ * adapter's `/world` entry is deliberately inert and is joined HERE).
+ *
+ *   1. roster membership (activation IS membership, spec S2);
+ *   2. ctx0 publishes the host mount record — the world's addressability
+ *      entry only since T-D (no webServer instance, no fence: those legs
+ *      retired with the world pages);
+ *   3. `spawnWorld` boots the sibling ROOT from the world's own nested home
+ *      (`<home>/agents/<key>/profiles/web` — provisioned here via
+ *      `provisionWorldProfile`, or by the line bootstrap when the adapter
+ *      package is not resolvable from this module), with the world mount
+ *      patches (no listener, no webui rows — T-D);
+ *   4. the world's gateway becomes a foreign target; the hub's `/hub` family
+ *      answers `?agent=<key>` traffic in ctx0's auth domain (T-C: the
+ *      per-label `/<key>/api` + `/<key>/api/remote.mux` mounts are retired —
+ *      `/hub` is the sole entry).
+ *
+ * Cordis identifies a plugin by its module, so ONE joiner row per tree — a
+ * second joined world needs either its own adapter-side plugin (omp/codex
+ * shape) or this plugin promoted to per-row instances. The world's PROFILE
+ * (bundles incl. its adapter) is provisioned by `provisionWorldProfile`
+ * (registry installs) or the line bootstrap (dev); this row only spawns,
+ * registers and mounts what that profile composes.
+ */
+import { mkdirSync } from 'node:fs'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { join } from 'node:path'
+import { registerAgent, setFailed, setReady } from './roster.js'
+import { registerForeignTarget } from './targets.js'
+import { spawnWorld } from './spawn-world.js'
+import { provisionWorldProfile, resolveInstallAnchor } from './world-provision.js'
+import { registerHostMount } from './world-host.js'
+import { worldMountPatches } from './world-mount.js'
+
+/** Stable Cordis plugin name. */
+export const name = 'superd-join'
+
+/** Row config: which world to join, under which roster label. */
+export interface Config {
+  key: string
+  label?: string
+}
+
+/** Structural slice of the ctx0 services the join needs. */
+interface HostContext {
+  provide(name: string, value: unknown): void
+  inject(deps: string[], callback: (ctx: unknown) => void): unknown
+  effect?(callback: () => () => void, label?: string): unknown
+  get(name: string): unknown
+}
+
+
+/** Apply the join. @param ctx - the CTX0 root context. @param config - `{ key, label? }`. */
+export function apply(ctx: HostContext, config?: Partial<Config>): void {
+  const key = typeof config?.key === 'string' ? config.key : undefined
+  if (key === undefined || key === '' || key.includes('/')) {
+    ctx.provide('superd.world.join.error', `invalid config.key ${JSON.stringify(config?.key)}`)
+    return
+  }
+  const label = typeof config?.label === 'string' && config.label !== '' ? config.label : key
+  registerAgent({ key, label, ready: false })
+  // S7 nested home: the world's whole tree lives under `agents/<key>` (its
+  // profiles were provisioned there by the line bootstrap; DSH data lands
+  // inside the same root via spawnWorld's dataHome override).
+  // Harness resolver (env → ~/.dsh): a consumer install has no DSH_HOME and
+  // no cwd contract — deriving the world root from cwd spawns worlds into a
+  // garbage tree or throws inside apply() and kills the whole host boot.
+  const root = resolveDshHome()
+  const worldHome = join(root, 'agents', key)
+  mkdirSync(join(worldHome, 'profiles'), { recursive: true })
+  // Publish story: a foreign install has no line bootstrap, so the nested
+  // profile + @pgmi-builds links are provisioned HERE (idempotent).
+  provisionWorldProfile({
+    key,
+    adapterPkg: '@pgmi-builds/agent-claude',
+    worldHome,
+  })
+  const world = (async () => {
+    // T-D: the mount record is addressability only — no ctx0 listening-stack
+    // wait, no webServer instance, no authorize leg (the /hub family wires
+    // its own gate in ctx0, see gateway.ts).
+    const dropHostMount = registerHostMount({ key, labelPath: `/${key}` })
+    const ctxW = await spawnWorld({
+      appName: `superd-${key}`,
+      profileName: 'web',
+      installAnchor: resolveInstallAnchor(ctx), // lazy: never at module scope — import must stay side-effect-free
+      home: worldHome,
+      dataHome: worldHome,
+      // The host's live table carries this world: spawnWorld republishes a
+      // widened successor before boot imports anything (spec §2.1), and
+      // @pgmi-builds rows resolve from the profile-local links written above.
+      host: ctx,
+      extraPatches: worldMountPatches(key) as never,
+    })
+    const gateway = ctxW.get('typertGateway') as never
+    registerForeignTarget({ key, gateway })
+    // T-C: no per-label mount anymore — the gateway above is the world's
+    // whole ingress, reached through the /hub family's `?agent=<key>` demux.
+    setReady(key, true)
+    ctx.effect?.(() => () => {
+      dropHostMount()
+    }, `superd-join: ${key} mount`)
+    return ctxW
+  })().catch((cause: unknown) => {
+    // A failed world degrades to a FAILED roster row (mount stays for
+    // diagnosis; ready stays false); a rejected provided promise would fail
+    // the entire host boot (loader entry apply).
+    console.error(`[super-dsh] ${key} world failed:`, cause)
+    try { setFailed(key, true) } catch { /* roster row already gone */ }
+    return null
+  })
+  ctx.provide(`superd.world.${key}`, world)
+}
+
+export default apply

@@ -1,0 +1,17 @@
+# dashr-dev-webmcp — dev/test-only bundle.
+#
+# Injects the page-mcp WebMCP tool provider (devtools tools on
+# document.modelContext) into every index.html the line serves, via the
+# webserver's public `webserver/index-inject` event — the SAME sanctioned
+# seam dashr-web-trust uses. Server-side injection is the whole point: any
+# browser that opens the line's URL (operator's Chrome, a coding agent's
+# browser-use, a fresh headless tab) gets the tools on page load with zero
+# manual steps. A client-side/tab-local injection proves nothing.
+#
+# NEVER SHIPPED: this package is not in the super-dsh pack `files` whitelist
+# and not in pack.mjs — only dev/test profiles compose it
+# (test/start-4999.sh). Off switch = restate the row `disabled: true` at the
+# profile layer, or drop it from `dsh.profile.bundles`.
+- insert:
+    - id: dashr-dev-webmcp
+      name: '@pgmi-builds/better-dsh-dev-webmcp'
