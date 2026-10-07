@@ -234,3 +234,8 @@
 - 单独小包验收：`SUPERD_TEST_CONSUMER=better-dsh SUPERD_PORT=4997 SUPERD_HOME_DIR=$PWD/.tests/better-dsh bash super-dsh/test/start-4999.sh`。构建仍是双产物，消费仅 Better Dash，没有 Super Dash override、Hub bundle 或 foreign agent。
 - dev3 使用同一个 launcher、实际宿主安装锚与保留的测试 home。将两 tarball + `pair.json` 传到目标后设置 `SUPERD_TEST_PACK_DIR=<received-directory>`；`scripts/read-pack-pair.mjs` 重定位产物路径，核验 SHA256、包名/同步版本、YAML 顺序和内嵌逐文件一致性后才安装。目标端不重新构建、不从 registry 拉 Better Dash。本机默认入口仍每轮双构建。
 - Git 历史保留两个原始根和全部旧 SHA；原 Better 分支/tag 以 `legacy/better-dsh/` 标记，避免与旧 Hub v0.1.x tag 重名。正式合并以 Better 历史为第一父、Hub 历史为第二父；旧 npm 版本不改写。
+
+
+### 8.2 dev3 review transport
+
+当前dev3测试服务4998宽绑定，但现有UFW未开放此公网端口。目标机实际安装/模型验证走SSH访问原生服务。浏览器review可用独立测试SSH转发unit `superd-4996-dev3-review`，从PC4996转发到dev3的127.0.0.1:4998；它访问同一交付物、profile与CLI，原生密码/cookie认证继续生效。该入口不修改目标防火墙或Caddy，也不提供替代bundle/peer解析。具体本轮URL和已核验边界见 `docs/test-reports/2026-10-08-monorepo-030.md`。review结束停止该unit即可；本机4999与4997消费者各自保持。
