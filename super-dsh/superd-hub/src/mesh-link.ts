@@ -27,6 +27,13 @@ import { PACK_VERSION } from './pack-version.js'
 export interface ProbeAgent {
   id: string
   key: string
+  /**
+   * The peer's unified runtime identifier (adapter package name; spec
+   * hub-roster-identity §1) — the common language icon matching consumes.
+   * Optional on the wire: peers older than the field answer without it, and
+   * the federation edge falls back to normalizing `key`.
+   */
+  runtimeId?: string
   label: string
   ready: boolean
   failed: boolean
@@ -44,6 +51,32 @@ export interface PairOutcome {
   machineId: string
   row: MachineRow
   probe: ProbeResult
+  /** The mutual-pairing reverse leg's outcome — present exactly when the
+   *  pairing input carried a {@link MutualPairing} self-description. */
+  mutual?: MutualOutcome
+}
+
+/**
+ * Reverse-leg payload (mutual pairing, 2026-10-08 user ruling "加了对方就等于
+ * 双方都加了"): after a successful pair the INITIATOR offers the peer its own
+ * pairing input, so one user action leaves BOTH machines holding each other.
+ * The peer processes the offer as an ordinary pair POST carrying
+ * `mutual: true` — pairing WITHOUT its own reverse leg, which stops the
+ * recursion by construction.
+ */
+export interface MutualPairing {
+  /** This machine's tokenized pairing URL as the peer should dial it. */
+  selfTokenUrl: string
+  /** This machine's operator-facing name (hostname, port-qualified per instance). */
+  selfName: string
+}
+
+/** The reverse leg's outcome. `ok` is also true when the peer answered
+ *  duplicate-machine-id — it already holds us, so mutual already holds. */
+export interface MutualOutcome {
+  ok: boolean
+  /** Why the offer failed; absent on success. The pairing itself never fails with it. */
+  error?: string
 }
 
 /** Test injection seam: fetch + registry load/save overrides. */
@@ -185,6 +218,7 @@ function coerceAgent(v: unknown): ProbeAgent {
   return {
     id: typeof a.id === 'string' ? a.id : '',
     key: typeof a.key === 'string' ? a.key : '',
+    runtimeId: typeof a.runtimeId === 'string' && a.runtimeId !== '' ? a.runtimeId : undefined,
     label: typeof a.label === 'string' ? a.label : '',
     ready: a.ready === true,
     failed: a.failed === true,
@@ -342,10 +376,13 @@ function persistRow(home: string, row: MachineRow, deps?: LinkDeps): void {
  * Full pairing: parse the pasted token URL → mint a cookie → probe the roster
  * → adopt the remote machine id (fail-loud on collision with self or an
  * existing remote) → persist the row with the retained token and minted
- * cookie → jar the cookie and mark the machine reachable. A failed mint/probe throws before
- * anything is persisted.
+ * cookie → jar the cookie and mark the machine reachable. When the input
+ * carries a {@link MutualPairing} self-description, the REVERSE LEG follows
+ * (best-effort, never fails the pairing): this machine offers its own pairing
+ * input to the peer over the just-minted cookie, so both sides end up holding
+ * each other — the "加了对方就等于双方都加了" ruling.
  */
-export async function pairMachine(home: string, input: { name: string; label?: string; tokenUrl: string }, deps?: LinkDeps): Promise<PairOutcome> {
+export async function pairMachine(home: string, input: { name: string; tokenUrl: string; mutual?: MutualPairing }, deps?: LinkDeps): Promise<PairOutcome> {
   const fetchImpl = deps?.fetchImpl ?? globalThis.fetch
   const load = deps?.load ?? loadMachines
   const { origin, token } = parseTokenUrl(input.tokenUrl)
@@ -361,7 +398,6 @@ export async function pairMachine(home: string, input: { name: string; label?: s
   const row: MachineRow = {
     id: probe.machineId,
     name: input.name,
-    label: input.label ?? input.name,
     origin,
     token,
     cookie,
@@ -372,7 +408,45 @@ export async function pairMachine(home: string, input: { name: string; label?: s
   cookieJar.set(row.id, cookie)
   recordStatus(row.id, 'reachable', undefined, versionWarningFor(probe.version, OWN_VERSION))
   emitFederation({ type: 'federated', machineId: row.id, machineName: row.name, origin, agents: probe.agents })
-  return { machineId: row.id, row, probe }
+  const outcome: PairOutcome = { machineId: row.id, row, probe }
+  if (input.mutual !== undefined) outcome.mutual = await reversePair(row, input.mutual, fetchImpl)
+  return outcome
+}
+
+const REVERSE_TIMEOUT_MS = 10_000
+
+/**
+ * The mutual-pairing reverse leg: offer THIS machine's pairing input to the
+ * just-paired peer over the cookie minted seconds ago (the peer then pairs
+ * back without its own reverse leg — the offer carries `mutual: true`). A
+ * duplicate-machine-id answer means the peer already holds us: mutual is
+ * already satisfied, reported as ok. EVERY failure lands on the outcome and
+ * never fails the pairing itself — the user sees it and can still add
+ * manually from the peer.
+ */
+async function reversePair(row: MachineRow, mutual: MutualPairing, fetchImpl: typeof fetch): Promise<MutualOutcome> {
+  let res: Response
+  try {
+    res = await fetchImpl(`${row.origin}/api/superd/machines`, {
+      method: 'POST',
+      headers: { cookie: row.cookie ?? '', 'content-type': 'application/json' },
+      body: JSON.stringify({ name: mutual.selfName, tokenUrl: mutual.selfTokenUrl, mutual: true }),
+      signal: AbortSignal.timeout(REVERSE_TIMEOUT_MS),
+    })
+  } catch (err) {
+    return { ok: false, error: `the peer did not answer the mutual-pairing offer — ${errMsg(err)}` }
+  }
+  if (res.status === 400) {
+    let error = ''
+    try {
+      const body = await res.json() as { error?: unknown }
+      if (typeof body.error === 'string') error = body.error
+    } catch { /* unreadable body */ }
+    if (error.includes('duplicate-machine-id')) return { ok: true }
+    return { ok: false, error: error === '' ? `the peer answered ${res.status}` : error }
+  }
+  if (res.status >= 200 && res.status < 300) return { ok: true }
+  return { ok: false, error: `the peer answered ${res.status}` }
 }
 
 /**

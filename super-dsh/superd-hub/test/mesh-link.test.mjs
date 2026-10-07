@@ -19,7 +19,7 @@ function startRemoteHub(opts = {}) {
     cookieName: opts.cookieName ?? 'dsh-auth-x',
     mintStatus: opts.mintStatus ?? 303,
     includeHub: opts.includeHub !== false,
-    agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false }],
+    agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', runtimeId: 'agent-codex', label: 'Codex', ready: true, failed: false }],
     validCookies: new Set(),
     mintCount: 0,
     probeCount: 0,
@@ -153,7 +153,7 @@ test('probeMachine：200 → ok + agents；401 → auth-expired；拒连 → unr
     assert.equal(ok.ok, true)
     assert.equal(ok.machineId, 'k3f9')
     assert.equal(ok.version, '0.1.6')
-    assert.deepEqual(ok.agents, [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false, machine: 'local' }])
+    assert.deepEqual(ok.agents, [{ id: 'q7m2xp', key: 'codex', runtimeId: 'agent-codex', label: 'Codex', ready: true, failed: false, machine: 'local' }])
 
     const expired = await probeMachine(hub.origin, 'dsh-auth-x=unknown')
     assert.equal(expired.ok, false)
@@ -178,6 +178,86 @@ test('probeMachine：缺 hub block → 非 superdsh 0.1.6+ 对端', async () => 
   } finally { await hub.close() }
 })
 
+// ---- mutual pairing: the reverse leg (2026-10-08 user ruling) --------------
+
+/** A fetchImpl fake that plays the PEER: mint + probe like the real fixture,
+ *  and records/answers the reverse-leg POST to /api/superd/machines. */
+function peerFetch(opts = {}) {
+  const calls = { machines: [] }
+  const impl = async (input, init) => {
+    const url = String(input instanceof URL ? input : input)
+    if (url.includes('/api/superd/machines')) {
+      calls.machines.push({ url, headers: init?.headers ?? {}, body: JSON.parse(init?.body ?? '{}') })
+      if (opts.fail === 'network') throw new Error('peer gone')
+      if (opts.fail === 'duplicate') return new Response(JSON.stringify({ error: 'mesh-link: duplicate-machine-id zz9 — collides with self' }), { status: 400 })
+      if (opts.fail === 'other') return new Response(JSON.stringify({ error: 'nope' }), { status: 400 })
+      if (opts.fail === 'status') return new Response('', { status: opts.status ?? 500 })
+      return new Response(JSON.stringify({ machine: { id: 'zz9' } }), { status: 201 })
+    }
+    if (url.includes('/?token=') || url.endsWith('/?token=boot-tok') || /\/\?token=/.test(url)) {
+      return new Response(null, { status: 303, headers: { 'set-cookie': 'dsh-auth-x=v1; Path=/' } })
+    }
+    return new Response(JSON.stringify({ available: true, hub: { machineId: 'k3f9', version: '0.1.12' }, agents: [{ id: 'q7m2xp', key: 'codex', runtimeId: 'agent-codex', label: 'Codex', ready: true, failed: false, machine: 'local' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  impl.calls = calls
+  return impl
+}
+
+test('mutual pairing：pair 成功后反向 offer 打到 peer 的 machines API（cookie + mutual:true），outcome.mutual.ok', async () => {
+  resetMachineStatus()
+  const h = home()
+  const fetchImpl = peerFetch()
+  try {
+    const out = await pairMachine(h, {
+      name: 'dev3',
+      tokenUrl: 'http://192.0.2.3:4999/?token=boot-tok',
+      mutual: { selfTokenUrl: 'http://192.0.2.130:4993/?token=own-tok', selfName: 'egv8:4993' },
+    }, { fetchImpl })
+    assert.equal(out.machineId, 'k3f9')
+    assert.deepEqual(out.mutual, { ok: true })
+    assert.equal(fetchImpl.calls.machines.length, 1)
+    const offer = fetchImpl.calls.machines[0]
+    assert.equal(offer.url, 'http://192.0.2.3:4999/api/superd/machines')
+    assert.equal(offer.headers.cookie, 'dsh-auth-x=v1', 'the offer rides the just-minted cookie')
+    assert.deepEqual(offer.body, { name: 'egv8:4993', tokenUrl: 'http://192.0.2.130:4993/?token=own-tok', mutual: true })
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('mutual pairing：peer duplicate → ok:true（已互持）；其它 400/网络错 → ok:false 带因，pairing 本身不失败', async () => {
+  resetMachineStatus()
+  const run = async (label, opts) => {
+    const h = home()
+    try {
+      const out = await pairMachine(h, {
+        name: label, tokenUrl: 'http://192.0.2.3:4999/?token=boot-tok',
+        mutual: { selfTokenUrl: 'http://own/?token=t', selfName: 'egv8' },
+      }, { fetchImpl: peerFetch(opts) })
+      return { out, count: listRemotes(h).length }
+    } finally { rmSync(h, { recursive: true, force: true }) }
+  }
+  const dup = await run('dev3', { fail: 'duplicate' })
+  assert.deepEqual(dup.out.mutual, { ok: true }, 'duplicate-machine-id = the peer already holds us')
+  assert.equal(dup.count, 1, 'the pairing itself stands')
+  const other = await run('dev3b', { fail: 'other' })
+  assert.equal(other.out.mutual.ok, false)
+  assert.equal(other.out.mutual.error, 'nope')
+  assert.equal(other.count, 1)
+  const net = await run('dev3c', { fail: 'network' })
+  assert.equal(net.out.mutual.ok, false)
+  assert.match(net.out.mutual.error, /did not answer/)
+  assert.equal(net.count, 1, 'every reverse failure still leaves the pairing in')
+})
+
+test('mutual pairing：无 mutual 输入 → 零反向请求（普通 pair 形态不变）', async () => {
+  resetMachineStatus()
+  const h = home()
+  const fetchImpl = peerFetch()
+  try {
+    await pairMachine(h, { name: 'dev3', tokenUrl: 'http://192.0.2.3:4999/?token=boot-tok' }, { fetchImpl })
+    assert.equal(fetchImpl.calls.machines.length, 0)
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
 test('pairMachine 全链：mint→probe→持久化→采纳 k3f9；重复 id 碰撞 throw', async () => {
   resetMachineStatus()
   assert.equal(machineStatus().size, 0)
@@ -186,12 +266,11 @@ test('pairMachine 全链：mint→probe→持久化→采纳 k3f9；重复 id �
   let fetchCalls = 0
   const fetchImpl = (...args) => { fetchCalls += 1; return globalThis.fetch(...args) }
   try {
-    const out = await pairMachine(h, { name: 'dev3', label: 'DEV3', tokenUrl: `${hub.origin}/?token=boot-tok` }, { fetchImpl })
+    const out = await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot-tok` }, { fetchImpl })
     assert.equal(out.machineId, 'k3f9')
     assert.equal(out.probe.ok, true)
     assert.equal(out.row.id, 'k3f9')
     assert.equal(out.row.name, 'dev3')
-    assert.equal(out.row.label, 'DEV3')
     assert.equal(out.row.origin, hub.origin)
     assert.equal(out.row.token, 'boot-tok')
     assert.equal(out.row.cookie, 'dsh-auth-x=v1') // mint 出的 cookie 随行持久化
@@ -277,7 +356,7 @@ test('reprobeMachine：持久化 cookie 跨进程可用（jar 冷启动 → 用�
   const h = home()
   try {
     hub.state.validCookies.add('v9') // 服务端已签发的存量 cookie（模拟另一进程/上次会话铸的）
-    upsertRemote(h, { id: 'p1q2', name: 'dev3', label: 'DEV3', origin: hub.origin, token: 'keep-tok', cookie: 'dsh-auth-x=v9', enabled: true, addedAt: 1 })
+    upsertRemote(h, { id: 'p1q2', name: 'dev3', origin: hub.origin, token: 'keep-tok', cookie: 'dsh-auth-x=v9', enabled: true, addedAt: 1 })
     const r = await reprobeMachine(h, 'p1q2') // 本进程从未 pair 过 p1q2：jar 空，只能吃行内 cookie
     assert.equal(r.ok, true)
     assert.equal(hub.state.mintCount, 0) // 存量 cookie 仍有效：不重铸
@@ -333,7 +412,7 @@ test('reprobeMachine：不可达 → unreachable；未知 id throw', async () =>
   const h = home()
   try {
     const dead = await closedOrigin()
-    upsertRemote(h, { id: 'd4e5', name: 'dev3', label: 'DEV3', origin: dead, token: 'ok', enabled: true, addedAt: 1 })
+    upsertRemote(h, { id: 'd4e5', name: 'dev3', origin: dead, token: 'ok', enabled: true, addedAt: 1 })
     const r = await reprobeMachine(h, 'd4e5')
     assert.equal(r.ok, false)
     assert.equal(r.status, 'unreachable')

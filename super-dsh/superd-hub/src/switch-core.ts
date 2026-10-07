@@ -1083,9 +1083,10 @@ export function decidePreFlight(label: string, row: PreFlightRow | undefined): P
 export const MACHINE_DOWN_ENRICH_MS = 3_000
 
 /** The machines-face slice the machine-down feedback reads (the client's
- *  `fetchMachines()` satisfies this structurally). */
+ *  `fetchMachines()` satisfies this structurally). `name` is the machine's
+ *  sole display identity (spec hub-roster-identity §4). */
 export interface MachineDownMachinesFace {
-  machines: readonly { id: string; label: string; status: string }[]
+  machines: readonly { id: string; name: string; status: string }[]
 }
 
 /** The branch's injected faces — the browser wiring supplies the real
@@ -1123,7 +1124,7 @@ export function runMachineDownFeedback(label: string, row: PreFlightRow & { labe
     if (enriched !== undefined) {
       const found = enriched.machines.find((entry) => entry.id === row.machine)
       if (found !== undefined) {
-        machineName = found.label
+        machineName = found.name
         if (found.status === 'unreachable' || found.status === 'auth-expired') status = found.status
       }
     }

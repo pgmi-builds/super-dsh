@@ -39,25 +39,27 @@ const STATUSES: readonly MeshMachineStatus[] = ['pending', 'reachable', 'unreach
  * flag exists so a self row surfacing in it still renders as self). Since
  * I2 (mesh P3 5a) a reachable row may also carry `versionWarning` — the
  * host's version-mismatch computation, coerced additively (absent stays
- * absent; a non-string is dropped).
+ * absent; a non-string is dropped). `name` is the machine's sole display
+ * identity (spec hub-roster-identity §4).
  */
 export interface MeshMachineView {
   readonly id: string
   readonly name: string
-  readonly label: string
   readonly origin: string
   readonly status: MeshMachineStatus
-  readonly lastProbeAt?: number
   /** I2: present exactly when the hub's probe found the peer's superd
    *  version incompatible with ours (diff major/minor, or unparsable). */
   readonly versionWarning?: string
   readonly self: boolean
 }
 
-/** The response's self block: this machine's minted m4 id + label. */
+/** The response's self block: this machine's minted m4 id + label, plus a
+ *  truncated launch-token preview (`'d_3txYKhc_…'`) when the host can mint —
+ *  display aid for the self row's copy affordance, never the token itself. */
 export interface MeshSelfView {
   readonly id: string
   readonly label: string
+  readonly tokenPreview?: string
 }
 
 /** The coerced GET answer: self (when the wire carried a usable one) + the remote rows. */
@@ -69,16 +71,19 @@ export interface MeshList {
 /** The pairing input — origin is parsed out of the token URL SERVER-side (mesh-link), never a separate field. */
 export interface AddMachineInput {
   readonly name: string
-  readonly label?: string
   readonly tokenUrl: string
 }
 
 /** Coerce the self block; a shape without a non-empty string id + string label is simply absent. */
 function coerceSelf(raw: unknown): MeshSelfView | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
-  const { id, label } = raw as Partial<MeshSelfView>
+  const { id, label, tokenPreview } = raw as Partial<MeshSelfView>
   if (typeof id !== 'string' || id === '' || typeof label !== 'string') return undefined
-  return { id, label }
+  return {
+    id,
+    label,
+    ...(typeof tokenPreview === 'string' && tokenPreview !== '' ? { tokenPreview } : {}),
+  }
 }
 
 /**
@@ -107,15 +112,13 @@ export function coerceMachineList(raw: unknown): MeshList {
       const base: MeshMachineView = {
         id: row.id,
         name: row.name,
-        label: typeof row.label === 'string' && row.label !== '' ? row.label : row.name,
         origin: row.origin,
         status,
         self: self !== undefined && row.id === self.id,
       }
-      const withProbe = typeof row.lastProbeAt === 'number' ? { ...base, lastProbeAt: row.lastProbeAt } : base
       machines.push(typeof row.versionWarning === 'string' && row.versionWarning !== ''
-        ? { ...withProbe, versionWarning: row.versionWarning }
-        : withProbe)
+        ? { ...base, versionWarning: row.versionWarning }
+        : base)
     }
   }
   return self === undefined ? { machines } : { self, machines }
@@ -155,23 +158,39 @@ export async function fetchMachines(): Promise<MeshList> {
   return coerceMachineList(await response.json().catch(() => undefined))
 }
 
+/** How the mutual-pairing reverse leg went on a successful pair (`ok` also
+ *  covers "the peer already held us"; `error` names any real failure — the
+ *  pairing itself succeeded either way and the row is in). */
+export interface MutualPairingOutcome {
+  readonly ok: boolean
+  readonly error?: string
+}
+
 /**
- * POST a pairing `{name, label?, tokenUrl}` (label omitted → the server
- * collapses it to the name).
+ * POST a pairing `{name, tokenUrl}` — mutual by design: the peer is offered
+ * our own pairing input, so one action pairs both machines.
  *
+ * @returns the reverse leg's outcome when the answer carried one.
  * @throws Error(body.error) when the face answers non-2xx — the message is
  * mesh-link's own, already token-redacted.
  */
-export async function addMachine(input: AddMachineInput): Promise<void> {
-  const body: Record<string, string> = { name: input.name, tokenUrl: input.tokenUrl }
-  if (typeof input.label === 'string' && input.label !== '') body.label = input.label
+export async function addMachine(input: AddMachineInput): Promise<{ mutual?: MutualPairingOutcome }> {
   const response = await fetch(MESH_API_BASE, {
     credentials: 'same-origin',
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ name: input.name, tokenUrl: input.tokenUrl }),
   })
   if (!response.ok) throw new Error(await errorText(response))
+  const body = await response.json().catch(() => undefined) as { mutual?: unknown } | undefined
+  if (typeof body?.mutual !== 'object' || body.mutual === null) return {}
+  const raw = body.mutual as { ok?: unknown; error?: unknown }
+  return {
+    mutual: {
+      ok: raw.ok === true,
+      ...(typeof raw.error === 'string' && raw.error !== '' ? { error: raw.error } : {}),
+    },
+  }
 }
 
 /**
@@ -213,23 +232,29 @@ export async function reprobeMachine(id: string): Promise<void> {
 export const AUTO_REFRESH_NOTE = 'auto-refreshes every 5 min'
 
 /**
- * The per-machine last-fetch line, shaped from the row's `lastProbeAt`
- * (the hub's status table stamp — mesh-rpc joins it on every GET).
- * Pure by design (the UI passes its own `now`): headless-testable without
- * jsdom, same presence contract as {@link machineVersionChip} — absent or
- * non-finite stamp means "never probed" and the panel omits the line.
+ * Ask the hub to tokenize the caller's origin with the process's live launch
+ * token (spec hub-roster-identity §3): the pairing URL a user copies onto
+ * another machine's Add-machine form. The host mints through the connection
+ * face's public `authenticatedUrl` — this client never sees the raw token
+ * anywhere else.
  *
- * @param lastProbeAt - epoch ms of the machine's last recorded probe.
- * @param now - epoch ms the panel renders at.
- * @returns "Updated 2m ago" / "Updated just now" / … , or undefined.
+ * @param origin - the page's own origin (`location.origin`), a bare http(s) origin.
+ * @returns the tokenized pairing URL.
+ * @throws Error(body.error) on a non-2xx answer (validation or missing host face).
  */
-export function lastFetchLabel(lastProbeAt: number | undefined, now: number): string | undefined {
-  if (typeof lastProbeAt !== 'number' || !Number.isFinite(lastProbeAt)) return undefined
-  const seconds = Math.max(0, Math.floor((now - lastProbeAt) / 1000))
-  if (seconds < 60) return 'Updated just now'
-  if (seconds < 3600) return `Updated ${Math.floor(seconds / 60)}m ago`
-  if (seconds < 86_400) return `Updated ${Math.floor(seconds / 3600)}h ago`
-  return `Updated ${Math.floor(seconds / 86_400)}d ago`
+export async function fetchPairingUrl(origin: string): Promise<string> {
+  const response = await fetch(MESH_API_BASE, {
+    credentials: 'same-origin',
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: 'tokenUrl', origin }),
+  })
+  if (!response.ok) throw new Error(await errorText(response))
+  const body = await response.json().catch(() => undefined) as { tokenUrl?: unknown } | undefined
+  if (typeof body?.tokenUrl !== 'string' || body.tokenUrl === '') {
+    throw new Error('mesh-api: tokenUrl op answered no tokenUrl')
+  }
+  return body.tokenUrl
 }
 
 /**

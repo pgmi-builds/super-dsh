@@ -13,8 +13,8 @@
  *               peer's ctx0 `/api` surface, no demux key — exactly how a
  *               browser ON the peer consumes its native DSH (the `/hub`
  *               family would 404 `?agent=native` as foreign-only).
- *   roster.ts   one row per agent: `{key: a6, label: '<Label> · <machine
- *               name>', machine: m4, ready, failed}` — `machine` set marks
+ *   roster.ts   one row per agent: `{key: a6, runtimeId: <package id>,
+ *               label, machine: m4, ready, failed}` — `machine` set marks
  *               the row federated; `agentLinks` projects it into the UI rows.
  *
  * The a6 IS the local registration key (spec §3.2): runtime keys are NOT
@@ -52,7 +52,7 @@
 import { createRemoteGateway, type RemoteGateway, type MuxClientSocket } from './mesh-gateway.js'
 import { cookieOf, onMeshFederationEvent } from './mesh-link.js'
 import type { MeshFederationEvent } from './mesh-link.js'
-import { registerAgent, unregisterAgent, listAgents, setReady } from './roster.js'
+import { registerAgent, unregisterAgent, listAgents, setReady, runtimeIdOf } from './roster.js'
 import { registerForeignTarget, unregisterForeignTarget, getTarget, type GatewayFace } from './targets.js'
 
 /** One remote agent as adopted from a probe — mesh-link's `ProbeAgent` shape
@@ -67,12 +67,20 @@ export interface FederatedAgent {
    *  (T3-M1) rather than shipping `?agent=` on the wire. */
   key: string
 
+  /**
+   * The peer's unified runtime identifier (adapter package name; spec
+   * hub-roster-identity §1). Absent from peers older than the field — the
+   * parse edge normalizes `key` so icon matching still speaks the common
+   * language.
+   */
+  runtimeId?: string
+
   label: string
   ready: boolean
   failed: boolean
 }
 
-/** The machine half of a federation fact (m4 + display name for label suffixes). */
+/** The machine half of a federation fact (m4 + display name for the UI's section heading). */
 export interface FederatedMachine {
   id: string
   name: string
@@ -114,15 +122,18 @@ function dropA6(a6: string): void {
 
 /**
  * Register one machine's probed agents — IDEMPOTENT replace per a6: a row
- * whose key/label/machine/ready/failed all match the live registry is left
- * untouched (zero roster churn on repeated probes); a changed row is
+ * whose key/runtimeId/label/machine/ready/failed all match the live registry
+ * is left untouched (zero roster churn on repeated probes); a changed row is
  * unregistered then re-registered (`registerAgent` throws on duplicate keys —
  * federate always unregisters first, so repeated probes never throw).
  * Agents with an empty id (unkeyable) are skipped; EVERY keyed row
  * federates — the peer's native row included (its `key:'native'` selects the
- * native gateway face; see {@link gatewayFor}).
- * @param machine - the peer's identity (m4 + name; the name lands in every label suffix).
- * @param agents - the probe's agent snapshot (a6 `id`, remote `key`, label, ready, failed).
+ * native gateway face; see {@link gatewayFor}). The label is the PEER'S OWN
+ * runtime label, unsuffixed (2026-10-07 user ruling, spec
+ * hub-roster-identity §4): the machine context is the UI's group heading,
+ * not part of the runtime's name.
+ * @param machine - the peer's identity (m4 + name; the grouping's section label).
+ * @param agents - the probe's agent snapshot (a6 `id`, remote `key`, runtimeId, label, ready, failed).
  * @param gatewayOf - gateway factory receiving the FULL agent row (the wiring
  * derives the face from `agent.key`; tests inject fakes) — called once per
  * (re)registration and once per converged-row target re-arm.
@@ -132,7 +143,8 @@ export function federateAgents(machine: FederatedMachine, agents: FederatedAgent
     if (agent.id === '') continue
     const desired = {
       key: agent.id,
-      label: `${agent.label} · ${machine.name}`,
+      runtimeId: agent.runtimeId ?? runtimeIdOf(agent.key),
+      label: agent.label,
       machine: machine.id,
       ready: agent.ready === true,
       failed: agent.failed === true,
@@ -140,6 +152,7 @@ export function federateAgents(machine: FederatedMachine, agents: FederatedAgent
     const existing = listAgents().find((e) => e.key === agent.id)
     if (
       existing !== undefined
+      && existing.runtimeId === desired.runtimeId
       && existing.label === desired.label
       && existing.ready === desired.ready
       && (existing.failed ?? false) === desired.failed

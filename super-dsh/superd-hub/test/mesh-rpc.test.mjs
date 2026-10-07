@@ -32,7 +32,7 @@ function startRemoteHub(opts = {}) {
     machineId: opts.machineId ?? 'k3f9',
     version: opts.version ?? '0.1.6',
     token: opts.token ?? 'ok',
-    agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false }],
+    agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', runtimeId: 'agent-codex', label: 'Codex', ready: true, failed: false }],
     validCookies: new Set(),
     mintCount: 0,
   }
@@ -97,7 +97,7 @@ function fakeCtx() {
 }
 
 const row = (over = {}) => ({
-  id: 'k3f9', name: 'dev3', label: 'DEV3', origin: 'http://127.0.0.1:9',
+  id: 'k3f9', name: 'dev3', origin: 'http://127.0.0.1:9',
   token: 'SECRET-TOKEN', cookie: 'dsh-auth-x=SECRET-COOKIE', enabled: true, addedAt: 123, ...over,
 })
 
@@ -114,11 +114,24 @@ test('GET：self + 投影行；token/cookie 永不上线；status 缺省 pending
     assert.equal(body.machines.length, 1)
     const m = body.machines[0]
     // 投影 = 白名单字段，一寸不多（无 token、无 cookie、无 lastProbeAt/error）
-    assert.deepEqual(Object.keys(m).sort(), ['addedAt', 'enabled', 'id', 'label', 'name', 'origin', 'status'])
+    assert.deepEqual(Object.keys(m).sort(), ['addedAt', 'enabled', 'id', 'name', 'origin', 'status'])
     assert.equal(m.status, 'pending') // 从未探测 → 缺省
     const raw = JSON.stringify(body)
     assert.ok(!raw.includes('SECRET-TOKEN'), 'token leaked into GET')
     assert.ok(!raw.includes('SECRET-COOKIE'), 'cookie leaked into GET')
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('GET self.tokenPreview：有 mint face → 10 字符预览 + 省略号；无 face → 键不存在；永不携带完整 token', async () => {
+  const h = home()
+  try {
+    const full = 'd_3txYKhc_GUfMlSjg0qwgUQDgVVAwC7I7V9XZeWt30'
+    const res = await handleMeshMachines(req('GET'), { home: h, tokenUrlOf: (origin) => `${origin}/?token=${full}` })
+    const body = await res.json()
+    assert.equal(body.self.tokenPreview, `${full.slice(0, 10)}…`, 'first 10 chars + ellipsis — enough to SEE it is a token')
+    assert.ok(!JSON.stringify(body).includes(full), 'the FULL token never rides the GET answer')
+    const bare = await handleMeshMachines(req('GET'), { home: h })
+    assert.equal('tokenPreview' in (await bare.json()).self, false, 'no mint face → no preview key')
   } finally { rmSync(h, { recursive: true, force: true }) }
 })
 
@@ -130,7 +143,7 @@ test('POST pair：fixture 远端真往返 → 201；行持久化（含机密）�
   const fetchImpl = (...args) => { fetchCalls += 1; return globalThis.fetch(...args) }
   try {
     const res = await handleMeshMachines(
-      req('POST', { name: 'dev3', label: 'DEV3', tokenUrl: `${hub.origin}/?token=boot-tok` }),
+      req('POST', { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot-tok` }),
       { home: h, fetchImpl },
     )
     assert.equal(res.status, 201)
@@ -138,7 +151,7 @@ test('POST pair：fixture 远端真往返 → 201；行持久化（含机密）�
     assert.equal(body.machine.id, 'k3f9')
     assert.equal(body.machine.name, 'dev3')
     assert.equal(body.machine.origin, hub.origin)
-    assert.deepEqual(Object.keys(body.machine).sort(), ['addedAt', 'enabled', 'id', 'label', 'lastProbeAt', 'name', 'origin', 'status'])
+    assert.deepEqual(Object.keys(body.machine).sort(), ['addedAt', 'enabled', 'id', 'lastProbeAt', 'name', 'origin', 'status'])
     assert.equal(body.machine.status, 'reachable')
     assert.ok(!JSON.stringify(body).includes('boot-tok'), 'token leaked into POST response')
     assert.ok(!JSON.stringify(body).includes('dsh-auth'), 'cookie leaked into POST response')
@@ -185,6 +198,113 @@ test('POST pair 失败分支：坏 URL / 不可达对端 / 坏形状 / 非 JSON 
   } finally {
     rmSync(h, { recursive: true, force: true })
   }
+})
+
+test('POST pair（user 形态）携带反向 offer；mutual:true 的 offer 不再反向（递归止于构造）', async () => {
+  resetMachineStatus()
+  const hub = await startRemoteHub({ machineId: 'k3f9', token: 'boot-tok' })
+  const h = home()
+  const hits = []
+  const fetchImpl = (...args) => {
+    const url = String(args[0])
+    if (url.includes('/api/superd/machines')) hits.push(url)
+    return globalThis.fetch(...args)
+  }
+  const deps = { home: h, fetchImpl, tokenUrlOf: (origin) => `${origin}/?token=req-tok` }
+  const reqWithHost = (body) => new Request(`http://x${MESH_API_BASE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', host: '192.0.2.130:4993' },
+    body: JSON.stringify(body),
+  })
+  try {
+    // user 形态：不带 mutual → 反向 offer 打到 peer（fixture 无 machines 路由 → 404 → ok:false 仍 201）
+    const res = await handleMeshMachines(
+      reqWithHost({ name: 'dev3', tokenUrl: `${hub.origin}/?token=boot-tok` }),
+      deps,
+    )
+    assert.equal(res.status, 201)
+    const body = await res.json()
+    assert.equal(body.mutual.ok, false, 'the fixture answers no machines route — the offer outcome is honest')
+    assert.match(body.mutual.error, /404/)
+    assert.equal(hits.length, 1, 'exactly one reverse offer')
+    assert.equal(hits[0], `${hub.origin}/api/superd/machines`)
+
+    // offer 形态：mutual:true → 配对成功但不再反向（删掉首对，重配新行验证）
+    await handleMeshMachines(new Request(`http://x${MESH_API_BASE}?id=k3f9`, { method: 'DELETE' }), deps)
+    const res2 = await handleMeshMachines(
+      reqWithHost({ name: 'again', tokenUrl: `${hub.origin}/?token=boot-tok`, mutual: true }),
+      deps,
+    )
+    assert.equal(res2.status, 201)
+    const body2 = await res2.json()
+    assert.equal('mutual' in body2, false, 'an offer with mutual:true answers no mutual outcome — it fires no reverse leg')
+    assert.equal(hits.length, 1, 'the mutual offer fired NO second reverse leg')
+  } finally { rmSync(h, { recursive: true, force: true }); await hub.close() }
+})
+
+test('POST {op:"tokenUrl"}：face 的 authenticatedUrl 令牌化 origin → {tokenUrl}；GET 永不带 token', async () => {
+  const h = home()
+  try {
+    const minted = []
+    const res = await handleMeshMachines(
+      req('POST', { op: 'tokenUrl', origin: 'https://test.pc.internal.test' }),
+      { home: h, tokenUrlOf: (origin) => { minted.push(origin); return `${origin}/?token=LIVE-TOKEN` } },
+    )
+    assert.equal(res.status, 200)
+    assert.deepEqual(await res.json(), { tokenUrl: 'https://test.pc.internal.test/?token=LIVE-TOKEN' })
+    assert.deepEqual(minted, ['https://test.pc.internal.test'])
+    // GET 投影永不携带完整 token —— 它只调用 face 取 10 字符预览（key tokenPreview），
+    // 且 face 抛错时静默降级为无预览，绝不拖垮 machines GET。
+    const get = await handleMeshMachines(req('GET'), { home: h, tokenUrlOf: (origin) => `${origin}/?token=<redacted>` })
+    const getBody = await get.json()
+    assert.equal(getBody.self.tokenPreview, `${'LIVE-TOKEN-0123456789'.slice(0, 10)}…`)
+    assert.ok(!JSON.stringify(getBody).includes('LIVE-TOKEN-0123456789'), 'the full token never rides the GET')
+    const grumpy = await handleMeshMachines(req('GET'), { home: h, tokenUrlOf: () => { throw new Error('mint face is having a day') } })
+    const grumpyBody = await grumpy.json()
+    assert.equal(grumpy.status, 200, 'a throwing preview never fails the list')
+    assert.equal('tokenPreview' in grumpyBody.self, false, 'degraded: no preview key')
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('POST {op:"tokenUrl"}：坏 origin / 无 face → 400，错误不回显 token', async () => {
+  const h = home()
+  try {
+    const cases = [
+      [{ op: 'tokenUrl' }, /non-empty origin/],
+      [{ op: 'tokenUrl', origin: 'not a url' }, /not a parseable absolute URL/],
+      [{ op: 'tokenUrl', origin: 'ftp://x' }, /must be http\(s\)/],
+      [{ op: 'tokenUrl', origin: 'https://x.app/hub' }, /bare origin/],
+      [{ op: 'tokenUrl', origin: 'https://x.app/?a=1' }, /bare origin/],
+      [{ op: 'tokenUrl', origin: 'https://user:pw@x.app' }, /must not carry credentials/],
+    ]
+    for (const [body, pattern] of cases) {
+      const res = await handleMeshMachines(req('POST', body), { home: h, tokenUrlOf: () => 'https://x/?token=T' })
+      assert.equal(res.status, 400, JSON.stringify(body))
+      assert.match((await res.json()).error, pattern)
+    }
+    // 老宿主：connection face 无 authenticatedUrl → 明确 400
+    const noFace = await handleMeshMachines(req('POST', { op: 'tokenUrl', origin: 'https://x.app' }), { home: h })
+    assert.equal(noFace.status, 400)
+    assert.match((await noFace.json()).error, /authenticatedUrl/)
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('registerMeshRpc：connection face 的 authenticatedUrl 接进 tokenUrl op（绑定 receiver——真实现读 this 上的进程 token）', async () => {
+  const h = home()
+  try {
+    const ctx = fakeCtx()
+    ctx.connection.launchToken = 'MINTED'
+    ctx.connection.authenticatedUrl = function (base) { return `${base}/?token=${this.launchToken}` }
+    registerMeshRpc(ctx, { home: h })
+    const route = ctx.routes[0]
+    const res = await route.fetch(new Request(`http://x${MESH_API_BASE}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ op: 'tokenUrl', origin: 'http://192.0.2.130:4999' }),
+    }))
+    assert.equal(res.status, 200)
+    assert.deepEqual(await res.json(), { tokenUrl: 'http://192.0.2.130:4999/?token=MINTED' })
+  } finally { rmSync(h, { recursive: true, force: true }) }
 })
 
 test('POST {op:"reprobe"}：走 reprobeMachine → {probe}；unknown id → 400；未知 op → 400', async () => {

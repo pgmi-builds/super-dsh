@@ -20,6 +20,10 @@
 #     stay valid across restarts (connection.cookieMaxAgeDays, default 30d).
 #     The ?token= in each boot's log is a per-process launch token for FIRST
 #     mint only — never re-inject cookies between test restarts.
+# 2026-10-07 user ruling baked in below:
+#   • the webserver binds 0.0.0.0 by default (SUPERD_BIND=127.0.0.1 opts back
+#     into the loopback + socat-relay shape): LAN/WAN visitors hit the port
+#     directly, no relay unit; admission stays cookie-only via web-trust.
 set -euo pipefail
 # Rig knobs: the defaults below are the long-lived compat home (session-format
 # verification, reused across runs — user data is a test asset). A throwaway
@@ -29,6 +33,13 @@ set -euo pipefail
 # (delete that home afterwards; see docs/07-cordis-dsh-dev-test-guides.md §3).
 PORT="${SUPERD_PORT:-4999}"
 UNIT="superd-${PORT}-test"
+# Bind face (2026-10-07 user ruling): the server binds ALL interfaces by
+# default — LAN/WAN visitors hit the port directly and the socat LAN relay is
+# skipped (a relay on the same port would collide with the wide bind).
+# SUPERD_BIND=127.0.0.1 restores the old loopback + relay shape. Admission is
+# unchanged either way: web-trust keeps cookie authentication and removes only
+# the Host/Origin fence, so an unauthenticated LAN request still gets 401.
+BIND="${SUPERD_BIND:-0.0.0.0}"
 # The line's repo root = wherever THIS script lives (main checkout or a dev
 # worktree — pack.mjs anchors itself the same way via import.meta.url), never a
 # hardcoded path: a worktree checkout must pack and boot its OWN branch state.
@@ -150,12 +161,13 @@ cat > "$PROFILE_DIR/package.json" <<EOF
 }
 EOF
 cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
-# ctx0 web face on the line port (loopback; LAN/WAN via socat/Caddy per repo
-# port discipline). Everything else — hub, world rows, claude join, picker —
-# composes from the installed super-dsh bundle's own patch.
+# ctx0 web face on the line port. Bind = ${BIND} (SUPERD_BIND override): the
+# default 0.0.0.0 serves LAN/WAN visitors directly, no socat relay; loopback
+# binds get the relay instead. Everything else — hub, world rows, claude
+# join, picker — composes from the installed super-dsh bundle's own patch.
 - id: webserver
   config:
-    host: 127.0.0.1
+    host: ${BIND}
     port: ${PORT}
 # One seed for every rig on this machine (see SHARED_CREDENTIALS above): the
 # upstream row defaults to the credentials document under the harness home,
@@ -252,9 +264,11 @@ done
 [ -n "$ok" ] || { echo "timeout waiting for ${PORT}" >&2; exit 1; }
 
 # LAN relay on every test port, including the Caddy-backed 4999.
-# The web server stays on loopback; web-trust retains authentication and
-# removes address fences, so neither host nor trusted-host CLI flags are needed.
-if [ -n "$LAN_IP" ]; then
+# LAN relay ONLY for a loopback bind (the default 0.0.0.0 already answers on
+# every interface, and a relay on the same port would lose the bind race).
+# web-trust retains authentication and removes address fences, so neither
+# host nor trusted-host CLI flags are needed on either shape.
+if [ -n "$LAN_IP" ] && [ "$BIND" = "127.0.0.1" ]; then
   systemd-run --user --unit="$RELAY" \
     --property=StandardOutput=append:"$LOG" \
     --property=StandardError=append:"$LOG" \
@@ -293,7 +307,11 @@ if [ -n "$found" ]; then
   if [ "$PORT" = "4999" ]; then
     echo "  wan:   https://test.pc.internal.test/?token=$found"
   fi
-  echo "  lan:   http://${LAN_IP}:${PORT}/?token=$found   (LAN relay: $RELAY)"
+  if [ "$BIND" = "127.0.0.1" ]; then
+    [ -n "$LAN_IP" ] && echo "  lan:   http://${LAN_IP}:${PORT}/?token=$found   (LAN relay: $RELAY)"
+  elif [ -n "$LAN_IP" ]; then
+    echo "  lan:   http://${LAN_IP}:${PORT}/?token=$found   (direct bind ${BIND}; no relay)"
+  fi
 else
   echo "  WARN: no token authenticated against the index — inspect $LOG" >&2
 fi

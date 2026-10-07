@@ -30,11 +30,11 @@ const FULL_BODY = {
   self: { id: 'a1b2', label: 'local' },
   machines: [
     {
-      id: 'm4x9', name: 'dev3', label: 'Dev 3', origin: 'http://192.0.2.130:4999',
+      id: 'm4x9', name: 'dev3', origin: 'http://192.0.2.130:4999',
       enabled: true, addedAt: 123, status: 'reachable', lastProbeAt: 456,
     },
     {
-      id: 'm7q1', name: 'lab2', label: '', origin: 'https://lab2.example.com:4999',
+      id: 'm7q1', name: 'lab2', origin: 'https://lab2.example.com:4999',
       enabled: true, addedAt: 234, status: 'auth-expired',
     },
   ],
@@ -45,17 +45,18 @@ test('coercion: a complete body maps to rows; self rides alongside, never per-ro
   assert.deepEqual(view.self, { id: 'a1b2', label: 'local' })
   assert.equal(view.machines.length, 2)
   assert.deepEqual(view.machines[0], {
-    id: 'm4x9', name: 'dev3', label: 'Dev 3', origin: 'http://192.0.2.130:4999',
-    status: 'reachable', lastProbeAt: 456, self: false,
+    id: 'm4x9', name: 'dev3', origin: 'http://192.0.2.130:4999',
+    status: 'reachable', self: false,
   })
   // every status of the union survives the coercion untouched
   assert.equal(view.machines[1].status, 'auth-expired')
 })
 
-test('coercion: an empty label collapses to the name (the optional-label contract)', () => {
+test('coercion: the name is the sole display identity; lastProbeAt is not a view field', () => {
   const view = mesh.coerceMachineList(FULL_BODY)
-  assert.equal(view.machines[1].label, 'lab2', 'label omitted/blank on the wire → the row name')
-  assert.equal('lastProbeAt' in view.machines[1], false, 'an absent lastProbeAt stays absent')
+  // 退役的 label 列不上视图（spec hub-roster-identity §4）：name 即标识
+  assert.equal('label' in view.machines[1], false, 'a legacy wire label is dropped, never rendered')
+  assert.equal('lastProbeAt' in view.machines[0], false, 'lastProbeAt stays a server-side fact, not a panel field')
 })
 
 test('coercion: self is DERIVED — a machines row whose id is the self id flags true', () => {
@@ -116,6 +117,18 @@ test('coercion: the legitimate empty body — self present, machines empty', () 
     self: { id: 'a1b2', label: 'local' },
     machines: [],
   })
+})
+
+test('coercion: the self tokenPreview rides only when the wire sent a usable string', () => {
+  const view = mesh.coerceMachineList({
+    self: { id: 'a1b2', label: 'local', tokenPreview: 'd_3txYKhc_…' },
+    machines: [],
+  })
+  assert.equal(view.self.tokenPreview, 'd_3txYKhc_…')
+  const bad = mesh.coerceMachineList({ self: { id: 'a1b2', label: 'local', tokenPreview: 42 }, machines: [] })
+  assert.equal('tokenPreview' in bad.self, false, 'a non-string preview is dropped, never coerced')
+  const bare = mesh.coerceMachineList({ self: { id: 'a1b2', label: 'local' }, machines: [] })
+  assert.equal('tokenPreview' in bare.self, false, 'an absent preview stays absent')
 })
 
 // ---- validTokenUrl: the client-side pre-check -------------------------------
@@ -181,34 +194,33 @@ test('chip presence: machineVersionChip exists exactly when the row carries a wa
   assert.equal(mesh.machineVersionChip(clean.machines[0]), undefined, 'a clean row renders NO chip')
 })
 
-// ---- R7: the D18 cadence copy + lastFetchLabel (pure shaping) ---------------
+// ---- R7: the D18 cadence copy ----------------------------------------------
 
 test('AUTO_REFRESH_NOTE is the standing 5-minute cadence copy', () => {
   assert.equal(mesh.AUTO_REFRESH_NOTE, 'auto-refreshes every 5 min')
 })
 
-test('lastFetchLabel: absent/non-finite → undefined; the UI omits the line (presence contract)', () => {
-  assert.equal(mesh.lastFetchLabel(undefined, 1_000), undefined)
-  assert.equal(mesh.lastFetchLabel(Number.NaN, 1_000), undefined)
-  assert.equal(mesh.lastFetchLabel(Number.POSITIVE_INFINITY, 1_000), undefined)
+test('fetchPairingUrl POSTs the tokenUrl op and answers the minted URL', async () => {
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push([url, init])
+    return new Response(JSON.stringify({ tokenUrl: 'https://x.app/?token=T' }), { status: 200 })
+  }
+  try {
+    const url = await mesh.fetchPairingUrl('https://x.app')
+    assert.equal(url, 'https://x.app/?token=T')
+    assert.equal(calls.length, 1)
+    assert.deepEqual(JSON.parse(calls[0][1].body), { op: 'tokenUrl', origin: 'https://x.app' })
+  } finally { globalThis.fetch = realFetch }
 })
 
-test('lastFetchLabel: bucket boundaries — just now / m / h / d', () => {
-  const now = 1_000_000_000_000
-  // under a minute (incl. clock skew clamped to zero) → just now
-  assert.equal(mesh.lastFetchLabel(now, now), 'Updated just now')
-  assert.equal(mesh.lastFetchLabel(now - 59_000, now), 'Updated just now')
-  assert.equal(mesh.lastFetchLabel(now + 5000, now), 'Updated just now', 'clock skew clamps, never negative ages')
-  // minutes: floor, 59m59s still minutes
-  assert.equal(mesh.lastFetchLabel(now - 60_000, now), 'Updated 1m ago')
-  assert.equal(mesh.lastFetchLabel(now - 119_999, now), 'Updated 1m ago', 'floored, not rounded')
-  assert.equal(mesh.lastFetchLabel(now - 120_000, now), 'Updated 2m ago')
-  assert.equal(mesh.lastFetchLabel(now - 3_599_999, now), 'Updated 59m ago')
-  // hours
-  assert.equal(mesh.lastFetchLabel(now - 3_600_000, now), 'Updated 1h ago')
-  assert.equal(mesh.lastFetchLabel(now - 2 * 3_600_000, now), 'Updated 2h ago')
-  assert.equal(mesh.lastFetchLabel(now - 86_399_999, now), 'Updated 23h ago')
-  // days
-  assert.equal(mesh.lastFetchLabel(now - 86_400_000, now), 'Updated 1d ago')
-  assert.equal(mesh.lastFetchLabel(now - 3 * 86_400_000, now), 'Updated 3d ago')
+test('fetchPairingUrl surfaces the wire error; a body without tokenUrl throws', async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'no face' }), { status: 400 })
+  try {
+    await assert.rejects(() => mesh.fetchPairingUrl('https://x.app'), /no face/)
+  } finally { globalThis.fetch = realFetch }
+  globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 })
+  try {
+    await assert.rejects(() => mesh.fetchPairingUrl('https://x.app'), /answered no tokenUrl/)
+  } finally { globalThis.fetch = realFetch }
 })

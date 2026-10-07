@@ -156,24 +156,24 @@ function envelopeReq(url) {
  *  (a6 exact) first, then the shared local target registry (label aliases). */
 const demux = (label) => federatedGatewayOf(label) ?? getTarget(label)?.gateway
 
-test('federateAgents：a6 行进 targets+roster；label=<Label> · <name>；machine 字段就位；空 a6 跳过；peer native 行照常采纳', () => {
+test('federateAgents：a6 行进 targets+roster；label 不带 machine 后缀；runtimeId 物化（wire 值优先，旧 peer 由 key 归一）；machine 字段就位；空 a6 跳过；peer native 行照常采纳', () => {
   sweep()
   const gw = { codex: fakeGateway('gw-codex'), omp: fakeGateway('gw-omp'), native: fakeGateway('gw-native') }
   const seen = []
   federateAgents(
     { id: 'k3f9', name: 'dev3' },
     [
-      { id: 'q7m2xp', key: 'codex', label: 'Codex', ready: true, failed: false },
-      { id: 'ab12cd', key: 'omp', label: 'OMP', ready: false, failed: true },
-      { id: 'zz9nat', key: 'native', label: 'Native', ready: true, failed: false }, // peer 的 native 行：a6 采纳，不跳过
+      { id: 'q7m2xp', key: 'codex', runtimeId: 'agent-codex', label: 'Codex', ready: true, failed: false },
+      { id: 'ab12cd', key: 'omp', label: 'OMP', ready: false, failed: true }, // 旧 peer：无 runtimeId → key 归一
+      { id: 'zz9nat', key: 'native', label: 'DSH', ready: true, failed: false }, // peer 的 native 行：a6 采纳，不跳过
       { id: '', key: 'junk', label: 'Junk', ready: true, failed: false }, // 空 a6：不可 keyed
     ],
     (agent) => { seen.push(agent.key); return gw[agent.key] },
   )
   assert.deepEqual(listAgents(), [
-    { key: 'q7m2xp', label: 'Codex · dev3', machine: 'k3f9', ready: true, failed: false },
-    { key: 'ab12cd', label: 'OMP · dev3', machine: 'k3f9', ready: false, failed: true },
-    { key: 'zz9nat', label: 'Native · dev3', machine: 'k3f9', ready: true, failed: false },
+    { key: 'q7m2xp', runtimeId: 'agent-codex', label: 'Codex', machine: 'k3f9', ready: true, failed: false },
+    { key: 'ab12cd', runtimeId: 'agent-omp', label: 'OMP', machine: 'k3f9', ready: false, failed: true },
+    { key: 'zz9nat', runtimeId: 'native', label: 'DSH', machine: 'k3f9', ready: true, failed: false },
   ])
   assert.equal(getTarget('zz9nat').gateway, gw.native, "the peer's native row registers its gateway like any other row")
   assert.equal(getTarget('q7m2xp').gateway, gw.codex)
@@ -200,7 +200,7 @@ test('幂等：重复 federate 无 throw、零 roster churn；ready/label 变化
     assert.equal(listAgents().length, 1)
     // 变化（远端 rename + ready 翻转）→ 幂等替换（先 unregister 再 register，不 throw）
     federateAgents({ id: 'k3f9', name: 'dev3' }, [{ id: 'q7m2xp', key: 'codex', label: 'Codex2', ready: false, failed: false }], () => fakeGateway('g3'))
-    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', label: 'Codex2 · dev3', machine: 'k3f9', ready: false, failed: false }])
+    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', runtimeId: 'agent-codex', label: 'Codex2', machine: 'k3f9', ready: false, failed: false }])
     assert.ok(emits > afterFirst)
   } finally {
     off()
@@ -245,7 +245,7 @@ test('pair 全链（wiring）：mesh-link 事件 → 联邦注册 → roster/tar
   try {
     const out = await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot-tok` })
     assert.equal(out.machineId, 'k3f9')
-    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', label: 'Codex · dev3', machine: 'k3f9', ready: true, failed: false }])
+    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', runtimeId: 'agent-codex', label: 'Codex', machine: 'k3f9', ready: true, failed: false }])
     assert.notEqual(getTarget('q7m2xp'), undefined)
     assert.ok(listRuntimeKeys().includes('q7m2xp'))
 
@@ -255,7 +255,8 @@ test('pair 全链（wiring）：mesh-link 事件 → 联邦注册 → roster/tar
     const remote = links[1]
     assert.equal(remote.key, 'q7m2xp')
     assert.equal(remote.id, 'q7m2xp', 'a6 即行 id（owner-minted，原样采纳，不本地重铸）')
-    assert.equal(remote.label, 'Codex · dev3')
+    assert.equal(remote.label, 'Codex')
+    assert.equal(remote.runtimeId, 'agent-codex', 'runtimeId 随行（wire 值 → 图标匹配的公共语言）')
     assert.equal(remote.machine, 'k3f9')
     assert.equal(remote.path, '/hub/?agent=q7m2xp')
     assert.equal(remote.ready, true)
@@ -298,7 +299,7 @@ test('reprobe 收敛：roster 变化 → stale 注销、变化行更新；unreac
     hub.state.agents = [{ id: 'q7m2xp', key: 'codex', label: 'Codex', ready: false, failed: false }]
     const r1 = await reprobeMachine(h, 'k3f9')
     assert.equal(r1.ok, true)
-    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', label: 'Codex · dev3', machine: 'k3f9', ready: false, failed: false }])
+    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', runtimeId: 'agent-codex', label: 'Codex', machine: 'k3f9', ready: false, failed: false }])
     assert.equal(getTarget('ab12cd'), undefined)
 
     // 不可达：行保留、ready=false、failed=false（orchestra 降级语义）
@@ -306,7 +307,7 @@ test('reprobe 收敛：roster 变化 → stale 注销、变化行更新；unreac
     const r2 = await reprobeMachine(h, 'k3f9')
     assert.equal(r2.ok, false)
     assert.equal(r2.status, 'unreachable')
-    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', label: 'Codex · dev3', machine: 'k3f9', ready: false, failed: false }])
+    assert.deepEqual(listAgents(), [{ key: 'q7m2xp', runtimeId: 'agent-codex', label: 'Codex', machine: 'k3f9', ready: false, failed: false }])
     assert.notEqual(getTarget('q7m2xp'), undefined, '降级不注销 target')
 
     // 恢复：ready 回升

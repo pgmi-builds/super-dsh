@@ -35,13 +35,32 @@ test('ensureSelf: 惰性铸造 + 持久 + 幂等', () => {
 test('remotes CRUD 全量持久化；损坏文件降级为空', () => {
   const h = home()
   try {
-    upsertRemote(h, { id: 'k3f9', name: 'dev3', label: 'DEV3', origin: 'http://192.0.2.3:4999', token: 'x', enabled: true, addedAt: 1 })
+    upsertRemote(h, { id: 'k3f9', name: 'dev3', origin: 'http://192.0.2.3:4999', token: 'x', enabled: true, addedAt: 1 })
     assert.equal(listRemotes(h).length, 1)
-    upsertRemote(h, { id: 'k3f9', name: 'dev3', label: 'DEV3b', origin: 'http://192.0.2.3:4999', enabled: true, addedAt: 1 }) // 同 id 覆盖
-    assert.equal(listRemotes(h)[0].label, 'DEV3b')
+    upsertRemote(h, { id: 'k3f9', name: 'dev3b', origin: 'http://192.0.2.3:4999', enabled: true, addedAt: 1 }) // 同 id 覆盖
+    assert.equal(listRemotes(h)[0].name, 'dev3b')
     assert.equal(removeRemote(h, 'k3f9'), true)
     assert.equal(removeRemote(h, 'k3f9'), false)
     assert.deepEqual(listRemotes(h), [])
+  } finally { rmSync(h, { recursive: true, force: true }) }
+})
+
+test('旧注册表的 label 列容错读入、内存即弃、下次写盘消失（大写中间态退役）', () => {
+  const h = home()
+  try {
+    mkdirSync(join(h, 'superd'), { recursive: true })
+    // 旧形态：行带独立 label 字段（用户看到的 DEV3 中间态）。
+    writeFileSync(join(h, 'superd', 'machines.json'), JSON.stringify({
+      self: { id: 'egv8', label: 'local' },
+      remotes: [{ id: 'k3f9', name: 'dev3', label: 'DEV3', origin: 'http://192.0.2.3:4999', enabled: true, addedAt: 1 }],
+    }), 'utf8')
+    const loaded = loadMachines(h)
+    assert.equal(loaded.self.id, 'egv8')
+    assert.deepEqual(loaded.remotes, [{ id: 'k3f9', name: 'dev3', origin: 'http://192.0.2.3:4999', enabled: true, addedAt: 1 }])
+    // 下一次写盘：文件里不再有 label。
+    upsertRemote(h, { id: 'k3f9', name: 'dev3', origin: 'http://192.0.2.3:4999', enabled: true, addedAt: 1 })
+    const raw = JSON.parse(readFileSync(join(h, 'superd', 'machines.json'), 'utf8'))
+    assert.equal(raw.remotes[0].label, undefined)
   } finally { rmSync(h, { recursive: true, force: true }) }
 })
 

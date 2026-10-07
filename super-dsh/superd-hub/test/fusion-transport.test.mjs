@@ -191,6 +191,22 @@ test('foreign fetch: the /api/agent-runtime control plane is NEVER rewritten', a
   ], 'the roster control plane always hits ctx0')
 })
 
+test('foreign fetch: the hub /api/superd control family is NEVER rewritten (2026-10-08 report)', async () => {
+  const { sandbox, install } = page()
+  install()
+  sandbox.__SUPERD_UI_STATE__.setAgent('q7nat') // a FEDERATED label — the reported shape
+  await sandbox.fetch('/api/superd/machines')
+  await sandbox.fetch('/api/superd/a2a/outbox?machine=k3f9')
+  await sandbox.fetch(new URL('http://host:4999/api/superd/exec'))
+  // Anything outside the hub namespace still follows the active agent.
+  await sandbox.fetch('/api/session.list')
+  assert.deepEqual(sandbox.calls.fetch.map((c) => String(c.input)), [
+    '/api/superd/machines', '/api/superd/a2a/outbox?machine=k3f9', 'http://host:4999/api/superd/exec', '/hub/api/session.list?agent=q7nat',
+  ], 'the machines face (and every mesh route) always hits ctx0 — a rewritten GET 404s on the peer plane and kills the roster grouping')
+  await sandbox.fetch('/api/superdoxx/not-hub')
+  assert.equal(String(sandbox.calls.fetch[4].input), '/hub/api/superdoxx/not-hub?agent=q7nat', 'the exemption is the exact /api/superd prefix, not a substring')
+})
+
 test('foreign: WebSocket, EventSource and XMLHttpRequest follow the same rule', () => {
   const { sandbox, install } = page()
   install()

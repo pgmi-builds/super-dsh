@@ -18,10 +18,13 @@ import { join } from 'node:path'
 export interface MachineRow {
   /** Machine id (m4) — minted by the owning machine, adopted as-is (D4). */
   id: string
-  /** Operator-facing machine name on the remote. */
+  /**
+   * The machine's display name — the operator-facing identifier the adder
+   * chose (spec hub-roster-identity §4: exactly TWO identities exist, this
+   * name and the internal `id`; the retired separate `label` field of older
+   * registries loads tolerantly and disappears on the next save).
+   */
   name: string
-  /** Display label for the machines UI. */
-  label: string
   /** Base origin of the remote hub (`http://host:port`). */
   origin: string
   /** Retained auth token for cookie re-mint; same sensitivity as the cookie itself. */
@@ -56,8 +59,8 @@ function isMachineRow(v: unknown): v is MachineRow {
   if (typeof v !== 'object' || v === null) return false
   const r = v as Record<string, unknown>
   return (
-    typeof r.id === 'string' && typeof r.name === 'string' && typeof r.label === 'string' &&
-    typeof r.origin === 'string' && typeof r.enabled === 'boolean' && typeof r.addedAt === 'number' &&
+    typeof r.id === 'string' && r.id !== '' && typeof r.name === 'string' && r.name !== '' &&
+    typeof r.origin === 'string' && r.origin !== '' && typeof r.enabled === 'boolean' && typeof r.addedAt === 'number' &&
     (r.token === undefined || typeof r.token === 'string') &&
     (r.cookie === undefined || typeof r.cookie === 'string') &&
     (r.execEnabled === undefined || r.execEnabled === true || r.execEnabled === false)
@@ -97,7 +100,19 @@ export function loadMachines(home: string): MachinesFile {
   if (typeof s.id !== 'string' || typeof s.label !== 'string' || !Array.isArray(o.remotes)) {
     return emptyMachines()
   }
-  return { self: { id: s.id, label: s.label }, remotes: o.remotes.filter(isMachineRow) }
+  // Projected field-by-field: older registries carry the retired `label`
+  // column on their rows — tolerated at load (never a whole-file reject),
+  // gone from memory so the next save writes the clean shape.
+  return { self: { id: s.id, label: s.label }, remotes: o.remotes.filter(isMachineRow).map((r) => ({
+    id: r.id,
+    name: r.name,
+    origin: r.origin,
+    enabled: r.enabled,
+    addedAt: r.addedAt,
+    ...(r.token === undefined ? {} : { token: r.token }),
+    ...(r.cookie === undefined ? {} : { cookie: r.cookie }),
+    ...(r.execEnabled === undefined ? {} : { execEnabled: r.execEnabled }),
+  })) }
 }
 
 /** Persist the whole registry: recursive mkdir, tmp write, chmod 0600, atomic rename. */

@@ -100,7 +100,7 @@ function liveAgentHandle(ctx: Context, sessionId: string): A2aAgentHandle | unde
 function rosterViewOf(home: string): HubRosterView {
   return {
     self: ensureSelf(home, 'local'),
-    remotes: listRemotes(home).map((row) => ({ id: row.id, label: row.label !== '' ? row.label : row.name })),
+    remotes: listRemotes(home).map((row) => ({ id: row.id, label: row.name })),
     agents: agentLinks(home),
   }
 }

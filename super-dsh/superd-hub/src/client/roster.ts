@@ -14,10 +14,18 @@
  *
  * @module superd-hub/client/roster
  */
+import { runtimeIdOf } from '../roster.js'
 
 /** One runtime as the roster hands it over: key, display label, mount path, machine. */
 export interface AgentLink {
   readonly key: string
+  /**
+   * The unified runtime identifier (adapter package name, `native` for DSH;
+   * spec hub-roster-identity §1) — the icon-matching key across machines.
+   * Optional at the parse boundary: an older host's rows lack it and the
+   * mark falls back to `runtimeIdOf(key)`.
+   */
+  readonly runtimeId?: string
   readonly label: string
   readonly path: string
   /**
@@ -35,7 +43,7 @@ export interface AgentLink {
 }
 
 /** The native runtime every composition can fall back to. */
-export const NATIVE_LINK: AgentLink = { key: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false }
+export const NATIVE_LINK: AgentLink = { key: 'native', runtimeId: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false }
 
 /** Labels for the read-only face's bare keys (it reports keys, not labels). */
 const FALLBACK_LABELS: Record<string, string> = {
@@ -60,10 +68,11 @@ function coerceAgents(raw: unknown): AgentLink[] | undefined {
   const links: AgentLink[] = []
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) continue
-    const { key, label, path, machine } = entry as Partial<AgentLink>
+    const { key, label, path, machine, runtimeId } = entry as Partial<AgentLink>
     if (typeof key !== 'string' || typeof path !== 'string') continue
     links.push({
       key,
+      runtimeId: typeof runtimeId === 'string' && runtimeId !== '' ? runtimeId : undefined,
       label: typeof label === 'string' ? label : (FALLBACK_LABELS[key] ?? key),
       path,
       // Passthrough (mesh P2 Task 4): a string machine id rides verbatim
@@ -111,7 +120,7 @@ export async function fetchRoster(): Promise<AgentLink[]> {
       if (typeof key !== 'string') continue
       links.push(key === 'native'
         ? NATIVE_LINK
-        : { key, label: FALLBACK_LABELS[key] ?? key, path: `/${key}/`, machine: 'local', ready: key === 'native' })
+        : { key, runtimeId: runtimeIdOf(key), label: FALLBACK_LABELS[key] ?? key, path: `/${key}/`, machine: 'local', ready: key === 'native' })
     }
     if (links.length > 0) return links
   }

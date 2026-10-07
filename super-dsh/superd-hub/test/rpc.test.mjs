@@ -44,11 +44,12 @@ test('GET exposes the available worlds AND the roster paths the selector navigat
     assert.deepEqual(body.available, ['native', 'omp'])
     // `agents` is the roster: native always, plus every key that currently owns a
     // host mount (none in this unit test), so the selector has a path per entry.
-    // Additive shape: the old fields exactly as before, `id` the only addition.
-    assert.deepEqual(Object.keys(body.agents[0]).sort(), ['failed', 'id', 'key', 'label', 'machine', 'path', 'ready'])
+    // Additive shape: the old fields exactly as before, `id` + `runtimeId` the
+    // additions (hub-roster-identity §1 — the icon-matching key).
+    assert.deepEqual(Object.keys(body.agents[0]).sort(), ['failed', 'id', 'key', 'label', 'machine', 'path', 'ready', 'runtimeId'])
     const { id, ...native } = body.agents[0]
     assert.match(id, /^[a-z0-9]{6}$/)
-    assert.deepEqual(native, { key: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false })
+    assert.deepEqual(native, { key: 'native', runtimeId: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false })
   } finally { rmSync(h, { recursive: true, force: true }) }
 })
 
@@ -127,8 +128,8 @@ test('the roster wire carries machine on native AND adapter rows (local constant
     assert.deepEqual(
       body.agents.map(({ id, ...rest }) => rest),
       [
-        { key: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false },
-        { key: 'omp', label: 'OMP', path: '/omp/', machine: 'local', ready: true, failed: false },
+        { key: 'native', runtimeId: 'native', label: 'DSH', path: '/', machine: 'local', ready: true, failed: false },
+        { key: 'omp', runtimeId: 'agent-omp', label: 'OMP', path: '/omp/', machine: 'local', ready: true, failed: false },
       ],
     )
     // The baked-index emitter (gateway's `webserver/index-inject` global,

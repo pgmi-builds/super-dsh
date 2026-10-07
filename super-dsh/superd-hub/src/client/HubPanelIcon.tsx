@@ -202,12 +202,12 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
       if (groupIndex > 0) items.push({ type: 'separator', id: `machine-divider:${group.key}` })
       items.push({ type: 'label', id: `machine:${group.key}`, text: group.label })
       for (const agent of group.agents) {
-        items.push({ id: agent.key, label: agent.label, icon: <RuntimeMark agentKey={agent.key} size={14} /> })
+        items.push({ id: agent.key, label: agent.label, icon: <RuntimeMark runtimeId={agent.runtimeId} agentKey={agent.key} size={14} /> })
       }
     })
   } else {
     for (const agent of agents) {
-      items.push({ id: agent.key, label: agent.label, icon: <RuntimeMark agentKey={agent.key} size={14} /> })
+      items.push({ id: agent.key, label: agent.label, icon: <RuntimeMark runtimeId={agent.runtimeId} agentKey={agent.key} size={14} /> })
     }
   }
 
@@ -287,8 +287,17 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
               }}
             >
               {/* The active agent's own mark: the row's answer to "which agent
-                  am I in", with the label moved into the `title`. */}
-              {activeKey !== undefined && <RuntimeMark agentKey={activeKey} size={MARK_SIZE} />}
+                  am I in", with the label moved into the `title`. Resolved
+                  through the roster row's unified runtimeId so a FEDERATED
+                  selection draws the same artwork its menu entry does (the
+                  bare a6 key alone maps to nothing). */}
+              {activeKey !== undefined && (
+                <RuntimeMark
+                  runtimeId={agents.find((row) => row.key === activeKey)?.runtimeId}
+                  agentKey={activeKey}
+                  size={MARK_SIZE}
+                />
+              )}
               {/* Explicit size: the pill's width math reads the same constant. */}
               <IconChevronDownOutlineRegular size={CHEVRON_SIZE} />
             </span>

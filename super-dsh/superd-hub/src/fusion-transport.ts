@@ -24,8 +24,11 @@
  *          restored after, so an agent switch re-targets the same anchor;
  *       5. `Storage.prototype` get/set/removeItem — namespace read at call
  *          time: native = no prefix, foreign = `'<label>:'`.
- *   - one control-plane exemption: `/api/agent-runtime` is NEVER rewritten —
- *     the roster always talks to ctx0, so the user can always switch back.
+ *   - two control-plane exemptions: `/api/agent-runtime` is NEVER rewritten —
+ *     the roster always talks to ctx0, so the user can always switch back —
+ *     and neither is the hub's own `/api/superd` family (machines/a2a/exec),
+ *     so the Hub panel's machine map + roster grouping stay live while a
+ *     remote agent is active (2026-10-08 user report).
  * Native mode is zero-interference: every patched face passes its exact
  * arguments through untouched.
  *
@@ -101,7 +104,13 @@ try {
 
   // ---- the one rewrite rule: '/api...' becomes '/hub/api...' + '?agent=<label>' ----
   const HUB = '/hub'
+  // Control planes: the roster AND the hub's own '/api/superd' family
+  // (machines/a2a/exec — mesh-rpc.ts) always talk to ctx0. A foreign plane
+  // answers neither (a peer's world has no mesh routes), so a rewritten
+  // machines GET 404s and the Hub panel loses its machine map + roster
+  // grouping the moment a remote agent is active (2026-10-08 user report).
   const CONTROL = '/api/agent-runtime'
+  const CONTROL_PREFIX = '/api/superd'
   const origin = () => {
     const loc = g.location
     if (loc !== undefined && typeof loc.origin === 'string' && loc.origin !== 'null') return loc.origin
@@ -116,8 +125,11 @@ try {
     }
   }
   const isApiPath = (path) => path === '/api' || path.startsWith('/api/')
-  // Control-plane exemption: the roster control plane always hits ctx0.
+  // Control-plane exemption: the roster and the '/api/superd' family always
+  // hit ctx0, so the switch surfaces and the Hub panel work while any agent
+  // is active.
   const isExempt = (path) => path === CONTROL || path.startsWith(CONTROL + '/')
+    || path === CONTROL_PREFIX || path.startsWith(CONTROL_PREFIX + '/')
   // Key compare matches the server demux shape: searchParams.get('agent')
   // looks up PERCENT-DECODED keys, so '%61gent=x' demuxes as agent=x and the
   // surgery must strip those spellings too (+' ' wins the '+' spelling).

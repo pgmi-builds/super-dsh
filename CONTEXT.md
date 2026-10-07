@@ -28,6 +28,10 @@ _Avoid_: passthrough adapter, translate adapter（作为类型名已废弃）
 RuntimeProvider 的一个具体实现，负责把某个上游 runtime 的能力映射到标准契约。每个 adapter 是独立注册的插件。
 _Avoid_: connector, integration
 
+**RuntimeId（统一 runtime 标识）**:
+跨机器一致的 agent runtime 标识 = adapter 包名的 unscoped 形态（`agent-omp`、`agent-omp-sdk`、…）；native DSH 恒为 `native`。由 roster key 经 `runtimeIdOf` 约定派生（adapter 的 key 必须等于其包名 `agent-` 后缀），随 roster 与 hub 间 probe 全链路传递，是 UI 图标匹配的键；本地资产包没有对应映射的 ID 渲染 fallback 图标。
+_Avoid_: runtime key 作跨机标识（key 仅本机寻址；federated 行的 key 是 a6）
+
 **两半注册（Two-Half Registration）**:
 能力协商方式：adapter 声明上游有什么数据字段，UI 侧注册可提供的 observable 字段；双方对齐的字段才呈现。
 _Avoid_: capability flags, feature negotiation
@@ -35,7 +39,7 @@ _Avoid_: capability flags, feature negotiation
 ### 机器与位置
 
 **Machine**:
-一台运行 superD 服务器的机器，分 Local（本机）与 Remote（远端，以机器命名如 DEV3）。remote 条目只指向远端的 superD，从不直连裸 runtime。
+一台运行 superD 服务器的机器，分 Local（本机）与 Remote（远端，以 add machine 时用户自定的 name 命名，如 dev3）。remote 条目只指向远端的 superD，从不直连裸 runtime。一台机器恰有两个标识：用户自定 `name` 与内部 `id`（m4）；独立于 name 的 display label 已随 2026-10-07 hub-roster-identity 裁决退役。
 _Avoid_: host, node, server（server 指进程）
 
 **本地发现（Local Discovery）**:

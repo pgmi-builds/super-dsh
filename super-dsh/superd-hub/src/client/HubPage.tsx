@@ -1,11 +1,19 @@
 import * as React from 'react'
-import { IconPlayOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IconCopyOutlineRegular,
+  IconPlayOutlineRegular,
+  IconRefreshOutlineRegular,
+  IconTrashOutlineRegular,
+  writeClipboard,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import { HubGlyph } from './glyph.js'
 import { RuntimeMark } from './runtime-icons.js'
+import { StatusMark } from './status-mark.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
 import {
   addMachine,
   fetchMachines,
+  fetchPairingUrl,
   removeMachine,
   reprobeMachine,
   machineVersionChip,
@@ -14,7 +22,8 @@ import {
   type MeshMachineStatus,
   type MeshMachineView,
 } from './mesh-api.js'
-import { AUTO_REFRESH_NOTE, lastFetchLabel } from './mesh-api.js'
+import { AUTO_REFRESH_NOTE } from './mesh-api.js'
+import { showSuperdToast } from './toast.js'
 import { groupByMachine, machineLabelsFrom } from './mesh-groups.js'
 import { attemptSwitch, fusionPage, uiState } from './switch.js'
 import { hubRowActive, seatClickDecision, switchAffordance } from '../switch-core.js'
@@ -63,7 +72,7 @@ import {
  * @module superd-hub/client/HubPage
  */
 
-/** The add-machine form's editable fields (label is server-side — it collapses to the name). */
+/** The add-machine form's editable fields — the name IS the machine's display identity. */
 interface AddDraft {
   readonly name: string
   readonly tokenUrl: string
@@ -92,19 +101,9 @@ const chipSelf: React.CSSProperties = {
   color: 'var(--dsw-alias-state-success-primary)',
 }
 
-const chipPending: React.CSSProperties = {
-  ...chip,
-  color: 'var(--dsw-alias-label-caption)',
-}
-
 const chipWarn: React.CSSProperties = {
   ...chip,
   color: 'var(--dsw-alias-state-warn-primary)',
-}
-
-const chipError: React.CSSProperties = {
-  ...chip,
-  color: 'var(--dsw-alias-state-error-primary)',
 }
 
 /** Machine id chip (the m4): the monospace chip look the roster's path tags use. */
@@ -159,7 +158,7 @@ const panelStyle: React.CSSProperties = {
   fontSize: 12.5,
 }
 
-/** The icon action (remove ✕) seat. */
+/** The icon action (remove / refresh / copy) seat. */
 const iconActionStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -172,17 +171,6 @@ const iconActionStyle: React.CSSProperties = {
   color: 'var(--dsw-alias-label-caption)',
   font: 'inherit',
   cursor: 'pointer',
-}
-/** The quiet text action (reprobe) — the switch/row-action look. */
-const textActionStyle: React.CSSProperties = {
-  border: 'none',
-  background: 'transparent',
-  padding: 0,
-  font: 'inherit',
-  fontSize: 12.5,
-  color: 'var(--dsw-alias-label-secondary)',
-  cursor: 'pointer',
-  whiteSpace: 'nowrap',
 }
 /** The row's settings panel heading. */
 const panelHeadStyle: React.CSSProperties = {
@@ -207,29 +195,6 @@ const optionStyle: React.CSSProperties = {
   fontSize: 12.5,
   color: 'var(--dsw-alias-label-primary)',
 }
-/** The status dot's color: reachable green, pending grey, unreachable amber, auth-expired red. */
-function statusDotColor(status: MeshMachineStatus): string {
-  if (status === 'reachable') return 'var(--dsw-alias-state-success-primary)'
-  if (status === 'auth-expired') return 'var(--dsw-alias-state-error-primary)'
-  if (status === 'unreachable') return 'var(--dsw-alias-state-warn-primary)'
-  return 'var(--dsw-alias-label-caption)'
-}
-
-/** The last-fetch caption's style (R7): quiet tertiary text beside the status chip. */
-const ageStyle: React.CSSProperties = {
-  fontSize: 11.5,
-  color: 'var(--dsw-alias-label-tertiary)',
-  whiteSpace: 'nowrap',
-}
-
-/** The status chip (style + text) for one remote row. */
-function statusChip(machine: MeshMachineView): { style: React.CSSProperties; text: string } {
-  if (machine.status === 'reachable') return { style: chipSelf, text: 'reachable' }
-  if (machine.status === 'auth-expired') return { style: chipError, text: 'auth expired' }
-  if (machine.status === 'unreachable') return { style: chipWarn, text: 'unreachable' }
-  return { style: chipPending, text: 'pending' }
-}
-
 /** One line of error text for the panel's inline error line. */
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -837,6 +802,8 @@ export function HubPage(): React.JSX.Element {
   const [meshReloads, setMeshReloads] = React.useState(0)
   const [showAdd, setShowAdd] = React.useState(false)
   const [draft, setDraft] = React.useState<AddDraft>(EMPTY_DRAFT)
+  /** The self row's pairing-URL mint/clipboard round trip is in flight. */
+  const [pairingBusy, setPairingBusy] = React.useState(false)
   const [agents, setAgents] = React.useState<AgentLink[] | null>(() => rosterFromGlobal() ?? null)
   const [rosterFailed, setRosterFailed] = React.useState(false)
   const [tab, setTab] = React.useState<'home' | 'workflows' | 'settings'>('home')
@@ -949,11 +916,12 @@ export function HubPage(): React.JSX.Element {
           expanded={expanded}
           onClick={() => { setExpandedKey((current) => toggleExpanded(current, agent.key)) }}
         >
-          {/* The runtime's own mark (runtime-icons.tsx), NOT the disclosure
-              chevron: the arrow was removed because the whole row is the
-              expand target, but this glyph is the runtime's identity and was
-              never part of that affordance. */}
-          <RuntimeMark agentKey={agent.key} size={20} />
+          {/* The runtime's own mark (runtime-icons.tsx), resolved through
+              the unified runtimeId so LOCAL and FEDERATED rows draw the same
+              artwork — NOT the disclosure chevron: the arrow was removed
+              because the whole row is the expand target, but this glyph is
+              the runtime's identity and was never part of that affordance. */}
+          <RuntimeMark runtimeId={agent.runtimeId} agentKey={agent.key} size={20} />
           <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{agent.label}</span>
           <span
             style={{
@@ -1022,11 +990,20 @@ export function HubPage(): React.JSX.Element {
     if (name === '' || !validTokenUrl(tokenUrl)) return
     setMeshBusy(true)
     void addMachine({ name, tokenUrl })
-      .then(() => {
+      .then((out) => {
         setDraft(EMPTY_DRAFT)
         setShowAdd(false)
         setMeshError(null)
         reloadMachines()
+        // Mutual pairing (2026-10-08 user ruling): the peer is offered our own
+        // pairing input as part of this pair. Say both halves out loud — a
+        // failed reverse leg is actionable (the row IS in, the peer's half is
+        // not) without being an error state.
+        if (out.mutual !== undefined && !out.mutual.ok) {
+          showSuperdToast(`Super D: paired with ${name}, but the mutual half failed (${out.mutual.error}) — add this machine from the peer manually.`)
+        } else {
+          showSuperdToast(`Super D: paired with ${name} — the peer also added this machine (mutual).`, { tone: 'success' })
+        }
       })
       .catch((err: unknown) => { setMeshError(errText(err)) })
       .finally(() => { setMeshBusy(false) })
@@ -1042,6 +1019,24 @@ export function HubPage(): React.JSX.Element {
     void reprobeMachine(id)
       .then(() => { setMeshError(null); reloadMachines() })
       .catch((err: unknown) => { setMeshError(errText(err)) })
+  }
+
+  /** The self row's copy affordance: one explicit mint (the token rides no
+   *  GET), one clipboard write, the outcome on the shared toast. */
+  const copyPairingUrl = (): void => {
+    if (pairingBusy) return
+    const origin = typeof location === 'undefined' ? '' : location.origin
+    if (origin === '') return
+    setPairingBusy(true)
+    void fetchPairingUrl(origin)
+      .then((url) => writeClipboard(url))
+      .then((copied) => {
+        showSuperdToast(copied
+          ? 'Pairing URL copied — paste it into Add machine on the other machine'
+          : 'Copy failed — the browser refused clipboard access', copied ? { tone: 'success' } : {})
+      })
+      .catch((err: unknown) => { setMeshError(errText(err)) })
+      .finally(() => { setPairingBusy(false) })
   }
 
   const draftValid = draft.name.trim() !== '' && validTokenUrl(draft.tokenUrl.trim())
@@ -1152,7 +1147,7 @@ export function HubPage(): React.JSX.Element {
             )}
           />
           <p style={{ margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' }}>
-            Add another DSH from remote machines, provide the token URL. Status {AUTO_REFRESH_NOTE}.
+            Add another DSH from remote machines, provide the token URL. Pairing is mutual — the peer adds this machine back automatically. Status {AUTO_REFRESH_NOTE}.
           </p>
           {meshError !== null && (
             <p style={{ margin: 0, fontSize: 12.5, lineHeight: '20px', color: 'var(--dsw-alias-state-error-primary)' }}>
@@ -1171,60 +1166,75 @@ export function HubPage(): React.JSX.Element {
               </li>
             )}
             {/* The self row: rendered from the response's self block (never a
-                wire row) — its origin is where this page is served from. */}
+                wire row) — its origin is where this page is served from. The
+                URL shows the token TRUNCATED (`/?token=d_3txYKhc_…`, the wire
+                carries only the preview) so the user can see it IS a token,
+                and the copy affordance rides directly after it — the pairing
+                entry (spec hub-roster-identity §3): the hub tokenizes THIS
+                page's origin with its live launch token, and the paste target
+                is the other machine's Add-machine form (mutual pairing —
+                either side's copy pairs both). */}
             {mesh.self !== undefined && (
               <HoverRow>
                 <span aria-hidden style={{ ...dotStyle, background: 'var(--dsw-alias-state-success-primary)' }} />
                 <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{mesh.self.label}</span>
-                <span style={originStyle}>{hereOrigin}</span>
+                <span style={{ ...originStyle, flex: '0 0 auto' }}>
+                  {hereOrigin}{mesh.self.tokenPreview !== undefined ? `/?token=${mesh.self.tokenPreview}` : ''}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Copy this machine's pairing URL"
+                  title={pairingBusy ? 'Minting pairing URL…' : 'Copy the token URL another machine can Add machine with'}
+                  disabled={pairingBusy}
+                  onClick={() => { copyPairingUrl() }}
+                  style={iconActionStyle}
+                >
+                  <IconCopyOutlineRegular size={15} />
+                </button>
+                <span style={{ flex: 1 }} />
                 <span style={chipMonoId}>{mesh.self.id}</span>
                 <span style={chipSelf}>self</span>
               </HoverRow>
             )}
-            {mesh.machines.map((machine) => {
-              const status = statusChip(machine)
-              return (
-                <HoverRow key={machine.id}>
-                  <span aria-hidden style={{ ...dotStyle, background: statusDotColor(machine.status) }} />
-                  <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{machine.name}</span>
-                  {machine.label !== machine.name && <span style={chip}>{machine.label}</span>}
-                  <span style={originStyle}>{machine.origin}</span>
-                  <span style={chipMonoId}>{machine.id}</span>
-                  <span style={status.style}>{status.text}</span>
-                  {/* R7: the D18 cadence fact — the last probe's age from the
-                      row's lastProbeAt; omitted while never probed (the
-                      presence contract of lastFetchLabel). */}
-                  {lastFetchLabel(machine.lastProbeAt, Date.now()) !== undefined && (
-                    <span style={ageStyle}>{lastFetchLabel(machine.lastProbeAt, Date.now())}</span>
-                  )}
-                  {/* I2 version-mismatch chip: present exactly when the hub's
-                      probe found the peer's superd version incompatible —
-                      amber like `unreachable`, full warning text as the chip
-                      (compact by construction), machine id context on hover. */}
-                  {machineVersionChip(machine) !== undefined && (
-                    <span style={chipWarn} title={`machine ${machine.id}`}>{machine.versionWarning}</span>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={`Refresh ${machine.name}`}
-                    onClick={() => { reprobeRemote(machine.id) }}
-                    style={textActionStyle}
-                  >
-                    refresh
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${machine.name}`}
-                    onClick={() => { removeRemote(machine.id) }}
-                    style={iconActionStyle}
-                  >
-                    <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
-                      <path d="M2.5 2.5L8.5 8.5M8.5 2.5L2.5 8.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                </HoverRow>
-              )
-            })}
+            {mesh.machines.map((machine) => (
+              <HoverRow key={machine.id}>
+                {/* Connection mark (2026-10-07 user ruling): the Wi-Fi-style
+                    signal glyph replaces the text chip; the word survives on
+                    the title/aria-label. The dot goes with it — the mark IS
+                    the status. */}
+                <span title={machine.status}>
+                  <StatusMark status={machine.status} size={16} />
+                </span>
+                <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{machine.name}</span>
+                <span style={originStyle}>{machine.origin}</span>
+                <span style={chipMonoId}>{machine.id}</span>
+                {/* I2 version-mismatch chip: present exactly when the hub's
+                    probe found the peer's superd version incompatible —
+                    full warning text as the chip (compact by construction),
+                    machine id context on hover. */}
+                {machineVersionChip(machine) !== undefined && (
+                  <span style={chipWarn} title={`machine ${machine.id}`}>{machine.versionWarning}</span>
+                )}
+                <button
+                  type="button"
+                  aria-label={`Refresh ${machine.name}`}
+                  title={`Refresh ${machine.name}`}
+                  onClick={() => { reprobeRemote(machine.id) }}
+                  style={iconActionStyle}
+                >
+                  <IconRefreshOutlineRegular size={15} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove ${machine.name}`}
+                  title={`Remove ${machine.name}`}
+                  onClick={() => { removeRemote(machine.id) }}
+                  style={iconActionStyle}
+                >
+                  <IconTrashOutlineRegular size={15} />
+                </button>
+              </HoverRow>
+            ))}
           </ul>
           {showAdd && (
             <div

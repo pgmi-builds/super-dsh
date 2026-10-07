@@ -8,11 +8,35 @@
  * the addressed world is the request's mount path (`DL7`, 2026-09-16).
  * one authority.
  */
+/** The canonical runtime identifier of the NATIVE DSH runtime (not an adapter — no package). */
+export const NATIVE_RUNTIME_ID = 'native'
+
+/**
+ * The unified runtime identifier convention: an adapter's roster key MUST be
+ * its package name's `agent-` suffix (`omp` ↔ `agent-omp`, `omp-sdk` ↔
+ * `agent-omp-sdk`), so one derivation IS the cross-machine agreement — the
+ * same ID travels on local rows and on every federated row (spec
+ * hub-roster-identity §1). `native` is the reserved DSH spelling.
+ * @param key - the roster key (`native`, or the adapter's runtime key).
+ * @returns the adapter package identifier (`agent-omp`, …) or `native`.
+ */
+export function runtimeIdOf(key: string): string {
+  return key === 'native' ? NATIVE_RUNTIME_ID : `agent-${key}`
+}
+
 export interface RosterEntry {
   /** Runtime key (`omp`, `codex`, …) — what the selector addresses. */
   key: string
   /** Human label for the selector chip. */
   label: string
+  /**
+   * The unified runtime identifier (adapter package name, `runtimeIdOf(key)`).
+   * Optional at registration — adapters registered before this field existed
+   * (and the generic joiner) are materialized at projection time; explicit
+   * values win so a future adapter whose package name drifts from the key
+   * convention can declare its identity.
+   */
+  runtimeId?: string
   /** True once the adapter's world context is spawned and its target registered. */
   ready: boolean
   /**

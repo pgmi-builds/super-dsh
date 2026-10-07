@@ -1160,12 +1160,12 @@ function downFaces({ machines, enrichTimeoutMs = 3_000 } = {}) {
 }
 
 test('machine-down feedback: toast (enriched) then EXACTLY ONE fire-and-forget reprobe per click', async () => {
-  const faces = downFaces({ machines: [{ id: 'm4x1', label: 'DEV3', status: 'unreachable' }] })
+  const faces = downFaces({ machines: [{ id: 'm4x1', name: 'dev3', status: 'unreachable' }] })
   runMachineDownFeedback('pi', { key: 'pi', label: 'Pi', ready: false, machine: 'm4x1' }, faces)
   await settle()
   assert.equal(faces.calls.toasts.length, 1)
   assert.match(faces.calls.toasts[0], /Pi is unavailable/)
-  assert.match(faces.calls.toasts[0], /DEV3/)
+  assert.match(faces.calls.toasts[0], /dev3/)
   assert.match(faces.calls.toasts[0], /unreachable/, 'the enriched status word rides the toast')
   assert.deepEqual(faces.calls.reprobes, ['m4x1'], 'one reprobe op per failed click, keyed by the machine id')
   assert.deepEqual(faces.calls.timers.map((t) => t.ms), [MACHINE_DOWN_ENRICH_MS], 'the enrichment await is bounded (folded parked minor)')

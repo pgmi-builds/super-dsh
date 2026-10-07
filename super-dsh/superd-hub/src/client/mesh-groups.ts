@@ -9,8 +9,8 @@
  * stay correct even when the wire order changes or the roster is seeded
  * from a stale baked global.
  *
- * The label map comes from `fetchMachines()` (mesh-api.ts): machine label,
- * falling back to the name, falling back to the raw m4 —
+ * The label map comes from `fetchMachines()` (mesh-api.ts): the machine's
+ * `name` — its sole display identity — keyed by id;
  * {@link machineLabelsFrom} builds it, and a machine the registry no longer
  * knows simply keeps its raw m4 as the section label (never a crash).
  *
@@ -30,13 +30,13 @@ export const LOCAL_MACHINE_KEY = 'local'
 /** The LOCAL section's fixed display label — this machine needs no registry row to be named. */
 export const LOCAL_MACHINE_LABEL = 'This machine'
 
-/** One machine's section: its grouping key, its display label, and its rows in roster order. */
+/** One machine's section: its grouping key, its display label, and its rows in DSH-first alphabetical order. */
 export interface MachineAgentGroup {
   /** The grouping key: {@link LOCAL_MACHINE_KEY} or the owning machine's m4. */
   readonly key: string
   /** The section heading: the machine's display label ({@link LOCAL_MACHINE_LABEL} for local, the raw key when no label is known). */
   readonly label: string
-  /** This machine's roster rows, keeping the roster's own order. */
+  /** This machine's roster rows: DSH first, then alphabetical (spec hub-roster-identity §4). */
   readonly agents: readonly AgentLink[]
 }
 
@@ -46,14 +46,30 @@ function isLocalMachine(machine: string | undefined): boolean {
 }
 
 /**
+ * One group's member order (spec hub-roster-identity §4, uniform for local
+ * and remote machines): the native DSH row first, then label code-unit order
+ * with the key as the tiebreak.
+ */
+function sortMembers(agents: readonly AgentLink[]): AgentLink[] {
+  return [...agents].sort((a, b) => {
+    const nativeA = (a.runtimeId ?? a.key) === 'native' ? 0 : 1
+    const nativeB = (b.runtimeId ?? b.key) === 'native' ? 0 : 1
+    if (nativeA !== nativeB) return nativeA - nativeB
+    if (a.label !== b.label) return a.label < b.label ? -1 : 1
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0
+  })
+}
+
+/**
  * Group a roster into machine sections for the switch menu and the Hub
  * roster rows: the LOCAL group first (label {@link LOCAL_MACHINE_LABEL};
  * rows whose `machine` is `'local'` or absent), then one group per remote
  * machine sorted by display label (code-unit order) with the machine key as
- * the tiebreak. Members keep the roster's given order inside their group;
- * groups only exist for machines actually present in the roster (no empty
- * local section when every row is federated). An unknown label map entry —
- * missing, or an empty string — falls back to the raw machine key.
+ * the tiebreak. Members are ordered DSH-first, then alphabetical, inside
+ * every group; groups only exist for machines actually present in the
+ * roster (no empty local section when every row is federated). An unknown
+ * label map entry — missing, or an empty string — falls back to the raw
+ * machine key.
  *
  * @param links - the roster rows (any order; the section order is derived, not inherited).
  * @param machineLabels - machine key (m4) → display label; the machines API answer via {@link machineLabelsFrom}.
@@ -80,16 +96,19 @@ export function groupByMachine(
     return typeof label === 'string' && label !== '' ? label : key
   }
   const remote: MachineAgentGroup[] = [...byKey.entries()]
-    .map(([key, agents]) => ({ key, label: labelOf(key), agents }))
+    .map(([key, agents]) => ({ key, label: labelOf(key), agents: sortMembers(agents) }))
     .sort((a, b) => (a.label !== b.label ? (a.label < b.label ? -1 : 1) : (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)))
-  return local.length > 0 ? [{ key: LOCAL_MACHINE_KEY, label: LOCAL_MACHINE_LABEL, agents: local }, ...remote] : remote
+  return local.length > 0
+    ? [{ key: LOCAL_MACHINE_KEY, label: LOCAL_MACHINE_LABEL, agents: sortMembers(local) }, ...remote]
+    : remote
 }
 
 /**
  * The machines API answer → the grouping label map: every remote row's
- * `id → label` (mesh-api's coercion already collapsed an empty label to the
- * machine name) plus the self block's own `m4 → label`. An absent list is
- * the empty map — the caller's degrade-to-flat trigger, never a throw.
+ * `id → name` (the machine's sole display identity — the retired separate
+ * label column no longer exists on the wire) plus the self block's own
+ * `m4 → label`. An absent list is the empty map — the caller's
+ * degrade-to-flat trigger, never a throw.
  *
  * @param list - the coerced `fetchMachines()` answer, when it succeeded.
  * @returns machine key → display label (the raw key stays absent, not mapped).
@@ -98,7 +117,7 @@ export function machineLabelsFrom(list: MeshList | undefined): Record<string, st
   const labels: Record<string, string> = {}
   if (list === undefined) return labels
   for (const machine of list.machines) {
-    labels[machine.id] = machine.label !== '' ? machine.label : machine.name
+    labels[machine.id] = machine.name
   }
   if (list.self !== undefined) labels[list.self.id] = list.self.label
   return labels

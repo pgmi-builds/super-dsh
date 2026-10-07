@@ -89,8 +89,8 @@
 
 - 499x 一族**全是测试口，没有谁占用谁（4999 也一样）**。起线前 `ss -tln` 动态探测。
 - 端口被占时的处置：经 `/proc/<listener-pid>/cgroup` 找到归属 user unit——属于**测试基建**（unit 名 `superd-*` / `*-test` / `*-relay`）→ 直接停掉接管；**非测试监听**（prod 3080/3081、未知进程）→ 拒绝并换口。`super-dsh/test/start-4999.sh` 已内置此逻辑。
-- 4999 = Caddy `test.pc.internal.test`（wan 可见）是**通道事实**，不是占用特权；非 Caddy 端口由脚本自动拉 **socat LAN relay**（unit `superd-lan-<port>-relay`，只绑 LAN IP、绝不 0.0.0.0）。
-- ⚠ webserver 只接受 `127.0.0.1` / `0.0.0.0` 字面量且**启动硬拒 `0.0.0.0`**（RCE 门）——LAN 直连只能走用户态中继，勿用 config `host: 0.0.0.0` 当 LAN 手段。
+- 4999 = Caddy `test.pc.internal.test`（wan 可见）是**通道事实**，不是占用特权；launcher 默认 **`host: 0.0.0.0` 直连**（2026-10-07 user 裁决，`SUPERD_BIND=127.0.0.1` 可退回旧形态）——全接口 bind 时不拉 relay（同口会撞）；仅显式 loopback bind 才自动拉 **socat LAN relay**（unit `superd-lan-<port>-relay`，只绑 LAN IP）。
+- webserver 的 `host` config 接受且仅接受 `127.0.0.1` / `0.0.0.0` 字面量并按值直接 bind（0.1.x 时代的「启动硬拒 0.0.0.0」RCE 门在现基线已不存在；对非本机 Host 的防护改由 connection 的 trustedHosts fence 承担，而整包 `superd-web-trust` 以 `trustAllHosts: true` 把它收敛为**认证唯一门**——cookie 不过仍然 401）。
 - **永不触碰 3080（Dash Agent prod）/ 3081（omp-web prod）**；prod 3080 的重启只凭 user 明确下令。
 
 ### 3.2 test home：复用，不换场（2026-09-27 user 裁决）
@@ -209,7 +209,7 @@
 > 2026-09-24 user 裁决：测试线必须「看到被测者看到的世界」，否则测的是别的东西。三条：
 
 1. **provider keys**：把 prod home 的 `~/.dsh/.env` **copy 进线 home**（`$DSH_HOME/.env`；launcher 的 env 分层 = 继承 env > 调用目录 `.env` > home `.env`，接受值不覆盖继承值）。**禁止** `--property=Environment="DEEPSEEK_API_KEY=…"` 形式的透传——从 agent shell 拉起时该值是**空串但已设置**，继承层会**挡掉** home `.env` 层的值，比不传更糟（2026-09-24 实证：create+prompt 拿不到模型回复的根因）。`.env` 缺失时脚本 fail-loud 拒绝起线。
-2. **web trust（2026-10-07 user 裁决）**：整包自身的 `superd-web-trust` row 以 `trustAllHosts: true` 启用与 dashr 同源的认证委托：移除 Host / Origin fence，保留原生 cookie 认证；head 注入 `__DSH_TRANSPORT__.ownsHost` 恢复 UI trusted-host / loopback surface。launcher 不再通过 profile override、CLI `--host` / `--trusted-host` 或 trust 环境变量帮被测包补能力。监听地址与信任分开，loopback + reverse proxy / relay 保持现行形态。
+2. **web trust（2026-10-07 user 裁决）**：整包自身的 `superd-web-trust` row 以 `trustAllHosts: true` 启用与 dashr 同源的认证委托：移除 Host / Origin fence，保留原生 cookie 认证；head 注入 `__DSH_TRANSPORT__.ownsHost` 恢复 UI trusted-host / loopback surface。launcher 不再通过 profile override、CLI `--host` / `--trusted-host` 或 trust 环境变量帮被测包补能力。监听地址与信任分开：同日后续裁决把默认 bind 定为 `0.0.0.0`（LAN/WAN 直连，无 relay；`SUPERD_BIND=127.0.0.1` 回退 loopback + relay 形态），认证仍是唯一门。
 3. **环境自身觉察**：agent 会话 env 自带 `DSH_HOME=~/.dsh`（跑在 prod dsh.service 里）——任何「我看到的环境变量」都是 **prod instance 的**，不是测试线的；拉线脚本必须显式设置全部 env（`DSH_HOME` / `SUPERD_DSH_ANCHOR` / `SUPERD_KEEP` / `PATH` / `UnsetEnvironment`），不依赖继承。
 
 ---

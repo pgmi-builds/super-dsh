@@ -13,17 +13,11 @@
  *
  * One exact route, body/method dispatched:
  *   GET    /api/superd/machines            → `{self, machines}` (public row
- *                                           projection — NEVER token/cookie,
- *                                           D1 + Task 2 review's deferred
- *                                           finding: the row carries two
- *                                           secrets and the wire carries
- *                                           none; since mesh P3 5a (I2) a
- *                                           row may also carry
- *                                           `versionWarning` — additive,
- *                                           present only when the peer's
- *                                           superd version differs from
- *                                           ours by more than patch)
- *   POST   /api/superd/machines            → `{op?: 'reprobe', ...}`:
+ *                                           projection — NEVER token/cookie on
+ *                                           a row; the SELF block carries a 10-char
+ *                                           token PREVIEW for the copy affordance,
+ *                                           full token only via op 'tokenUrl')
+ *   POST   /api/superd/machines            → `{op?: 'reprobe' | 'tokenUrl', ...}`:
  *        op:'reprobe' + {id}               → `{probe: ProbeResult}` (the
  *                                           brief's `/machines/reprobe` path
  *                                           variant is FOLDED here because
@@ -31,7 +25,13 @@
  *                                           path — one registration, body
  *                                           dispatch; documented per Task 3
  *                                           controller amendment)
- *        otherwise `{name, label?, tokenUrl}` → pairMachine → 201 `{machine}`;
+ *        op:'tokenUrl' + {origin}          → `{tokenUrl}` — the caller's
+ *                                           origin tokenized with the process's
+ *                                           live launch token via the connection
+ *                                           face's public `authenticatedUrl`
+ *                                           (spec hub-roster-identity §3); the
+ *                                           GET projection still carries no secret
+ *        otherwise `{name, tokenUrl}` → pairMachine → 201 `{machine}`;
  *                                           any failure → 400 `{error}` (the
  *                                           message is mesh-link's own,
  *                                           already token-redacted)
@@ -50,8 +50,9 @@
  * upstream tightens that, remove folds into a POST op like reprobe.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { hostname } from 'node:os'
 import { type MachineRow, ensureSelf, listRemotes, removeRemote } from './machines.js'
-import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type ProbeResult, type MachineStatusEntry } from './mesh-link.js'
+import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type MutualPairing, type ProbeResult, type MachineStatusEntry } from './mesh-link.js'
 import { type A2aIngest } from './a2a-ingest.js'
 import { A2A_ENDPOINT_PATH, A2A_OUTBOX_PATH, A2A_WIRE_VERSION, decodeA2aWireFrame } from './a2a-wire.js'
 import type { A2aLogFn } from './a2a-log.js'
@@ -63,20 +64,24 @@ export const MESH_API_BASE = '/api/superd/machines'
 /** Injection seam: the hub home (registry + pairing live under it) and an
  *  optional fetch override for tests. `home` is resolved by the caller
  *  (gateway.ts passes `resolveDshHome()` at registration time); this module
- *  stays free of home-resolution logic. */
+ *  stays free of home-resolution logic. `tokenUrlOf` tokenizes an origin with
+ *  the process's live launch token — built from the connection face's
+ *  `authenticatedUrl` at registration; tests inject a fake (and may omit it
+ *  to pin the missing-face 400). */
 export interface MeshDeps {
   home: string
   fetchImpl?: typeof fetch
+  tokenUrlOf?: (origin: string) => string
 }
 
 /** The GET/POST row shape as it crosses the wire — the persisted MachineRow
  *  minus its two secrets (`token`, `cookie`), plus the joined status (and,
  *  additively since I2/mesh P3 5a, the version-mismatch warning when the
- *  mesh-link status entry carries one). */
+ *  mesh-link status entry carries one). `name` is the machine's sole display
+ *  identity (spec hub-roster-identity §4). */
 export interface MachinePublicRow {
   id: string
   name: string
-  label: string
   origin: string
   enabled: boolean
   addedAt: number
@@ -105,6 +110,23 @@ function json(status: number, body: unknown): Response {
   })
 }
 
+/**
+ * Truncated launch-token preview for the self row (first 10 chars + ellipsis):
+ * enough for the user to SEE this is a token, never enough to mint a cookie —
+ * the full token rides only the explicit `tokenUrl` op.
+ * @param tokenUrl - a tokenized URL (`…/?token=<value>`), as the mint answers.
+ * @returns the preview, or undefined when the URL carries no token.
+ */
+export function tokenPreviewOf(tokenUrl: string): string | undefined {
+  const at = tokenUrl.indexOf('token=')
+  if (at === -1) return undefined
+  const raw = tokenUrl.slice(at + 'token='.length)
+  const amp = raw.indexOf('&')
+  const token = amp === -1 ? raw : raw.slice(0, amp)
+  if (token === '') return undefined
+  return `${token.slice(0, 10)}…`
+}
+
 /** Project one persisted row to its public wire shape (allowlist — never
  *  token, never cookie) and join the mesh-link status entry by id. */
 function publicRow(row: MachineRow): MachinePublicRow {
@@ -113,8 +135,8 @@ function publicRow(row: MachineRow): MachinePublicRow {
 
 function projectRow(row: MachineRow, status: ReadonlyMap<string, MachineStatusEntry>): MachinePublicRow {
   const entry = status.get(row.id)
-  if (entry === undefined) return { id: row.id, name: row.name, label: row.label, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: 'pending' }
-  const out: MachinePublicRow = { id: row.id, name: row.name, label: row.label, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: entry.status, lastProbeAt: entry.lastProbeAt }
+  if (entry === undefined) return { id: row.id, name: row.name, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: 'pending' }
+  const out: MachinePublicRow = { id: row.id, name: row.name, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: entry.status, lastProbeAt: entry.lastProbeAt }
   if (entry.error !== undefined) out.error = entry.error
   if (entry.versionWarning !== undefined) out.versionWarning = entry.versionWarning
   return out
@@ -152,16 +174,98 @@ export async function handleMeshMachines(request: Request, deps: MeshDeps): Prom
 }
 
 /** GET: self (lazily minted on first need, spec §3.1) + every remote row in
- *  its public projection, status joined from the mesh-link table. */
+ *  its public projection, status joined from the mesh-link table. The self
+ *  block carries a truncated token preview (see {@link tokenPreviewOf}) when
+ *  the mint face is available — display aid for the copy affordance, never
+ *  the token itself. */
 function handleList(deps: MeshDeps): Response {
   const self = ensureSelf(deps.home, 'local')
   const status = machineStatus()
   const machines = listRemotes(deps.home).map((row) => projectRow(row, status))
-  return json(200, { self, machines })
+  // Cosmetic leg: a throwing mint face degrades to no preview, never a failed
+  // machines GET.
+  let preview: string | undefined
+  if (deps.tokenUrlOf !== undefined) {
+    try { preview = tokenPreviewOf(deps.tokenUrlOf('http://localhost/')) } catch { /* degrade */ }
+  }
+  return json(200, {
+    self: preview === undefined ? self : { ...self, tokenPreview: preview },
+    machines,
+  })
 }
 
-/** POST: body-dispatched — `{op: 'reprobe', id}` re-probes, anything else is
- *  a pairing input `{name, label?, tokenUrl}`. */
+/**
+ * Validate a token-url request origin: an absolute http(s) URL that is ONLY
+ * an origin — no path, query, hash, or credentials. The pairing URL a user
+ * copies must address the server root (`authorizeIndex` answers `/` only),
+ * and anything beyond the origin would smuggle parts the mint would overwrite
+ * or drop anyway.
+ * @param origin - the client-supplied origin (trim before calling).
+ * @returns the normalized origin, or the failure reason.
+ */
+export function parsePairingOrigin(origin: string): { ok: true; origin: string } | { ok: false; error: string } {
+  if (origin === '') return { ok: false, error: 'mesh-api: tokenUrl body must be {op: "tokenUrl", origin} with a non-empty origin' }
+  let url: URL
+  try {
+    url = new URL(origin)
+  } catch {
+    return { ok: false, error: 'mesh-api: tokenUrl origin is not a parseable absolute URL' }
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, error: `mesh-api: tokenUrl origin must be http(s), got "${url.protocol}"` }
+  }
+  if (url.username !== '' || url.password !== '') return { ok: false, error: 'mesh-api: tokenUrl origin must not carry credentials' }
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    return { ok: false, error: 'mesh-api: tokenUrl origin must be a bare origin (no path, query or hash)' }
+  }
+  return { ok: true, origin: url.origin }
+}
+
+/** POST op `tokenUrl`: tokenize the caller's origin with the live launch
+ *  token (spec hub-roster-identity §3). The answer rides a POST the user
+ *  explicitly clicks — the GET projection still carries no secret. */
+function handleTokenUrl(body: Record<string, unknown>, deps: MeshDeps): Response {
+  const raw = typeof body.origin === 'string' ? body.origin.trim() : ''
+  const parsed = parsePairingOrigin(raw)
+  if (!parsed.ok) return json(400, { error: parsed.error })
+  if (deps.tokenUrlOf === undefined) {
+    return json(400, { error: 'mesh-api: the host connection face exposes no authenticatedUrl — this hub cannot mint pairing URLs' })
+  }
+  return json(200, { tokenUrl: deps.tokenUrlOf(parsed.origin) })
+}
+
+/**
+ * The initiator's self-description for the mutual-pairing reverse leg: the
+ * authority the user reached us by (the request's Host header — the
+ * dispatched Request's URL carries only the carrier's internal placeholder
+ * origin, while the headers survive `http-bridge.ts` verbatim), tokenized,
+ * plus this host's name port-qualified so two instances of one machine stay
+ * distinguishable. `x-forwarded-proto` upgrades the scheme behind a TLS
+ * proxy; everything else dials http. Undefined when we cannot self-describe
+ * (no mint face, no Host header) — the peer can then only be paired
+ * manually from its own UI.
+ */
+function buildMutual(request: Request, deps: MeshDeps): MutualPairing | undefined {
+  if (deps.tokenUrlOf === undefined) return undefined
+  const host = request.headers.get('host')
+  if (host === null || host === '') return undefined
+  const proto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim() ?? 'http'
+  const origin = `${proto}://${host}`
+  const port = new URL(origin).port
+  const name = hostname()
+  return {
+    selfTokenUrl: deps.tokenUrlOf(origin),
+    selfName: port === '' ? name : `${name}:${port}`,
+  }
+}
+
+/** POST: body-dispatched — `{op: 'reprobe', id}` re-probes, `{op: 'tokenUrl',
+ *  origin}` tokenizes the pairing URL, anything else is
+ *  a pairing input `{name, tokenUrl}`. A user-initiated pair carries the
+ *  mutual-pairing reverse leg (the peer is offered our own pairing input, so
+ *  one action pairs both machines); an offer that arrived WITH
+ *  `mutual: true` pairs WITHOUT its own reverse leg — the recursion stops by
+ *  construction. */
 async function handlePost(request: Request, deps: MeshDeps): Promise<Response> {
   let body: Record<string, unknown>
   try {
@@ -170,6 +274,7 @@ async function handlePost(request: Request, deps: MeshDeps): Promise<Response> {
     return json(400, { error: errMsg(err) })
   }
   if (typeof body.op === 'string' && body.op !== '') {
+    if (body.op === 'tokenUrl') return handleTokenUrl(body, deps)
     if (body.op !== 'reprobe') return json(400, { error: `mesh-api: unknown op "${body.op}"` })
     const id = typeof body.id === 'string' && body.id !== '' ? body.id : ''
     if (id === '') return json(400, { error: 'mesh-api: reprobe body must be {op: "reprobe", id} with a non-empty id' })
@@ -186,17 +291,26 @@ async function handlePost(request: Request, deps: MeshDeps): Promise<Response> {
   const name = typeof body.name === 'string' && body.name !== '' ? body.name : ''
   const tokenUrl = typeof body.tokenUrl === 'string' && body.tokenUrl !== '' ? body.tokenUrl : ''
   if (name === '' || tokenUrl === '') {
-    return json(400, { error: 'mesh-api: pair body must be {name, label?, tokenUrl} with non-empty name and tokenUrl' })
+    return json(400, { error: 'mesh-api: pair body must be {name, tokenUrl} with non-empty name and tokenUrl' })
   }
-  const label = typeof body.label === 'string' && body.label !== '' ? body.label : undefined
+  // The reverse leg rides USER-initiated pairs only: an offer that arrived
+  // with `mutual: true` (the peer's own reverse leg) pairs without one.
+  const mutual = body.mutual === true ? undefined : buildMutual(request, deps)
   let outcome: Awaited<ReturnType<typeof pairMachine>>
   try {
-    outcome = await pairMachine(deps.home, { name, label, tokenUrl }, { fetchImpl: deps.fetchImpl })
+    outcome = await pairMachine(
+      deps.home,
+      { name, tokenUrl, ...(mutual === undefined ? {} : { mutual }) },
+      { fetchImpl: deps.fetchImpl },
+    )
   } catch (err) {
     // mesh-link errors are actionable and token-redacted (Task 2 fix round 1).
     return json(400, { error: errMsg(err) })
   }
-  return json(201, { machine: publicRow(outcome.row) })
+  return json(201, {
+    machine: publicRow(outcome.row),
+    ...(outcome.mutual === undefined ? {} : { mutual: outcome.mutual }),
+  })
 }
 
 /** DELETE: drop one remote row by `?id=`; `{removed: false}` for unknown ids. */
@@ -211,17 +325,31 @@ function handleRemove(request: Request, deps: MeshDeps): Response {
 /**
  * Register the mesh-machines API on the shared `/api` connection channel
  * (behind the standard browser-trust + auth fence). No-op when the
- * `connection` service is absent (e.g. fake-ctx unit tests).
+ * `connection` service is absent (e.g. fake-ctx unit tests). The connection
+ * face also backs the `tokenUrl` op: its public `authenticatedUrl` is the
+ * ONLY sanctioned way to attach the process's live launch token (spec
+ * hub-roster-identity §3 — the token is random per process, never derived
+ * from the stored credential seed).
  */
 export function registerMeshRpc(ctx: Context, deps: MeshDeps): void {
   ctx.inject(['connection'], (connCtx) => {
-    const fetchFace = (Reflect.get(connCtx, 'connection') as { fetch?: ConnectionFetchFace } | undefined)?.fetch
-    if (fetchFace === undefined) return // connection not actually present (test ctx)
+    const connection = Reflect.get(connCtx, 'connection') as {
+      fetch?: ConnectionFetchFace
+      authenticatedUrl?: (baseUrl: string) => string
+    } | undefined
+    const fetchFace = connection?.fetch
+    if (connection === undefined || fetchFace === undefined) return // connection not actually present (test ctx)
+    // Bound method capture: `authenticatedUrl` reads the process's launch
+    // token off `this`, so the closure must keep the face as receiver.
+    const authenticatedUrl = typeof connection.authenticatedUrl === 'function'
+      ? connection.authenticatedUrl.bind(connection)
+      : undefined
+    const tokenUrlOf = authenticatedUrl === undefined ? undefined : (origin: string) => authenticatedUrl(origin)
     connCtx.effect(() => fetchFace.register({
       path: MESH_API_BASE,
       methods: [...ROUTE_METHODS],
       requestBody: 'buffered',
-      fetch: (request) => handleMeshMachines(request, deps),
+      fetch: (request) => handleMeshMachines(request, { ...deps, ...(tokenUrlOf === undefined ? {} : { tokenUrlOf }) }),
     }), 'superd-hub: /api/superd/machines route')
   })
 }
