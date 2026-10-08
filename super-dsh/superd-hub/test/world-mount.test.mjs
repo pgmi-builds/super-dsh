@@ -13,7 +13,7 @@ import { spawnWorld, registerHostMount, worldServerOf, worldMountPatches } from 
 import { WorldWebServer } from '../dist/world-web-server.js'
 
 const REPO = join(new URL('../../..', import.meta.url).pathname)
-const HOME = process.env.SUPERD_TEST_HOME ?? join(REPO, '.tests', 'superd')
+const HOME = process.env.SUPERD_TEST_HOME ?? join(REPO, '.tests', 'hub-mount-test-home')
 // The world's webRuntime trusted-host extras derive from this env (world-entry);
 // pin the neutral no-extras shape for the deterministic assertion below.
 delete process.env.SUPERD_TRUSTED_HOSTS

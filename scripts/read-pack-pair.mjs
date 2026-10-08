@@ -19,7 +19,7 @@ export function readPackPair(directory){
   if(entry.sha256!==sha256)throw new Error(`Received ${name} SHA256 mismatch`)
   const packed=JSON.parse(execFileSync('tar',['-xOf',tarball,'package/package.json'],{encoding:'utf8'}))
   if(packed.name!==name||packed.version!==entry.version)throw new Error(`Received ${name} manifest version mismatch`)
-  if(name==='super-dsh'&&JSON.stringify(packed.dsh?.bundle?.patch)!==JSON.stringify(['./node_modules/better-dsh/cordis.patch.yml','./cordis.patch.yml']))throw new Error('Received bundle patch order mismatch')
+  if(name==='super-dsh'&&packed.dsh?.bundle?.patch!=='./cordis.patch.yml')throw new Error('Received bundle activation boundary mismatch')
   result[key]={...entry,tarball}
  }
  result.bundledFiles=verifyBundledPackage(result.superDash.tarball,result.betterDash.tarball,'better-dsh')

@@ -1,6 +1,6 @@
 {
   "name": "super-dsh",
-  "version": "0.3.0-c",
+  "version": "0.3.0-a",
   "description": "Super D for the DeepSeek Harness (DSH) — one dsh plugin that mounts the superd hub (runtime selector, roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
   "type": "module",
   "license": "MIT",
@@ -26,7 +26,8 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./fusion-transport": "./superd-hub/dist/fusion-transport.js",
-    "./a2a": "./superd-hub/dist/a2a-row.js"
+    "./a2a": "./superd-hub/dist/a2a-row.js",
+    "./setup": "./superd-hub/dist/bundle-setup.js"
   },
   "files": [
     "cordis.patch.yml",
@@ -38,6 +39,7 @@
     "superd-hub/package.json",
     "superd-hub/cordis.patch.yml",
     "agent-omp/dist",
+    "agent-omp/lib",
     "agent-omp/package.json",
     "agent-omp/cordis.patch.yml",
     "agent-omp-sdk/dist",
@@ -66,14 +68,12 @@
     "agent-agy-sdk/dist",
     "agent-agy-sdk/package.json",
     "agent-agy-sdk/cordis.patch.yml",
-    "agent-agy-sdk/bridge"
+    "agent-agy-sdk/bridge",
+    "bundles"
   ],
   "dsh": {
     "bundle": {
-      "patch": [
-        "./node_modules/better-dsh/cordis.patch.yml",
-        "./cordis.patch.yml"
-      ]
+      "patch": "./cordis.patch.yml"
     },
     "client": {
       "inject": [
@@ -83,7 +83,7 @@
     }
   },
   "dependencies": {
-    "better-dsh": "0.3.0-c",
+    "better-dsh": "0.3.0-a",
     "@earendil-works/pi-coding-agent": "0.84.2",
     "zod": "4.4.3",
     "@modelcontextprotocol/sdk": "^1.29.0"
@@ -160,10 +160,14 @@
     "access": "public"
   },
   "bundledDependencies": [
-    "better-dsh"
+    "better-dsh",
+    "@earendil-works/pi-coding-agent"
   ],
   "homepage": "https://github.com/pgmi-builds/super-dsh",
   "bugs": {
     "url": "https://github.com/pgmi-builds/super-dsh/issues"
+  },
+  "superd": {
+    "delivery": "./bundles/manifest.json"
   }
 }

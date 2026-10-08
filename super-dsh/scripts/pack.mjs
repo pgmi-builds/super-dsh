@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { packPackage } from './pack-package.mjs'
 import { buildBetterDash } from './build-better.mjs'
 import { verifyBundledPackage } from './verify-bundled.mjs'
+import { buildPiBundle, verifyPiBundle, PI_PACKAGE } from './build-pi.mjs'
 
 const LINE = join(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO = dirname(LINE)
@@ -58,6 +59,7 @@ const GENERATED = [
   join(LINE, 'superd-hub', 'dist'),
   join(LINE, 'superd-hub', 'lib'),
   ...AGENTS.map((pkg) => join(LINE, pkg, 'dist')),
+  join(LINE, 'agent-omp', 'lib'),
 ]
 for (const dir of GENERATED) rmSync(dir, { recursive: true, force: true })
 console.log(`[pack] cleaned ${GENERATED.length} generated dir(s)`)
@@ -70,14 +72,18 @@ run('node scripts/build-superd-client.mjs', join(LINE, 'superd-hub'))
 for (const pkg of AGENTS) {
   console.log(`[pack] building ${pkg} (tsc)`)
   run('npm run build', join(LINE, pkg))
+  const component = JSON.parse(readFileSync(join(LINE, pkg, 'package.json'), 'utf8'))
+  if (component.scripts?.['build-client']) run('npm run build-client', join(LINE, pkg))
 }
 
 const { version } = manifest
+buildPiBundle(LINE, REPO)
 console.log(`[pack] npm pack super-dsh@${version}`)
 packPackage(LINE, PACK_DIR)
 console.log(`[pack] tarball: ${PACK_DIR}/super-dsh-${version}.tgz`)
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex')
 const superDash = { name: manifest.name, version, source: LINE, tarball: join(PACK_DIR, `super-dsh-${version}.tgz`) }
+verifyPiBundle(superDash.tarball, manifest.dependencies[PI_PACKAGE])
 const bundledFiles = verifyBundledPackage(superDash.tarball, betterDash.tarball, betterDash.name)
 console.log(`[pack] verified ${bundledFiles} bundled Better Dash files against its local tarball`)
 const pair = { bundledFiles, builtAt: new Date().toISOString(), betterDash: { ...betterDash, sha256: sha256(betterDash.tarball) }, superDash: { ...superDash, sha256: sha256(superDash.tarball) } }

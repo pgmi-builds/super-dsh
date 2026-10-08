@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleMeshMachines, handleA2aIngestPost, handleA2aOutboxGet, registerMeshRpc, MESH_API_BASE } from '../dist/mesh-rpc.js'
 import { A2A_OUTBOX_PATH } from '../dist/a2a-wire.js'
-import { machineStatus, resetMachineStatus, onMeshFederationEvent } from '../dist/mesh-link.js'
+import { machineStatus, resetMachineStatus, onMeshFederationEvent, OWN_VERSION } from '../dist/mesh-link.js'
 import { listRemotes, upsertRemote } from '../dist/machines.js'
 
 const home = () => mkdtempSync(join(tmpdir(), 'superd-mesh-rpc-'))
@@ -30,7 +30,7 @@ function req(method, body, url = `http://x${MESH_API_BASE}`) {
 function startRemoteHub(opts = {}) {
   const state = {
     machineId: opts.machineId ?? 'k3f9',
-    version: opts.version ?? '0.1.6',
+    version: opts.version ?? OWN_VERSION,
     token: opts.token ?? 'ok',
     agents: opts.agents ?? [{ id: 'q7m2xp', key: 'codex', runtimeId: 'agent-codex', label: 'Codex', ready: true, failed: false }],
     validCookies: new Set(),
@@ -414,9 +414,9 @@ test('未注册方法（PUT/HEAD）→ 直连 handler 应答 405', async () => {
 
 test('I2 投影加性：跨 minor 对端 → GET 行携带 versionWarning；同 minor/未探测 → 键不存在', async () => {
   resetMachineStatus()
-  // ours is the hub package version: derive diff-minor and same-minor peer
+  // ours is the delivery pack version: derive diff-minor and same-minor peer
   // spellings so the assertion survives version bumps.
-  const ours = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  const ours = OWN_VERSION
   const [maj, min] = ours.split('.').map(Number)
   const peerDiff = `${maj}.${min + 1}.0`
   const hub = await startRemoteHub({ machineId: 'w2c4', token: 'i2-tok', version: peerDiff })

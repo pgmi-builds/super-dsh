@@ -1,7 +1,7 @@
 {
   "name": "superd-workspace",
   "private": true,
-  "version": "0.3.0-c",
+  "version": "0.3.0-a",
   "releaseTarget": "0.3.0",
   "type": "module",
   "description": "Super D unified development repository: Better Dash native tools and Super Dash multi-agent platform.",
@@ -14,7 +14,7 @@
     "build": "node super-dsh/scripts/pack.mjs",
     "pack": "node super-dsh/scripts/pack.mjs",
     "version:release": "node scripts/release-version.mjs",
-    "test": "node --test test/*.test.mjs super-dsh/test/better-dash-composition.test.mjs super-dsh/test/pack-package.test.mjs super-dsh/test/pair-login.test.mjs super-dsh/test/pack-contract.test.mjs",
+    "test": "node --expose-internals --test test/*.test.mjs super-dsh/test/better-dash-composition.test.mjs super-dsh/test/pack-package.test.mjs super-dsh/test/pair-login.test.mjs super-dsh/test/pack-contract.test.mjs super-dsh/test/pi-bundle.test.mjs",
     "test:better": "npm --prefix better-dsh test",
     "test:4999": "bash super-dsh/test/start-4999.sh"
   }

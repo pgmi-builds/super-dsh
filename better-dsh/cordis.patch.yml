@@ -17,6 +17,10 @@
 # `python` is only a hint: the runtime OWNS the kernel environment. An
 # explicit interpreter (DASHR_KERNEL_PYTHON) is verified; the bare
 - insert:
+    # No-op standalone; keeps a containing pack's local companion delivery current.
+    - id: dashr-bundle-delivery
+      name: 'better-dsh/bundle-delivery'
+
     - id: dashr-repl
       name: 'better-dsh'
       config:
@@ -121,3 +125,15 @@
   name: '@deepseek-ai/dsh-client-ui-settings-models'
   config:
     credentialOnboarding: false
+
+# Native watcher/queue with scoped transaction context across listener replacement.
+# Distinct row preserves whole-bundle disablement in the native manager.
+- id: hmr
+  name: '@deepseek-ai/dsh-hmr'
+  disabled: true
+- insert:
+    - id: dashr-hmr
+      name: 'better-dsh/hmr'
+      disabled: !!js "!ctx.get('profileContext')"
+      config:
+        root: []

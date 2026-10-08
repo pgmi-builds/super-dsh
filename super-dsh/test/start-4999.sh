@@ -7,7 +7,8 @@
 #
 # No hand-written compositions, no @pgmi-builds symlink farms, no library boot
 # script: the native profile activates Super Dash only. Its pack contains the
-# locally built Better Dash package and composes Better Dash YAML before its own.
+# locally built Better Dash package; its own delivery coordinator registers
+# Better as an independent bundle through the native package operation.
 #
 # Red line (repo AGENTS §〇): this script refuses to run against any home that
 # is not this repo's .tests tree — the launch step owns the dev/test boundary,
@@ -53,12 +54,7 @@ case "$CONSUMER" in super-dsh) PRODUCT_KEY=superDash; DEFAULT_PROFILE=superd-pub
 PROFILE="${SUPERD_PROFILE:-$DEFAULT_PROFILE}"
 LOG="$REPO/.scratch/superd-${PORT}.log"
 NODE_BIN="/usr/bin/node"
-if command -v corepack >/dev/null 2>&1; then
-  PNPM="corepack pnpm@10.33.2"
-else
-  PNPM="pnpm --config.strict-dep-builds=false"  # Keep dependency builds disabled without pnpm 12 aborting.
-fi
-PNPM_STORE="$REPO/.npm-cache/pnpm-store-v10"
+PNPM="pnpm"  # Same canonical executable and default build policy as native UI.
 ANCHOR="${SUPERD_TEST_DSH_ANCHOR:-$REPO/upstream/deepseek-harness/apps/cli/package.json}"
 CLI="$(dirname "$ANCHOR")/lib/bin.js"
 [ -f "$ANCHOR" ] && [ -f "$CLI" ] || { echo "DSH installation missing: $ANCHOR" >&2; exit 1; }
@@ -171,6 +167,9 @@ packages:
 nodeLinker: hoisted
 autoInstallPeers: false
 EOF
+# Initial installation and native Plugin Manager both use pnpm's configured
+# default store. Isolation belongs to this test profile, not a custom store.
+
 cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
 # Native WebServer defaults belong to Better Dash; the port is a CLI flag.
 # One seed for every rig on this machine (see SHARED_CREDENTIALS above): the
@@ -183,8 +182,8 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
   config:
     path: ${SHARED_CREDENTIALS}
 EOF
-echo "--- pnpm install (first run downloads the runtime SDKs into the store; later runs reuse it)"
-(cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$DEV_WEBMCP" --config.store-dir="$PNPM_STORE" --prefer-offline)
+echo "--- pnpm install (complete local pack, native default script policy)"
+(cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$DEV_WEBMCP" --prefer-offline)
 
 # ---- 3. boot via the repo build's dsh CLI (no custom boot code) ----
 # ---- test preparation (2026-09-24 user ruling; spec: docs/07 §7) — the line
@@ -249,7 +248,15 @@ if [ -n "${SUPERD_TEST_HTTP_PROXY:-}" ]; then
   PROXY_ARGS+=(--property="Environment=ALL_PROXY=$SUPERD_TEST_HTTP_PROXY")
   PROXY_ARGS+=(--property="Environment=NO_PROXY=localhost,127.0.0.1,::1")
 fi
+# Operator access configuration remains valid when Better's permissive fence
+# is disabled. These are official CLI authorities, not plugin policy overrides.
 HOST_ARGS=()
+if [ -n "${SUPERD_TEST_TRUSTED_HOSTS:-}" ]; then
+  read -r -a TEST_TRUSTED_HOSTS <<< "$SUPERD_TEST_TRUSTED_HOSTS"
+  for authority in "${TEST_TRUSTED_HOSTS[@]}"; do
+    HOST_ARGS+=(--trusted-host "$authority")
+  done
+fi
 if [ "$BIND" = "127.0.0.1" ]; then HOST_ARGS+=(--host 127.0.0.1); fi
 [ "$BIND" = "0.0.0.0" ] || [ "$BIND" = "127.0.0.1" ] || { echo "unsupported SUPERD_BIND: $BIND" >&2; exit 1; }
 systemd-run --user --unit="$UNIT" "${PROXY_ARGS[@]}" \

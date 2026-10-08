@@ -25,6 +25,8 @@ export interface HostMount {
   key: string
   /** Mount root (`/omp`). */
   labelPath: string
+  /** Owning activation; carried into its world patch to reject obsolete boots. */
+  ownerId?: string
 }
 
 const mounts = new Map<string, HostMount>()
@@ -82,9 +84,12 @@ const worldFetchHandlers = new Map<string, WorldFetchHandler>()
  * can forward non-envelope traffic (`?agent=<label>` GET/HEAD) into the
  * world's registered routes (session-log export and friends). Called from
  * inside the world root (`world-entry`); read from the host root
- * (`carrier`). Idempotent replace.
+ * (`carrier`). Idempotent replace. An optional owner mount prevents delayed
+ * publication after that mount was removed or replaced.
  */
-export function publishWorldFetch(key: string, handler: WorldFetchHandler): () => void {
+export function publishWorldFetch(key: string, handler: WorldFetchHandler, owner?: HostMount): () => void {
+  // A connection may activate after its host row was removed or replaced.
+  if (owner !== undefined && mounts.get(key) !== owner) return () => {}
   worldFetchHandlers.set(key, handler)
   return () => {
     if (worldFetchHandlers.get(key) === handler) worldFetchHandlers.delete(key)
@@ -95,4 +100,3 @@ export function publishWorldFetch(key: string, handler: WorldFetchHandler): () =
 export function worldFetchHandlerOf(key: string): WorldFetchHandler | undefined {
   return worldFetchHandlers.get(key)
 }
-

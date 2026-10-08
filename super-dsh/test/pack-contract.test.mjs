@@ -76,11 +76,18 @@ test("no dependency map in the pack declares a codex binary/SDK package", () => 
   }
 });
 
-test("the pack root carries only pure-JS runtime dependencies", () => {
+test("the pack root avoids installation-time platform runtime dependencies", () => {
   const manifest = JSON.parse(readFileSync(join(packRoot, "package.json"), "utf8"));
   // The 0.1.11 incident list: everything here ships a native binary through
-  // aliased optionalDependencies. Any new entry must be pure JavaScript.
+  // aliased optionalDependencies. Pi's separately verified prebuilt bundle
+  // carries its upstream assets without installation-time builds.
   assert.equal(manifest.dependencies?.["@openai/codex"], undefined);
   assert.equal(manifest.dependencies?.["@openai/codex-sdk"], undefined);
   assert.equal(manifest.optionalDependencies, undefined, "no optionalDependencies at the pack root");
+});
+
+test("Pi SDK must be physically bundled so its transitive hooks need no consumer approval", () => {
+  const manifest = JSON.parse(readFileSync(join(packRoot, "package.json"), "utf8"));
+  assert.ok(manifest.bundledDependencies?.includes("@earendil-works/pi-coding-agent"),
+    "a dependency declaration alone leaves Pi's transitive install hooks to the consumer");
 });

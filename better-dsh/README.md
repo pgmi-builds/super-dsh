@@ -1,4 +1,4 @@
-> Part of [Super D](../README.md). This is the independently installable `better-dsh` package. Super Dash embeds the same local build; both versions advance together toward0.3.0. Active source is this directory, with shared specifications and references under root `docs/`.
+> Part of [Super D](../README.md). This is the independently installable `better-dsh` package. Super Dash embeds the same local build and registers it as a separate native Plugin Manager row, with its own enable/disable switch; both packages share version 0.3.0-a. Active source is this directory, with shared specifications and references under root `docs/`.
 
 # Better Dsh — Dashr
 

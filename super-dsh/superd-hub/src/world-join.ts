@@ -32,11 +32,10 @@
 import { mkdirSync } from 'node:fs'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { join } from 'node:path'
-import { registerAgent, setFailed, setReady } from './roster.js'
-import { registerForeignTarget } from './targets.js'
+import { setFailed } from './roster.js'
 import { spawnWorld } from './spawn-world.js'
 import { provisionWorldProfile, resolveInstallAnchor } from './world-provision.js'
-import { registerHostMount } from './world-host.js'
+import { ownWorld } from './world-lifecycle.js'
 import { worldMountPatches } from './world-mount.js'
 
 /** Stable Cordis plugin name. */
@@ -52,7 +51,7 @@ export interface Config {
 interface HostContext {
   provide(name: string, value: unknown): void
   inject(deps: string[], callback: (ctx: unknown) => void): unknown
-  effect?(callback: () => () => void, label?: string): unknown
+  effect(callback: () => () => Promise<void>, label?: string): unknown
   get(name: string): unknown
 }
 
@@ -65,7 +64,6 @@ export function apply(ctx: HostContext, config?: Partial<Config>): void {
     return
   }
   const label = typeof config?.label === 'string' && config.label !== '' ? config.label : key
-  registerAgent({ key, label, ready: false })
   // S7 nested home: the world's whole tree lives under `agents/<key>` (its
   // profiles were provisioned there by the line bootstrap; DSH data lands
   // inside the same root via spawnWorld's dataHome override).
@@ -82,39 +80,23 @@ export function apply(ctx: HostContext, config?: Partial<Config>): void {
     adapterPkg: '@pgmi-builds/agent-claude',
     worldHome,
   })
-  const world = (async () => {
-    // T-D: the mount record is addressability only — no ctx0 listening-stack
-    // wait, no webServer instance, no authorize leg (the /hub family wires
-    // its own gate in ctx0, see gateway.ts).
-    const dropHostMount = registerHostMount({ key, labelPath: `/${key}` })
-    const ctxW = await spawnWorld({
-      appName: `superd-${key}`,
-      profileName: 'web',
-      installAnchor: resolveInstallAnchor(ctx), // lazy: never at module scope — import must stay side-effect-free
-      home: worldHome,
-      dataHome: worldHome,
-      // The host's live table carries this world: spawnWorld republishes a
-      // widened successor before boot imports anything (spec §2.1), and
-      // @pgmi-builds rows resolve from the profile-local links written above.
-      host: ctx,
-      extraPatches: worldMountPatches(key) as never,
-    })
-    const gateway = ctxW.get('typertGateway') as never
-    registerForeignTarget({ key, gateway })
-    // T-C: no per-label mount anymore — the gateway above is the world's
-    // whole ingress, reached through the /hub family's `?agent=<key>` demux.
-    setReady(key, true)
-    ctx.effect?.(() => () => {
-      dropHostMount()
-    }, `superd-join: ${key} mount`)
-    return ctxW
-  })().catch((cause: unknown) => {
+  const world = ownWorld(ctx, { key, label }, (ownerId) => spawnWorld({
+    appName: `superd-${key}`,
+    profileName: 'web',
+    installAnchor: resolveInstallAnchor(ctx), // lazy: never at module scope — import must stay side-effect-free
+    home: worldHome,
+    dataHome: worldHome,
+    // The host's live table carries this world: spawnWorld republishes a
+    // widened successor before boot imports anything (spec §2.1), and
+    // @pgmi-builds rows resolve from the profile-local links written above.
+    host: ctx,
+    extraPatches: worldMountPatches(key, ownerId) as never,
+  }), (cause) => {
     // A failed world degrades to a FAILED roster row (mount stays for
     // diagnosis; ready stays false); a rejected provided promise would fail
     // the entire host boot (loader entry apply).
     console.error(`[super-dsh] ${key} world failed:`, cause)
     try { setFailed(key, true) } catch { /* roster row already gone */ }
-    return null
   })
   ctx.provide(`superd.world.${key}`, world)
 }

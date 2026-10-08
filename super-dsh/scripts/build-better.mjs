@@ -1,6 +1,7 @@
 // Build the same-repository source and stage its actual tarball for npm bundling.
+import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, realpathSync, rmSync, lstatSync, existsSync, readdirSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, rmSync, lstatSync, existsSync, readdirSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { packPackage } from './pack-package.mjs'
 import { assertReleaseVersions } from '../../scripts/release-version.mjs'
@@ -36,5 +37,10 @@ export function buildBetterDash(line, repo, output, superManifest) {
   rmSync(embedded, { recursive: true, force: true })
   mkdirSync(embedded, { recursive: true })
   execFileSync('tar', ['-xf', tarball, '-C', embedded, '--strip-components=1'])
+  const delivery = join(line, 'bundles')
+  mkdirSync(delivery, { recursive: true })
+  copyFileSync(tarball, join(delivery, 'better-dsh.tgz'))
+  const sha256 = createHash('sha256').update(readFileSync(tarball)).digest('hex')
+  writeFileSync(join(delivery, 'manifest.json'), JSON.stringify({ companions: [{ name: manifest.name, version: manifest.version, tarball: './better-dsh.tgz', sha256 }] }, null, 2) + '\n')
   return { name: manifest.name, version: manifest.version, source, tarball }
 }

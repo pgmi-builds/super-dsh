@@ -19,22 +19,41 @@ dsh plugin --profile <name> add super-dsh@latest
 
 That single package composes the whole line (`@pgmi-builds/superd-hub` plus the
 six primary `@pgmi-builds/agent-*` packages and three OPTIONAL SDK halves).
-Restart the profile and the
-home under `<DSH_HOME>/agents/<label>/` on first boot.
+Restart the profile after replacing a loaded package. Each foreign world's
+DSH home is created under `<DSH_HOME>/agents/<label>/` on first boot.
 
 ## Better Dash delivery and native Web defaults
 
-This development build embeds [Better Dash](../better-dsh/).
+The release embeds [Better Dash](../better-dsh/) and Pi's prebuilt SDK dependency tree.
 Every `scripts/pack.mjs` invocation first builds the current same-repository
 `../better-dsh` and packs it with the same npm approach, then embeds that
 artifact using `bundledDependencies`. Missing source or an exact version mismatch
 fails the build; Better Dash is never fetched from a registry during this step.
 The pack verifies every embedded file against the independent Better Dash tarball.
 
-Install and enable Super Dash alone: its ordered bundle patch reads the embedded
-Better Dash YAML before its own YAML. Both source directories share one repository,
-and Better Dash remains separately installable with the same version. These local development artifacts
-have not been published to npm.
+Install Super Dash alone: on first startup its delivery component registers the
+exact enclosed Better Dash tarball through the installed harness's native package
+operation. The native Plugin Manager then shows **Super Dash** and **Better Dash**
+as parallel installed bundles. Their switches are independent: Better alone keeps
+native tools; Super alone keeps Hub/A2A and foreign agents. dev WebMCP stays separate.
+Super never includes Better's YAML in its own bundle patch.
+
+The archive is cached in the current DSH home's `bundle-artifacts/` directory, so
+Better remains reinstallable after Super is removed. An update preserves a retained
+Better disablement; replacing an already installed package requires a DSH restart.
+When both bundles are disabled, companion updates wait until either is enabled.
+Explicitly uninstalling Better is respected for the same Super artifact.
+Both source directories share one repository, and Better Dash remains separately
+installable with the same version, currently **0.3.0-a**. Pi's bundled dependencies
+require no installation-script approval from the consumer.
+
+For a tarball URL installation in the native Web UI, put the `.tgz` URL in the
+main Add plugin input and keep the separate Registry selection on the official
+npm registry. A tarball file server is not an npm registry.
+
+Disabling Better restores native Web binding, trusted-host, login and onboarding
+policies. Remote deployments must supply native DSH trusted-host configuration;
+Super does not take ownership of those Better policies.
 
 Better Dash owns the native DSH policies: `dashr-web-trust` retains cookie
 authentication while accepting authenticated serving Host/Origin values; its

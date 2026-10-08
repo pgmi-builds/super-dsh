@@ -140,7 +140,7 @@ export const WORLD_WAVE2_DISABLED_ROWS: readonly string[] = [
   'ui-trajectory', 'ui-user-questions', 'ui-workflow-run', 'ui-workspace',
 ]
 
-export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
+export function worldMountPatches(key: string, ownerId?: string): readonly WorldPatchLayer[] {
   if (typeof key !== 'string' || key === '' || key.includes('/')) {
     throw new Error(`world-mount: invalid key ${JSON.stringify(key)}`)
   }
@@ -174,7 +174,7 @@ export function worldMountPatches(key: string): readonly WorldPatchLayer[] {
     // without a startup failure (2026-09-27 wave-2 rig evidence).
     { id: 'modules', inject: ['webServer'] },
     { insert: [
-      { id: WORLD_MOUNT_ROW_ID, name: WORLD_MOUNT_PLUGIN, config: { key } },
+      { id: WORLD_MOUNT_ROW_ID, name: WORLD_MOUNT_PLUGIN, config: { key, ...(ownerId === undefined ? {} : { ownerId }) } },
       { id: WORLD_HUB_ROW_ID, name: WORLD_HUB_PLUGIN },
     ] },
     // Wave-1 minimization: the foreign runtimes replace the native agent

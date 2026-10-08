@@ -31,9 +31,10 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { join } from 'node:path'
 import {
-  spawnWorld, registerAgent, unregisterAgent, setReady, registerForeignTarget,
-  registerHostMount, worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
+  spawnWorld,
+  worldMountPatches, provisionWorldProfile, resolveInstallAnchor,
 } from '../../superd-hub/dist/index.js'
+import { ownWorld } from '../../superd-hub/dist/world-lifecycle.js'
 import { sdkRuntimeLayout } from './sdk-runtime.js'
 
 export const name = 'agent-omp-sdk'
@@ -50,7 +51,7 @@ const KEY = 'omp-sdk'
 interface HostContext {
   provide(name: string, value: unknown): void
   inject(deps: string[], callback: (ctx: unknown) => void): unknown
-  effect?(callback: () => () => void, label?: string): unknown
+  effect(callback: () => () => Promise<void>, label?: string): unknown
   get(name: string): unknown
 }
 
@@ -77,16 +78,6 @@ function diagnoseSdkRuntime(worldHome: string): void {
 }
 
 export function apply(ctx: HostContext): void {
-  // Roster membership is FIBER-SCOPED (2026-10-03 acceptance finding):
-  // disabling this row from the plugin manager disposes the fiber, and the
-  // entry must go with it. The `/api/agent-runtime` view hides a row whose
-  // host mount is gone, but the raw roster map is never pruned — so without
-  // this disposer a later re-enable dies on `roster: duplicate agent key
-  // omp-sdk` (reproduced live on 4997).
-  ctx.effect?.(() => {
-    registerAgent({ key: KEY, label: 'OMP (SDK)', ready: false })
-    return () => unregisterAgent(KEY)
-  }, `agent-${KEY}: roster`)
   // Harness resolver (env → ~/.dsh): a consumer install has no DSH_HOME and
   // no cwd contract — deriving the world root from cwd spawns worlds into a
   // garbage tree or throws inside apply() and kills the whole host boot.
@@ -106,37 +97,18 @@ export function apply(ctx: HostContext): void {
     adapterPkg: '@pgmi-builds/agent-omp-sdk',
     worldHome,
   })
-  const world = (async () => {
-    // T-D: no ctx0 listening-stack wait — the mount record is addressability
-    // only and the /hub family wires its own gate in ctx0 (gateway.ts).
-    const dropHostMount = registerHostMount({ key: KEY, labelPath: `/${KEY}` })
-    const ctxW = await spawnWorld({
-      appName: `superd-${KEY}`,
-      profileName: 'web',
-      installAnchor: resolveInstallAnchor(ctx), // lazy: never at module scope — import must stay side-effect-free
-      home: worldHome,
-      dataHome: worldHome,
-      // The host's live table carries this world: spawnWorld republishes a
-      // widened successor before boot imports anything (spec §2.1), and
-      // @pgmi-builds rows resolve from the profile-local links written above.
-      host: ctx,
-      extraPatches: worldMountPatches(KEY) as never,
-    })
-    const gateway = ctxW.get('typertGateway') as never
-    registerForeignTarget({ key: KEY, gateway })
-    setReady(KEY, true)
-    ctx.effect?.(() => () => {
-      dropHostMount()
-    }, `agent-${KEY}: mount`)
-    // Toggling the row off must really UNLOAD the world (2026-10-03 acceptance
-    // finding): disposing the world's own fiber disposes its provider, which
-    // releases every held transport, which releases the refcounted sidecar —
-    // without this the bun sidecar (hundreds of MB) outlives its own row.
-    ctx.effect?.(() => () => {
-      void (ctxW as unknown as { fiber?: { dispose(): unknown } }).fiber?.dispose()
-    }, `agent-${KEY}: world teardown`)
-    return ctxW
-  })().catch((cause: unknown) => {
+  const world = ownWorld(ctx, { key: KEY, label: 'OMP (SDK)' }, (ownerId) => spawnWorld({
+    appName: `superd-${KEY}`,
+    profileName: 'web',
+    installAnchor: resolveInstallAnchor(ctx), // lazy: never at module scope — import must stay side-effect-free
+    home: worldHome,
+    dataHome: worldHome,
+    // The host's live table carries this world: spawnWorld republishes a
+    // widened successor before boot imports anything (spec §2.1), and
+    // @pgmi-builds rows resolve from the profile-local links written above.
+    host: ctx,
+    extraPatches: worldMountPatches(KEY, ownerId) as never,
+  }), (cause) => {
     // A failed world degrades to a not-ready roster row; a rejected provided
     // promise would fail the entire host boot (loader entry apply).
     console.error(`[super-dsh] ${KEY} world failed:`, cause)
@@ -148,7 +120,6 @@ export function apply(ctx: HostContext): void {
         console.error(`[super-dsh] ${KEY} startup:`, JSON.stringify(message))
       }
     }
-    return null
   })
   ctx.provide(`superd.world.${KEY}`, world)
 }

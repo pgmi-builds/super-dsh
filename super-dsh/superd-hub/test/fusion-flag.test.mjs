@@ -103,19 +103,21 @@ const DISABLED_ROWS = [
   'superd-join-claude', 'directory-picker-browse', 'directory-picker-browse-surface',
   // This injection fixture supplies no native tools/settings or startup service.
   'dashr-repl', 'dashr-url-schemes', 'dashr-welcome-notice', 'dashr-webserver',
+  'dashr-hmr', 'dashr-bundle-delivery', 'superd-bundle-setup',
 ]
 
 function ctx0Home(extraProfileRows) {
   const home = mkdtempSync(join(tmpdir(), 'superd-flag-'))
   const profile = join(home, 'profiles', 'ctx0')
   mkdirSync(join(profile, 'node_modules'), { recursive: true })
-  // Consumer install shape: the composite is a physical profile package.
+  // Source-backed injection fixture; tarball consumer registration is tested separately.
   symlinkSync(LINE, join(profile, 'node_modules', 'super-dsh'), 'dir')
+  symlinkSync(join(LINE, '..', 'better-dsh'), join(profile, 'node_modules', 'better-dsh'), 'dir')
   writeFileSync(join(profile, 'index.html'), '<!doctype html><html><head></head><body></body></html>\n')
   writeFileSync(join(profile, 'package.json'), JSON.stringify({
     name: 'ctx0-replica',
     private: true,
-    dsh: { profile: { bundles: ['super-dsh'] } },
+    dsh: { profile: { bundles: ['better-dsh', 'super-dsh'] } },
   }) + '\n')
   writeFileSync(join(profile, 'cordis.patch.yml'), [
     '# Minimal ctx0 web face: the upstream rows inserted directly (the replica',

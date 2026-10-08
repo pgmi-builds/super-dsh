@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -36,20 +37,32 @@ test('bundle verification rejects missing or stale local dependency files', asyn
   try {
     const source = join(root, 'source'), local = join(root, 'local'), output = join(root, 'output')
     mkdirSync(source); mkdirSync(local)
-    writeFileSync(join(local, 'package.json'), JSON.stringify({ name: 'local-better-probe', version: '1.0.0', files: ['value.txt'] }))
+    writeFileSync(join(local, 'package.json'), JSON.stringify({ name: 'better-dsh', version: '1.0.0', files: ['value.txt'] }))
     writeFileSync(join(local, 'value.txt'), 'fresh local source')
     const dep = packPackage(local, output)
-    writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'bundle-probe', version: '1.0.0', files: ['index.js'], dependencies: { 'local-better-probe': '1.0.0' }, bundledDependencies: ['local-better-probe'] }))
+    writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'super-dsh', version: '1.0.0', files: ['index.js','cordis.patch.yml','bundles','agent-omp'], superd: {delivery:'./bundles/manifest.json'}, dsh: {bundle:{patch:'./cordis.patch.yml'}}, dependencies: { 'better-dsh': '1.0.0' }, bundledDependencies: ['better-dsh'] }))
     writeFileSync(join(source, 'index.js'), '')
+    writeFileSync(join(source, 'cordis.patch.yml'), '[]\n')
+    mkdirSync(join(source,'bundles'))
+    const bytes = readFileSync(join(output,dep.filename))
+    writeFileSync(join(source,'bundles/better-dsh.tgz'),bytes)
+    writeFileSync(join(source,'bundles/manifest.json'),JSON.stringify({companions:[{name:'better-dsh',version:'1.0.0',tarball:'./better-dsh.tgz',sha256:createHash('sha256').update(bytes).digest('hex')}]}))
     const outer = packPackage(source, output)
     const archive = join(output, outer.filename), dependency = join(output, dep.filename)
-    assert.throws(() => verifyBundledPackage(archive, dependency, 'local-better-probe'))
-    const nested = join(source, 'node_modules/local-better-probe'); mkdirSync(nested, { recursive: true })
+    assert.throws(() => verifyBundledPackage(archive, dependency, 'better-dsh'))
+    const nested = join(source, 'node_modules/better-dsh'); mkdirSync(nested, { recursive: true })
     execFileSync('tar', ['-xf', dependency, '-C', nested, '--strip-components=1'])
     packPackage(source, output)
-    assert.equal(verifyBundledPackage(archive, dependency, 'local-better-probe'), 2)
+    assert.equal(verifyBundledPackage(archive, dependency, 'better-dsh'), 2)
+    const clientPackage = join(source,'agent-omp'); mkdirSync(clientPackage)
+    writeFileSync(join(clientPackage,'package.json'),JSON.stringify({name:'@pgmi-builds/agent-omp',dsh:{client:{platform:'web'}},exports:{'./client':'./lib/client/index.js'}}))
+    packPackage(source,output)
+    assert.throws(() => verifyBundledPackage(archive,dependency,'better-dsh'), /Missing declared client export/)
+    mkdirSync(join(clientPackage,'lib/client'),{recursive:true});writeFileSync(join(clientPackage,'lib/client/index.js'),'export {}')
+    packPackage(source,output)
+    assert.equal(verifyBundledPackage(archive,dependency,'better-dsh'),2)
     writeFileSync(join(nested, 'value.txt'), 'stale registry-like content')
     packPackage(source, output)
-    assert.throws(() => verifyBundledPackage(archive, dependency, 'local-better-probe'), /differs from local tarball/)
+    assert.throws(() => verifyBundledPackage(archive, dependency, 'better-dsh'), /differs from local tarball/)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

@@ -35,16 +35,20 @@ export const name = 'superd-world-mount'
 /** Row config: which world this root is. */
 export interface Config {
   key: string
+  /** Optional activation identity from the owning row's world patch. */
+  ownerId?: string
 }
 
 /** Apply the world mount. @param ctx - the WORLD root context. @param config - `{ key }`. */
-export function apply(ctx: Context, config?: { key?: unknown }): void {
+export function apply(ctx: Context, config?: { key?: unknown, ownerId?: unknown }): void {
   const key = typeof config?.key === 'string' ? config.key : undefined
   if (key === undefined) {
     ctx.logger?.warn?.('superd-world-mount: missing config.key — world not mounted')
     return
   }
   const mount = takeHostMount(key)
+  // A delayed old boot must not adopt its replacement's mount capability.
+  if (typeof config?.ownerId === 'string' && mount?.ownerId !== config.ownerId) return
   if (mount === undefined) {
     ctx.logger?.warn?.(`superd-world-mount: no host mount registered for key ${JSON.stringify(key)}`)
     return
@@ -72,7 +76,7 @@ export function apply(ctx: Context, config?: { key?: unknown }): void {
     } | undefined
     if (connection === undefined) return
     if (typeof connection.createSharedFetchHandler === 'function') {
-      dropWorldFetch = publishWorldFetch(key, connection.createSharedFetchHandler('/api'))
+      dropWorldFetch = publishWorldFetch(key, connection.createSharedFetchHandler('/api'), mount)
     }
   })
   ctx.effect(() => () => {

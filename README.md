@@ -9,9 +9,9 @@ This repository develops and releases two packages together:
 | `super-dsh` | [Super Dash](./super-dsh/) | Better Dash tools and native Web policies, plus the Hub and foreign-agent adapters |
 | `better-dsh` | [Better Dash](./better-dsh/) | Native DSH tools and Web policies independently |
 
-Super Dash embeds the **locally built Better Dash package** in its own npm tarball. Installing Super Dash alone provides both; no separate Better Dash activation is needed. Both packages keep their own YAML and exports.
+Super Dash embeds the **locally built Better Dash package** in its own npm tarball. Installing Super Dash registers both as parallel rows in the native Plugin Manager. Each row can be enabled or disabled independently; dev WebMCP remains separate. Both packages keep their own YAML and exports.
 
-The unified release target is **0.3.0**. Current acceptance artifacts use synchronized letter versions;0.3.0 has not yet been published. Existing npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
+The two packages share release version **0.3.0-a**. Earlier npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
 
 ## Development
 

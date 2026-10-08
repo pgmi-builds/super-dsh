@@ -13,7 +13,7 @@
 #   - super-dsh/join           the generic hub joiner for the standalone
 #                              claude adapter (R2)
 # DSH-only WebTrust, WebServer and onboarding policies belong to the bundled
-# Better Dash package, whose own YAML is loaded before this patch.
+# Better Dash package, registered as an independent profile bundle.
 #   - super-dsh/a2a            the agent-facing A2A tool face (mesh P3): the
 #                              single `superd-hub` model tool on ctx0's tools
 #                              service (dormant without tools; world trees
@@ -22,6 +22,9 @@
 # Profile-layer values (webserver port/host, settings path) stay in the USER's
 # profile patch layer, never here.
 - insert:
+    # Register the bundled local companion as an independent native bundle.
+    - id: superd-bundle-setup
+      name: 'super-dsh/setup'
     # BARE package row: subpath rows (…/agents/omp) are permanently not client
     # rows in client-modules' scan (exactPackageSpecifier), so THIS row is
     # what registers the package's client half — the sidebar selector.
@@ -31,10 +34,8 @@
     # + five call-time patches. Composing this row IS the switch — there is no
     # environment variable in the decision (2026-09-27 user ruling: a release
     # gate living in an env var is deployment state no patch layer can see).
-    # ROW ORDER IS LOAD ORDER: the bundle loads Better Dash's web-trust first.
-    # the trust script's non-merging `if(!window.__DSH_TRANSPORT__)` verdict
-    # must be evaluated before the fusion script could own that global
-    # (spec §3.4, hard; precedent world-web-server.ts renderIndex).
+    # Better's ownership head uses unshift, so independent bundle reenable
+    # order cannot put it behind this fusion script.
     # To turn the fused surface off: restate this row (same id, same name) with
     # `config: {enabled: false}` or `disabled: true`, or drop it from the
     # composition. Off = the component registers nothing: no script, no global.
