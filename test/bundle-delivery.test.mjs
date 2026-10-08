@@ -39,9 +39,9 @@ test('native CLI registers the embedded companion independently and retains disa
    const packed=packPackage(source,out);const profileManifest=read(join(dir,'package.json'));profileManifest.dependencies['super-dsh']='file:'+join(out,packed.filename);json(join(dir,'package.json'),profileManifest)
   }
   syncOwner()
-  await api.reconcileBundledDelivery(profile)
+  assert.deepEqual(await api.reconcileBundledDelivery(profile),{installed:['better-dsh@0.3.0-d'],restartRequired:true},'first companion promotion requires a restart on the refresh-capable Host')
   const first=read(join(dir,'package.json'));assert.deepEqual(first.dsh.profile.bundles,['super-dsh','better-dsh']);assert.match(first.dependencies['better-dsh'],/^file:/);const cached=first.dependencies['better-dsh'].slice(5);assert.ok(existsSync(cached));assert.equal(read(join(dir,'node_modules/better-dsh/package.json')).version,'0.3.0-d')
-  const before=readFileSync(join(dir,'package.json'),'utf8');await api.reconcileBundledDelivery(profile);assert.equal(readFileSync(join(dir,'package.json'),'utf8'),before)
+  const before=readFileSync(join(dir,'package.json'),'utf8');assert.deepEqual(await api.reconcileBundledDelivery(profile),{installed:[],restartRequired:false},'an exact installed no-op does not request another restart');assert.equal(readFileSync(join(dir,'package.json'),'utf8'),before)
   const receipt=join(home,'bundle-artifacts',createHash('sha256').update(dir).digest('hex')+'.json')
   await t.test('an exact installed no-op repairs a lost receipt before a later uninstall',async()=>{
    rmSync(receipt)
@@ -55,7 +55,7 @@ test('native CLI registers the embedded companion independently and retains disa
    const restored=await mutate(['add','file:'+cached,'--ignore-scripts']);assert.equal(restored.exitCode,0,restored.output)
   })
   first.dsh.profile.bundles=['super-dsh'];json(join(dir,'package.json'),first)
-  artifact('0.3.0-e');syncOwner();await api.reconcileBundledDelivery(profile)
+  artifact('0.3.0-e');syncOwner();assert.deepEqual(await api.reconcileBundledDelivery(profile),{installed:['better-dsh@0.3.0-e'],restartRequired:true},'replacing an installed companion still requires a restart')
   const updated=read(join(dir,'package.json'));assert.deepEqual(updated.dsh.profile.bundles,['super-dsh']);assert.equal(read(join(dir,'node_modules/better-dsh/package.json')).version,'0.3.0-e');assert.ok(existsSync(cached),'prior file specs remain reinstallable')
   await t.test('native uninstall under the profile lock wins over a queued companion update',async()=>{
    artifact('0.3.0-f');syncOwner()

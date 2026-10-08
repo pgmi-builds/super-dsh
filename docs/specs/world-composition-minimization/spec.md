@@ -12,7 +12,7 @@ Wave-incremental: each wave = disable block + full rig verification; anything qu
 ## Verified KEEP invariants (2026-09-27 dependency pass — do not violate)
 
 - **Adapters inject `["agents","sessions","llm","agentDefaultModel","settings"]` + `agentPresets`** → rows `agent`, the `dsh-llm` family, `agent-default-model`, `settings`, `agent-preset-registry` STAY (all waves until adapters decouple).
-- Session core (`dsh-session`) injects only `invariants` + `typert`.
+- Session core (`dsh-session`) injects only `typert` on DSH `0.2.1-alpha.1`; the upstream runtime invariant service and companion exports are removed.
 - KEEP-set api controllers inject nothing from the wave-1 families: session-controller (`fileReferences`, `fileUploads`, `typert`, `attachments`), workspace-controller (`directoryPicker`, `remote`, `typert`, `workspaceRegistry`), account-controller (`deepseekAccount`), api-gateway (`typert`, `connection`, `webServer`).
 - `mcpResources` has zero consumers in the farm; `jobs` service is consumed only by `api-job-controller` (dropped together).
 

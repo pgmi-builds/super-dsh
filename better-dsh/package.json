@@ -1,6 +1,6 @@
 {
   "name": "better-dsh",
-  "version": "0.3.0-a",
+  "version": "0.3.0-c",
   "description": "Make your dsh ready for serious coding tasks. (Tools x Schemas)^REPL. `skill://`, `ctx://`, `agent://`, `dvc://`, `dsh://`, IPython REPL, Context as Variables, cross compactions recallable, full context revive. `hash-edit`, `dvc://browser`, subagent as function, workflow as function.",
   "type": "module",
   "main": "lib/index.js",
@@ -144,7 +144,6 @@
     "@deepseek-ai/dsh-fs-local": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-home-paths": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.5-0 <0.3.0-0",
-    "@deepseek-ai/dsh-invariants": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-llm": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-llm-retry": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-persona": ">=0.1.5-0 <0.3.0-0",
@@ -226,9 +225,6 @@
       "optional": true
     },
     "@deepseek-ai/dsh-home-paths": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-invariants": {
       "optional": true
     },
     "@deepseek-ai/dsh-llm": {

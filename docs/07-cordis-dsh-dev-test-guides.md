@@ -242,3 +242,13 @@
 ### 8.2 dev3 review transport
 
 当前dev3测试服务4998宽绑定，但现有UFW未开放此公网端口。目标机实际安装/模型验证走SSH访问原生服务。浏览器review可用独立测试SSH转发unit `superd-4996-dev3-review`，从PC4996转发到dev3的127.0.0.1:4998；它访问同一交付物、profile与CLI，原生密码/cookie认证继续生效。该入口不修改目标防火墙或Caddy，也不提供替代bundle/peer解析。具体本轮URL和已核验边界见 `docs/test-reports/2026-10-08-monorepo-030.md`。review结束停止该unit即可；本机4999与4997消费者各自保持。
+
+## 9. 合仓后的上游 alignment
+
+对齐同时走源码轨与消费者轨。先查询 `@deepseek-ai/dsh` 的 registry dist-tags、上传时间和精确版本，再将本仓 `upstream/deepseek-harness` 切到对应官方发布 tag。最新上传的 alpha 可以晚于 `latest`；两者分别记录，不能默认同一版本。备份既有授权构建补丁，检查新 tag 是否已经提供官方替代机制；清理旧生成产物、按上游 lock 与 packageManager 完整重建，然后同步两个编译 farm。当前源码与官方接口核查必须实际使用 LSP/AST。
+
+审计覆盖 Hub/adapters 和 Better 的原生工具、客户端、重述 YAML、包内 coordinator。先在 4999 整包 tarball 线上验证真实工具 Surface、会话和插件开关，再进行小包消费者与 dev3 精确 registry 宿主安装验收。目标测试使用独立安装锚，不更新生产共享安装树；两 tarball 与 pair.json 原样传输，目标端沿现行 launcher 核验安装。测试轮同步字母版本，报告归 docs/test-reports；没有本轮发布放行，不 publish 或 Git 定版。
+
+DSH `0.2.1-alpha.1` 的 `PluginPackages.refresh()` 要求可重算的官方 `ProfileRuntimeResolution`。Hub 扩大 host 表时保留该真实类及其重算能力，并在每次重算后重新加入 world 映射；旧宿主没有该类时仍走其原有数据表契约。原生映射删除和重启冲突检查仍由宿主负责。
+
+在 refresh-capable 宿主上，首次由包内 coordinator 将已经进入 host 表的内嵌 Better 提升为直接依赖，属于原生 resolver 明确要求的冷重启窗口。coordinator 明确报告重启；保持已经写好的 profile，冷重启一次该测试服务后，再验证两包独立启停。不得修改 resolver、预先由 launcher 提升 Better，或重新生成 profile 来掩盖这条消费者行为。后续实际代码替换也继续要求重启。该窗口不适用于普通 bundle 开关、首次安装无既有映射的普通插件或旧宿主的首次登记。

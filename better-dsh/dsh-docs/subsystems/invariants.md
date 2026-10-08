@@ -1,5 +1,8 @@
 # Runtime Invariants
 
+> DSH `0.2.1-alpha.1` removes this plugin and all companion `./invariant` exports. This page is an older reference snapshot; use the [runtime compatibility baseline](../baseline.md) for the current host contract.
+
+
 English | [中文](invariants.zh.md)
 
 [dsh-invariants](../../packages/runtime-diagnostics/invariants) is the configurable registry service (`ctx.invariants`) for package-owned runtime invariant checks. It is one support-group package, not a three-package capability seam, and not part of the agent-loop spine: the registry owns selection, name reservation, child-fiber lifecycle, and package-attributed failure, while every workspace package publishes a `./invariant` companion plugin that registers checks under its exact npm package name. What a check may assert — authoritative event streams or mutable data, never service or method presence — is the runtime-invariants convention in [AGENTS.md](../../AGENTS.md#conventions); the registry design is owned by the [invariant-service Agent Note](../../.agents/notes/implemented/architecture/2026-07-19-package-owned-invariant-service.md).

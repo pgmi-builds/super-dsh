@@ -28,6 +28,7 @@ import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import { existsSync, writeFileSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { superdTrustedHosts } from './world-mount.js'
+import { widenWorldResolution } from './world-resolution.js'
 
 /**
  * The host (ctx0) surface spawnWorld needs: cordis `ctx.get`, which locates
@@ -147,11 +148,12 @@ async function publishWorldInHostResolutionTurn(
   if (!publishedRoots.has(rootName)) {
     publishedRoots.set(rootName, { name: rootName, realPath: opts.home })
   }
-  packages.replace({
-    ...base,
-    entries: [...base.entries, ...publishedEntries.values()],
-    linkedRoots: [...base.linkedRoots, ...publishedRoots.values()],
-  })
+  packages.replace(widenWorldResolution(
+    base,
+    { installAnchor: launcher.installAnchor, home: launcher.home, profileDir: profile.dir },
+    publishedEntries.values(),
+    publishedRoots.values(),
+  ))
 }
 
 /** Bare package name of a module specifier (`@scope/pkg/sub` → `@scope/pkg`). */

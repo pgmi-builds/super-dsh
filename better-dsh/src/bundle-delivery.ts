@@ -6,6 +6,7 @@ import { dirname, join, relative, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import type { Context } from '@deepseek-ai/cordis'
+import * as AppBoot from '@deepseek-ai/dsh-app-boot'
 import type { ProfileContext } from '@deepseek-ai/dsh-app-boot'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-plugin-manager'
@@ -29,6 +30,11 @@ interface InstallExpectation {
 }
 type NativeDisposition = 'installed' | 'owner-changed' | 'companion-changed' | 'companion-removed'
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex')
+// Refresh-capable hosts retain loaded package provenance: promoting the
+// companion from its containing pack to a direct dependency needs a restart.
+// Older hosts without this API keep their first-registration behavior.
+const nativePackages = AppBoot.PluginPackages?.prototype
+const restartForPromotion = nativePackages !== undefined && typeof Reflect.get(nativePackages, 'refresh') === 'function'
 const json = async <T>(path: string): Promise<T> => JSON.parse(await readFile(path, 'utf8')) as T
 async function optionalJson<T>(path: string): Promise<T | undefined> {
   try { return await json<T>(path) } catch (error) {
@@ -131,7 +137,7 @@ export async function reconcileBundledDelivery(profile: ProfileContext, signal?:
         await writeFileAtomic(receiptPath, JSON.stringify(receipts) + '\n', { mode: 0o600 })
         if (disposition === 'companion-removed') continue
         result.installed.push(`${item.name}@${item.version}`)
-        result.restartRequired ||= priorSpec !== undefined
+        result.restartRequired ||= priorSpec !== undefined || restartForPromotion
       }
     }
     return result

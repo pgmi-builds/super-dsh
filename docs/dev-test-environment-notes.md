@@ -4,6 +4,10 @@
 
 现行通用规范以 [Cordis / DSH 开发测试指南](07-cordis-dsh-dev-test-guides.md) 为准，整包与 adapter 局部规则以 [super-dsh/AGENTS.md](../super-dsh/AGENTS.md) 及对应子目录指引为准。启动参数以现行 `super-dsh/test/start-4999.sh` 为入口核实；上游版本以物理 checkout 和本轮对齐报告确认，不能据历史台账推断当前值。
 
+## 2026-10-09 当前上游参考
+
+物理 checkout 已对齐 `dsh-v0.2.1-alpha.1` / `5badb15009ae1756c3afe0ae0cef1faafc290ccc`，清旧产物后完整构建通过。registry alpha=`0.2.1-alpha.1`，latest/next 仍 rc.2。新版官方 native config loader 使旧 unrun 和 repository-root 构建补丁退役；仅保留既有 workspace store 配置。双包对齐候选为 `0.3.0-c`。本轮验收及已知 Antigravity QUOTA 缺口见 [对齐报告](test-reports/2026-10-08-dsh-021-alpha-alignment.md)。下面台账保留历史，不是现行基线。
+
 ## 〇、Development Operation Contract — 红线
 
 0. **生态即产品（Ecosystem-is-the-product；2026-09-22 user 裁决，最高优先）**：在 Node 生态里，写代码 ≠ 开发完成。依赖图、包管理器行为（npm pack 规则、pnpm store/linker/`file:` 语义）、解析算法（exports、node_modules 走查、symlink realpath）、交付通道（registry → 消费者安装），全部是产品本体的一部分。三条铁律：
