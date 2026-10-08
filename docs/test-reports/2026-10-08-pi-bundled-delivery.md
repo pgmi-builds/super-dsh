@@ -96,6 +96,14 @@ and does not claim the user's production UI installation has completed.
 No production profile write, service restart, Caddy change or publication
 was performed.
 
+## User acceptance and release follow-up
+
+The user confirmed the corrected production Web UI install worked, then
+authorized production removal and `0.3.0-a` GitHub/npm finalization.
+The [release report](2026-10-08-030-a-release.md) records the final pair,
+fresh tests/consumer sessions, preserved history and publication receipts.
+The final pack's runtime files are byte-identical to this accepted h artifact.
+
 ## Runtime behavior
 
 PC 4999 consumed the complete locally built pair through the standard launcher

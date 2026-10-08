@@ -31,4 +31,10 @@ Files: `super-dsh/scripts/build-pi.mjs`, `super-dsh/agent-pi/runtime/{package.js
 - [x] Copy exact Super tarball into `/home/u1/view-dir`, verify SHA256 and dev3 HTTPS download.
 - [x] Keep 4999 running through existing launcher; verify native rows and Pi behavior.
 - [x] Use dev3 isolated complete-pack test service and native `pluginManager/inspect` + `pluginManager/installBundle` with HTTPS URL and strictDepBuilds true, no approvedBuilds. Verify Better independent registration, Pi behavior and report.
-- [x] Write report and provide exact URL for user's production UI installation; do not publish.
+- [x] Write report and provide exact URL for user's production UI installation; do not publish before explicit release approval.
+
+## Approved release follow-up
+
+User production UI acceptance and `0.3.0-a` release approval are recorded in
+`docs/test-reports/2026-10-08-030-a-release.md`. Final artifact verification,
+fresh full tests and PC/dev3 consumer behavior passed before submission.
