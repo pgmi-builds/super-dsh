@@ -87,6 +87,8 @@
 
 `npm login` 是另一种配置本机 npm 认证的入口，会把凭证保存到用户 `.npmrc`；不是额外必需的独立登录层。参考 [npm login](https://docs.npmjs.com/cli/v11/commands/npm-login/) 与 [npm 自动化认证](https://docs.npmjs.com/using-private-packages-in-a-ci-cd-workflow/)。仍须遵守本轮 user 发布放行、Better 先于 Super、验收归档原样发布与 registry 下载校验；认证可用不代表发布授权。
 
+npm 可能在返回成功后提示 `Your package is being processed`，此时公开查询仍可返回404。每包只提交一次；等待公开 metadata、dist-tag 和 tarball，核对归档 SHA256/SHA1/SHA512 后才安装消费者或宣告发布完成。不得因处理延迟重复 publish、换字母或让消费者退回旧 latest。
+
 ---
 
 ## 3. 测试环境规范
@@ -96,6 +98,7 @@
 - 499x 一族**全是测试口，没有谁占用谁（4999 也一样）**。起线前 `ss -tln` 动态探测。
 - 端口被占时的处置：经 `/proc/<listener-pid>/cgroup` 找到归属 user unit——属于**测试基建**（unit 名 `superd-*` / `*-test` / `*-relay`）→ 直接停掉接管；**非测试监听**（prod 3080/3081、未知进程）→ 拒绝并换口。`super-dsh/test/start-4999.sh` 已内置此逻辑。
 - 4999 = Caddy `test.pc.internal.test`（wan 可见）是**通道事实**，不是占用特权；launcher 使用原生 **`--host 127.0.0.1`**（2026-10-09 user 再修订）并自动拉 **socat LAN relay**（unit `superd-lan-<port>-relay`，只绑 LAN IP）。
+- **LAN 测试依赖**：launcher 必须找到可执行的 socat，依次使用 `SUPERD_SOCAT_BIN`、PATH 中的 `socat`、本仓 `.scratch/socat-runtime/usr/bin/socat`；缺失则报错退出。4999 也保留 LAN relay，供直接内网访问。收尾同时停止测试 DSH、LAN relay 和该口的只读双包 registry；不通过 Better/Super patch 放宽宿主监听。
 - **访问 authority（2026-10-09 user 裁决）**：每个测试口的 systemd CLI 默认 `--trusted-host <本机主IP>:<测试口>`；仅 4999 再声明 `--trusted-host test.pc.internal.test`，`SUPERD_TEST_TRUSTED_HOSTS` 只追加其它入口。生产 PC / dev3 各声明自己的 `dsh.<machine>.internal.test`。对应 Caddy 保留 Host/Origin 原样转发，取消旧 header 改写；flags 在 Better 缺席时仍支持原生信任检查，认证及监听 bind 仍是独立机制。
 - **对外 URL（2026-10-09 user 补充）**：有实际域名入口的部署同时传官方 `--public-url`：生产 PC / dev3 分别使用 `https://dsh.pc.internal.test` / `https://dsh.dev3.internal.test`，4999 使用 `https://test.pc.internal.test`。测试 launcher 的 `SUPERD_TEST_PUBLIC_URL` 可声明其它 canonical URL；额外 trusted authority 不自动变成对外地址。此 flag 影响启动链接、Agent Web 上下文及 `DSH_WEB_URL`，不改变信任、认证和 bind。
 - webserver 的 `host` config 接受且仅接受 `127.0.0.1` / `0.0.0.0` 字面量并按值直接 bind（0.1.x 时代的「启动硬拒 0.0.0.0」RCE 门在现基线已不存在；对非本机 Host 的防护改由 connection 的 trustedHosts fence 承担，而独立 Better Dash 的 `dashr-web-trust` 以 `trustAllHosts: true` 把它收敛为**认证唯一门**——cookie 不过仍然 401）。
@@ -257,4 +260,4 @@
 
 DSH `0.2.1-alpha.1` 的 `PluginPackages.refresh()` 要求可重算的官方 `ProfileRuntimeResolution`。Hub 扩大 host 表时保留该真实类及其重算能力，并在每次重算后重新加入 world 映射；旧宿主没有该类时仍走其原有数据表契约。原生映射删除和重启冲突检查仍由宿主负责。
 
-在 refresh-capable 宿主上，首次由包内 coordinator 将已经进入 host 表的传递依赖 Better 提升为直接依赖，属于原生 resolver 明确要求的冷重启窗口。coordinator 明确报告重启；保持已经写好的 profile，冷重启一次该测试服务后，再验证两包独立启停。不得修改 resolver、预先由 launcher 提升 Better，或重新生成 profile 来掩盖这条消费者行为。后续实际代码替换也继续要求重启。该窗口不适用于普通 bundle 开关、首次安装无既有映射的普通插件或旧宿主的首次登记。
+历史 `0.3.0-c` 至 `0.3.0-e` 的依赖式交付中，在 refresh-capable 宿主上首次由包内 coordinator 将已经进入 host 表的传递依赖 Better 提升为直接依赖，属于原生 resolver 明确要求的冷重启窗口。本轮独立 companion 交付已退役该提升机制，普通启停/卸载的现行契约与验收以 §8.1 为准。coordinator 明确报告重启；保持已经写好的 profile，冷重启一次该测试服务后，再验证两包独立启停。不得修改 resolver、预先由 launcher 提升 Better，或重新生成 profile 来掩盖这条消费者行为。后续实际代码替换也继续要求重启。该窗口不适用于普通 bundle 开关、首次安装无既有映射的普通插件或旧宿主的首次登记。
