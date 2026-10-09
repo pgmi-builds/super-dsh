@@ -81,6 +81,12 @@
 > ⚠ **预发布 tuple 坑**（实测）：`>=0.1.5-0 <0.3.0-0` 这类 npm-range optional peer 在 **pnpm 解析**时**不匹配** `0.1.7-rc.1`（0.1.7 的 tuple 没有预发布比较器），auto-install 会落到 `0.1.5-rc.3`。
 > **与本仓的关系**：本仓该 range 只用于 **0.1.7 插件兼容门**的 `semver.satisfies(..., {includePrerelease:true})`（判 row/bundle 是否启用），**不是**用来解析安装版本的；harness 依赖由编译 farm（`super-dsh/node_modules/@deepseek-ai/*`，`scripts/sync-dsh-farm.mjs`）+ 运行期宿主树提供。因此**永远不要在子包里 `npm install @deepseek-ai/*`**（会物化物理副本 → 双模块实例 → `dsh-scope` `kScope` 分裂）。
 
+### 2.4 发布认证（2026-10-10 user 补充）
+
+本机 npm 发布凭证位于 `/home/u1/workspaces/base/secrets/npm.env`，变量名为 `NPM_ACCESS_TOKEN`。该文件不在本仓，也不会被 npm 自动读取；默认 `npm whoami` 失败不能据此判定本机没有 token。发布前仅在当前操作内读取，通过权限 `0600` 的临时 user npmrc 为 `//registry.npmjs.org/` 配置 `_authToken`，先验证 `npm whoami`，操作结束删除临时文件。不得打印 token、提交凭证或把认证文件打入 tarball。
+
+`npm login` 是另一种配置本机 npm 认证的入口，会把凭证保存到用户 `.npmrc`；不是额外必需的独立登录层。参考 [npm login](https://docs.npmjs.com/cli/v11/commands/npm-login/) 与 [npm 自动化认证](https://docs.npmjs.com/using-private-packages-in-a-ci-cd-workflow/)。仍须遵守本轮 user 发布放行、Better 先于 Super、验收归档原样发布与 registry 下载校验；认证可用不代表发布授权。
+
 ---
 
 ## 3. 测试环境规范
