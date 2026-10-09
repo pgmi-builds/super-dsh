@@ -52,7 +52,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { hostname } from 'node:os'
 import { type MachineRow, ensureSelf, listRemotes, removeRemote } from './machines.js'
-import { machineStatus, pairMachine, reprobeMachine, emitMachineRemoved, type MutualPairing, type ProbeResult, type MachineStatusEntry } from './mesh-link.js'
+import { machineStatus, pairMachine, receivePairing, reprobeMachine, emitMachineRemoved, type MutualPairing, type ProbeResult, type MachineStatusEntry } from './mesh-link.js'
 import { type A2aIngest } from './a2a-ingest.js'
 import { A2A_ENDPOINT_PATH, A2A_OUTBOX_PATH, A2A_WIRE_VERSION, decodeA2aWireFrame } from './a2a-wire.js'
 import type { A2aLogFn } from './a2a-log.js'
@@ -135,7 +135,7 @@ function publicRow(row: MachineRow): MachinePublicRow {
 
 function projectRow(row: MachineRow, status: ReadonlyMap<string, MachineStatusEntry>): MachinePublicRow {
   const entry = status.get(row.id)
-  if (entry === undefined) return { id: row.id, name: row.name, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: 'pending' }
+  if (entry === undefined) return { id: row.id, name: row.name, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: row.incoming && !row.cookie ? 'unreachable' : 'pending' }
   const out: MachinePublicRow = { id: row.id, name: row.name, origin: row.origin, enabled: row.enabled, addedAt: row.addedAt, status: entry.status, lastProbeAt: entry.lastProbeAt }
   if (entry.error !== undefined) out.error = entry.error
   if (entry.versionWarning !== undefined) out.versionWarning = entry.versionWarning
@@ -195,7 +195,7 @@ function handleList(deps: MeshDeps): Response {
 }
 
 /**
- * Validate a token-url request origin: an absolute http(s) URL that is ONLY
+ * Validate a token-url request origin: an absolute host-bearing URL that is ONLY
  * an origin — no path, query, hash, or credentials. The pairing URL a user
  * copies must address the server root (`authorizeIndex` answers `/` only),
  * and anything beyond the origin would smuggle parts the mint would overwrite
@@ -211,14 +211,12 @@ export function parsePairingOrigin(origin: string): { ok: true; origin: string }
   } catch {
     return { ok: false, error: 'mesh-api: tokenUrl origin is not a parseable absolute URL' }
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return { ok: false, error: `mesh-api: tokenUrl origin must be http(s), got "${url.protocol}"` }
-  }
+  if (url.host === '') return { ok: false, error: 'mesh-api: tokenUrl origin must name a host' }
   if (url.username !== '' || url.password !== '') return { ok: false, error: 'mesh-api: tokenUrl origin must not carry credentials' }
-  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+  if ((url.pathname !== '/' && url.pathname !== '') || url.search !== '' || url.hash !== '') {
     return { ok: false, error: 'mesh-api: tokenUrl origin must be a bare origin (no path, query or hash)' }
   }
-  return { ok: true, origin: url.origin }
+  return { ok: true, origin: url.protocol + '//' + url.host }
 }
 
 /** POST op `tokenUrl`: tokenize the caller's origin with the live launch
@@ -245,12 +243,15 @@ function handleTokenUrl(body: Record<string, unknown>, deps: MeshDeps): Response
  * (no mint face, no Host header) — the peer can then only be paired
  * manually from its own UI.
  */
-function buildMutual(request: Request, deps: MeshDeps): MutualPairing | undefined {
+function buildMutual(request: Request, deps: MeshDeps, pageOrigin?: unknown): MutualPairing | undefined {
   if (deps.tokenUrlOf === undefined) return undefined
   const host = request.headers.get('host')
-  if (host === null || host === '') return undefined
+  if ((host === null || host === '') && typeof pageOrigin !== 'string') return undefined
   const proto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim() ?? 'http'
-  const origin = `${proto}://${host}`
+  const raw = typeof pageOrigin === 'string' ? pageOrigin : `${proto}://${host}`
+  const parsed = parsePairingOrigin(raw)
+  if (!parsed.ok) return undefined
+  const origin = parsed.origin
   const port = new URL(origin).port
   const name = hostname()
   return {
@@ -293,9 +294,14 @@ async function handlePost(request: Request, deps: MeshDeps): Promise<Response> {
   if (name === '' || tokenUrl === '') {
     return json(400, { error: 'mesh-api: pair body must be {name, tokenUrl} with non-empty name and tokenUrl' })
   }
+  if (body.mutual === true && typeof body.machineId === 'string' && body.machineId !== '') {
+    const received = await receivePairing(deps.home, { machineId: body.machineId, name, tokenUrl }, { fetchImpl: deps.fetchImpl })
+    const { row, ...reciprocal } = received
+    return json(201, { ...(row === undefined ? {} : { machine: publicRow(row) }), reciprocal })
+  }
   // The reverse leg rides USER-initiated pairs only: an offer that arrived
   // with `mutual: true` (the peer's own reverse leg) pairs without one.
-  const mutual = body.mutual === true ? undefined : buildMutual(request, deps)
+  const mutual = body.mutual === true ? undefined : buildMutual(request, deps, body.origin)
   let outcome: Awaited<ReturnType<typeof pairMachine>>
   try {
     outcome = await pairMachine(

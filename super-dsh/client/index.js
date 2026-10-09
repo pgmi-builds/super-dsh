@@ -331,7 +331,7 @@ function RuntimeMark({ runtimeId, agentKey, size }) {
 function statusColor(status) {
 	if (status === "reachable") return "var(--dsw-alias-state-success-primary)";
 	if (status === "auth-expired") return "var(--dsw-alias-state-error-primary)";
-	if (status === "unreachable") return "var(--dsw-alias-state-warn-primary)";
+	if (status === "unreachable") return "var(--dsw-alias-label-caption)";
 	return "var(--dsw-alias-label-caption)";
 }
 /** The word the icon replaces — tooltip and accessibility text. */
@@ -614,7 +614,8 @@ async function addMachine(input) {
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({
 			name: input.name,
-			tokenUrl: input.tokenUrl
+			tokenUrl: input.tokenUrl,
+			...pageOrigin() === "" ? {} : { origin: pageOrigin() }
 		})
 	});
 	if (!response.ok) throw new Error(await errorText(response));
@@ -623,8 +624,20 @@ async function addMachine(input) {
 	const raw = body.mutual;
 	return { mutual: {
 		ok: raw.ok === true,
+		...raw.skipped === "self" || raw.skipped === "already-paired" ? { skipped: raw.skipped } : {},
 		...typeof raw.error === "string" && raw.error !== "" ? { error: raw.error } : {}
 	} };
+}
+/** Preserve shell schemes whose WHATWG origin is opaque; this is an address, not a reachability verdict. */
+function pageOrigin() {
+	if (typeof location === "undefined") return "";
+	if (location.origin !== "null" && location.origin !== "") return location.origin;
+	try {
+		const url = new URL(location.href);
+		return url.protocol + "//" + url.host;
+	} catch {
+		return "";
+	}
 }
 /**
 * DELETE one remote row by id (`{removed: boolean}` answers even for
@@ -671,7 +684,7 @@ const AUTO_REFRESH_NOTE = "auto-refreshes every 5 min";
 * face's public `authenticatedUrl` — this client never sees the raw token
 * anywhere else.
 *
-* @param origin - the page's own origin (`location.origin`), a bare http(s) origin.
+* @param origin - the page's own host address, including a desktop scheme.
 * @returns the tokenized pairing URL.
 * @throws Error(body.error) on a non-2xx answer (validation or missing host face).
 */
@@ -692,9 +705,9 @@ async function fetchPairingUrl(origin) {
 }
 /**
 * Client-side pre-check before a pairing submit: a parseable absolute
-* http(s) URL carrying a non-empty `token` query param. The server re-parses
+* host-bearing URL carrying a non-empty `token` query param. The server re-parses
 * authoritatively (mesh-link's parseTokenUrl); this only keeps obviously
-* dead drafts off the wire.
+* malformed drafts off the wire.
 *
 * @param input - the raw token-URL draft (trim before calling).
 * @returns whether the draft is submit-shaped.
@@ -707,7 +720,7 @@ function validTokenUrl(input) {
 	} catch {
 		return false;
 	}
-	if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+	if (url.host === "") return false;
 	const token = url.searchParams.get("token");
 	return token !== null && token !== "";
 }
@@ -3143,7 +3156,7 @@ function HubPage() {
 		});
 	}, [fusion]);
 	const here = currentMountPath();
-	const hereOrigin = typeof location === "undefined" ? "" : location.origin;
+	const hereOrigin = pageOrigin();
 	const isActive = (agent) => hubRowActive({
 		fusion,
 		agentKey: agent.key,
@@ -3254,8 +3267,9 @@ function HubPage() {
 			setShowAdd(false);
 			setMeshError(null);
 			reloadMachines();
-			if (out.mutual !== void 0 && !out.mutual.ok) showSuperdToast(`Super D: paired with ${name}, but the mutual half failed (${out.mutual.error}) — add this machine from the peer manually.`);
-			else showSuperdToast(`Super D: paired with ${name} — the peer also added this machine (mutual).`, { tone: "success" });
+			if (out.mutual !== void 0 && !out.mutual.ok) showSuperdToast(`Super D: paired with ${name}; reverse connection unavailable.`);
+			else if (out.mutual?.ok && out.mutual.skipped !== "self") showSuperdToast(`Super D: paired with ${name} — the peer also added this machine (mutual).`, { tone: "success" });
+			else showSuperdToast(`Super D: paired with ${name}.`, { tone: "success" });
 		}).catch((err) => {
 			setMeshError(errText(err));
 		}).finally(() => {
@@ -3282,7 +3296,7 @@ function HubPage() {
 	*  GET), one clipboard write, the outcome on the shared toast. */
 	const copyPairingUrl = () => {
 		if (pairingBusy) return;
-		const origin = typeof location === "undefined" ? "" : location.origin;
+		const origin = pageOrigin();
 		if (origin === "") return;
 		setPairingBusy(true);
 		fetchPairingUrl(origin).then((url) => (0, __deepseek_ai_dsh_client_ui_primitives.writeClipboard)(url)).then((copied) => {
@@ -3463,7 +3477,7 @@ function HubPage() {
 								color: "var(--dsw-alias-label-tertiary)"
 							},
 							children: [
-								"Add another DSH from remote machines, provide the token URL. Pairing is mutual — the peer adds this machine back automatically. Status ",
+								"Add another DSH with its token URL. The peer attempts to connect back. Status ",
 								AUTO_REFRESH_NOTE,
 								"."
 							]

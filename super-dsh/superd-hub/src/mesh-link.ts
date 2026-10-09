@@ -20,8 +20,9 @@
  * records a `versionWarning` on the status entry (diff major/minor or
  * unparsable → warn; patch-only drift → clean).
  */
-import { type MachineRow, loadMachines, saveMachines, upsertRemote, listRemotes } from './machines.js'
+import { type MachineRow, ensureSelf, loadMachines, saveMachines, upsertRemote, listRemotes } from './machines.js'
 import { PACK_VERSION } from './pack-version.js'
+import { PAIRING_AUTH_PATH } from './pairing-auth.js'
 
 /** One roster agent as seen through a successful probe (§6.2 additive fields). */
 export interface ProbeAgent {
@@ -71,10 +72,10 @@ export interface MutualPairing {
   selfName: string
 }
 
-/** The reverse leg's outcome. `ok` is also true when the peer answered
- *  duplicate-machine-id — it already holds us, so mutual already holds. */
+/** The peer's explicitly confirmed reverse-leg outcome. */
 export interface MutualOutcome {
   ok: boolean
+  skipped?: 'self' | 'already-paired'
   /** Why the offer failed; absent on success. The pairing itself never fails with it. */
   error?: string
 }
@@ -145,6 +146,9 @@ const FETCH_TIMEOUT_MS = 10_000
 
 /** <machineId, cookie> — in-process jar, a front for the persisted `MachineRow.cookie` (same value; write-through on every mint). */
 const cookieJar = new Map<string, string>()
+/** Latest pairing/probe attempt owns status and federation updates. */
+const probeAttempts = new Map<string, symbol>()
+const removalGenerations = new Map<string, number>()
 
 const machineStatusTable = new Map<string, MachineStatusEntry>()
 
@@ -191,15 +195,26 @@ function firstCookiePair(raw: string): string | null {
  * with the status/cause attached.
  */
 export async function mintCookie(origin: string, token: string, fetchImpl: typeof fetch = globalThis.fetch): Promise<string> {
+  // Native peers exchange at /. Super peers also expose a dedicated route
+  // because Better Dash owns / for password login. Both use native auth.
+  const root = await exchangeCookie(origin, '/', token, fetchImpl)
+  if (root !== undefined) return root
+  const dedicated = await exchangeCookie(origin, PAIRING_AUTH_PATH, token, fetchImpl)
+  if (dedicated !== undefined) return dedicated
+  throw new Error(`mesh-link: token mint failed — no dsh-auth-* Set-Cookie in response from ${origin}`)
+}
+
+async function exchangeCookie(origin: string, path: string, token: string, fetchImpl: typeof fetch): Promise<string | undefined> {
   let res: Response
   try {
-    res = await fetchImpl(`${origin}/?token=${encodeURIComponent(token)}`, {
+    res = await fetchImpl(`${origin}${path}?token=${encodeURIComponent(token)}`, {
       redirect: 'manual',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
   } catch (err) {
     throw new Error(`mesh-link: token mint to ${origin} failed — ${errMsg(err)}`)
   }
+  if (path === PAIRING_AUTH_PATH && res.status === 404) return undefined
   if (res.status !== 303 && !(res.status >= 200 && res.status < 300)) {
     throw new Error(`mesh-link: token mint failed — unexpected status ${res.status} from ${origin}`)
   }
@@ -210,7 +225,7 @@ export async function mintCookie(origin: string, token: string, fetchImpl: typeo
     const pair = firstCookiePair(raw)
     if (pair !== null && pair.startsWith('dsh-auth-')) return pair
   }
-  throw new Error(`mesh-link: token mint failed — no dsh-auth-* Set-Cookie in response (status ${res.status}) from ${origin}`)
+  return undefined
 }
 
 function coerceAgent(v: unknown): ProbeAgent {
@@ -284,6 +299,9 @@ export function machineStatus(): Map<string, MachineStatusEntry> {
 /** Test hook: drop all status entries. */
 export function resetMachineStatus(): void {
   machineStatusTable.clear()
+  cookieJar.clear()
+  probeAttempts.clear()
+  removalGenerations.clear()
 }
 
 /**
@@ -331,6 +349,10 @@ function emitFederation(event: MeshFederationEvent): void {
  * mesh-link, the registrar subscribes at wiring time).
  */
 export function emitMachineRemoved(machineId: string): void {
+  removalGenerations.set(machineId, (removalGenerations.get(machineId) ?? 0) + 1)
+  cookieJar.delete(machineId)
+  machineStatusTable.delete(machineId)
+  probeAttempts.set(machineId, Symbol())
   emitFederation({ type: 'defederated', machineId })
 }
 
@@ -342,10 +364,8 @@ export function emitMachineRemoved(machineId: string): void {
  * in this process), else `''` (wire calls then simply omit the Cookie header).
  */
 export function cookieOf(machineId: string, home?: string): string {
-  const jarred = cookieJar.get(machineId)
-  if (jarred !== undefined) return jarred
-  if (home === undefined) return ''
-  return listRemotes(home).find((r) => r.id === machineId)?.cookie ?? ''
+  if (home !== undefined) return listRemotes(home).find((r) => r.id === machineId)?.cookie ?? ''
+  return cookieJar.get(machineId) ?? ''
 }
 
 /** Record one probe outcome; the I2 versionWarning (4th arg) lands only on
@@ -385,14 +405,19 @@ function persistRow(home: string, row: MachineRow, deps?: LinkDeps): void {
 export async function pairMachine(home: string, input: { name: string; tokenUrl: string; mutual?: MutualPairing }, deps?: LinkDeps): Promise<PairOutcome> {
   const fetchImpl = deps?.fetchImpl ?? globalThis.fetch
   const load = deps?.load ?? loadMachines
+  const removalsAtStart = new Map(removalGenerations)
   const { origin, token } = parseTokenUrl(input.tokenUrl)
   const cookie = await mintCookie(origin, token, fetchImpl)
   const probe = await probeMachine(origin, cookie, fetchImpl)
   if (!probe.ok) {
     throw new Error(`mesh-link: pairing ${origin} failed — ${probe.status}: ${probe.error}`)
   }
+  if ((removalGenerations.get(probe.machineId) ?? 0) !== (removalsAtStart.get(probe.machineId) ?? 0)) {
+    throw new Error('mesh-link: machine removed during pairing')
+  }
   const file = load(home)
-  if (probe.machineId === file.self.id || file.remotes.some((r) => r.id === probe.machineId)) {
+  const prior = file.remotes.find((r) => r.id === probe.machineId)
+  if (probe.machineId === file.self.id || (prior !== undefined && !(prior.incoming && !prior.cookie))) {
     throw new Error(`mesh-link: duplicate-machine-id ${probe.machineId} — collides with self or an existing remote row; remove the stale row before re-pairing`)
   }
   const row: MachineRow = {
@@ -401,15 +426,18 @@ export async function pairMachine(home: string, input: { name: string; tokenUrl:
     origin,
     token,
     cookie,
-    enabled: true,
-    addedAt: Date.now(),
+    enabled: prior?.enabled ?? true,
+    addedAt: prior?.addedAt ?? Date.now(),
+    ...(prior?.incoming === undefined ? {} : { incoming: prior.incoming }),
+    ...(prior?.execEnabled === undefined ? {} : { execEnabled: prior.execEnabled }),
   }
   persistRow(home, row, deps)
+  probeAttempts.set(row.id, Symbol())
   cookieJar.set(row.id, cookie)
   recordStatus(row.id, 'reachable', undefined, versionWarningFor(probe.version, OWN_VERSION))
   emitFederation({ type: 'federated', machineId: row.id, machineName: row.name, origin, agents: probe.agents })
   const outcome: PairOutcome = { machineId: row.id, row, probe }
-  if (input.mutual !== undefined) outcome.mutual = await reversePair(row, input.mutual, fetchImpl)
+  if (input.mutual !== undefined) outcome.mutual = await reversePair(row, input.mutual, ensureSelf(home, 'local').id, fetchImpl)
   return outcome
 }
 
@@ -419,18 +447,18 @@ const REVERSE_TIMEOUT_MS = 10_000
  * The mutual-pairing reverse leg: offer THIS machine's pairing input to the
  * just-paired peer over the cookie minted seconds ago (the peer then pairs
  * back without its own reverse leg — the offer carries `mutual: true`). A
- * duplicate-machine-id answer means the peer already holds us: mutual is
- * already satisfied, reported as ok. EVERY failure lands on the outcome and
+ * peer must explicitly confirm the reverse outcome or a reachable row with
+ * our UID. EVERY failure lands on the outcome and
  * never fails the pairing itself — the user sees it and can still add
  * manually from the peer.
  */
-async function reversePair(row: MachineRow, mutual: MutualPairing, fetchImpl: typeof fetch): Promise<MutualOutcome> {
+async function reversePair(row: MachineRow, mutual: MutualPairing, machineId: string, fetchImpl: typeof fetch): Promise<MutualOutcome> {
   let res: Response
   try {
     res = await fetchImpl(`${row.origin}/api/superd/machines`, {
       method: 'POST',
       headers: { cookie: row.cookie ?? '', 'content-type': 'application/json' },
-      body: JSON.stringify({ name: mutual.selfName, tokenUrl: mutual.selfTokenUrl, mutual: true }),
+      body: JSON.stringify({ name: mutual.selfName, tokenUrl: mutual.selfTokenUrl, machineId, mutual: true }),
       signal: AbortSignal.timeout(REVERSE_TIMEOUT_MS),
     })
   } catch (err) {
@@ -442,11 +470,61 @@ async function reversePair(row: MachineRow, mutual: MutualPairing, fetchImpl: ty
       const body = await res.json() as { error?: unknown }
       if (typeof body.error === 'string') error = body.error
     } catch { /* unreadable body */ }
-    if (error.includes('duplicate-machine-id')) return { ok: true }
     return { ok: false, error: error === '' ? `the peer answered ${res.status}` : error }
   }
-  if (res.status >= 200 && res.status < 300) return { ok: true }
+  if (res.status >= 200 && res.status < 300) {
+    const body = await res.json().catch(() => undefined) as { reciprocal?: Record<string, unknown>; machine?: { id?: unknown; status?: unknown } } | undefined
+    const reciprocal = body?.reciprocal
+    if (typeof reciprocal?.ok === 'boolean') {
+      return {
+        ok: reciprocal.ok,
+        ...(reciprocal.skipped === 'self' || reciprocal.skipped === 'already-paired' ? { skipped: reciprocal.skipped } : {}),
+        ...(typeof reciprocal.error === 'string' ? { error: reciprocal.error } : {}),
+      }
+    }
+    // Older peers confirm the paired identity through their public machine row.
+    if (body?.machine?.id === machineId && body.machine.status === 'reachable') return { ok: true }
+    return { ok: false, error: 'the peer did not confirm a reverse connection' }
+  }
   return { ok: false, error: `the peer answered ${res.status}` }
+}
+
+/** Incoming offers name identity before dialing; address format is not reachability evidence. */
+export async function receivePairing(
+  home: string,
+  input: { machineId: string; name: string; tokenUrl: string },
+  deps?: LinkDeps,
+): Promise<MutualOutcome & { row?: MachineRow }> {
+  const self = ensureSelf(home, 'local')
+  if (input.machineId === self.id) return { ok: true, skipped: 'self' }
+  const load = deps?.load ?? loadMachines
+  const existing = load(home).remotes.find((row) => row.id === input.machineId)
+  if (existing?.cookie) {
+    persistRow(home, { ...existing, incoming: true }, deps)
+    const probe = await reprobeMachine(home, existing.id, deps)
+    return {
+      ok: probe.ok, ...(probe.ok ? { skipped: 'already-paired' as const } : { error: probe.error }),
+      row: load(home).remotes.find((row) => row.id === existing.id),
+    }
+  }
+  let url: URL
+  try { url = new URL(input.tokenUrl) } catch { return { ok: false, error: 'mesh-link: invalid reciprocal URL' } }
+  const origin = url.protocol + '//' + url.host
+  const token = url.searchParams.get('token') ?? ''
+  const row: MachineRow = {
+    id: input.machineId, name: existing?.name ?? input.name, origin, token,
+    incoming: true, enabled: existing?.enabled ?? true, addedAt: existing?.addedAt ?? Date.now(),
+    ...(existing?.execEnabled === undefined ? {} : { execEnabled: existing.execEnabled }),
+  }
+  // Retain the identity even if the address cannot be dialed from this Host.
+  persistRow(home, row, deps)
+  recordStatus(row.id, 'unreachable', 'reciprocal connection has not been established')
+  const probe = await reprobeMachine(home, row.id, deps)
+  return {
+    ok: probe.ok,
+    row: load(home).remotes.find((current) => current.id === row.id),
+    ...(probe.ok ? {} : { error: probe.error }),
+  }
 }
 
 /**
@@ -465,22 +543,44 @@ export async function reprobeMachine(home: string, id: string, deps?: LinkDeps):
     throw new Error(`mesh-link: unknown machine id "${id}" — no remote row in the registry`)
   }
   const origin = row.origin
-  let cookie = cookieJar.get(id) ?? row.cookie ?? ''
-  let probe = await probeMachine(origin, cookie, fetchImpl)
-  if (!probe.ok && probe.status === 'auth-expired' && row.token) {
+  const attempt = Symbol()
+  probeAttempts.set(id, attempt)
+  let cookie = row.cookie ?? ''
+  let probe: ProbeResult
+  if (cookie === '' && row.token) {
     try {
       cookie = await mintCookie(origin, row.token, fetchImpl)
-      cookieJar.set(id, cookie)
-      persistRow(home, { ...row, cookie }, deps)
+      probe = await probeMachine(origin, cookie, fetchImpl)
+    } catch (err) {
+      probe = { ok: false, status: 'unreachable', error: `connection failed — ${errMsg(err)}` }
+    }
+  } else probe = await probeMachine(origin, cookie, fetchImpl)
+  if (!probe.ok && probe.status === 'auth-expired' && row.token && cookie !== '') {
+    try {
+      cookie = await mintCookie(origin, row.token, fetchImpl)
       probe = await probeMachine(origin, cookie, fetchImpl)
     } catch (err) {
       probe = { ok: false, status: 'auth-expired', error: `re-mint failed — ${errMsg(err)}` }
     }
   }
+  if (probe.ok && probe.machineId !== id) {
+    probe = { ok: false, status: 'unreachable', error: 'peer Hub UID does not match the paired machine' }
+  }
+  if (probe.ok && row.incoming && cookie === '') {
+    probe = { ok: false, status: 'unreachable', error: 'reciprocal connection has no authenticated credentials' }
+  }
+  if (!probe.ok && row.incoming && !row.cookie) {
+    probe = { ...probe, status: 'unreachable' }
+  }
+  const current = (deps?.load ? deps.load(home).remotes : listRemotes(home)).find((r) => r.id === id)
+  if (probeAttempts.get(id) !== attempt || current === undefined || current.origin !== row.origin || current.token !== row.token || current.cookie !== row.cookie || current.addedAt !== row.addedAt) {
+    return { ok: false, status: 'unreachable', error: 'pairing changed during probe' }
+  }
   if (probe.ok) {
+    persistRow(home, { ...current, cookie }, deps)
     cookieJar.set(id, cookie)
     recordStatus(id, 'reachable', undefined, versionWarningFor(probe.version, OWN_VERSION))
-    emitFederation({ type: 'federated', machineId: id, machineName: row.name, origin, agents: probe.agents })
+    emitFederation({ type: 'federated', machineId: id, machineName: current.name, origin, agents: probe.agents })
   } else if (probe.status === 'auth-expired') {
     recordStatus(id, 'auth-expired', probe.error)
     emitFederation({ type: 'degraded', machineId: id, reason: 'auth-expired', error: probe.error })

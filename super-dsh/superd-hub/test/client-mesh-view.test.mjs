@@ -151,7 +151,6 @@ test('validTokenUrl: everything else is rejected before the wire', () => {
     '/relative?token=1',                 // relative — no authority
     'relative?token=1',                  // relative
     'localhost:4999/?token=1',           // parses, but scheme 'localhost:' not http(s)
-    'ftp://h/?token=1',                  // wrong scheme
     'mailto:a@b?token=1',                // wrong scheme
     'http://',                           // no authority at all
     'https://host:4999/',                // no token param
@@ -223,4 +222,25 @@ test('fetchPairingUrl surfaces the wire error; a body without tokenUrl throws', 
   try {
     await assert.rejects(() => mesh.fetchPairingUrl('https://x.app'), /answered no tokenUrl/)
   } finally { globalThis.fetch = realFetch }
+})
+
+test('desktop null-origin host is copied and offered without a reachability pre-check', async () => {
+  const priorLocation = globalThis.location
+  const calls = []
+  globalThis.location = { origin: 'null', href: 'dsh-app://app/' }
+  globalThis.fetch = async (url, init) => {
+    calls.push(JSON.parse(init.body))
+    return new Response(JSON.stringify({ machine: { id: 'r123', name: 'peer', origin: 'http://peer', status: 'reachable' }, mutual: { ok: false, error: 'offline' } }), { status: 201 })
+  }
+  try {
+    assert.equal(mesh.pageOrigin(), 'dsh-app://app')
+    assert.equal(mesh.validTokenUrl('dsh-app://app/?token=T'), true)
+    const paired = await mesh.addMachine({ name: 'peer', tokenUrl: 'http://peer/?token=T' })
+    assert.equal(paired.mutual.ok, false)
+    assert.equal(calls[0].origin, 'dsh-app://app')
+  } finally {
+    globalThis.fetch = realFetch
+    if (priorLocation === undefined) delete globalThis.location
+    else globalThis.location = priorLocation
+  }
 })

@@ -31,6 +31,8 @@ export interface MachineRow {
   token?: string
   /** Last minted request cookie (spec §4): persisted so hub restarts keep the remote's 30-day session instead of forcing a re-mint on every boot. */
   cookie?: string
+  /** Received a reciprocal offer; without a verified cookie this is an incoming-only row. */
+  incoming?: boolean
   enabled: boolean
   /** P4 exec knob on the INITIATOR side (spec §5): undefined/true = this machine's agents may exec there; false = the tool leg refuses. */
   execEnabled?: boolean
@@ -63,6 +65,7 @@ function isMachineRow(v: unknown): v is MachineRow {
     typeof r.origin === 'string' && r.origin !== '' && typeof r.enabled === 'boolean' && typeof r.addedAt === 'number' &&
     (r.token === undefined || typeof r.token === 'string') &&
     (r.cookie === undefined || typeof r.cookie === 'string') &&
+    (r.incoming === undefined || typeof r.incoming === 'boolean') &&
     (r.execEnabled === undefined || r.execEnabled === true || r.execEnabled === false)
   )
 }
@@ -111,6 +114,7 @@ export function loadMachines(home: string): MachinesFile {
     addedAt: r.addedAt,
     ...(r.token === undefined ? {} : { token: r.token }),
     ...(r.cookie === undefined ? {} : { cookie: r.cookie }),
+    ...(r.incoming === undefined ? {} : { incoming: r.incoming }),
     ...(r.execEnabled === undefined ? {} : { execEnabled: r.execEnabled }),
   })) }
 }

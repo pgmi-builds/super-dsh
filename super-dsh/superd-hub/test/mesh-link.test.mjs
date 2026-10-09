@@ -192,7 +192,7 @@ function peerFetch(opts = {}) {
       if (opts.fail === 'duplicate') return new Response(JSON.stringify({ error: 'mesh-link: duplicate-machine-id zz9 — collides with self' }), { status: 400 })
       if (opts.fail === 'other') return new Response(JSON.stringify({ error: 'nope' }), { status: 400 })
       if (opts.fail === 'status') return new Response('', { status: opts.status ?? 500 })
-      return new Response(JSON.stringify({ machine: { id: 'zz9' } }), { status: 201 })
+      return new Response(JSON.stringify({ reciprocal: { ok: true } }), { status: 201 })
     }
     if (url.includes('/?token=') || url.endsWith('/?token=boot-tok') || /\/\?token=/.test(url)) {
       return new Response(null, { status: 303, headers: { 'set-cookie': 'dsh-auth-x=v1; Path=/' } })
@@ -219,11 +219,11 @@ test('mutual pairing：pair 成功后反向 offer 打到 peer 的 machines API�
     const offer = fetchImpl.calls.machines[0]
     assert.equal(offer.url, 'http://192.0.2.3:4999/api/superd/machines')
     assert.equal(offer.headers.cookie, 'dsh-auth-x=v1', 'the offer rides the just-minted cookie')
-    assert.deepEqual(offer.body, { name: 'egv8:4993', tokenUrl: 'http://192.0.2.130:4993/?token=own-tok', mutual: true })
+    assert.deepEqual(offer.body, { name: 'egv8:4993', tokenUrl: 'http://192.0.2.130:4993/?token=own-tok', machineId: ensureSelf(h, 'local').id, mutual: true })
   } finally { rmSync(h, { recursive: true, force: true }) }
 })
 
-test('mutual pairing：peer duplicate → ok:true（已互持）；其它 400/网络错 → ok:false 带因，pairing 本身不失败', async () => {
+test('mutual pairing：peer duplicate 未确认反向连接 → ok:false；其它 400/网络错 → ok:false 带因，pairing 本身不失败', async () => {
   resetMachineStatus()
   const run = async (label, opts) => {
     const h = home()
@@ -236,7 +236,7 @@ test('mutual pairing：peer duplicate → ok:true（已互持）；其它 400/�
     } finally { rmSync(h, { recursive: true, force: true }) }
   }
   const dup = await run('dev3', { fail: 'duplicate' })
-  assert.deepEqual(dup.out.mutual, { ok: true }, 'duplicate-machine-id = the peer already holds us')
+  assert.equal(dup.out.mutual.ok, false, 'a duplicate error does not confirm identity or reachability')
   assert.equal(dup.count, 1, 'the pairing itself stands')
   const other = await run('dev3b', { fail: 'other' })
   assert.equal(other.out.mutual.ok, false)

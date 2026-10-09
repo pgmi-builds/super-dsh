@@ -41,13 +41,13 @@ function sweepFetch(log, { deadPrefix = 'dead', defer = false } = {}) {
     if (defer) return new Promise((resolve) => { pending.push({ url, resolve }) })
     if (url.startsWith(`http://${deadPrefix}`)) return Promise.reject(new Error('connection refused'))
     return Promise.resolve(new Response(
-      JSON.stringify({ available: true, agents: [], hub: { machineId: 'k3f9', version: '0.1.0' } }),
+      JSON.stringify({ available: true, agents: [], hub: { machineId: url.startsWith('http://ok2') ? 'bbbb' : 'aaaa', version: '0.1.0' } }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     ))
   }
   fetchImpl.release = () => {
     for (const p of pending.splice(0)) p.resolve(new Response(
-      JSON.stringify({ available: true, agents: [], hub: { machineId: 'k3f9', version: '0.1.0' } }),
+      JSON.stringify({ available: true, agents: [], hub: { machineId: p.url.startsWith('http://ok2') ? 'bbbb' : 'aaaa', version: '0.1.0' } }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     ))
   }

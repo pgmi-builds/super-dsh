@@ -272,7 +272,7 @@ test('POST {op:"tokenUrl"}：坏 origin / 无 face → 400，错误不回显 tok
     const cases = [
       [{ op: 'tokenUrl' }, /non-empty origin/],
       [{ op: 'tokenUrl', origin: 'not a url' }, /not a parseable absolute URL/],
-      [{ op: 'tokenUrl', origin: 'ftp://x' }, /must be http\(s\)/],
+      [{ op: 'tokenUrl', origin: 'data:text/plain,x' }, /must name a host/],
       [{ op: 'tokenUrl', origin: 'https://x.app/hub' }, /bare origin/],
       [{ op: 'tokenUrl', origin: 'https://x.app/?a=1' }, /bare origin/],
       [{ op: 'tokenUrl', origin: 'https://user:pw@x.app' }, /must not carry credentials/],

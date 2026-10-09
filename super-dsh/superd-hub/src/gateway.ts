@@ -25,6 +25,7 @@ import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { registerSelectorRpc, registryTargets } from './rpc.js'
 import { registerMeshRpc } from './mesh-rpc.js'
+import { registerPairingAuth } from './pairing-auth.js'
 import { startReprobeSweep } from './mesh-link.js'
 import { federatedGatewayOf, startMeshFederation } from './mesh-federate.js'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
@@ -91,6 +92,7 @@ export function apply(ctx: Context, config?: HubConfig): void {
   ctx.inject(['webServer', 'connection'], (host) => {
     const real = host.get('webServer')
     if (real instanceof WorldWebServer) return
+    registerPairingAuth(host)
     const connection = host.get('connection') as {
       authorizeIndex(req: unknown, res: unknown): boolean
       requestRejection(req: unknown): number | undefined

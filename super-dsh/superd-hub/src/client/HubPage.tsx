@@ -14,6 +14,7 @@ import {
   addMachine,
   fetchMachines,
   fetchPairingUrl,
+  pageOrigin,
   removeMachine,
   reprobeMachine,
   machineVersionChip,
@@ -862,7 +863,7 @@ export function HubPage(): React.JSX.Element {
   const here = currentMountPath()
   // The self row's origin: where this page is served from (the API's self
   // block carries the identity, not the origin).
-  const hereOrigin = typeof location === 'undefined' ? '' : location.origin
+  const hereOrigin = pageOrigin()
   const isActive = (agent: AgentLink): boolean => hubRowActive({
     fusion,
     agentKey: agent.key,
@@ -1000,9 +1001,11 @@ export function HubPage(): React.JSX.Element {
         // failed reverse leg is actionable (the row IS in, the peer's half is
         // not) without being an error state.
         if (out.mutual !== undefined && !out.mutual.ok) {
-          showSuperdToast(`Super D: paired with ${name}, but the mutual half failed (${out.mutual.error}) — add this machine from the peer manually.`)
-        } else {
+          showSuperdToast(`Super D: paired with ${name}; reverse connection unavailable.`)
+        } else if (out.mutual?.ok && out.mutual.skipped !== 'self') {
           showSuperdToast(`Super D: paired with ${name} — the peer also added this machine (mutual).`, { tone: 'success' })
+        } else {
+          showSuperdToast(`Super D: paired with ${name}.`, { tone: 'success' })
         }
       })
       .catch((err: unknown) => { setMeshError(errText(err)) })
@@ -1025,7 +1028,7 @@ export function HubPage(): React.JSX.Element {
    *  GET), one clipboard write, the outcome on the shared toast. */
   const copyPairingUrl = (): void => {
     if (pairingBusy) return
-    const origin = typeof location === 'undefined' ? '' : location.origin
+    const origin = pageOrigin()
     if (origin === '') return
     setPairingBusy(true)
     void fetchPairingUrl(origin)
@@ -1147,7 +1150,7 @@ export function HubPage(): React.JSX.Element {
             )}
           />
           <p style={{ margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' }}>
-            Add another DSH from remote machines, provide the token URL. Pairing is mutual — the peer adds this machine back automatically. Status {AUTO_REFRESH_NOTE}.
+            Add another DSH with its token URL. The peer attempts to connect back. Status {AUTO_REFRESH_NOTE}.
           </p>
           {meshError !== null && (
             <p style={{ margin: 0, fontSize: 12.5, lineHeight: '20px', color: 'var(--dsw-alias-state-error-primary)' }}>

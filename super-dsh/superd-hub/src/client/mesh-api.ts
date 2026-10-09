@@ -163,6 +163,7 @@ export async function fetchMachines(): Promise<MeshList> {
  *  pairing itself succeeded either way and the row is in). */
 export interface MutualPairingOutcome {
   readonly ok: boolean
+  readonly skipped?: 'self' | 'already-paired'
   readonly error?: string
 }
 
@@ -179,18 +180,29 @@ export async function addMachine(input: AddMachineInput): Promise<{ mutual?: Mut
     credentials: 'same-origin',
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: input.name, tokenUrl: input.tokenUrl }),
+    body: JSON.stringify({ name: input.name, tokenUrl: input.tokenUrl, ...(pageOrigin() === '' ? {} : { origin: pageOrigin() }) }),
   })
   if (!response.ok) throw new Error(await errorText(response))
   const body = await response.json().catch(() => undefined) as { mutual?: unknown } | undefined
   if (typeof body?.mutual !== 'object' || body.mutual === null) return {}
-  const raw = body.mutual as { ok?: unknown; error?: unknown }
+  const raw = body.mutual as { ok?: unknown; error?: unknown; skipped?: unknown }
   return {
     mutual: {
       ok: raw.ok === true,
+      ...(raw.skipped === 'self' || raw.skipped === 'already-paired' ? { skipped: raw.skipped } : {}),
       ...(typeof raw.error === 'string' && raw.error !== '' ? { error: raw.error } : {}),
     },
   }
+}
+
+/** Preserve shell schemes whose WHATWG origin is opaque; this is an address, not a reachability verdict. */
+export function pageOrigin(): string {
+  if (typeof location === 'undefined') return ''
+  if (location.origin !== 'null' && location.origin !== '') return location.origin
+  try {
+    const url = new URL(location.href)
+    return url.protocol + '//' + url.host
+  } catch { return '' }
 }
 
 /**
@@ -238,7 +250,7 @@ export const AUTO_REFRESH_NOTE = 'auto-refreshes every 5 min'
  * face's public `authenticatedUrl` — this client never sees the raw token
  * anywhere else.
  *
- * @param origin - the page's own origin (`location.origin`), a bare http(s) origin.
+ * @param origin - the page's own host address, including a desktop scheme.
  * @returns the tokenized pairing URL.
  * @throws Error(body.error) on a non-2xx answer (validation or missing host face).
  */
@@ -259,9 +271,9 @@ export async function fetchPairingUrl(origin: string): Promise<string> {
 
 /**
  * Client-side pre-check before a pairing submit: a parseable absolute
- * http(s) URL carrying a non-empty `token` query param. The server re-parses
+ * host-bearing URL carrying a non-empty `token` query param. The server re-parses
  * authoritatively (mesh-link's parseTokenUrl); this only keeps obviously
- * dead drafts off the wire.
+ * malformed drafts off the wire.
  *
  * @param input - the raw token-URL draft (trim before calling).
  * @returns whether the draft is submit-shaped.
@@ -274,7 +286,7 @@ export function validTokenUrl(input: string): boolean {
   } catch {
     return false
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  if (url.host === '') return false
   const token = url.searchParams.get('token')
   return token !== null && token !== ''
 }

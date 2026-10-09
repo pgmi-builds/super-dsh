@@ -18,7 +18,9 @@
  * SPA and authenticates only its index responses through
  * `ctx.connection.authorizeIndex` — the sole place a launch token is exchanged,
  * and only for `GET /` with exactly one `token` query parameter. Owning exact
- * `/` therefore retires the token path. An authenticated `GET /` is answered here
+ * `/` therefore retires the browser token path. The official Desktop profile
+ * retains its native token exchange because Electron uses it to bootstrap its
+ * authenticated Host carrier before loading the GUI. An authenticated `GET /` is answered here
  * by rendering the SPA index itself — with the Web runtime's own dist resolver
  * and the same `<base href="./">` insertion the fallback owner applies — so
  * sign-in costs no redirect and the browser URL stays the clean `/?`-free `/`.
@@ -44,6 +46,8 @@
 import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
+import type { ProfileContext } from '@deepseek-ai/dsh-app-boot'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import { readFile } from 'node:fs/promises'
 import { credentialKey } from '@deepseek-ai/dsh-credentials'
 import type { CredentialProvider, CredentialRecord } from '@deepseek-ai/dsh-credentials'
@@ -526,6 +530,15 @@ class PasswordGate {
    */
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
+      const profile = this.ctx.get('profileContext') as ProfileContext | undefined
+      if (profile?.name === 'desktop' && req.method === 'GET'
+        && new URL(req.url ?? '/', 'http://dsh.invalid').searchParams.has('token')) {
+        // The launcher identifies the official Desktop profile. Its shell
+        // exchanges this token before GUI boot; native Connection owns the
+        // validation, signed cookie and redirect, including invalid tokens.
+        this.ctx.connection.authorizeIndex(req, res)
+        return
+      }
       const state = await this.gateState()
       if (req.method === 'POST') {
         await this.handleLogin(req, res, state)

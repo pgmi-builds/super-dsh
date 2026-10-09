@@ -112,13 +112,22 @@ try {
   const CONTROL_PREFIX = '/api/superd'
   const origin = () => {
     const loc = g.location
+    if (g.document !== undefined && typeof g.document.baseURI === 'string') return g.document.baseURI
+    if (loc !== undefined && typeof loc.href === 'string') return loc.href
     if (loc !== undefined && typeof loc.origin === 'string' && loc.origin !== 'null') return loc.origin
     return 'http://dsh.internal'
   }
-  // Same authority as the page (scheme-agnostic: ws/wss/http/https share host).
+  // The document and the shell-declared stream carrier can name different
+  // authorities. Read both at call time; never infer a carrier from localhost.
   const sameAuthority = (url) => {
     try {
-      return url.host === new URL(origin()).host
+      if (url.host === new URL(origin()).host) return true
+      const base = g.__DSH_TRANSPORT__ && g.__DSH_TRANSPORT__.streamBaseUrl
+      if (typeof base !== 'string') return false
+      const carrier = new URL(base)
+      return (carrier.protocol === 'http:' || carrier.protocol === 'https:')
+        && (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'ws:' || url.protocol === 'wss:')
+        && url.host === carrier.host
     } catch {
       return false
     }
@@ -175,7 +184,9 @@ try {
       const url = new URL(s, origin())
       if (!sameAuthority(url)) return s
       const next = retarget(url.pathname, url.search, url.hash)
-      return next === null ? s : url.origin + next
+      // WHATWG URL.origin is 'null' for custom schemes such as dsh-app.
+      // Preserve that scheme/authority instead of manufacturing an HTTP URL.
+      return next === null ? s : url.protocol + '//' + url.host + next
     } catch {
       return s
     }

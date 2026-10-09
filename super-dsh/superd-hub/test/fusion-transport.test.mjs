@@ -62,6 +62,44 @@ function page() {
   return { sandbox, install: () => vm.runInContext(renderFusionTransport(), vm.createContext(sandbox), { filename: 'fusion-transport.head.js' }) }
 }
 
+test('desktop: document RPC and declared-host WS target the same foreign world', async () => {
+  const { sandbox, install } = page()
+  sandbox.location = { origin: 'null', href: 'dsh-app://app/', hostname: 'app' }
+  sandbox.document = { baseURI: 'dsh-app://app/' }
+  sandbox.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl: 'http://127.0.0.1:43210' }
+  install()
+  sandbox.__SUPERD_UI_STATE__.setAgent('codex')
+  await sandbox.fetch('api/session.create')
+  new sandbox.WebSocket('ws://127.0.0.1:43210/api/remote.mux')
+  new sandbox.WebSocket('ws://127.0.0.1:43211/api/remote.mux')
+  assert.equal(sandbox.calls.fetch[0].input, 'dsh-app://app/hub/api/session.create?agent=codex')
+  assert.equal(sandbox.calls.ws[0].url, 'ws://127.0.0.1:43210/hub/api/remote.mux?agent=codex')
+  assert.equal(sandbox.calls.ws[1].url, 'ws://127.0.0.1:43211/api/remote.mux')
+  await sandbox.fetch('api/superd/machines')
+  assert.equal(sandbox.calls.fetch[1].input, 'api/superd/machines')
+  sandbox.__SUPERD_UI_STATE__.setAgent('native')
+  await sandbox.fetch('api/session.create')
+  new sandbox.WebSocket('ws://127.0.0.1:43210/api/remote.mux')
+  assert.equal(sandbox.calls.fetch[2].input, 'api/session.create')
+  assert.equal(sandbox.calls.ws[2].url, 'ws://127.0.0.1:43210/api/remote.mux')
+})
+
+test('desktop: stream host is read dynamically and custom-scheme Request URLs survive', async () => {
+  const { sandbox, install } = page()
+  sandbox.location = { origin: 'dsh-app://app', href: 'dsh-app://app/', hostname: 'app' }
+  sandbox.document = { baseURI: 'dsh-app://app/' }
+  sandbox.Request = Request
+  sandbox.__DSH_TRANSPORT__ = { streamBaseUrl: 'http://127.0.0.1:43210' }
+  install()
+  sandbox.__SUPERD_UI_STATE__.setAgent('pi')
+  sandbox.__DSH_TRANSPORT__.streamBaseUrl = 'http://127.0.0.1:43212'
+  new sandbox.WebSocket('ws://127.0.0.1:43212/api/remote.mux')
+  await sandbox.fetch(new Request('dsh-app://app/api/session.create', { method: 'POST', body: 'payload' }))
+  assert.equal(sandbox.calls.ws[0].url, 'ws://127.0.0.1:43212/hub/api/remote.mux?agent=pi')
+  assert.equal(sandbox.calls.fetch[0].input.url, 'dsh-app://app/hub/api/session.create?agent=pi')
+  assert.equal(await sandbox.calls.fetch[0].input.text(), 'payload')
+})
+
 test('the state atom: initial native, subscribe/unsubscribe, change-only notify', () => {
   const { sandbox, install } = page()
   install()

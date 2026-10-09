@@ -16,7 +16,7 @@ import type { MeshMachineStatus } from './mesh-api.js'
 function statusColor(status: MeshMachineStatus): string {
   if (status === 'reachable') return 'var(--dsw-alias-state-success-primary)'
   if (status === 'auth-expired') return 'var(--dsw-alias-state-error-primary)'
-  if (status === 'unreachable') return 'var(--dsw-alias-state-warn-primary)'
+  if (status === 'unreachable') return 'var(--dsw-alias-label-caption)'
   return 'var(--dsw-alias-label-caption)'
 }
 

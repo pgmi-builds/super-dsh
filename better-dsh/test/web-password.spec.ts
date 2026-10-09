@@ -270,9 +270,12 @@ describe('root gate over a fake host', () => {
     handler: (req: unknown, res: unknown) => void | Promise<void>
   }
 
-  function fakeHost(): { ctx: never, route: () => FakeRoute } {
+  function fakeHost(options: { profileName?: string; auth?: BrowserAuth } = {}): { ctx: never, route: () => FakeRoute } {
     const routes = new Map<string, FakeRoute>()
     const ctx = {
+      profileContext: options.profileName === undefined ? undefined : { name: options.profileName },
+      get: (key: string) => key === 'profileContext' && options.profileName !== undefined ? { name: options.profileName } : undefined,
+      connection: options.auth,
       logger: () => ({ info: () => {}, warn: () => {} }),
       credentials: stubProvider(store),
       webServer: {
@@ -314,10 +317,10 @@ describe('root gate over a fake host', () => {
     return { captured, res: res as never }
   }
 
-  function request(method: string, headers: Record<string, string>, body?: string): never {
+  function request(method: string, headers: Record<string, string>, body?: string, url = '/'): never {
     const listeners = new Map<string, ((chunk?: Buffer) => void)[]>()
     const req = {
-      method, url: '/', headers, socket: { remoteAddress: '127.0.0.1' },
+      method, url, headers, socket: { remoteAddress: '127.0.0.1' },
       on: (event: string, fn: (chunk?: Buffer) => void) => {
         const list = listeners.get(event) ?? []
         list.push(fn)
@@ -343,9 +346,24 @@ describe('root gate over a fake host', () => {
   it('treats a launch token on the root as no door at all', async () => {
     const { route } = fakeHost()
     const { captured, res } = response()
-    await route().handler(request('GET', { host: AUTHORITY, 'x-token': 'ignored' }), res)
+    await route().handler(request('GET', { host: AUTHORITY }, undefined, '/?token=ignored'), res)
     expect(captured.status).toBe(200)
     expect(captured.headers['set-cookie']).toBeUndefined()
+  })
+
+  it('preserves the official desktop Host bootstrap token exchange and native cookie', async () => {
+    const auth = await BrowserAuth.create({}, stubProvider(store), 30)
+    const { route } = fakeHost({ profileName: 'desktop', auth })
+    const tokenUrl = new URL(auth.authenticatedUrl(`http://${AUTHORITY}/`))
+    const { captured, res } = response()
+    await route().handler(request('GET', { host: AUTHORITY }, undefined, tokenUrl.pathname + tokenUrl.search), res)
+    expect(captured.status).toBe(303)
+    const cookie = captured.headers['set-cookie'].split(';')[0]
+    expect(auth.isAuthenticated({ headers: { host: AUTHORITY, cookie } })).toBe(true)
+    const invalid = response()
+    await route().handler(request('GET', { host: AUTHORITY }, undefined, '/?token=wrong'), invalid.res)
+    expect(invalid.captured.status).toBe(401)
+    expect(invalid.captured.headers['set-cookie']).toBeUndefined()
   })
 
   it('mints the native cookie and redirects to / (not /index.html)', async () => {
