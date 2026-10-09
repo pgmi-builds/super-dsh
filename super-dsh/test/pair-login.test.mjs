@@ -3,9 +3,9 @@ import { createServer } from 'node:http'
 import test from 'node:test'
 import { checkPairLogin } from './check-pair-login.mjs'
 
-async function withServer(apiStatus, run) {
+async function withServer(apiStatus, run, indexStatus = 200) {
   const server = createServer((request, response) => {
-    if (request.url === '/') response.end('<form method="post" action="/"><input name="password" type="password"></form>')
+    if (request.url === '/') { response.writeHead(indexStatus); response.end('<form method="post" action="/"><input name="password" type="password"></form>') }
     else { response.writeHead(apiStatus); response.end('{}') }
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -19,4 +19,12 @@ test('login form 200 is readiness only; protected API must reject anonymous requ
 })
 test('does not accept an unprotected API just because the login form is 200', async () => {
   await withServer(200, base => assert.rejects(checkPairLogin(base), /401/))
+})
+test('native authentication stays valid when the independently managed Better package is absent', async () => {
+  await withServer(401, async base => {
+    assert.deepEqual(await checkPairLogin(base), { passwordForm: false, anonymousApiStatus: 401 })
+  }, 401)
+})
+test('native root challenge does not excuse an unprotected API', async () => {
+  await withServer(200, base => assert.rejects(checkPairLogin(base), /401/), 401)
 })

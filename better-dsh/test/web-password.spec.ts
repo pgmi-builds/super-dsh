@@ -358,7 +358,9 @@ describe('root gate over a fake host', () => {
     const { captured, res } = response()
     await route().handler(request('GET', { host: AUTHORITY }, undefined, tokenUrl.pathname + tokenUrl.search), res)
     expect(captured.status).toBe(303)
-    const cookie = captured.headers['set-cookie'].split(';')[0]
+    const setCookie = captured.headers['set-cookie']
+    if (typeof setCookie !== 'string') throw new Error('Successful native bootstrap must issue its authentication cookie')
+    const cookie = setCookie.split(';')[0]
     expect(auth.isAuthenticated({ headers: { host: AUTHORITY, cookie } })).toBe(true)
     const invalid = response()
     await route().handler(request('GET', { host: AUTHORITY }, undefined, '/?token=wrong'), invalid.res)

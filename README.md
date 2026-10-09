@@ -9,7 +9,7 @@ This repository develops and releases two packages together:
 | `super-dsh` | [Super Dash](./super-dsh/) | Better Dash tools and native Web policies, plus the Hub and foreign-agent adapters |
 | `better-dsh` | [Better Dash](./better-dsh/) | Native DSH tools and Web policies independently |
 
-Super Dash declares an **exact-version Better Dash dependency**, without embedding its files. One user installation downloads both registry packages; native offline registration exposes both as parallel rows in the Plugin Manager. Each row can be enabled or disabled independently; dev WebMCP remains separate. Both packages keep their own YAML and exports.
+Super Dash and Better Dash are independent packages. On first use, Super requests Better through the native DSH Plugin Manager: its own installed version first, then `better-dsh@latest`, then bare `better-dsh` if each preceding request fails. User disable/removal choices survive restarts and upgrades; Hub Settings offers explicit reinstall. Both retain independent YAML, Plugin Manager rows and component switches; dev WebMCP remains separate.
 
 The two packages share test iteration **0.3.0-f** (unpublished). Earlier npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
 

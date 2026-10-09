@@ -30,20 +30,20 @@ test('shared pack entry produces a fresh verified tarball without npm JSON parsi
 })
 
 
-test('dependency verification rejects embedded Better and checks exact pins and browser artifacts', async () => {
+test('package-pair verification rejects Better dependency edges and physical payload, preserving browser artifacts', async () => {
  const {packPackage}=await import('../scripts/pack-package.mjs')
- const {verifyDependencyPair}=await import('../scripts/verify-dependency-pair.mjs')
+ const {verifyPackagePair}=await import('../scripts/verify-package-pair.mjs')
  const root=mkdtempSync(join(tmpdir(),'superd dependency probe '))
  try {
   const source=join(root,'super'),local=join(root,'better'),out=join(root,'out');mkdirSync(source);mkdirSync(local)
   const b={name:'better-dsh',version:'1.0.0',files:['value.txt']};writeFileSync(join(local,'package.json'),JSON.stringify(b));writeFileSync(join(local,'value.txt'),'local');const better=join(out,packPackage(local,out).filename)
-  const a={name:'super-dsh',version:'1.0.0',files:['cordis.patch.yml','bundles','agent-omp'],dsh:{bundle:{patch:'./cordis.patch.yml'}},dependencies:{'better-dsh':'1.0.0'}}
+  const a={name:'super-dsh',version:'1.0.0',files:['cordis.patch.yml','bundles','agent-omp'],dsh:{bundle:{patch:'./cordis.patch.yml'}},dependencies:{}}
   writeFileSync(join(source,'package.json'),JSON.stringify(a));writeFileSync(join(source,'cordis.patch.yml'),'[]\n');const pack=()=>join(out,packPackage(source,out).filename)
-  assert.equal(verifyDependencyPair(pack(),better),true)
-  a.dependencies['better-dsh']='^1.0.0';writeFileSync(join(source,'package.json'),JSON.stringify(a));assert.throws(()=>verifyDependencyPair(pack(),better),/exact/)
-  a.dependencies['better-dsh']='1.0.0';a.bundledDependencies=['better-dsh'];writeFileSync(join(source,'package.json'),JSON.stringify(a));assert.throws(()=>verifyDependencyPair(pack(),better),/physical|bundl/)
-  delete a.bundledDependencies;writeFileSync(join(source,'package.json'),JSON.stringify(a));mkdirSync(join(source,'bundles'));writeFileSync(join(source,'bundles/better-dsh.tgz'),'archive');assert.throws(()=>verifyDependencyPair(pack(),better),/Physical/);rmSync(join(source,'bundles'),{recursive:true})
-  const client=join(source,'agent-omp');mkdirSync(client);writeFileSync(join(client,'package.json'),JSON.stringify({name:'agent-omp',dsh:{client:{}},exports:{'./client':'./client.js'}}));assert.throws(()=>verifyDependencyPair(pack(),better),/Missing declared client/)
-  writeFileSync(join(client,'client.js'),'export {}');assert.equal(verifyDependencyPair(pack(),better),true)
+  assert.equal(verifyPackagePair(pack(),better),true)
+  for(const field of ['dependencies','optionalDependencies','peerDependencies']){a[field]={'better-dsh':'1.0.0'};writeFileSync(join(source,'package.json'),JSON.stringify(a));assert.throws(()=>verifyPackagePair(pack(),better),/dependency/);delete a[field]}
+  a.bundledDependencies=['better-dsh'];writeFileSync(join(source,'package.json'),JSON.stringify(a));assert.throws(()=>verifyPackagePair(pack(),better),/physical|bundl/)
+  delete a.bundledDependencies;writeFileSync(join(source,'package.json'),JSON.stringify(a));mkdirSync(join(source,'bundles'));writeFileSync(join(source,'bundles/better-dsh.tgz'),'archive');assert.throws(()=>verifyPackagePair(pack(),better),/Physical/);rmSync(join(source,'bundles'),{recursive:true})
+  const client=join(source,'agent-omp');mkdirSync(client);writeFileSync(join(client,'package.json'),JSON.stringify({name:'agent-omp',dsh:{client:{}},exports:{'./client':'./client.js'}}));assert.throws(()=>verifyPackagePair(pack(),better),/Missing declared client/)
+  writeFileSync(join(client,'client.js'),'export {}');assert.equal(verifyPackagePair(pack(),better),true)
  } finally {rmSync(root,{recursive:true,force:true})}
 })

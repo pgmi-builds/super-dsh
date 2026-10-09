@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderFusionTransport, Config, apply as applyFusion } from '../dist/fusion-transport.js'
-import { apply as applyWebTrust } from '../../node_modules/better-dsh/lib/web-trust.js'
+import { apply as applyWebTrust } from '../../../better-dsh/lib/web-trust.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const LINE = join(HERE, '..', '..') // super-dsh composite root
@@ -242,6 +242,18 @@ test('foreign fetch: the hub /api/superd control family is NEVER rewritten (2026
   ], 'the machines face (and every mesh route) always hits ctx0 — a rewritten GET 404s on the peer plane and kills the roster grouping')
   await sandbox.fetch('/api/superdoxx/not-hub')
   assert.equal(String(sandbox.calls.fetch[4].input), '/hub/api/superdoxx/not-hub?agent=q7nat', 'the exemption is the exact /api/superd prefix, not a substring')
+})
+
+test('foreign selection never routes companion management to a remote agent', async () => {
+  const {sandbox, install} = page()
+  install(); sandbox.__SUPERD_UI_STATE__.setAgent('remote')
+  await sandbox.fetch('/api/superdCompanions/getBetterDash')
+  await sandbox.fetch('/api/superdCompanions/installBetterDash')
+  await sandbox.fetch('/api/superdCompanionsOther/get')
+  assert.deepEqual(sandbox.calls.fetch.map(c => String(c.input)), [
+    '/api/superdCompanions/getBetterDash', '/api/superdCompanions/installBetterDash',
+    '/hub/api/superdCompanionsOther/get?agent=remote',
+  ])
 })
 
 test('foreign: WebSocket, EventSource and XMLHttpRequest follow the same rule', () => {

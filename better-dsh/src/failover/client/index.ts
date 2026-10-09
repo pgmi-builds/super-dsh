@@ -25,6 +25,7 @@ import { en, NS, zh } from './locales.ts'
 import { FailoverRow, type FailoverRowInjected, type FailoverRowProps } from './FailoverRow.tsx'
 import { setupMobileLayout } from '../../mobile/client/index.ts'
 import { setupCompactionRow } from '../../compaction/client/index.ts'
+import { setupWelcomeNotice } from '../../welcome-notice/client/index.ts'
 
 export type { FailoverRowInjected, FailoverRowProps }
 export { FailoverRow }
@@ -54,6 +55,7 @@ export function apply(ctx: ClientContext): void {
   // Automatic-compaction threshold row (its host half is
   // `src/compaction/index.ts`, installed by the plugin's host apply).
   setupCompactionRow(ctx)
+  setupWelcomeNotice(ctx)
 
   // The package client remains loaded when a Host component is disabled.
   // Follow the owning namespace rather than offering an unserved editor.

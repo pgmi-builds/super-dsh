@@ -15,5 +15,5 @@
     "resolveJsonModule": true,
   },
   "include": ["src", "test", "vitest.config.ts", "tsdown.config.ts"],
-  "exclude": ["src/failover/client", "src/compaction/client", "src/mobile/client", "test/**/*.client.spec.ts"]
+  "exclude": ["src/failover/client", "src/compaction/client", "src/mobile/client", "src/welcome-notice/client", "test/**/*.client.spec.ts"]
 }

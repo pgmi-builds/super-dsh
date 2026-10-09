@@ -22,62 +22,20 @@ six primary `@pgmi-builds/agent-*` packages and three OPTIONAL SDK halves).
 Restart the profile after replacing a loaded package. Each foreign world's
 DSH home is created under `<DSH_HOME>/agents/<label>/` on first boot.
 
-## Better Dash delivery and native Web defaults
+## Better Dash delivery
 
-Super Dash declares [Better Dash](../better-dsh/) at the synchronized exact
-version in ordinary npm `dependencies`; it contains no Better files or archive.
-One `npm install super-dsh@<version>` or native Plugin Manager installation
-resolves both packages from the configured registry. Publish Better first, then
-Super. Pi's prebuilt SDK dependency tree retains its separate bundled delivery.
+Super installs [Better Dash](../better-dsh/) at runtime through the native DSH
+Plugin Manager, requesting its installed Super version first, then `better-dsh@latest`, then bare
+`better-dsh` after each preceding failure. The packages have no dependency edge or shared physical payload;
+both retain independent native Plugin Manager rows and component switches.
 
-DSH does not recursively expose transitive bundles. On startup the coordinator
-registers the already downloaded exact Better version using native profile
-package operations **offline**, without installation hooks or another registry
-fetch. This automatic local registration is separate from the user's single
-installation command. Missing cached data reports a failure instead of falling
-back to online fetching. Replacing loaded code or promoting loaded provenance
-requires the documented cold restart.
+First-use intent lives under `$DSH_HOME/superd/companions/`, so manual removal
+remains removed across restarts and upgrades. Hub Settings offers explicit
+reinstallation. Both packages ship at synchronized versions; publish Better
+before Super. Pi's prebuilt SDK retains its separate bundled delivery.
 
-The Plugin Manager shows both packages as parallel installed bundles with their
-own YAML and independent switches. Better's Code source is `better-dsh@<version>`.
-Updates retain disablement and same-version explicit uninstall; removing Super
-retains the directly registered Better. Old `bundle-artifacts/` caches are left
-intact for previous installations, but new releases do not write them. With Super
-disabled, registration waits until Super is enabled. dev WebMCP is
-separate and test-only.
-
-Both packages use the same local dual-build pipeline. Tests serve the exact
-unpublished artifact pair through a read-only local registry, without modifying
-the release manifest or preinstalling Better. Current iteration: **0.3.0-f**.
-
-For a tarball URL installation in the native Web UI, put the `.tgz` URL in the
-main Add plugin input and keep the separate Registry selection on the official
-npm registry. A tarball file server is not an npm registry.
-
-Disabling Better restores native Web binding, trusted-host, login and onboarding
-policies. Remote deployments must supply native DSH trusted-host configuration;
-Super does not take ownership of those Better policies.
-
-Better Dash owns the native DSH policies: `dashr-web-trust` retains cookie
-authentication while accepting authenticated serving Host/Origin values; its
-password page provides new-client login. Cookie expiry and authority binding remain.
-`dashr-webserver` defaults to `0.0.0.0`; native `--port` and explicit loopback
-`--host` overrides are preserved. Super Dash carries no duplicate WebTrust.
-To restore the native address fence, set `dashr-web-trust`'s `trustAllHosts: false`.
-
-Better Dash also disables automatic credential onboarding and acknowledges the
-installed Models client's current welcome version before the listener opens.
-Manual model configuration remains available. To restore native welcome behavior:
-
-```yaml
-- id: dashr-welcome-notice
-  disabled: true
-```
-
-Version-only upstream bumps adapt at the next startup. A renamed private constant
-or changed bundle layout fails explicitly and requires adaptation or disabling the
-entry. Dev WebMCP lives in the root `dev-webmcp/` directory and is included
-only as an extra development profile bundle, never in either release tarball.
+Better's welcome policy uses the official client onboarding slot. Native
+WebServer and HMR stay in place; listener configuration belongs to deployment.
 
 ## Runtimes
 

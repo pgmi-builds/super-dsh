@@ -117,27 +117,32 @@ export function apply(ctx: Context, config?: HubConfig): void {
     // would multiply probes against every paired remote. The effect's
     // disposer IS the sweep disposer — the timer dies with the row
     // (unref'd, overlap-skipping, per-machine errors swallowed; mesh-link).
-    ctx.effect(
+    host.effect(
       () => startReprobeSweep({ home, intervalSec: config?.reprobeIntervalSec, immediate: true }),
       'superd-hub: mesh reprobe sweep',
     )
-    const dispose = registerHubRoute({
+    host.effect(() => registerHubRoute({
       real: real as RealWebServerFace,
       authorize: (req, res) => connection.authorizeIndex(req, res),
       requestRejection: (req) => connection.requestRejection(req),
       gatewayOf: (label) => (federatedGatewayOf(label) ?? getTarget(label)?.gateway) as CarrierGatewayFace | undefined,
-    })
-    ctx.effect(() => dispose, 'superd-hub: /hub route family')
+    }), 'superd-hub: /hub route family')
     // P4 §8.2: the PTY executor's upgrade route — same gate as the /hub family
     // (authorizeIndex cookie auth first, then the browser-trust fence). The
     // dumb pump lives in exec-pty-rpc.ts; a2a-row owns the initiator half.
-    void registerPtyExecutor(real as RealWebServerFace, {
-      authorize: (req, res) => connection.authorizeIndex(req, res),
-      requestRejection: (req) => connection.requestRejection(req),
-      log: consoleA2aLog(),
-    }).then((disposePty) => {
-      ctx.effect(() => disposePty, 'superd-hub: PTY executor upgrade route')
-    }, () => { /* ws unavailable in this env — route not offered */ })
+    // The async effect belongs to this Connection injection: disposal waits
+    // for setup and releases its route even when setup finishes during unload.
+    host.effect(async () => {
+      try {
+        return await registerPtyExecutor(real as RealWebServerFace, {
+          authorize: (req, res) => connection.authorizeIndex(req, res),
+          requestRejection: (req) => connection.requestRejection(req),
+          log: consoleA2aLog(),
+        })
+      } catch {
+        return () => { /* ws unavailable in this env — route not offered */ }
+      }
+    }, 'superd-hub: PTY executor upgrade route')
   })
 }
 export default apply

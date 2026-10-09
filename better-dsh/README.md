@@ -47,28 +47,29 @@ dsh runtime package dependencies**: only `@deepseek-ai/cordis` (peer),
   dependency imports external (`dts: { resolve: false }`): bundled copies
   would create duplicate type identities in a consumer's program.
 
-## Native Web defaults
+## Native Web policies
 
 The bundle owns native DSH Web policies as independently toggleable components.
 `dashr-web-trust` accepts authenticated serving Host/Origin values while retaining
-native cookie authentication. `dashr-webserver` inherits the native server and
-waits for welcome confirmation before listening; its default address is
-`0.0.0.0`, with the native port and CLI override behavior preserved.
+native cookie authentication. The native WebServer and HMR remain in place;
+Better contributes WebTrust, mobile behavior and its password page through the
+public WebServer interfaces. Listener address and port follow native CLI policy.
 Automatic credential onboarding is disabled; users can still configure models.
 
-`dashr-welcome-notice` reads the current `WELCOME_NOTICE_VERSION` from the Models
-client belonging to the actual DSH installation and acknowledges it through the
-original General settings namespace before the first HTTP read. No version is
-pinned in the plugin. Ordinary version bumps adapt at startup; changed private
-symbols or build layouts fail explicitly. Restore native welcome behavior with:
+`dashr-welcome-notice` shadows only the native `welcome-notice` onboarding entry
+at a higher precedence and calls the shell's public completion callback every
+time it mounts, including new chats and explicitly reopened notices. It renders
+no dialog and writes no native acknowledgement state. Disabling the component
+withdraws its client contribution and restores the native welcome item; other
+onboarding steps retain their own behavior.
 
 ```yaml
 - id: dashr-welcome-notice
   disabled: true
 ```
 
-The sibling Super Dash pack builds this repository locally and embeds its actual
-tarball. Better Dash remains independently installable. `../dev-webmcp` is an
+Super Dash installs Better through the native Plugin Manager as a separate
+bundle. Better Dash remains independently installable. `../dev-webmcp` is an
 unshipped development-only bundle owned by this repository.
 
 ## Install

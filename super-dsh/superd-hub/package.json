@@ -18,8 +18,7 @@
     "dist",
     "lib",
     "assets",
-    "cordis.patch.yml",
-    "scripts/register-companion.mjs"
+    "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {

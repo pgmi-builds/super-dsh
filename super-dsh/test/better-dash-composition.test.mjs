@@ -11,11 +11,12 @@ const require = createRequire(join(repo, 'upstream/deepseek-harness/apps/cli/pac
 const { composeEntries, loadOverlayPatches } = require('@deepseek-ai/dsh-app-boot')
 const manifest = path => JSON.parse(readFileSync(path, 'utf8'))
 
-test('Super Dash pins the local Better Dash package version', () => {
+test('Super and Better ship synchronized versions with no dependency edge', () => {
   const a = manifest(join(repo, 'super-dsh/package.json'))
   const b = manifest(join(better, 'package.json'))
   assert.equal(b.name, 'better-dsh')
-  assert.equal(a.dependencies['better-dsh'], b.version)
+  assert.equal(a.version, b.version)
+  for (const field of ['dependencies','optionalDependencies','peerDependencies']) assert.equal(a[field]?.['better-dsh'], undefined)
 })
 
 test('native composition retains Better Dash components with a single active WebTrust', () => {
@@ -37,14 +38,16 @@ test('native composition retains Better Dash components with a single active Web
     assert.notEqual(matches[0].disabled, true, `${id} must remain enabled`)
   }
   assert.equal(rows.find(row => row.id === 'superd-web-trust'), undefined)
-  assert.equal(rows.find(row => row.id === 'webserver').disabled, true)
+  assert.notEqual(rows.find(row => row.id === 'webserver').disabled, true)
+  assert.equal(rows.find(row => row.id === 'dashr-webserver'), undefined)
+  assert.equal(rows.find(row => row.id === 'hmr').name, '@deepseek-ai/dsh-hmr')
   assert.ok(rows.findIndex(row => row.id === 'dashr-web-trust') < rows.findIndex(row => row.id === 'superd-fusion-transport'))
   const trust = rows.find(row => row.id === 'dashr-web-trust')
   assert.notEqual(trust.disabled, true)
   assert.equal(trust.config.trustAllHosts, true)
   const { interpolate } = require('@deepseek-ai/cordis-plugin-loader')
-  const config = interpolate({ webStartup: {} }, rows.find(row => row.id === 'dashr-webserver').config)
-  assert.equal(config.host, '0.0.0.0')
+  const config = interpolate({ webStartup: {} }, rows.find(row => row.id === 'webserver').config)
+  assert.equal(config.host, '127.0.0.1')
   assert.equal(config.port, 3080)
   assert.equal(config.compression, 'gzip')
   assert.equal(rows.find(row => row.id === 'ui-settings-models').config.credentialOnboarding, false)

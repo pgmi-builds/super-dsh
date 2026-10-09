@@ -47,6 +47,7 @@ import {
   setAuthMode,
   settingsErrorText,
 } from './runtime-settings-api.js'
+import {CompanionSettings} from './CompanionSettings.js'
 
 /**
  * The Hub main panel (`main`, key `hub`): the hub-functionality home page.
@@ -1110,10 +1111,8 @@ export function HubPage(): React.JSX.Element {
 
         {tab === 'settings' && (
           <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <GroupHead title="Settings" count={0} />
-            <p style={{ margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' }}>
-              Hub preferences — pairing, runtime visibility, and orchestration defaults land with the hub service.
-            </p>
+            <GroupHead title="Settings" count={1} />
+            <CompanionSettings />
           </section>
         )}
 

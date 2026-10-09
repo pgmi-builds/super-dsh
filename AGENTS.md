@@ -26,7 +26,7 @@
 ## 一、这是什么（定位速查）
 
 - **superd = 独立 App（最小 cordis 宿主）**，不是 dsh 的插件/profile/fork。桥接层：把本机与远端已有 Agent 运行时映射到 DSH Web UI 可消费的数据面；**自己不跑 agent、不存原始会话**（唯一持久状态 = pairing 表）。
-- 交付结构：**单一 pack `super-dsh`**（unscoped npm 包 = dsh plugin market 名；内含 `superd-hub` + 各 `agent-<runtime>` 兄弟目录；composite patch 自指 subpath `super-dsh/hub` / `super-dsh/agents/<label>` / `super-dsh/join`，另加一条裸名行 `super-dsh` 承载 client half）。per-runtime 对偶包命名：`@pgmi-builds/agent-*`（数据面）+ `@pgmi-builds/agent-ui-*`（呈现面）。根 `package.json` 是 private 编排入口，统一版本、构建与测试；两个发布包是 `better-dsh` 与 `super-dsh`，版本同步，后者以 exact-version dependencies 依赖前者。
+- 交付结构：**单一 pack `super-dsh`**（unscoped npm 包 = dsh plugin market 名；内含 `superd-hub` + 各 `agent-<runtime>` 兄弟目录；composite patch 自指 subpath `super-dsh/hub` / `super-dsh/agents/<label>` / `super-dsh/join`，另加一条裸名行 `super-dsh` 承载 client half）。per-runtime 对偶包命名：`@pgmi-builds/agent-*`（数据面）+ `@pgmi-builds/agent-ui-*`（呈现面）。根 `package.json` 是 private 编排入口，统一版本、构建与测试；两个发布包是 `better-dsh` 与 `super-dsh`，版本同步，后者运行时经原生 Plugin Manager 安装前者（自身版本精确请求优先，依次回退 latest、裸包名），无 npm 依赖边。
 - 命名纪律：App 名 Super Dash / 品牌 Super D / 代码与 CLI `superd`（无空格连字符）；上游 UI 内 DSH 字样原样保留（品牌原则：仅自研代码用 Super D 品牌）。
 - 设计正本：`docs/00-blueprint.md`（v0.4a）+ `docs/01-component-boundaries.md`（v0.3）+ `docs/adr/0001–0007` + `CONTEXT.md` 词汇表。研究镜像 `docs/01–05` 簇保留历史只读；合仓资料导航见 `docs/README.md`，原 Better 根文件保留来源。
 
@@ -48,8 +48,8 @@
 - **Agent 对代码库承担 ownership**：负责实现选择、依赖链与副作用；把 user 当 supervisor / reviewer，以目标、结论、用户可见影响和必要决策汇报，不默认其熟悉内部字段、Schema 或调用链。内部细节由 Agent 查清并消化，需要解释时先说明与目标的关系。
 - **LSP 与 AST 工具必须实际使用**：开发前用 LSP 查定义、引用和调用关系，用 AST（如 ast-grep）核实结构与匹配范围，追踪上游已有 CLI、配置和扩展入口，再决定实现。优先官方机制；环境变量绕行或 monkey patch 须有官方入口不足的证据；工具不可用时明确缺口，不能声称已核实。
 - **验证按真实交付路径进行**：遵守生产隔离与发布红线，通过整包 tarball 线和 dev3 实装验证代码行为及模型看到的 Surface；复用测试 home、保留用户数据，测试口接管、认证和启动交给现行 launcher，不手搓临时替代流程。
-- **Better Dash 合仓开发与交付（2026-10-09 user 修订）**：本仓 `better-dsh/` 与 `super-dsh/` 是唯一现役源码；同一 Git/GitHub，两个同步版本 npm 包，正式目标 `0.3.0`。原 `../dashr/` 保留历史参考，不参与构建。每次 pack 本仓双构建；Super 只声明 exact-version Better dependency，不携带 Better 物理文件或 tarball。用户一次 npm / native Plugin Manager 安装从配置的 registry 拉取两包；宿主不递归登记 transitive bundle，因此 coordinator 经官方 profile writer lock / 包操作离线登记已经下载的 exact Better，不再次联网，不设安装钩子。两包各自 YAML、原生管理行及开关独立，更新保留关闭选择。测试 registry 只服务本轮本仓双 tarball，不可回退公共 registry 的旧 Better。生产发布先 Better 后 Super，各轮仍需单次发布授权。WebTrust、WebServer、欢迎说明归 Better；dev WebMCP 仅测试。机制见 docs/07 §8。
-- **版本与资料**：`npm run version:release -- <version>` 同步根、两包及 exact dependency；测试轮使用同步字母版本。共享资料归根 `docs/`，`docs/package-catalog.json` 明确 Better Dash 发包副本，不能无差别扫入 Hub 文档。历史根文件冲突存 `docs/legacy/better-dash/`。
+- **Better Dash 合仓开发与交付（2026-10-09 user 再修订）**：本仓 `better-dsh/` 与 `super-dsh/` 是唯一现役源码；两个同步版本 npm 包、独立原生 DSH bundle。Super 不声明 Better 的 dependency/optional/peer，不携带其文件；运行时调用宿主 `pluginManager.installBundle`，先请求自身已安装版本对应的 exact Better，失败依次请求 latest、裸包名。首次自动安装与 Hub Settings 显式重装复用同一操作；既有安装、关闭和卸载选择保留，不在 Super 升级时强行重装。profile companion 状态位于 `$DSH_HOME/superd/companions/`，迁移旧 receipt 后清理自身旧文件。Super 不实现第二套 npm/pnpm/store。Better 欢迎策略使用官方 `settings.onboarding`，不替换 WebServer/HMR；测试监听由 launcher 的 loopback 与 LAN relay 管。机制见 docs/07 §8。
+- **版本与资料**：`npm run version:release -- <version>` 同步根、两包版本及锁文件元数据；测试轮使用同步字母版本。共享资料归根 `docs/`，`docs/package-catalog.json` 明确 Better Dash 发包副本，不能无差别扫入 Hub 文档。历史根文件冲突存 `docs/legacy/better-dash/`。
 - **细节按需披露**：通用开发与测试机制见 [docs/07](docs/07-cordis-dsh-dev-test-guides.md)，整包与 adapter 规则见 [super-dsh/AGENTS.md](super-dsh/AGENTS.md)，启动入口为 `super-dsh/test/start-4999.sh`，历史记录见 [开发环境记录](docs/dev-test-environment-notes.md)；局部守则放对应子目录，根总纲不收纳操作流水账。
 
 ---

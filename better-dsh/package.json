@@ -1,6 +1,6 @@
 {
   "name": "better-dsh",
-  "version": "0.3.0-e",
+  "version": "0.3.0-f",
   "description": "Make your dsh ready for serious coding tasks. (Tools x Schemas)^REPL. `skill://`, `ctx://`, `agent://`, `dvc://`, `dsh://`, IPython REPL, Context as Variables, cross compactions recallable, full context revive. `hash-edit`, `dvc://browser`, subagent as function, workflow as function.",
   "type": "module",
   "main": "lib/index.js",
@@ -55,14 +55,6 @@
     "./welcome-notice": {
       "types": "./lib/welcome-notice.d.ts",
       "default": "./lib/welcome-notice.js"
-    },
-    "./webserver": {
-      "types": "./lib/webserver.d.ts",
-      "default": "./lib/webserver.js"
-    },
-    "./hmr": {
-      "types": "./lib/hmr.d.ts",
-      "default": "./lib/hmr.js"
     }
   },
   "imports": {
@@ -173,8 +165,7 @@
     "@deepseek-ai/dsh-app-boot": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-atomic-write": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-cmdline": ">=0.1.5-0 <0.3.0-0",
-    "@deepseek-ai/dsh-plugin-manager": ">=0.1.5-0 <0.3.0-0",
-    "@deepseek-ai/dsh-hmr": ">=0.1.5-0 <0.3.0-0"
+    "@deepseek-ai/dsh-plugin-manager": ">=0.1.5-0 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -361,9 +352,6 @@
       "optional": true
     },
     "@deepseek-ai/dsh-plugin-manager": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-hmr": {
       "optional": true
     }
   },

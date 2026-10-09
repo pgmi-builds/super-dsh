@@ -15,8 +15,8 @@ export function buildBetterDash(line, repo, output, superManifest) {
   assertReleaseVersions(repo)
   const source = resolveBetterDashSource(repo)
   const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
-  if (manifest.name !== 'better-dsh' || superManifest.dependencies?.['better-dsh'] !== manifest.version) {
-    throw new Error(`Local better-dsh@${manifest.version} does not match the Super Dash exact dependency; update the pin deliberately`)
+  if (manifest.name !== 'better-dsh' || superManifest.version !== manifest.version) {
+    throw new Error(`Local better-dsh@${manifest.version} does not match the Super Dash version; synchronize the two packages`)
   }
   for (const hook of ['preinstall', 'install', 'postinstall', 'prepare']) {
     if (manifest.scripts?.[hook]) throw new Error(`Better Dash must not carry install hook ${hook}`)
@@ -32,11 +32,8 @@ export function buildBetterDash(line, repo, output, superManifest) {
   }
   const packed = packPackage(source, output)
   const tarball = join(output, packed.filename)
-  const embedded = join(line, 'node_modules/better-dsh')
-  rmSync(embedded, { recursive: true, force: true })
-  mkdirSync(embedded, { recursive: true })
-  execFileSync('tar', ['-xf', tarball, '-C', embedded, '--strip-components=1'])
-  // Remove legacy staging; npm must resolve the exact ordinary dependency.
+  // Remove old development staging; Super has no Better runtime imports.
+  rmSync(join(line, 'node_modules/better-dsh'), { recursive: true, force: true })
   rmSync(join(line, 'bundles'), { recursive: true, force: true })
   return { name: manifest.name, version: manifest.version, source, tarball }
 }

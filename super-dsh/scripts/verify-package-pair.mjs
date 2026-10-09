@@ -1,15 +1,16 @@
-// Verify ordinary exact registry dependency delivery and real browser exports.
+// Verify independent synchronized package delivery and real browser exports.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-export function verifyDependencyPair(tarball, dependencyTarball) {
+export function verifyPackagePair(tarball, dependencyTarball) {
  const scratch=mkdtempSync(join(tmpdir(),'superd-dependency-'))
  try {
   for(const [dir,archive] of [['super',tarball],['better',dependencyTarball]]){mkdirSync(join(scratch,dir));execFileSync('tar',['-xf',archive,'-C',join(scratch,dir)])}
   const outer=join(scratch,'super/package'),better=join(scratch,'better/package')
   const a=JSON.parse(readFileSync(join(outer,'package.json'))),b=JSON.parse(readFileSync(join(better,'package.json')))
-  if(a.name!=='super-dsh'||b.name!=='better-dsh'||a.version!==b.version||a.dependencies?.['better-dsh']!==b.version)throw new Error('Super must declare the synchronized exact Better registry version')
+  if(a.name!=='super-dsh'||b.name!=='better-dsh'||a.version!==b.version)throw new Error('Super and Better must have synchronized package versions')
+  if(['dependencies','optionalDependencies','peerDependencies'].some(field=>a[field]?.['better-dsh']!==undefined))throw new Error('Super must not declare a Better dependency')
   const bundled=a.bundledDependencies??a.bundleDependencies
   if(bundled===true||Array.isArray(bundled)&&bundled.includes('better-dsh'))throw new Error('Physical Better bundling is forbidden')
   const files=execFileSync('tar',['-tf',tarball],{encoding:'utf8',maxBuffer:16*1024*1024}).split('\n')

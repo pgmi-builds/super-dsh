@@ -6,8 +6,7 @@
 #   fresh profile  →  boot via the repo build's dsh CLI.
 #
 # No hand-written compositions, no @pgmi-builds symlink farms, no library boot
-# script: the native profile activates Super Dash only. Its pack contains the
-# exact Better Dash registry dependency; its native coordinator registers
+# script: the native profile activates Super Dash only. Its runtime coordinator installs
 # Better as an independent bundle through the native package operation.
 #
 # Red line (repo AGENTS §〇): this script refuses to run against any home that
@@ -21,10 +20,7 @@
 #     stay valid across restarts (connection.cookieMaxAgeDays, default 30d).
 #     The joint line uses Better Dash's password page for new clients;
 #     never re-inject cookies between test restarts.
-# 2026-10-07 user ruling baked in below:
-#   • the webserver binds 0.0.0.0 by default (SUPERD_BIND=127.0.0.1 opts back
-#     into the loopback + socat-relay shape): LAN/WAN visitors hit the port
-#     directly, no relay unit; admission stays cookie-only via web-trust.
+# 2026-10-09: native WebServer stays on loopback; LAN access uses a test relay.
 set -euo pipefail
 # Rig knobs: the defaults below are the long-lived compat home (session-format
 # verification, reused across runs — user data is a test asset). A throwaway
@@ -34,13 +30,9 @@ set -euo pipefail
 # (delete that home afterwards; see docs/07-cordis-dsh-dev-test-guides.md §3).
 PORT="${SUPERD_PORT:-4999}"
 UNIT="superd-${PORT}-test"
-# Bind face (2026-10-07 user ruling): the server binds ALL interfaces by
-# default — LAN/WAN visitors hit the port directly and the socat LAN relay is
-# skipped (a relay on the same port would collide with the wide bind).
-# SUPERD_BIND=127.0.0.1 restores the old loopback + relay shape. Admission is
-# unchanged either way: web-trust keeps cookie authentication and removes only
-# the Host/Origin fence, so an unauthenticated LAN request still gets 401.
-BIND="${SUPERD_BIND:-0.0.0.0}"
+# Explicit native loopback keeps plugin changes independent of listener ownership.
+# The test relay changes reachability only; native cookie authentication remains.
+BIND="${SUPERD_BIND:-127.0.0.1}"
 # The line's repo root = wherever THIS script lives (main checkout or a dev
 # worktree — pack.mjs anchors itself the same way via import.meta.url), never a
 # hardcoded path: a worktree checkout must pack and boot its OWN branch state.
@@ -154,7 +146,7 @@ else
 fi
 PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
 # Retain an independently registered companion and its bundle enablement.
-# Removing this dependency while keeping the registration receipt would mean an
+# Removing Better while keeping the companion receipt means an
 # intentional user uninstall to the shipped coordinator. A fresh profile still
 # declares only the selected product; this never performs first promotion.
 COMPANION_STATE="$("$NODE_BIN" --input-type=module - "$PROFILE_DIR/package.json" <<'JS'
@@ -214,7 +206,7 @@ printf 'registry=%s\n' "$REGISTRY_URL" > "$PROFILE_DIR/.npmrc"
 
 if [ ! -f "$PROFILE_DIR/cordis.patch.yml" ]; then
 cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
-# Native WebServer defaults belong to Better Dash; the port is a CLI flag.
+# Native WebServer bind and port are explicit deployment CLI flags.
 # One seed for every rig on this machine (see SHARED_CREDENTIALS above): the
 # upstream row defaults to the credentials document under the harness home,
 # which makes the
@@ -309,7 +301,7 @@ if [ -n "${SUPERD_TEST_TRUSTED_HOSTS:-}" ]; then
   done
 fi
 if [ "$BIND" = "127.0.0.1" ]; then HOST_ARGS+=(--host 127.0.0.1); fi
-[ "$BIND" = "0.0.0.0" ] || [ "$BIND" = "127.0.0.1" ] || { echo "unsupported SUPERD_BIND: $BIND" >&2; exit 1; }
+[ "$BIND" = "127.0.0.1" ] || { echo "unsupported SUPERD_BIND: $BIND; use native loopback plus the LAN relay" >&2; exit 1; }
 systemd-run --user --unit="$UNIT" "${PROXY_ARGS[@]}" \
   --property=WorkingDirectory="$REPO" \
   --property=Environment="DSH_HOME=$DSH_HOME_DIR" \
@@ -332,8 +324,7 @@ done
 [ -n "$ok" ] || { echo "timeout waiting for ${PORT}" >&2; exit 1; }
 
 # LAN relay on every test port, including the Caddy-backed 4999.
-# LAN relay ONLY for a loopback bind (the default 0.0.0.0 already answers on
-# every interface, and a relay on the same port would lose the bind race).
+# The native CLI binds loopback; this test-only relay exposes the chosen LAN IP.
 # The CLI declarations above cover both direct and relay access. Better's
 # authentication-only policy remains its own independently delivered behavior.
 if [ -n "$LAN_IP" ] && [ "$BIND" = "127.0.0.1" ]; then
@@ -354,8 +345,8 @@ if [ -n "$SEED_EXISTED" ]; then
 else
   echo "--- listening on ${PORT}; NEW shared seed — sign in through the Better Dash password page."
 fi
-# Better Dash owns '/', so 200 may be a password form, NOT an authenticated
-# app. Readiness requires the expected form AND rejection by a protected API.
+# Better's password form or native 401 are valid independent package states.
+# Readiness also requires rejection by a protected API.
 # Actual authenticated app/API behavior is verified separately at acceptance.
 door_ready=""
 for _ in $(seq 1 15); do
@@ -365,7 +356,7 @@ for _ in $(seq 1 15); do
   fi
   sleep 2
 done
-[ -n "$door_ready" ] || { echo "password door / protected API readiness failed — inspect $LOG" >&2; exit 1; }
+[ -n "$door_ready" ] || { echo "authentication entry / protected API readiness failed — inspect $LOG" >&2; exit 1; }
 echo "  local: http://127.0.0.1:${PORT}/"
 if [ "$PORT" = "4999" ]; then
   echo "  wan:   https://test.pc.internal.test/"

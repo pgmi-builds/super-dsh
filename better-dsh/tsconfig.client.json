@@ -20,6 +20,7 @@
     "src/failover/client",
     "src/compaction/client",
     "src/mobile/client",
+    "src/welcome-notice/client",
     "src/css-modules.d.ts"
   ],
   // The parent excludes these three directories; the lane exists to re-include them.

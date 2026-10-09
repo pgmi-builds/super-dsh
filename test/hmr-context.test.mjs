@@ -1,8 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createServer } from 'node:http'
-import { once } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,11 +14,8 @@ const { default: Loader } = await load('@deepseek-ai/cordis-plugin-loader')
 const { default: Timer } = await load('@deepseek-ai/cordis-plugin-timer')
 const { default: NativeHmr } = await load('@deepseek-ai/dsh-hmr')
 const { default: AgentRegistry } = await load('@deepseek-ai/dsh-agent')
-// The same HTTP regression runs against native HMR before the implementation exists.
-const BetterHmr = process.env.HMR_NATIVE_RED === '1'
-  ? NativeHmr : (await import('../better-dsh/src/hmr.ts')).default
-
-async function fixture(t, Hmr = BetterHmr) {
+const { WebServer } = await load('@deepseek-ai/dsh-host-webserver')
+async function fixture(t, Hmr = NativeHmr) {
   const dir = mkdtempSync(join(tmpdir(), 'better-hmr-context-'))
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(dir).href + '/'
@@ -32,31 +27,29 @@ async function fixture(t, Hmr = BetterHmr) {
   return { ctx, dir, provider, hmr: ctx.hmr }
 }
 
-async function httpMutation(t, hmr, operation = async () => 'applied') {
-  let server
-  await hmr.runExclusive(async () => {
-    server = createServer(async (_request, response) => {
-      try { response.end(await hmr.runExclusive(operation)) }
-      catch (error) { response.statusCode = 500; response.end(error.message) }
-    })
-    server.listen(0, '127.0.0.1')
-    await once(server, 'listening')
-  })
-  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections() }))
-  const response = await fetch(`http://127.0.0.1:${server.address().port}`, { headers: { connection: 'close' } })
-  return { status: response.status, body: await response.text() }
-}
-
-test('native HMR reproduces stale transaction context in an HTTP server', { timeout: 5000 }, async t => {
-  const { hmr } = await fixture(t, NativeHmr)
-  const result = await httpMutation(t, hmr)
-  assert.equal(result.status, 500)
-  assert.match(result.body, /HMR transactions cannot be nested/)
-})
-
-test('HTTP callbacks created during a completed transaction can mutate again', { timeout: 5000 }, async t => {
-  const { hmr } = await fixture(t)
-  assert.deepEqual(await httpMutation(t, hmr), { status: 200, body: 'applied' })
+test('the native listener stays outside management transactions and can serve repeated mutations', { timeout: 5000 }, async t => {
+  const { ctx, hmr } = await fixture(t)
+  await ctx.plugin(WebServer, { host: '127.0.0.1', port: 0 })
+  const listener = ctx.webServer
+  let changes = 0
+  ctx.effect(() => listener.register({ kind: 'exact', path: '/mutate', async handler(_request, response) {
+    try {
+      const result = await hmr.runExclusive(async () => {
+        const component = ctx.plugin({ apply() {} })
+        await component.await()
+        await component.dispose()
+        return ++changes
+      })
+      response.end(String(result))
+    } catch (error) { response.statusCode = 500; response.end(error.stack) }
+  } }))
+  const url = `http://127.0.0.1:${listener.port}/mutate`
+  for (const expected of [1, 2, 3]) {
+    const response = await fetch(url, { headers: { connection: 'close' } })
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), String(expected))
+    assert.equal(ctx.webServer.port, listener.port)
+  }
 })
 
 test('native queue serializes operations, rejects actual nesting and recovers after failure', { timeout: 5000 }, async t => {
@@ -107,20 +100,17 @@ test('native HMR disposal drains an active operation before completing', { timeo
   await assert.rejects(hmr.runExclusive(async () => {}), /HMR is disposed/)
 })
 
-test('selective reset preserves caller ALS and real AgentRegistry self-disposal lineage', { timeout: 5000 }, async t => {
+test('native management preserves caller ALS and AgentRegistry self-disposal lineage', { timeout: 5000 }, async t => {
   const { ctx, hmr } = await fixture(t)
   const scope = await ctx.plugin(AgentRegistry)
   const agents = ctx.agents
   const agent = { id: 'hmr-initiator' }
   const request = new AsyncLocalStorage()
-  // Capture a stale native HTTP-like resource, then establish a fresh caller identity inside it.
-  let stale
-  await hmr.runExclusive(async () => { stale = AsyncLocalStorage.snapshot() })
-  await stale(() => request.run({ id: 'current-request' }, () => agents.withInitiator(agent, () =>
+  await request.run({ id: 'current-request' }, () => agents.withInitiator(agent, () =>
     hmr.runExclusive(async () => {
       assert.equal(request.getStore().id, 'current-request')
       assert.equal(agents.currentInitiator(), agent)
       await scope.dispose()
-    }))))
+    })))
   assert.throws(() => agents.currentInitiator(), /initiator scope is disposed/)
 })

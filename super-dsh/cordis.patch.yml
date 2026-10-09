@@ -12,8 +12,8 @@
 #                              zero-port sibling root, mounted under /<label>
 #   - super-dsh/join           the generic hub joiner for the standalone
 #                              claude adapter (R2)
-# DSH-only WebTrust, WebServer and onboarding policies belong to the exact registry
-# Better Dash dependency, registered as an independent profile bundle.
+# DSH-only WebTrust and onboarding policies belong to independently installed
+# Better Dash; the native Plugin Manager owns its package and enablement.
 #   - super-dsh/a2a            the agent-facing A2A tool face (mesh P3): the
 #                              single `superd-hub` model tool on ctx0's tools
 #                              service (dormant without tools; world trees
@@ -22,7 +22,7 @@
 # Profile-layer values (webserver port/host, settings path) stay in the USER's
 # profile patch layer, never here.
 - insert:
-    # Register the already installed exact registry companion as an independent native bundle.
+    # Expose native companion management and perform first-use installation.
     - id: superd-bundle-setup
       name: 'super-dsh/setup'
     # BARE package row: subpath rows (…/agents/omp) are permanently not client

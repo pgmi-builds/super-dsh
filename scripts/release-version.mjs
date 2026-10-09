@@ -5,7 +5,7 @@ const dirs=['','better-dsh','super-dsh']
 const load=(repo,dir)=>JSON.parse(readFileSync(join(repo,dir,'package.json'),'utf8'))
 export function assertReleaseVersions(repo){
  const [root,better,superDash]=dirs.map(dir=>load(repo,dir))
- if(root.private!==true||better.name!=='better-dsh'||superDash.name!=='super-dsh'||root.version!==better.version||root.version!==superDash.version||superDash.dependencies?.['better-dsh']!==root.version)throw new Error('Release version mismatch: root, Better Dash, Super Dash and exact dependency must agree')
+ if(root.private!==true||better.name!=='better-dsh'||superDash.name!=='super-dsh'||root.version!==better.version||root.version!==superDash.version||['dependencies','optionalDependencies','peerDependencies'].some(field=>superDash[field]?.['better-dsh']!==undefined))throw new Error('Release version mismatch: root, Better Dash, Super Dash must agree and remain independent')
  return root.version
 }
 export function isReleaseVersion(version){
@@ -17,7 +17,7 @@ export function setReleaseVersion(repo,version){
  if(!isReleaseVersion(version))throw new Error(`Invalid release version: ${version}`)
  const manifests=dirs.map(dir=>load(repo,dir));if(manifests[0].private!==true||manifests[1].name!=='better-dsh'||manifests[2].name!=='super-dsh')throw new Error('Unexpected release package identity')
  for(const manifest of manifests)manifest.version=version
- manifests[2].dependencies={...manifests[2].dependencies,'better-dsh':version}
+ for(const field of ['dependencies','optionalDependencies','peerDependencies']){if(manifests[2][field])delete manifests[2][field]['better-dsh']}
  for(const [i,dir]of dirs.entries()){
   const manifest=manifests[i];writeFileSync(join(repo,dir,'package.json'),JSON.stringify(manifest,null,2)+'\n')
   const lockPath=join(repo,dir,'package-lock.json');if(existsSync(lockPath)){

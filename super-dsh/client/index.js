@@ -2199,6 +2199,145 @@ async function removeProvider(agentKey, namespace, id, doFetch) {
 }
 
 //#endregion
+//#region src/client/companion-api.ts
+async function callCompanion(operation, doFetch) {
+	const method = `superdCompanions/${operation}`;
+	const response = await (doFetch ?? ((path, init) => fetch(path, init)))(`/api/${method}`, {
+		method: "POST",
+		credentials: "same-origin",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			type: "client-request",
+			rpcId: mintRpcId(),
+			method,
+			payload: { args: {} }
+		})
+	});
+	if (!response.ok) throw new Error(`Better Dash: HTTP ${response.status}`);
+	let body;
+	try {
+		body = JSON.parse(await response.text());
+	} catch {
+		throw new Error("Better Dash: unreadable response");
+	}
+	const result = body?.result;
+	if (result?.ok !== true) throw new Error(result?.error?.message ?? "Better Dash: request failed");
+	const value = result.value;
+	if (value === null || typeof value !== "object" || typeof value.installed !== "boolean" || typeof value.installing !== "boolean" || typeof value.requestedVersion !== "string" || value.version !== void 0 && typeof value.version !== "string" || value.enabled !== void 0 && typeof value.enabled !== "boolean" || value.error !== void 0 && typeof value.error !== "string") throw new Error("Better Dash: invalid status");
+	return value;
+}
+
+//#endregion
+//#region src/client/CompanionSettings.tsx
+/** Native plugin switches remain in Plugin Manager; this row provides explicit recovery. */
+function CompanionSettings() {
+	const [status, setStatus] = react.default.useState();
+	const [error, setError] = react.default.useState();
+	const [busy, setBusy] = react.default.useState(false);
+	const live = react.default.useRef(false);
+	const operation = react.default.useRef(false);
+	react.default.useEffect(() => {
+		live.current = true;
+		let reading = false;
+		const refresh = async () => {
+			if (reading || operation.current) return;
+			reading = true;
+			try {
+				const next = await callCompanion("getBetterDash");
+				if (live.current) {
+					setStatus(next);
+					setError(next.error);
+				}
+			} catch (cause) {
+				if (live.current) setError(cause instanceof Error ? cause.message : String(cause));
+			} finally {
+				reading = false;
+			}
+		};
+		refresh();
+		const timer = window.setInterval(() => {
+			refresh();
+		}, 5e3);
+		return () => {
+			live.current = false;
+			window.clearInterval(timer);
+		};
+	}, []);
+	const install = async () => {
+		if (operation.current) return;
+		operation.current = true;
+		setBusy(true);
+		setError(void 0);
+		try {
+			const next = await callCompanion("installBetterDash");
+			if (live.current) {
+				setStatus(next);
+				setError(next.error);
+			}
+		} catch (cause) {
+			if (live.current) setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			operation.current = false;
+			if (live.current) setBusy(false);
+		}
+	};
+	const installing = busy || status?.installing === true;
+	const label = status === void 0 ? "Loading…" : status.installed ? `Installed${status.version ? " · " + status.version : ""}${status.enabled === false ? " · Disabled" : ""}` : "Not installed";
+	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+		style: {
+			borderRadius: 12,
+			padding: "12px 14px",
+			background: "var(--dsw-alias-interactive-bg-hover)"
+		},
+		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+			style: {
+				display: "flex",
+				alignItems: "center",
+				gap: 16
+			},
+			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				style: { flex: 1 },
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					style: {
+						fontSize: 14,
+						fontWeight: 600
+					},
+					children: "Better Dash"
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					role: "status",
+					style: {
+						fontSize: 12,
+						color: "var(--dsw-alias-label-secondary)",
+						marginTop: 4
+					},
+					children: installing ? "Installing…" : label
+				})]
+			}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				disabled: installing || status?.installed === true,
+				onClick: () => {
+					install();
+				},
+				style: {
+					padding: "6px 12px",
+					borderRadius: 8,
+					cursor: installing || status?.installed ? "default" : "pointer"
+				},
+				children: installing ? "Installing…" : status?.installed ? "Installed" : "Install"
+			})]
+		}), error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+			role: "alert",
+			style: {
+				fontSize: 12,
+				margin: "8px 0 0",
+				color: "var(--dsw-alias-state-error-primary)"
+			},
+			children: error
+		})]
+	});
+}
+
+//#endregion
 //#region src/client/HubPage.tsx
 const EMPTY_DRAFT = {
 	name: "",
@@ -3415,16 +3554,8 @@ function HubPage() {
 					},
 					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(GroupHead, {
 						title: "Settings",
-						count: 0
-					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-						style: {
-							margin: 0,
-							fontSize: 13,
-							lineHeight: "20px",
-							color: "var(--dsw-alias-label-tertiary)"
-						},
-						children: "Hub preferences — pairing, runtime visibility, and orchestration defaults land with the hub service."
-					})]
+						count: 1
+					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CompanionSettings, {})]
 				}),
 				tab === "home" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
 					style: {
