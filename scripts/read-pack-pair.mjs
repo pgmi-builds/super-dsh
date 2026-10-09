@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto'
 import {execFileSync} from 'node:child_process'
 import {pathToFileURL} from 'node:url'
 import {isReleaseVersion} from './release-version.mjs'
-import {verifyBundledPackage} from '../super-dsh/scripts/verify-bundled.mjs'
+import {verifyDependencyPair} from '../super-dsh/scripts/verify-dependency-pair.mjs'
 
 /** Delivery-only consumption of a pair already built from local source. No registry fallback. */
 export function readPackPair(directory){
@@ -22,7 +22,7 @@ export function readPackPair(directory){
   if(name==='super-dsh'&&packed.dsh?.bundle?.patch!=='./cordis.patch.yml')throw new Error('Received bundle activation boundary mismatch')
   result[key]={...entry,tarball}
  }
- result.bundledFiles=verifyBundledPackage(result.superDash.tarball,result.betterDash.tarball,'better-dsh')
+ result.registryDependency=verifyDependencyPair(result.superDash.tarball,result.betterDash.tarball)
  return result
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){

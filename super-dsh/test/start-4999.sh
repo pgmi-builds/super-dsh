@@ -7,7 +7,7 @@
 #
 # No hand-written compositions, no @pgmi-builds symlink farms, no library boot
 # script: the native profile activates Super Dash only. Its pack contains the
-# locally built Better Dash package; its own delivery coordinator registers
+# exact Better Dash registry dependency; its native coordinator registers
 # Better as an independent bundle through the native package operation.
 #
 # Red line (repo AGENTS §〇): this script refuses to run against any home that
@@ -83,8 +83,21 @@ SOCAT_BIN="${SUPERD_SOCAT_BIN:-$(command -v socat || true)}"
 if [ -z "$SOCAT_BIN" ] && [ -x "$REPO/.scratch/socat-runtime/usr/bin/socat" ]; then
   SOCAT_BIN="$REPO/.scratch/socat-runtime/usr/bin/socat"
 fi
-[ -x "$SOCAT_BIN" ] || { echo "socat missing: install it or set SUPERD_SOCAT_BIN" >&2; exit 1; }
+if [ "$BIND" = "127.0.0.1" ] && [ ! -x "$SOCAT_BIN" ]; then
+  echo "socat missing for loopback relay: install it or set SUPERD_SOCAT_BIN" >&2
+  exit 1
+fi
 LAN_IP=$(hostname -I | awk '{print $1}')
+
+# ---- 1. Build locally, or explicitly consume the SAME received artifact pair ----
+[ -z "${SUPERD_TEST_TARBALL:-}" ] || { echo "use a verified dual artifact pair, not a single unverified tarball" >&2; exit 1; }
+if [ -n "${SUPERD_TEST_PACK_DIR:-}" ]; then
+  PACK_DIR="$SUPERD_TEST_PACK_DIR"
+else
+  "$NODE_BIN" "$LINE/scripts/pack-pair.mjs"
+  PACK_DIR="$REPO/.scratch/superd-pack"
+fi
+TARBALL="$("$NODE_BIN" "$REPO/scripts/read-pack-pair.mjs" "$PACK_DIR" "$PRODUCT_KEY")"
 
 # Idempotent restart of THIS rig's own named units; then, per the 2026-09-27
 # port ruling (test ports are unowned, 4999 included), any OTHER test-owned
@@ -122,18 +135,9 @@ if ss -tln | grep -q ":${PORT} "; then
   echo "  pick another port: SUPERD_PORT=<free> bash super-dsh/test/start-4999.sh" >&2
   exit 1
 fi
-# ---- 1. Build locally, or explicitly consume the SAME received artifact pair ----
-[ -z "${SUPERD_TEST_TARBALL:-}" ] || { echo "use a verified dual artifact pair, not a single unverified tarball" >&2; exit 1; }
-if [ -n "${SUPERD_TEST_PACK_DIR:-}" ]; then
-  PACK_DIR="$SUPERD_TEST_PACK_DIR"
-else
-  "$NODE_BIN" "$LINE/scripts/pack-pair.mjs"
-  PACK_DIR="$REPO/.scratch/superd-pack"
-fi
-TARBALL="$("$NODE_BIN" "$REPO/scripts/read-pack-pair.mjs" "$PACK_DIR" "$PRODUCT_KEY")"
 DEV_WEBMCP="$REPO/dev-webmcp"
 
-# ---- 2. fresh profile consuming the tarball (consumer manifest shape) ----
+# ---- 2. preserved profile consuming the tarball (consumer manifest shape) ----
 # Plus the dev-only WebMCP injection bundle (dev-webmcp/): built from
 # this checkout each boot and installed as an additional `file:` dep, so ANY browser
 # on the line URL gets the page-mcp tools server-side with zero manual steps.
@@ -149,27 +153,66 @@ else
   (cd "$DEV_WEBMCP" && npm run build --silent)
 fi
 PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
-rm -rf "$PROFILE_DIR"
+# Retain an independently registered companion and its bundle enablement.
+# Removing this dependency while keeping the registration receipt would mean an
+# intentional user uninstall to the shipped coordinator. A fresh profile still
+# declares only the selected product; this never performs first promotion.
+COMPANION_STATE="$("$NODE_BIN" --input-type=module - "$PROFILE_DIR/package.json" <<'JS'
+import { readFileSync } from 'node:fs'
+let previous
+try { previous = JSON.parse(readFileSync(process.argv[2], 'utf8')) }
+catch (error) { if (error.code !== 'ENOENT') throw error }
+const spec = previous?.dependencies?.['better-dsh']
+console.log(JSON.stringify(typeof spec === 'string' ? {
+  spec, enabled: previous.dsh?.profile?.bundles?.includes('better-dsh') ?? false,
+} : {}))
+JS
+)"
+# Stop/restart only this rig's read-only registry endpoint after pair validation.
+REGISTRY_UNIT="superd-${PORT}-pair-registry"
+REGISTRY_PORT="${SUPERD_TEST_REGISTRY_PORT:-$((PORT + 10000))}"
+REGISTRY_UPSTREAM="$(cd "$REPO" && npm config get registry)"
+REGISTRY_URL="http://127.0.0.1:${REGISTRY_PORT}/"
+systemctl --user stop "$REGISTRY_UNIT" 2>/dev/null || true
+systemd-run --user --unit="$REGISTRY_UNIT" \
+  --property=WorkingDirectory="$REPO" \
+  --property=StandardOutput=append:"$REPO/.scratch/pair-registry-${PORT}.log" \
+  --property=StandardError=append:"$REPO/.scratch/pair-registry-${PORT}.log" \
+  "$NODE_BIN" "$LINE/test/registry-pair-server.mjs" "$PACK_DIR" "$REGISTRY_PORT" "$REGISTRY_UPSTREAM"
+for _ in $(seq 1 30); do
+  if curl --noproxy '*' --fail --silent "$REGISTRY_URL$CONSUMER" > /dev/null; then break; fi
+  systemctl --user is-active --quiet "$REGISTRY_UNIT" || exit 1
+  sleep 1
+done
+curl --noproxy '*' --fail --silent "$REGISTRY_URL$CONSUMER" > /dev/null || exit 1
 mkdir -p "$PROFILE_DIR"
-cat > "$PROFILE_DIR/package.json" <<EOF
-{
-  "name": "${CONSUMER}-test-profile",
-  "private": true,
-  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "$CONSUMER", "@pgmi-builds/better-dsh-dev-webmcp"] } },
-  "dependencies": { "$CONSUMER": "file:$TARBALL", "@pgmi-builds/better-dsh-dev-webmcp": "file:$DEV_WEBMCP" }
+"$NODE_BIN" --input-type=module - "$PROFILE_DIR/package.json" "$CONSUMER" "$TARBALL" "$DEV_WEBMCP" "$COMPANION_STATE" <<'JS'
+import { writeFileSync, readFileSync, existsSync } from 'node:fs'
+const [file, consumer, tarball, webmcp, retained] = process.argv.slice(2)
+const companion = JSON.parse(retained)
+const previous = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
+const bundles = [...new Set([...(previous.dsh?.profile?.bundles ?? []), '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', consumer, '@pgmi-builds/better-dsh-dev-webmcp'])]
+const dependencies = { ...previous.dependencies, [consumer]: 'file:' + tarball, '@pgmi-builds/better-dsh-dev-webmcp': 'file:' + webmcp }
+if (consumer === 'super-dsh' && companion.spec !== undefined) {
+  dependencies['better-dsh'] = companion.spec
+  if (companion.enabled && !bundles.includes('better-dsh')) bundles.push('better-dsh')
 }
-EOF
-# The selected product is the only direct package. For Super Dash, Better
-# comes from its tarball; no direct dependency or override can mask a missing bundle.
+writeFileSync(file, JSON.stringify({ ...previous, name: consumer + '-test-profile', private: true,
+  dsh: { ...previous.dsh, profile: { ...previous.dsh?.profile, bundles } }, dependencies }, null, 2) + '\n')
+JS
+# First consumption still relies exclusively on the delivered coordinator;
+# repeat consumption preserves its native registration and independent disablement.
 cat > "$PROFILE_DIR/pnpm-workspace.yaml" <<EOF
 packages:
   - .
 nodeLinker: hoisted
 autoInstallPeers: false
 EOF
+printf 'registry=%s\n' "$REGISTRY_URL" > "$PROFILE_DIR/.npmrc"
 # Initial installation and native Plugin Manager both use pnpm's configured
 # default store. Isolation belongs to this test profile, not a custom store.
 
+if [ ! -f "$PROFILE_DIR/cordis.patch.yml" ]; then
 cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
 # Native WebServer defaults belong to Better Dash; the port is a CLI flag.
 # One seed for every rig on this machine (see SHARED_CREDENTIALS above): the
@@ -182,6 +225,7 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
   config:
     path: ${SHARED_CREDENTIALS}
 EOF
+fi
 echo "--- pnpm install (complete local pack, native default script policy)"
 (cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$DEV_WEBMCP" --prefer-offline)
 
@@ -251,6 +295,13 @@ fi
 # Operator access configuration remains valid when Better's permissive fence
 # is disabled. These are official CLI authorities, not plugin policy overrides.
 HOST_ARGS=()
+# Declare the direct machine entrance on every test port. Only 4999 owns the
+# Caddy-backed test.pc entrance; extra deployment authorities remain additive.
+if [ -n "$LAN_IP" ]; then HOST_ARGS+=(--trusted-host "${LAN_IP}:${PORT}"); fi
+if [ "$PORT" = "4999" ]; then HOST_ARGS+=(--trusted-host test.pc.internal.test); fi
+PUBLIC_URL="${SUPERD_TEST_PUBLIC_URL:-}"
+if [ -z "$PUBLIC_URL" ] && [ "$PORT" = "4999" ]; then PUBLIC_URL=https://test.pc.internal.test; fi
+if [ -n "$PUBLIC_URL" ]; then HOST_ARGS+=(--public-url "$PUBLIC_URL"); fi
 if [ -n "${SUPERD_TEST_TRUSTED_HOSTS:-}" ]; then
   read -r -a TEST_TRUSTED_HOSTS <<< "$SUPERD_TEST_TRUSTED_HOSTS"
   for authority in "${TEST_TRUSTED_HOSTS[@]}"; do
@@ -283,8 +334,8 @@ done
 # LAN relay on every test port, including the Caddy-backed 4999.
 # LAN relay ONLY for a loopback bind (the default 0.0.0.0 already answers on
 # every interface, and a relay on the same port would lose the bind race).
-# web-trust retains authentication and removes address fences, so neither
-# host nor trusted-host CLI flags are needed on either shape.
+# The CLI declarations above cover both direct and relay access. Better's
+# authentication-only policy remains its own independently delivered behavior.
 if [ -n "$LAN_IP" ] && [ "$BIND" = "127.0.0.1" ]; then
   systemd-run --user --unit="$RELAY" \
     --property=StandardOutput=append:"$LOG" \

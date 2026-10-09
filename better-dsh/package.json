@@ -1,6 +1,6 @@
 {
   "name": "better-dsh",
-  "version": "0.3.0-c",
+  "version": "0.3.0-d",
   "description": "Make your dsh ready for serious coding tasks. (Tools x Schemas)^REPL. `skill://`, `ctx://`, `agent://`, `dvc://`, `dsh://`, IPython REPL, Context as Variables, cross compactions recallable, full context revive. `hash-edit`, `dvc://browser`, subagent as function, workflow as function.",
   "type": "module",
   "main": "lib/index.js",
@@ -60,10 +60,6 @@
       "types": "./lib/webserver.d.ts",
       "default": "./lib/webserver.js"
     },
-    "./bundle-delivery": {
-      "types": "./lib/bundle-delivery.d.ts",
-      "default": "./lib/bundle-delivery.js"
-    },
     "./hmr": {
       "types": "./lib/hmr.d.ts",
       "default": "./lib/hmr.js"
@@ -83,8 +79,7 @@
     "cordis.patch.yml",
     "eval-description.md",
     "url-schemes-instruction.md",
-    "scripts/kernel-provision.mjs",
-    "scripts/register-bundle.mjs"
+    "scripts/kernel-provision.mjs"
   ],
   "scripts": {
     "prebuild": "node scripts/copy-docs.mjs",

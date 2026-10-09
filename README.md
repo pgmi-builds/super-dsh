@@ -9,20 +9,20 @@ This repository develops and releases two packages together:
 | `super-dsh` | [Super Dash](./super-dsh/) | Better Dash tools and native Web policies, plus the Hub and foreign-agent adapters |
 | `better-dsh` | [Better Dash](./better-dsh/) | Native DSH tools and Web policies independently |
 
-Super Dash embeds the **locally built Better Dash package** in its own npm tarball. Installing Super Dash registers both as parallel rows in the native Plugin Manager. Each row can be enabled or disabled independently; dev WebMCP remains separate. Both packages keep their own YAML and exports.
+Super Dash declares an **exact-version Better Dash dependency**, without embedding its files. One user installation downloads both registry packages; native offline registration exposes both as parallel rows in the Plugin Manager. Each row can be enabled or disabled independently; dev WebMCP remains separate. Both packages keep their own YAML and exports.
 
-The two packages share release version **0.3.0-a**. Earlier npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
+The two packages share test iteration **0.3.0-f** (unpublished). Earlier npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
 
 ## Development
 
 ```sh
-npm run version:release -- 0.3.0-a  # synchronize both packages and their exact edge
+npm run version:release -- 0.3.0-f  # synchronize both packages and their exact edge
 npm run pack                      # always build both from this repository
 npm test
 npm run test:4999                  # native consumer, delivered Super Dash tarball
 ```
 
-The existing upstream checkout and real development dependencies are required. Test homes and artifacts are ignored. Never substitute source links or a registry Better Dash for delivery acceptance. See [the development guide](docs/07-cordis-dsh-dev-test-guides.md) for setup, native-peer alignment and target-machine testing.
+The existing upstream checkout and real development dependencies are required. Test homes and artifacts are ignored. Delivery acceptance serves the verified local pair through a test-only registry; never substitute source links or an older public Better release. See [the development guide](docs/07-cordis-dsh-dev-test-guides.md) for setup, native-peer alignment and target-machine testing.
 
 | Path | Role |
 | --- | --- |

@@ -1,6 +1,6 @@
 {
   "name": "super-dsh",
-  "version": "0.3.0-c",
+  "version": "0.3.0-d",
   "description": "Super D for the DeepSeek Harness (DSH) — one dsh plugin that mounts the superd hub (runtime selector, roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
   "type": "module",
   "license": "MIT",
@@ -69,7 +69,7 @@
     "agent-agy-sdk/package.json",
     "agent-agy-sdk/cordis.patch.yml",
     "agent-agy-sdk/bridge",
-    "bundles"
+    "superd-hub/scripts/register-companion.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -83,7 +83,7 @@
     }
   },
   "dependencies": {
-    "better-dsh": "0.3.0-c",
+    "better-dsh": "0.3.0-d",
     "@earendil-works/pi-coding-agent": "0.84.2",
     "zod": "4.4.3",
     "@modelcontextprotocol/sdk": "^1.29.0"
@@ -104,7 +104,11 @@
     "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-user-approval": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-user-questions": ">=0.1.5-0 <0.3.0-0",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.5-0 <0.3.0-0"
+    "@deepseek-ai/dsh-client-connection": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-app-boot": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-atomic-write": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-cmdline": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-plugin-manager": ">=0.1.5-0 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -154,20 +158,28 @@
     },
     "@deepseek-ai/dsh-client-connection": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-app-boot": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-atomic-write": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-cmdline": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-plugin-manager": {
+      "optional": true
     }
   },
   "publishConfig": {
     "access": "public"
   },
   "bundledDependencies": [
-    "better-dsh",
     "@earendil-works/pi-coding-agent"
   ],
   "homepage": "https://github.com/pgmi-builds/super-dsh",
   "bugs": {
     "url": "https://github.com/pgmi-builds/super-dsh/issues"
-  },
-  "superd": {
-    "delivery": "./bundles/manifest.json"
   }
 }

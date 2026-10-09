@@ -17,10 +17,6 @@
 # `python` is only a hint: the runtime OWNS the kernel environment. An
 # explicit interpreter (DASHR_KERNEL_PYTHON) is verified; the bare
 - insert:
-    # No-op standalone; keeps a containing pack's local companion delivery current.
-    - id: dashr-bundle-delivery
-      name: 'better-dsh/bundle-delivery'
-
     - id: dashr-repl
       name: 'better-dsh'
       config:

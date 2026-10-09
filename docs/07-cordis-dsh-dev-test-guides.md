@@ -90,7 +90,9 @@
 - 499x 一族**全是测试口，没有谁占用谁（4999 也一样）**。起线前 `ss -tln` 动态探测。
 - 端口被占时的处置：经 `/proc/<listener-pid>/cgroup` 找到归属 user unit——属于**测试基建**（unit 名 `superd-*` / `*-test` / `*-relay`）→ 直接停掉接管；**非测试监听**（prod 3080/3081、未知进程）→ 拒绝并换口。`super-dsh/test/start-4999.sh` 已内置此逻辑。
 - 4999 = Caddy `test.pc.internal.test`（wan 可见）是**通道事实**，不是占用特权；launcher 默认 **`host: 0.0.0.0` 直连**（2026-10-07 user 裁决，`SUPERD_BIND=127.0.0.1` 可退回旧形态）——全接口 bind 时不拉 relay（同口会撞）；仅显式 loopback bind 才自动拉 **socat LAN relay**（unit `superd-lan-<port>-relay`，只绑 LAN IP）。
-- webserver 的 `host` config 接受且仅接受 `127.0.0.1` / `0.0.0.0` 字面量并按值直接 bind（0.1.x 时代的「启动硬拒 0.0.0.0」RCE 门在现基线已不存在；对非本机 Host 的防护改由 connection 的 trustedHosts fence 承担，而内嵌 Better Dash 的 `dashr-web-trust` 以 `trustAllHosts: true` 把它收敛为**认证唯一门**——cookie 不过仍然 401）。
+- **访问 authority（2026-10-09 user 裁决）**：每个测试口的 systemd CLI 默认 `--trusted-host <本机主IP>:<测试口>`；仅 4999 再声明 `--trusted-host test.pc.internal.test`，`SUPERD_TEST_TRUSTED_HOSTS` 只追加其它入口。生产 PC / dev3 各声明自己的 `dsh.<machine>.internal.test`。对应 Caddy 保留 Host/Origin 原样转发，取消旧 header 改写；flags 在 Better 缺席时仍支持原生信任检查，认证及监听 bind 仍是独立机制。
+- **对外 URL（2026-10-09 user 补充）**：有实际域名入口的部署同时传官方 `--public-url`：生产 PC / dev3 分别使用 `https://dsh.pc.internal.test` / `https://dsh.dev3.internal.test`，4999 使用 `https://test.pc.internal.test`。测试 launcher 的 `SUPERD_TEST_PUBLIC_URL` 可声明其它 canonical URL；额外 trusted authority 不自动变成对外地址。此 flag 影响启动链接、Agent Web 上下文及 `DSH_WEB_URL`，不改变信任、认证和 bind。
+- webserver 的 `host` config 接受且仅接受 `127.0.0.1` / `0.0.0.0` 字面量并按值直接 bind（0.1.x 时代的「启动硬拒 0.0.0.0」RCE 门在现基线已不存在；对非本机 Host 的防护改由 connection 的 trustedHosts fence 承担，而独立 Better Dash 的 `dashr-web-trust` 以 `trustAllHosts: true` 把它收敛为**认证唯一门**——cookie 不过仍然 401）。
 - **永不触碰 3080（Dash Agent prod）/ 3081（omp-web prod）**；prod 3080 的重启只凭 user 明确下令。
 
 ### 3.2 test home：复用，不换场（2026-09-27 user 裁决）
@@ -189,7 +191,7 @@
 ### 6.1 三层验收
 
 1. **单元测试**（adapter / hub 侧唯一存留形态）：`node --test test/*.test.mjs`，测试导入 `dist/` → **先 build 后 test**；只测 fakes / 映射 / 事件转译 / lazy 不变量；**fake 不作行为验收证据**。
-2. **整包 pack 线冒烟**（场景级验证**唯一入口**）：`bash super-dsh/test/start-4999.sh`（双包本地 pack → 内嵌 Better Dash 的 Super Dash tarball → 单入口原生 profile → repo build CLI 启动，详见 §8）。冒烟基线：认证后的 shell 200 + roster 全量 + `/hub` 家族语义 + `world failed` 计数 0。
+2. **整包 pack 线冒烟**（场景级验证**唯一入口**）：`bash super-dsh/test/start-4999.sh`（双包本地 pack → 独立 Better Dash 的 Super Dash tarball → 单入口原生 profile → repo build CLI 启动，详见 §8）。冒烟基线：认证后的 shell 200 + roster 全量 + `/hub` 家族语义 + `world failed` 计数 0。
 3. **dev3 目标机实装**（根 AGENTS §〇.0.a）：tarball → restart → journalctl 计数 + 同组探针 → 报告落 `docs/test-reports/` → user 放行 → 才谈 publish。
 
 ### 6.2 per-agent 场景测试：退役且不回潮（2026-09-24 裁决，2026-09-27 重申）
@@ -209,21 +211,24 @@
 > 2026-09-24 user 裁决：测试线必须「看到被测者看到的世界」，否则测的是别的东西。三条：
 
 1. **provider keys**：把 prod home 的 `~/.dsh/.env` **copy 进线 home**（`$DSH_HOME/.env`；launcher 的 env 分层 = 继承 env > 调用目录 `.env` > home `.env`，接受值不覆盖继承值）。**禁止** `--property=Environment="DEEPSEEK_API_KEY=…"` 形式的透传——从 agent shell 拉起时该值是**空串但已设置**，继承层会**挡掉** home `.env` 层的值，比不传更糟（2026-09-24 实证：create+prompt 拿不到模型回复的根因）。`.env` 缺失时脚本 fail-loud 拒绝起线。
-2. **原生 Web 策略（2026-10-07 user 裁决）**：内嵌 Better Dash 的 `dashr-web-trust` row 配置 `trustAllHosts: true`，保留 native cookie 校验、移除 Host/Origin fence，并注入 browser ownership。WebServer 默认 `0.0.0.0` 也由 Better Dash 提供；默认仍由 Better 提供策略；独立关掉 Better 时，部署方通过官方 `--trusted-host` 保持原生远程访问。launcher 的显式 `SUPERD_TEST_TRUSTED_HOSTS` 只传递这些访问 authority，不修改业务策略；官方 `--port` 选择测试端口。显式 `SUPERD_BIND=127.0.0.1` 可选 loopback + relay。
+2. **原生 Web 策略（2026-10-07 user 裁决；2026-10-09 入口声明补充）**：独立 Better Dash 的 `dashr-web-trust` row 配置 `trustAllHosts: true`，保留 native cookie 校验、移除 Host/Origin fence，并注入 browser ownership。WebServer 默认 `0.0.0.0` 也由 Better Dash 提供；默认仍由 Better 提供策略。launcher 在 systemd CLI 默认声明本机主 IP 加测试端口，仅 4999 再声明 `test.pc.internal.test`；`SUPERD_TEST_TRUSTED_HOSTS` 追加其它访问 authority，不修改业务策略。独立关掉 Better 时，这些官方 `--trusted-host` 声明仍生效；官方 `--port` 选择测试端口。显式 `SUPERD_BIND=127.0.0.1` 可选 loopback + relay。
 3. **环境自身觉察**：agent 会话 env 自带 `DSH_HOME=~/.dsh`（跑在 prod dsh.service 里）——任何「我看到的环境变量」都是 **prod instance 的**，不是测试线的；拉线脚本必须显式设置全部 env（`DSH_HOME` / `SUPERD_DSH_ANCHOR` / `SUPERD_KEEP` / `PATH` / `UnsetEnvironment`），不依赖继承。
 
 ---
 
-## 8. Better Dash 本地构建与 Super Dash 自包含交付（2026-10-07）
+## 8. Better Dash 双构建与 registry 依赖交付（2026-10-09）
 
-本仓 `better-dsh/` 与 `super-dsh/` 共用一个 Git/GitHub，保持两个独立 npm 包与同步版本，无源码 symlink。原兄弟仓保留参考，不参与构建。每次 pack 都构建当前本地 Better Dash，再将它的 tarball 展开到 Super Dash 的忽略生成目录 `node_modules/better-dsh`；npm `bundledDependencies` 把它物理内嵌进 Super Dash tarball。独立 Better Dash tarball 同时保留，可以单独安装。
+两包同仓、同步版本、独立 npm 发布。Super 的普通 `dependencies.better-dsh` exact pin 到同轮版本，tarball 不含 Better 物理文件或归档；Pi 的 bundled dependency 不变。构建仍先完成本仓 Better 独立 tarball，并将它展开到忽略的开发依赖目录供真实类型/运行时 import；该目录不进入 Super tarball。
 
-- 默认入口 `bash super-dsh/test/start-4999.sh`；`pack-pair.mjs` 仅复用 `pack.mjs`，后者自身也强制先构建 Better Dash，不能绕过。唯一源码 `better-dsh/`，拒绝源码 symlink；源不存在、两包版本或 exact-pin 不匹配即失败，禁止 registry / 兄弟仓回退。
-- 两包共同用 `scripts/pack-package.mjs` 执行普通 `npm pack --pack-destination`，核验实际 tarball manifest；不解析 npm JSON 输出。版本、来源、路径、SHA256、构建时间记录在 `.scratch/superd-pack/pair.json`；构建开始清除旧记录。
-- 首次消费者 profile **仅直接安装/启用 Super Dash**，launcher 不手工声明 Better Dash 或设 override。Super 同时包含该本地产物的精确独立 tarball 与 SHA256 描述；ready 后 coordinator 将它缓存到当前 home 的 `bundle-artifacts/`，通过已安装 DSH 的原生 profile 包操作注册为独立直接依赖/bundle。原生 Plugin Manager 显示两个平行行、分别保存开关。宿主仍不递归激活 transitive bundle；Super 只读自己的 YAML，Better 独立维护自己的 YAML。
-- 更新保留已关闭的 Better；两者全关时同步延后到下一次启用。已安装代码替换仍遵守原生 restart-required 规则。相同 owner artifact 不反复重装已卸载的 Better；排队的同步在原生 profile writer lock 内重查卸载/owner 状态。
+- 唯一入口 `bash super-dsh/test/start-4999.sh`，复用完整 `pack.mjs` 双构建；缺源码、版本/pin 不一致即失败，禁止旧 registry / 兄弟仓构建回退。
+- 两包普通 npm pack，`pair.json` 记录版本/路径/SHA256；检查独立 YAML、所有 browser exports、exact dependency 及无 Better payload。
+- 初始消费者只安装 Super；npm/pnpm 在同一个安装操作解析两包。测试 launcher 运行仅监听 loopback 的只读 registry gateway，Better/Super 元数据与 archive 来自收到的双 tarball，其它依赖转发正常 registry。profile `.npmrc` 固定同一 endpoint，后续 Plugin Manager 复用。launcher 不 override、不预提升 Better，不改正式 archive。
+- 登记器归 Super 的自身 setup 实现；Better 不携带 Super 交付代码，避免旧 Better 优先解析阻挡升级。宿主只列出 direct dependencies/selected bundles。coordinator 在官方 profile writer lock 内重查 owner/卸载意图，从 Super 解析已下载的 exact Better，并使用 `saveManifest` + `runProfilePnpm(['install','--offline','--ignore-scripts','--no-frozen-lockfile'])` 登记为独立直接依赖/bundle。这是用户一次安装之后的自动本地登记，不是第二次联网下载。不能用 `add --offline`：当前宿主会先在线 `pnpm view`；无 named spec 的 install 不走该 lookup。离线缓存不足报错，不在线回退。
+- 直接 npm 消费者若 exact Better 已 hoist，登记只写 profile/npm lock root 元数据，保持 `npm ci` 一致；旧 direct 版本冲突则通过官方包操作调用 npm 离线重排，使用消费者已有 npm cache。不能假定 npm 下载已进入 pnpm store。
+- `Code source` 真实读取 dependency spec：新 Better 为 `better-dsh@<version>`；测试 Super 若通过 archive 安装则保持实际 archive 来源。旧 file-backed Better 随升级迁移为 exact registry spec；旧 cache 不删除。两包各自 YAML、原生开关与 component patches 独立。
+- 新 receipt 位于 `companion-registration/`，记录成功的 version；保留关闭、同版本显式卸载、profile writer-lock 竞态和取消。已加载代码/来源替换仍明确要求冷重启。生产发布先 Better 后 Super，必须完成报告与本轮放行；公共 registry 的本轮实际安装验收只能在批准上传后执行。
 - Better 提供原生 HMR 子类，仅通过有守卫的兼容桥清除过期事务 ALS，保留原生 watcher、队列和 disposal；完整关闭 Better 后恢复原生服务。WebServer 切换会断开当前 HTTP 连接，浏览器可能需要刷新，已保存的开关不丢失。
-- 初次 pnpm 安装的测试 store 写入 profile `.npmrc`，后续原生 Plugin Manager/包内同步使用同一 store；不以 transient CLI 参数造成运行时安装来源不一致。
+- 初次安装和原生 Plugin Manager/离线登记使用同一默认 pnpm store、profile `.npmrc` registry；不改变默认脚本策略。
 - WebTrust、WebServer、credential onboarding 和 welcome 是 Better Dash 原生 DSH 策略。`dashr-web-trust` 是唯一 trust 实现；Better Dash 禁用原生 `webserver` 行，插入 `dashr-webserver` 提供同一原生 Service，并在监听前等待 welcome policy。默认 host `0.0.0.0`、port 3080/CLI override、native 压缩参数保留。测试 profile 只补共用 credentials，测试端口走官方 CLI `--port 4999`。
 - `dashr-welcome-notice` 从真实宿主安装的 Models client 读取当前 `WELCOME_NOTICE_VERSION`，用官方 Loader 配置事件/更新入口投到原 General settings namespace。无写死版本，无 Models UI 替换；`- id: dashr-welcome-notice` + `disabled: true` 恢复原生确认行为。一般版本 bump 自动适配；私有符号或产物布局变化会报错，需适配或禁用。监听顺序保证首个 HTTP settings 读取也已完成确认。
 - dev WebMCP 位于本仓根 `dev-webmcp/`，名为 `@pgmi-builds/better-dsh-dev-webmcp`。只由测试 profile 附加，不进入两包正式 tarball；编译 peer 同源于 launcher 的真实安装锚。
@@ -235,7 +240,7 @@
 - 根 `npm run version:release -- 0.3.0-a` 同步 private 根、两包、锁文件元数据及 Super Dash 的 exact Better dependency。正式目标0.3.0；测试轮后缀同步递增，真实发布仍需本轮放行。
 - 根 `npm run pack` 强制本仓双构建。Better Dash 文档副本按 `docs/package-catalog.json` 选择原生/共享资料，旧冲突文档可映射到原包路径；不把整棵 Hub 资料扫进小包。
 - 单独小包验收：`SUPERD_TEST_CONSUMER=better-dsh SUPERD_PORT=4997 SUPERD_HOME_DIR=$PWD/.tests/better-dsh bash super-dsh/test/start-4999.sh`。构建仍是双产物，消费仅 Better Dash，没有 Super Dash override、Hub bundle 或 foreign agent。
-- dev3 使用同一个 launcher、实际宿主安装锚与保留的测试 home。将两 tarball + `pair.json` 传到目标后设置 `SUPERD_TEST_PACK_DIR=<received-directory>`；`scripts/read-pack-pair.mjs` 重定位产物路径，核验 SHA256、包名/同步版本、独立 YAML 层、内嵌逐文件一致性、确切归档 bytes 和 browser client exports后才安装。目标端不重新构建、不从 registry 拉 Better Dash。本机默认入口仍每轮双构建。
+- dev3 使用同一个 launcher、实际宿主安装锚与保留的测试 home。将两 tarball + `pair.json` 传到目标后设置 `SUPERD_TEST_PACK_DIR=<received-directory>`；`scripts/read-pack-pair.mjs` 重定位产物路径，核验 SHA256、同步版本、独立 YAML、exact dependency、无 Better payload 与 browser exports 后才安装。目标端不重建；其只读测试 registry 仅提供同一双产物。本机默认入口仍每轮双构建。
 - Git 历史保留两个原始根和全部旧 SHA；原 Better 分支/tag 以 `legacy/better-dsh/` 标记，避免与旧 Hub v0.1.x tag 重名。正式合并以 Better 历史为第一父、Hub 历史为第二父；旧 npm 版本不改写。
 
 
@@ -251,4 +256,4 @@
 
 DSH `0.2.1-alpha.1` 的 `PluginPackages.refresh()` 要求可重算的官方 `ProfileRuntimeResolution`。Hub 扩大 host 表时保留该真实类及其重算能力，并在每次重算后重新加入 world 映射；旧宿主没有该类时仍走其原有数据表契约。原生映射删除和重启冲突检查仍由宿主负责。
 
-在 refresh-capable 宿主上，首次由包内 coordinator 将已经进入 host 表的内嵌 Better 提升为直接依赖，属于原生 resolver 明确要求的冷重启窗口。coordinator 明确报告重启；保持已经写好的 profile，冷重启一次该测试服务后，再验证两包独立启停。不得修改 resolver、预先由 launcher 提升 Better，或重新生成 profile 来掩盖这条消费者行为。后续实际代码替换也继续要求重启。该窗口不适用于普通 bundle 开关、首次安装无既有映射的普通插件或旧宿主的首次登记。
+在 refresh-capable 宿主上，首次由包内 coordinator 将已经进入 host 表的传递依赖 Better 提升为直接依赖，属于原生 resolver 明确要求的冷重启窗口。coordinator 明确报告重启；保持已经写好的 profile，冷重启一次该测试服务后，再验证两包独立启停。不得修改 resolver、预先由 launcher 提升 Better，或重新生成 profile 来掩盖这条消费者行为。后续实际代码替换也继续要求重启。该窗口不适用于普通 bundle 开关、首次安装无既有映射的普通插件或旧宿主的首次登记。

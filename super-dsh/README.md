@@ -24,28 +24,31 @@ DSH home is created under `<DSH_HOME>/agents/<label>/` on first boot.
 
 ## Better Dash delivery and native Web defaults
 
-The release embeds [Better Dash](../better-dsh/) and Pi's prebuilt SDK dependency tree.
-Every `scripts/pack.mjs` invocation first builds the current same-repository
-`../better-dsh` and packs it with the same npm approach, then embeds that
-artifact using `bundledDependencies`. Missing source or an exact version mismatch
-fails the build; Better Dash is never fetched from a registry during this step.
-The pack verifies every embedded file against the independent Better Dash tarball.
+Super Dash declares [Better Dash](../better-dsh/) at the synchronized exact
+version in ordinary npm `dependencies`; it contains no Better files or archive.
+One `npm install super-dsh@<version>` or native Plugin Manager installation
+resolves both packages from the configured registry. Publish Better first, then
+Super. Pi's prebuilt SDK dependency tree retains its separate bundled delivery.
 
-Install Super Dash alone: on first startup its delivery component registers the
-exact enclosed Better Dash tarball through the installed harness's native package
-operation. The native Plugin Manager then shows **Super Dash** and **Better Dash**
-as parallel installed bundles. Their switches are independent: Better alone keeps
-native tools; Super alone keeps Hub/A2A and foreign agents. dev WebMCP stays separate.
-Super never includes Better's YAML in its own bundle patch.
+DSH does not recursively expose transitive bundles. On startup the coordinator
+registers the already downloaded exact Better version using native profile
+package operations **offline**, without installation hooks or another registry
+fetch. This automatic local registration is separate from the user's single
+installation command. Missing cached data reports a failure instead of falling
+back to online fetching. Replacing loaded code or promoting loaded provenance
+requires the documented cold restart.
 
-The archive is cached in the current DSH home's `bundle-artifacts/` directory, so
-Better remains reinstallable after Super is removed. An update preserves a retained
-Better disablement; replacing an already installed package requires a DSH restart.
-When both bundles are disabled, companion updates wait until either is enabled.
-Explicitly uninstalling Better is respected for the same Super artifact.
-Both source directories share one repository, and Better Dash remains separately
-installable with the same version, currently **0.3.0-a**. Pi's bundled dependencies
-require no installation-script approval from the consumer.
+The Plugin Manager shows both packages as parallel installed bundles with their
+own YAML and independent switches. Better's Code source is `better-dsh@<version>`.
+Updates retain disablement and same-version explicit uninstall; removing Super
+retains the directly registered Better. Old `bundle-artifacts/` caches are left
+intact for previous installations, but new releases do not write them. With Super
+disabled, registration waits until Super is enabled. dev WebMCP is
+separate and test-only.
+
+Both packages use the same local dual-build pipeline. Tests serve the exact
+unpublished artifact pair through a read-only local registry, without modifying
+the release manifest or preinstalling Better. Current iteration: **0.3.0-f**.
 
 For a tarball URL installation in the native Web UI, put the `.tgz` URL in the
 main Add plugin input and keep the separate Registry selection on the official

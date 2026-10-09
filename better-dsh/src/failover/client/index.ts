@@ -37,7 +37,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /** Required services (cordis fiber inject). */
-export const inject = ['slots', 'locale', 'remote', 'remote.settings', 'remote.session']
+export const inject = ['slots', 'locale', 'remote', 'remote.settings', 'remote.session', 'configForms']
 
 /**
  * Register the `failover` dictionaries and the General settings row.
@@ -55,7 +55,9 @@ export function apply(ctx: ClientContext): void {
   // `src/compaction/index.ts`, installed by the plugin's host apply).
   setupCompactionRow(ctx)
 
-  ctx.slots.inject('settings.general.item', function* () {
+  // The package client remains loaded when a Host component is disabled.
+  // Follow the owning namespace rather than offering an unserved editor.
+  ctx.effect(() => ctx.configForms.whileServed([FAILOVER_SETTINGS_ENTRY], () => ctx.slots.inject('settings.general.item', function* () {
     yield ctx.slots.register({
       name: 'settings.general.item',
       id: 'failover',
@@ -88,5 +90,5 @@ export function apply(ctx: ClientContext): void {
         },
       }),
     }, FailoverRow)
-  })
+  })), 'llm-failover: served settings row')
 }

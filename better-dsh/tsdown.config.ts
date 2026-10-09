@@ -42,7 +42,6 @@ export default defineConfig({
     'src/web-trust.ts',
     'src/web-password.ts',
     'src/welcome-notice.ts',
-    'src/bundle-delivery.ts',
     'src/hmr.ts',
     'src/webserver.ts',
     'src/mobile/plugin.ts',

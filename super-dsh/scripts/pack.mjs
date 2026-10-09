@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { packPackage } from './pack-package.mjs'
 import { buildBetterDash } from './build-better.mjs'
-import { verifyBundledPackage } from './verify-bundled.mjs'
+import { verifyDependencyPair } from './verify-dependency-pair.mjs'
 import { buildPiBundle, verifyPiBundle, PI_PACKAGE } from './build-pi.mjs'
 
 const LINE = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -84,8 +84,8 @@ console.log(`[pack] tarball: ${PACK_DIR}/super-dsh-${version}.tgz`)
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex')
 const superDash = { name: manifest.name, version, source: LINE, tarball: join(PACK_DIR, `super-dsh-${version}.tgz`) }
 verifyPiBundle(superDash.tarball, manifest.dependencies[PI_PACKAGE])
-const bundledFiles = verifyBundledPackage(superDash.tarball, betterDash.tarball, betterDash.name)
-console.log(`[pack] verified ${bundledFiles} bundled Better Dash files against its local tarball`)
-const pair = { bundledFiles, builtAt: new Date().toISOString(), betterDash: { ...betterDash, sha256: sha256(betterDash.tarball) }, superDash: { ...superDash, sha256: sha256(superDash.tarball) } }
+const registryDependency = verifyDependencyPair(superDash.tarball, betterDash.tarball)
+console.log('[pack] verified exact registry dependency; no Better payload in Super')
+const pair = { registryDependency, builtAt: new Date().toISOString(), betterDash: { ...betterDash, sha256: sha256(betterDash.tarball) }, superDash: { ...superDash, sha256: sha256(superDash.tarball) } }
 writeFileSync(join(PACK_DIR, 'pair.json'), JSON.stringify(pair, null, 2) + '\n')
 for (const item of [pair.betterDash, pair.superDash]) console.log(`[pack] ${item.name}@${item.version}: ${item.sha256}`)

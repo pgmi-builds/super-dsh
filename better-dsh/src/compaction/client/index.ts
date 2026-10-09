@@ -37,7 +37,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
  * Register the dictionaries and the General settings row.
  *
  * Called from the plugin's client entry, which already injects `locale`,
- * `slots` and `remote.settings`.
+ * `slots`, `remote.settings` and `configForms`.
  *
  * @param ctx - client root context.
  */
@@ -47,7 +47,7 @@ export function setupCompactionRow(ctx: ClientContext): void {
     'compaction-tuning: dictionaries',
   )
 
-  ctx.slots.inject('settings.general.item', function*() {
+  ctx.effect(() => ctx.configForms.whileServed([COMPACTION_SETTINGS_ENTRY], () => ctx.slots.inject('settings.general.item', function*() {
     yield ctx.slots.register({
       name: 'settings.general.item',
       id: COMPACTION_SETTINGS_NS,
@@ -74,5 +74,5 @@ export function setupCompactionRow(ctx: ClientContext): void {
         },
       }),
     }, CompactionRow)
-  })
+  })), 'compaction-tuning: served settings row')
 }
