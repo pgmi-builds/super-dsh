@@ -89,6 +89,10 @@
 
 npm 可能在返回成功后提示 `Your package is being processed`，此时公开查询仍可返回404。每包只提交一次；等待公开 metadata、dist-tag 和 tarball，核对归档 SHA256/SHA1/SHA512 后才安装消费者或宣告发布完成。不得因处理延迟重复 publish、换字母或让消费者退回旧 latest。
 
+该提示来自 registry 的 `npm-notice` 响应头；HTTP202 表示请求已接收，不代表包已公开。npm 已加入发布前扫描，包可能等待扫描、人工审核或被阻止，服务状态页正常不能排除单包延迟。参考 [官方发布前扫描说明](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/)。
+
+**排查触发点**：提交后15分钟仍不可见，就停止纯轮询并转入诊断；这是本仓操作阈值，不是 npm 的时限保证。检查原始 npm debug log 的目标 URL、PUT 状态和耗时；安全核对认证身份、包 owner、token 权限及有效配置；比较已成功的发布；用 PC/目标机、代理/直连、认证/匿名读取排除缓存与网络差异；检查 `npm stage list` 是否有显式待审批任务。不得输出 token 或完整认证配置。若仍只有202→404且 staging 为空，记录具体证据与待完成部署，查看维护者收到的 npm 延迟/审核通知；不要把404直接判为认证失败、扫描通过或恶意内容，也不要继续无期限轮询。npm 对扫描状态查询和延迟通知的说明见 [官方讨论](https://github.com/orgs/community/discussions/203413)。
+
 ---
 
 ## 3. 测试环境规范
