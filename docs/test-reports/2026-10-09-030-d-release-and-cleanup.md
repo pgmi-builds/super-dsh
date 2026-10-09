@@ -41,14 +41,18 @@ An independent requesting-code-review reviewer found no current implementation b
 
 ## Publication and cleanup
 
-Publication is authorized by the current user instruction. The verified Better archive was submitted first and became publicly available with `latest=0.3.0-d`; its downloaded archive matches the table SHA256. Super's unchanged verified archive was submitted next and npm returned success with asynchronous processing. At this checkpoint its public version was still pending; public pair download/install verification and the final release tag follow after registry visibility. No repeated publication or rollback was attempted.
+Publication was authorized by the current user instruction. The verified Better archive was submitted first and became publicly available, then Super was submitted. Both are now publicly available with `latest=0.3.0-d`. Both public downloads match the table SHA256 exactly. npm's asynchronous processing delayed visibility; neither publication was repeated or rolled back.
+
+A new empty-cache consumer performed one ordinary `npm install super-dsh@0.3.0-d` against public npm, fetched both exact packages, verified the final README, and completed native companion registration with the exact direct npm lock edge. The temporary consumer home/cache was removed afterward. Public verification is recorded in `registry-proof.json`, `public-consumer.json`, and `public-install.log`.
 
 Cleanup completed independently while waiting for registry processing:
 
 - PC4999, dev3 4998 and PC4997 were all test services and are stopped. Old PC4993/4994 test services, PC4996 review tunnel, both read-only test registry gateways and old failed test-unit records were also removed/stopped. `ss` found no 499x or test-registry listeners on either machine; neither retained any `superd*` unit.
 - Removed the two clean tracked linked worktrees (`codex-app-server`, `p0-api-wrap`) and the empty retired `foreign-substrate` directory. The former worktrees' Git branches remain. Main checkout has no runtime symlink referencing them.
-- Removed 10 temporary PC test-home directories and three dev3 probe/tool-install directories. Retained PC `.tests/superd` and `.tests/better-dsh`, dev3 `.tests/foreign-substrate`, its exact DSH Host installation anchor, compatibility dependencies and shared credential seed. Old4993/4994 test assets were archived with mode0600 before directory removal.
+- Removed 11 temporary PC test-home directories (including the final public consumer) and three dev3 probe/tool-install directories. Retained PC `.tests/superd` and `.tests/better-dsh`, dev3 `.tests/foreign-substrate`, its exact DSH Host installation anchor, compatibility dependencies and shared credential seed. Old4993/4994 test assets were archived with mode0600 before directory removal.
 - Retained profiles' generated registry configuration now points at public npm; local test-gateway tarball URLs for the two release packages were normalized to their public equivalents without changing integrity or version. Future launcher runs manage their own gateway configuration again.
 - Source/report staging excludes unrelated private `.claude/settings.local.json`. Production services and user runtime homes were not cleaned or upgraded.
 
-Evidence: `cleanup-pc-initial.json`, `cleanup-dev3-initial.json`, `stopped-services-pc.json`, the protected `obsolete-homes-user-assets.tgz`, and registry/public installation records under `.scratch/release-030-d/`.
+Evidence: `cleanup-pc-initial.json`, `cleanup-pc-final.json`, `cleanup-dev3-initial.json`, `stopped-services-pc.json`, the protected `obsolete-homes-user-assets.tgz`, and registry/public installation records under `.scratch/release-030-d/`.
+
+Verified source and reports were committed as `ed56a35` and pushed to origin/master during registry processing. The final documentation checkpoint and annotated `v0.3.0-d` tag follow successful public verification; private local settings remain outside Git.
