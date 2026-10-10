@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import type { OutputStats } from './hub-contract.ts'
 
 /** 收帧帧体：退出码 + 只读回传的 cwd（Non-Goal ②：报告不重建）。 */
 export interface PtyFrame { exit: number; cwd: string | null }
@@ -28,9 +29,16 @@ export function normalizePtyText(s: string): string {
   return stripAnsi(s).replace(/\r\n/g, '\n').replace(/\r/g, '')
 }
 
-export function tailWindow(text: string, cap: number): { text: string; truncated?: number } {
-  if (text.length <= cap) return { text }
-  return { text: `[truncated: showing last ${cap} of ${text.length} chars]\n${text.slice(text.length - cap)}`, truncated: text.length }
+export function tailWindow(text: string, cap: number, stats?: OutputStats): { text: string; truncated?: number; stats?: OutputStats } {
+  let tail = text.slice(-cap)
+  if (tail.charCodeAt(0) >= 0xdc00 && tail.charCodeAt(0) <= 0xdfff) tail = tail.slice(1)
+  const returned = stats?.unit === 'bytes' ? Buffer.byteLength(tail) : tail.length
+  const total = stats?.total ?? text.length
+  const updated = stats === undefined ? {} : { stats: { ...stats, returned } }
+  if (total <= returned) return { text: tail, ...updated }
+  const unit = stats?.unit === 'bytes' ? 'bytes' : 'chars'
+  const eviction = stats !== undefined && stats.dropped > 0 ? `; retained ${stats.retained}, dropped head ${stats.dropped}, retention limit ${stats.retentionLimit} ${stats.unit === 'bytes' ? 'bytes' : 'UTF-16 code units'}` : ''
+  return { text: `[truncated: showing last ${returned} of ${total} ${unit}${eviction}]\n${tail}`, truncated: total, ...updated }
 }
 
 export interface FrameParserEvents {

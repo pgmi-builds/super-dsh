@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { deferredTargetResolution, killReturnedShell } from './disposal-fixture.ts'
 import { RemoteDriver, type RemoteAuditRecord } from '../../src/remote/driver.ts'
 
 const driverWith = (over: Partial<ConstructorParameters<typeof RemoteDriver>[0]> = {}): RemoteDriver =>
@@ -234,5 +235,40 @@ describe('RemoteDriver BYO-PTY labels (target:"byop:<label>")', () => {
     expect(a1).toContain('incus containers')
     expect(a2).toContain('incus containers')
     await d.dispose()
+  })
+})
+
+
+describe('RemoteDriver terminal disposal', () => {
+  it.each(['pty', 'oneshot'] as const)('does not launch %s work after disposal while target discovery is pending', async mode => {
+    const gate = deferredTargetResolution()
+    const driver = driverWith(gate.options)
+    let result: Awaited<ReturnType<RemoteDriver['call']>> | undefined
+    try {
+      const pending = driver.call({ target: 'delayed', mode, cmd: 'printf %s "$$"' })
+        .then(value => { result = value; return { value } }, error => ({ error }))
+      await gate.entered
+      await driver.dispose()
+      gate.release()
+      expect(await pending).toMatchObject({ error: expect.objectContaining({ message: expect.stringContaining('E_REMOTE_DISPOSED') }) })
+      await expect(driver.call({ target: 'byop:after', spawn: 'bash', cmd: 'echo should-not-run' })).rejects.toThrow('E_REMOTE_DISPOSED')
+    } finally {
+      gate.release()
+      killReturnedShell(result?.stdout)
+      await driver.dispose()
+    }
+  })
+
+  it('concurrent disposal calls share completion and settle only after the live shell exits', async () => {
+    const driver = driverWith()
+    try {
+      const result = await driver.call({ target: 'byop:live', spawn: 'bash', cmd: 'printf %s "$$"' })
+      const pid = Number(result.stdout)
+      const first = driver.dispose(), second = driver.dispose()
+      expect(second).toBe(first)
+      await Promise.all([first, second])
+      expect(() => process.kill(pid, 0)).toThrow()
+      expect(driver.dispose()).toBe(first)
+    } finally { await driver.dispose() }
   })
 })

@@ -1,3 +1,4 @@
+import { Utf16TailRing, type StreamOutputStats } from '../../remote/plugin.js'
 // PTY session machinery — PORTED from better-dsh src/remote/pty-session.ts
 // (spec §8.2 / D12 "原样照抄"), with the ONE sanctioned adaptation: the
 // subprocess spawn is replaced by the PtyChannel seam (exec-pty-channel.ts) —
@@ -23,6 +24,7 @@ export interface PtySessionOptions {
 export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number }
 export interface PtyDispatchResult {
   output: string
+  outputStats?: StreamOutputStats
   exit: number | null
   cwd: string | null
   timedOut: boolean
@@ -70,12 +72,12 @@ export class PtySession {
       this.inFlight++
       return await new Promise<PtyDispatchResult>((resolve) => {
         const nonce = genNonce()
-        let output = ''
+        const ring = new Utf16TailRing(OUTPUT_HARD_CAP)
         let interrupted = false
         let settled = false
         let interruptTimer: NodeJS.Timeout | undefined
         let killTimer: NodeJS.Timeout | undefined
-        const deathWaiter = (): void => finish({ output, exit: null, cwd: null, timedOut: interrupted })
+        const deathWaiter = (): void => finish({ output: ring.text, exit: null, cwd: null, timedOut: interrupted })
         const cleanup = (): void => {
           this.onChunk = null
           // I1（终审）：已结算 dispatch 的死亡等待必须摘除——否则闭包钉住整段 output，
@@ -91,19 +93,13 @@ export class PtySession {
           this.inFlight--
           this.lastSettleAt = Date.now()
           this.resetIdleTimer()
-          resolve({ ...r, reconnected, durationMs: Date.now() - started })
+          resolve({ ...r, outputStats: { stdout: ring.stats() }, reconnected, durationMs: Date.now() - started })
         }
         const parser = createNonceFrameParser(nonce, {
           onOutput: (t) => {
-            output += t
-            // C1（终审）：内存安全帽——无帽时一条 cat /dev/urandom 能在 120s 看门狗内
-            // 吃垮宿主 daemon。帽上切片避开代理对（首字符为低位代理则让出一字符）。
-            if (output.length > OUTPUT_HARD_CAP) {
-              output = output.slice(output.length - OUTPUT_HARD_CAP)
-              if (output.charCodeAt(0) >= 0xdc00 && output.charCodeAt(0) <= 0xdfff) output = output.slice(1)
-            }
+            ring.push(t)
           },
-          onFrame: ({ exit, cwd }) => finish({ output, exit, cwd, timedOut: interrupted }),
+          onFrame: ({ exit, cwd }) => finish({ output: ring.text, exit, cwd, timedOut: interrupted }),
         })
         this.onChunk = (c) => parser.feed(c)
         this.write(wrapPtyCommand(cmd, nonce))
@@ -121,7 +117,7 @@ export class PtySession {
             // （否则 trap-INT 的卡死进程永生，重连后旧组再不可达）
             this.opts.channel.kill()
             this.markDead()
-            finish({ output, exit: null, cwd: null, timedOut: true })
+            finish({ output: ring.text, exit: null, cwd: null, timedOut: true })
           }, INTERRUPT_GRACE_MS)
         }, dOpts.timeoutSec === undefined ? 120_000 : dOpts.timeoutSec * 1_000)
         this.deathWaiters.push(deathWaiter)

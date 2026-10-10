@@ -7,3 +7,6 @@ lib/
 .venv/
 
 bundles/
+
+# Independent generated remote closure; canonical sources live in Better.
+/remote/

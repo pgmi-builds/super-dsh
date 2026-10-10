@@ -15,3 +15,5 @@ Matching shared files were reused. Different root documents were preserved rathe
 `docs/60_exploration-and-research/` and local skill variants are ignored working references. Published reference/skill source is under `80_upstream-docs-and-skills/`; local agent skill installations are development tooling, outside both npm packs.
 
 The version/history/layout decision is recorded in [the monorepo spec](specs/monorepo-030/spec.md). Hub-only documents remain in the shared tree but are absent from the Better Dash package unless deliberately selected. Better runtime resources in `better-dsh/dsh-docs/` remain package-owned assets.
+
+Current remote ownership and independent-bundle architecture: [ADR 0015](adr/0015-independent-bundles-agent-remote.md), [remote specification](specs/remote-tool-enhancement/spec.md), and [remote user guide](remote-tools.md). ADR 0014 documents the superseded dependency architecture.

@@ -10,3 +10,10 @@
 - `scripts/copy-docs.mjs` 按根 `docs/package-catalog.json` 生成包内文档副本；新增共享/原生资料应更新清单。根资料不因发包被改写；Hub 专属资料不进入小包。
 - 测试以根整包 launcher 为准，单包消费者用 `SUPERD_TEST_CONSUMER=better-dsh` 与独立 `.tests/` home；仍构建双产物。语义 Surface 必须通过真实模型工具行为验收。
 - 历史规则/术语/报告可在 `docs/legacy/better-dash/`、`docs/00_adr/`、`docs/20_specs/` 与 `docs/50_test-reports/` 查询；原兄弟仓保持原样，不参与现役开发与构建。
+
+- **remote 窄范围构建复用例外（2026-10-10）**：`better-dsh/src/remote/` 是唯一可编辑源码；Super 仅生成独立 `remote/` ESM/dts 闭包及源码 SHA-256 provenance，导出 `super-dsh/remote`。生成物不手改，不含 Better 整包、client、其他工具或 npm 依赖边；两条 remote 行默认开，按 Agent 官方创建事件竞争注册。除此例外，原独立双包边界不变。赢家卸载不热重抢，新 Agent 或冷恢复可重新竞争；现行决策见 `docs/adr/0015-independent-bundles-agent-remote.md`。
+
+
+### 2026-10-10 consumer worker delivery correction
+
+The generated Super `remote/` contains exactly `plugin.js`, `plugin.d.ts`, private `file-worker.js`, and `provenance.json`. The worker leaf is built solely from canonical `better-dsh/src/remote/file-worker.ts`, has Node-builtins-only imports, and is hashed/checked with the closure. It has no public package export, host peer imports, duplicated host modules, source loader or Better dependency. The public plugin contract remains unchanged. The existing owned child-process/group cleanup remains the receiver boundary; no worker-thread lifecycle replacement. This narrow extra generated leaf fixes actual installed receiver resolution, not a general guarantee that host plugins import outside their host resolver.

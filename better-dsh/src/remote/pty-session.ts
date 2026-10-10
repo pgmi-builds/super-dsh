@@ -1,3 +1,5 @@
+import { Utf16TailRing } from './output-ring.ts'
+import type { StreamOutputStats } from './hub-contract.ts'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { buildInitCommand, createNonceFrameParser, genNonce, wrapPtyCommand } from './nonce-framing.ts'
 
@@ -27,6 +29,7 @@ export interface PtySessionOptions {
 export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number }
 export interface PtyDispatchResult {
   output: string
+  outputStats?: StreamOutputStats
   exit: number | null
   cwd: string | null
   timedOut: boolean
@@ -57,6 +60,9 @@ export class PtySession {
   private lastSettleAt = 0
   /** 是否曾成功初始化（ready 过）。决定死亡语义：ready 过 → reconnect（留池）；从未 ready → 出池（见 start()）。 */
   private everReady = false
+  private disposal: Promise<void> | undefined
+  private procClose: Promise<void> = Promise.resolve()
+  private groupCleanup: Promise<void> = Promise.resolve()
 
   constructor(private readonly opts: PtySessionOptions) {}
 
@@ -76,15 +82,16 @@ export class PtySession {
       const started = Date.now()
       const reconnected = this.state === 'dead'
       if (this.state !== 'ready') await this.start()
+      if (this.state === 'disposed') throw new Error(`[E_SESSION_DISPOSED] remote pty session '${displayKey(this.opts.key)}' was disposed before dispatch`)
       this.inFlight++
       return await new Promise<PtyDispatchResult>((resolve) => {
         const nonce = genNonce()
-        let output = ''
+        const ring = new Utf16TailRing(OUTPUT_HARD_CAP)
         let interrupted = false
         let settled = false
         let interruptTimer: NodeJS.Timeout | undefined
         let killTimer: NodeJS.Timeout | undefined
-        const deathWaiter = (): void => finish({ output, exit: null, cwd: null, timedOut: interrupted })
+        const deathWaiter = (): void => finish({ output: ring.text, exit: null, cwd: null, timedOut: interrupted })
         const cleanup = (): void => {
           this.onChunk = null
           // I1（终审）：已结算 dispatch 的死亡等待必须摘除——否则闭包钉住整段 output，
@@ -100,19 +107,13 @@ export class PtySession {
           this.inFlight--
           this.lastSettleAt = Date.now()
           this.resetIdleTimer()
-          resolve({ ...r, reconnected, durationMs: Date.now() - started })
+          resolve({ ...r, outputStats: { stdout: ring.stats() }, reconnected, durationMs: Date.now() - started })
         }
         const parser = createNonceFrameParser(nonce, {
           onOutput: (t) => {
-            output += t
-            // C1（终审）：内存安全帽——无帽时一条 cat /dev/urandom 能在 120s 看门狗内
-            // 吃垮宿主 daemon。帽上切片避开代理对（首字符为低位代理则让出一字符）。
-            if (output.length > OUTPUT_HARD_CAP) {
-              output = output.slice(output.length - OUTPUT_HARD_CAP)
-              if (output.charCodeAt(0) >= 0xdc00 && output.charCodeAt(0) <= 0xdfff) output = output.slice(1)
-            }
+            ring.push(t)
           },
-          onFrame: ({ exit, cwd }) => finish({ output, exit, cwd, timedOut: interrupted }),
+          onFrame: ({ exit, cwd }) => finish({ output: ring.text, exit, cwd, timedOut: interrupted }),
         })
         this.onChunk = (c) => parser.feed(c)
         this.write(wrapPtyCommand(cmd, nonce))
@@ -130,7 +131,7 @@ export class PtySession {
             // （否则 trap-INT 的卡死进程永生，重连后旧组再不可达）
             this.killTree()
             this.markDead()
-            finish({ output, exit: null, cwd: null, timedOut: true })
+            finish({ output: ring.text, exit: null, cwd: null, timedOut: true })
           }, INTERRUPT_GRACE_MS)
         }, dOpts.timeoutSec === undefined ? 120_000 : dOpts.timeoutSec * 1_000)
         this.deathWaiters.push(deathWaiter)
@@ -142,14 +143,22 @@ export class PtySession {
   }
 
   /** TTL / row teardown：尽力 exit，1s 后杀组，出池。 */
-  async dispose(): Promise<void> {
-    if (this.state === 'disposed') return
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal
     this.clearIdleTimer()
     this.state = 'disposed'
     this.startPromise = null
+    const proc = this.proc
+    const close = this.procClose
+    // Captured pgid, not this.proc: the shell may close before redirected
+    // background descendants. Their TERM/KILL policy must still run.
+    const group = this.reapGroup(proc?.pid, 1_000, close)
+    this.disposal = Promise.all([close, this.groupCleanup, group]).then(() => {
+      if (this.proc === proc) this.proc = null
+    })
     this.write('exit\n')
-    setTimeout(() => this.killTree(), 1_000).unref()
     this.opts.onDead?.()
+    return this.disposal
   }
 
   private write(s: string): void {
@@ -184,7 +193,9 @@ export class PtySession {
     proc.stdout.setEncoding('utf8')
     proc.stdout.on('data', (d: string) => { this.onChunk?.(d) })
     proc.stderr.setEncoding('utf8').on('data', (d: string) => { this.diag = (this.diag + d).slice(-2_000) })
-    proc.once('close', () => this.markDead())
+    this.procClose = new Promise<void>((resolve) => {
+      proc.once('close', () => { this.markDead(); resolve() })
+    })
     proc.once('error', (err) => { this.diag = (this.diag + `\n[remote: spawn failed: ${err.message}]`).slice(-2_000) })
 
     const initTimeoutSec = this.opts.initTimeoutSec ?? DEFAULT_INIT_TIMEOUT_SEC
@@ -242,6 +253,7 @@ export class PtySession {
 
   private resetIdleTimer(): void {
     this.clearIdleTimer()
+    if (this.state === 'disposed') return
     this.idleTimer = setTimeout(() => void this.dispose(), this.opts.idleTtlSec * 1_000)
     this.idleTimer.unref()
   }
@@ -253,10 +265,52 @@ export class PtySession {
   private killTree(): void {
     const pid = this.proc?.pid
     this.proc = null
-    if (pid === undefined) return
-    try { process.kill(-pid, 'SIGTERM') } catch { /* already gone */ }
-    setTimeout(() => { try { process.kill(-pid, 'SIGKILL') } catch { /* already gone */ } }, 2_000).unref()
+    const cleanup = this.reapGroup(pid, 0, this.procClose)
+    this.groupCleanup = Promise.all([this.groupCleanup, cleanup]).then(() => undefined)
   }
+
+  /** A direct child's close is not proof that its detached process group is gone. */
+  private reapGroup(pid: number | undefined, graceMs: number, close: Promise<void>): Promise<void> {
+    if (pid === undefined) return Promise.resolve()
+    const signal = (value: NodeJS.Signals | 0): boolean => {
+      try { process.kill(-pid, value); return true }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
+        throw error
+      }
+    }
+    return new Promise<void>((resolve, reject) => {
+      let termTimer: NodeJS.Timeout | undefined
+      let killTimer: NodeJS.Timeout | undefined
+      let settled = false
+      const finish = (error?: unknown) => {
+        if (settled) return
+        settled = true
+        if (termTimer !== undefined) clearTimeout(termTimer)
+        if (killTimer !== undefined) clearTimeout(killTimer)
+        if (error !== undefined) reject(error)
+        else resolve()
+      }
+      // Early completion is allowed only when the *whole group* is absent.
+      const checkGone = () => { try { if (!signal(0)) finish() } catch (error) { finish(error) } }
+      checkGone()
+      if (settled) return
+      void close.then(checkGone)
+      termTimer = setTimeout(() => {
+        try {
+          if (!signal('SIGTERM')) { finish(); return }
+          killTimer = setTimeout(() => {
+            // A next check-phase callback can still precede kernel signal
+            // settlement. Bound this final settle window; never wait for
+            // orphan zombie PID removal by the system reaper.
+            try { signal('SIGKILL'); killTimer = setTimeout(() => finish(), 100) }
+            catch (error) { finish(error) }
+          }, 2_000)
+        } catch (error) { finish(error) }
+      }, graceMs)
+    })
+  }
+
 }
 
 export interface PtyPoolDefaults { idleTtlSec: number; initTimeoutSec?: number }
@@ -264,6 +318,8 @@ export interface PtyPoolDefaults { idleTtlSec: number; initTimeoutSec?: number }
 /** 会话池：键 → 会话。意外死亡的会话留在池内（下次 dispatch 带 reconnect 提示）。 */
 export class PtyPool {
   private readonly sessions = new Map<string, PtySession>()
+  private disposed = false
+  private disposal: Promise<void> | undefined
 
   constructor(private readonly defaults: PtyPoolDefaults) {}
 
@@ -287,6 +343,7 @@ export class PtyPool {
   }
 
   getOrCreate(key: string, argv: string[], origin?: string): PtySession {
+    if (this.disposed) throw new Error('[E_REMOTE_DISPOSED] remote: the owning Agent or plugin PTY pool was disposed')
     let s = this.sessions.get(key)
     if (s === undefined || s.sessionState === 'disposed') {
       s = new PtySession({ key, argv, origin, ...this.defaults, onDead: () => this.sessions.delete(key) })
@@ -295,8 +352,10 @@ export class PtyPool {
     return s
   }
 
-  async disposeAll(): Promise<void> {
-    await Promise.all([...this.sessions.values()].map((s) => s.dispose()))
-    this.sessions.clear()
+  disposeAll(): Promise<void> {
+    if (this.disposal) return this.disposal
+    this.disposed = true
+    return this.disposal = Promise.all([...this.sessions.values()].map((s) => s.dispose()))
+      .then(() => { this.sessions.clear() })
   }
 }

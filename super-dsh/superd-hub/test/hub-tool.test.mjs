@@ -15,6 +15,23 @@ import { join } from 'node:path'
 import { createSuperdHubTool, parseAgentAddress, shapeAgentStatusWindow, RECENT_CONVERSATIONS_MAX } from '../dist/hub-tool.js'
 import { wireHubToolRow, name as rowName } from '../dist/a2a-row.js'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
+import { runOneShotExec } from '../dist/exec.js'
+
+test('legacy Hub tool pipes string stdin to real oneshot and declares returned byte metadata', async () => {
+  const { tool } = makeTool({ deps: { localExec: true }, exec: { selfM4: () => 'm1ab', run: runOneShotExec } })
+  const value = await tool.execute({ action: 'exec', cmd: 'cat', stdin: 'literal $HOME `x` 中🙂' }, fakeExec())
+  assert.equal(value.stdout, 'literal $HOME `x` 中🙂')
+  assert.equal(value.outputStats.stdout.total, 25)
+  assert.deepEqual(validateJsonSchemaValue(tool.output.schema, value, ''), [])
+})
+
+test('legacy peer rendering labels unavailable totals instead of treating returned tail as full output', async () => {
+  const { tool } = makeTool({ deps: { localExec: true } })
+  const value = await tool.execute({ action: 'exec', cmd: 'ls' }, fakeExec())
+  const rendered = JSON.parse(tool.output.render({}, value)[0].text)
+  assert.match(rendered.note, /exact.*total.*retained.*dropped.*unavailable/)
+  assert.equal(rendered.outputStats, undefined)
+})
 
 // ---------------------------------------------------------------- fakes
 
@@ -407,7 +424,7 @@ test('stop idle (D5): stopped:false + the honest note; session scope keeps the d
 // ---------------------------------------------------------------- exec (P4 one-shot)
 
 test('exec: local one-shot runs on THIS machine; pty answers honestly; unknown machine is typed', async () => {
-  const { tool } = makeTool()
+  const { tool } = makeTool({ deps: { localExec: true } })
   const value = await tool.execute({ action: 'exec', mode: 'oneshot', cmd: 'ls' }, fakeExec())
   assert.deepEqual(value, {
     action: 'exec',
@@ -492,7 +509,7 @@ test('parseAgentAddress: strict <m4>-<a6> shape (T4) — malformed refused at pa
 // ---------------------------------------------------------------- output contract
 
 test('render is one JSON text block; every action value passes the declared output schema', async () => {
-  const { tool, service } = makeTool()
+  const { tool, service } = makeTool({ deps: { localExec: true } })
   const values = [
     await tool.execute({}, fakeExec()),
     await tool.execute({ action: 'send', agent: 'm1ab-na1ive', message: 'hi' }, fakeExec()),
@@ -508,7 +525,14 @@ test('render is one JSON text block; every action value passes the declared outp
     const violations = validateJsonSchemaValue(tool.output.schema, value, '')
     assert.deepEqual(violations, [], `output schema must accept the ${value.action} value`)
     const blocks = tool.output.render({}, value)
-    assert.deepEqual(blocks, [{ type: 'text', text: JSON.stringify(value) }])
+    assert.equal(blocks.length, 1)
+    assert.equal(blocks[0].type, 'text')
+    const rendered = JSON.parse(blocks[0].text)
+    if (value.action === 'exec' && !value.outputStats) {
+      assert.match(rendered.note, /exact total\/retained\/dropped unavailable/)
+      delete rendered.note
+    }
+    assert.deepEqual(rendered, value)
   }
   // the failed-send receipt shape passes too
   service.state.sendReceipt = { outcome: 'failed', messageId: 'm', sessionId: '', error: { code: 'c', message: 'm' } }
@@ -815,6 +839,7 @@ test('description and schema carry the agent_status leg and the thin-roster word
 test('0.1.7-n F1: cwd on the pty leg is refused loudly (no silent parameter no-op); oneshot still honors it', async () => {
   const seen = []
   const { tool } = makeTool({
+    deps: { localExec: true },
     exec: {
       selfM4: () => 'm1ab',
       run: async (input) => {
@@ -847,4 +872,13 @@ test('0.1.8 T3: agent is optional on continuation (route derived); D24 the singl
   assert.match(tool.description, /MESSAGING HAS NO STATUS QUERY/)
   assert.match(tool.description, /cwd is oneshot-only/)
   assert.match(tool.parameters.properties.cwd.description, /Not accepted with mode "pty"/)
+})
+
+test('exec default local gate rejects missing/self for both modes; explicit compatibility permits it', async () => {
+  const { tool } = makeTool()
+  for (const mode of ['oneshot', 'pty']) for (const machine of [undefined, 'm1ab']) {
+    await assert.rejects(tool.execute({ action: 'exec', cmd: 'printf forbidden', mode, ...(machine ? { machine } : {}) }, fakeExec()), /remote machine|local execution/)
+  }
+  const compatible = makeTool({ deps: { localExec: true } }).tool
+  assert.equal((await compatible.execute({ action: 'exec', cmd: 'printf allowed' }, fakeExec())).machine, 'm1ab')
 })

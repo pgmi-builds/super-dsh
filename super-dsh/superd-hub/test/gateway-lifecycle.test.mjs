@@ -107,3 +107,55 @@ test('disposing Connection during asynchronous PTY registration removes the late
   const releasePty = b.ctx.webServer.registerUpgrade({ path: PTY_EXEC_PATH, handler() {} })
   releasePty()
 })
+
+test('Hub body provides remote transport and receives exec without model tool rows', { timeout: 5000 }, async t => {
+  const b = await bench(t)
+  await b.connect()
+  const hub = b.ctx.plugin(Gateway)
+  await hub.await()
+  await idle()
+  assert.equal(b.ctx.get('superdRemoteTransport')?.protocol, 1)
+  assert.deepEqual(b.ctx.get('superdRemoteTransport').listTargets(), [])
+  assert.equal(b.ctx.get('tools'), undefined)
+  const url = new URL(b.ctx.connection.authenticatedUrl(b.origin))
+  const response = await fetch(b.origin + PAIRING_AUTH_PATH + url.search, { redirect: 'manual' })
+  const cookie = response.headers.getSetCookie().map(s => s.split(';')[0]).join('; ')
+  const exec = await fetch(b.origin + '/api/superd/exec', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ cmd: 'printf peer-local' }) })
+  assert.equal(exec.status, 200)
+  assert.equal((await exec.json()).stdout, 'peer-local')
+  const { createRemoteFileEndpoint } = await import('../dist/remote-file-rpc.js')
+  const { writeFile, readFile } = await import('node:fs/promises')
+  const scratch = mkdtempSync(join(tmpdir(), 'gateway-file-'))
+  t.after(() => rmSync(scratch, { recursive: true, force: true }))
+  const source = join(scratch, 'source'), destination = join(scratch, 'destination')
+  await writeFile(source, Buffer.from([0, 255, 128, 10]))
+  const endpoint = createRemoteFileEndpoint(() => ({ origin: b.origin, cookie }))
+  const signal = new AbortController().signal
+  await endpoint.importTree(destination, await endpoint.exportTree(source, signal), { mkdir: true, signal })
+  assert.deepEqual(await readFile(destination), Buffer.from([0, 255, 128, 10]))
+  await hub.dispose()
+  assert.equal(b.ctx.get('superdRemoteTransport'), undefined)
+})
+
+test('foreign WorldWebServer does not acquire a native provider or receiving exec route', async t => {
+  const { WorldWebServer } = await import('../dist/world-web-server.js')
+  const home = mkdtempSync(join(tmpdir(), 'superd-world-remote-'))
+  const before = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const ctx = new Context()
+  const routes = []
+  ctx.provide('webServer', new WorldWebServer('/foreign'))
+  ctx.provide('connection', { fetch: { register(route) { routes.push(route.path); return () => {} } } })
+  try {
+    const hub = ctx.plugin(Gateway)
+    await hub.await()
+    await idle()
+    assert.equal(ctx.get('superdRemoteTransport'), undefined)
+    assert.ok(!routes.includes('/api/superd/exec'))
+  } finally {
+    await ctx.fiber.dispose()
+    if (before === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = before
+    rmSync(home, { recursive: true, force: true })
+  }
+})

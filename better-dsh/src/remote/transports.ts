@@ -1,3 +1,4 @@
+import { sshArgv } from './ssh-targets.ts'
 import type { TargetPlan } from './target.ts'
 
 /** POSIX 单引号机械转义（唯一一层转义，spec §三"一层机械转义"）。 */
@@ -11,7 +12,7 @@ export function buildOneShotArgv(plan: TargetPlan, cmd: string): string[] {
     case 'ssh':
       // ssh 把 host 后的 argv 用空格拼接交远端 shell 解析——预先整体 shQuote，
       // 远端只做这一层解析，bash -lc 拿到原样 cmd。
-      return ['ssh', '-o', 'BatchMode=yes', '-T', '--', plan.host, `bash -lc ${shQuote(cmd)}`]
+      return sshArgv(plan.connection ?? { host: plan.host }, { command: `bash -lc ${shQuote(cmd)}` })
     case 'docker':
       return ['docker', 'exec', '-i', '--', plan.container, 'bash', '-lc', cmd]
     case 'incus':
@@ -23,7 +24,7 @@ export function buildOneShotArgv(plan: TargetPlan, cmd: string): string[] {
 export function buildPtyArgv(plan: TargetPlan): string[] {
   switch (plan.kind) {
     case 'ssh':
-      return ['ssh', '-tt', '-o', 'BatchMode=yes', '--', plan.host, 'bash']
+      return sshArgv(plan.connection ?? { host: plan.host }, { tty: true, command: 'bash' })
     case 'docker':
       return ['script', '-qfec', `stty -echo 2>/dev/null ; exec docker exec -it -- ${shQuote(plan.container)} bash`, '/dev/null']
     case 'incus':

@@ -12,6 +12,7 @@
 // process GROUP, 2s grace, SIGKILL to the group — `bash -lc` children must
 // not outlive their parent's timeout.
 import { spawn } from 'node:child_process'
+import { ByteTailRing, type StreamOutputStats } from '../../remote/plugin.js'
 import type { A2aLogFn } from './a2a-log.js'
 
 /** Shared-channel Fetch route path this API owns. */
@@ -19,6 +20,7 @@ export const EXEC_API_BASE = '/api/superd/exec'
 
 export interface OneShotExecInput {
   cmd: string
+  stdin?: string
   cwd?: string
   timeoutSec?: number
 }
@@ -29,6 +31,7 @@ export interface OneShotExecResult {
   stderr: string
   durationMs: number
   truncated: boolean
+  outputStats?: StreamOutputStats
   timedOut: boolean
   /**
    * Why the process ended (0.1.7-e, first-person finding F1/F2: `exit:null`
@@ -42,9 +45,9 @@ export interface OneShotExecResult {
   outcome: 'exited' | 'signaled' | 'timeout' | 'spawn-error'
 }
 
-/** Per-stream tail window returned to the caller (spec §8.1: 30k). */
+/** Per-stream returned tail: at most 30,000 bytes, beginning on a UTF8 boundary. */
 export const EXEC_TAIL_WINDOW = 30_000
-/** Per-stream hard retention while running (spec §8.1: 4M ring). */
+/** Hub oneshot per-stream raw-byte retention: 4MiB, distinct from native/PTy UTF16 caps. */
 export const EXEC_RING_HARD_CAP = 4 * 1024 * 1024
 export const EXEC_DEFAULT_TIMEOUT_SEC = 120
 export const EXEC_MAX_TIMEOUT_SEC = 600
@@ -77,7 +80,8 @@ export function parseOneShotExecBody(body: unknown): OneShotExecParsed {
   if (raw.timeoutSec !== undefined && (typeof raw.timeoutSec !== 'number' || !Number.isInteger(raw.timeoutSec) || raw.timeoutSec < 1 || raw.timeoutSec > EXEC_MAX_TIMEOUT_SEC)) {
     return { ok: false, error: `exec: timeoutSec must be an integer in [1, ${EXEC_MAX_TIMEOUT_SEC}]` }
   }
-  const known = new Set(['cmd', 'cwd', 'timeoutSec'])
+  if (raw.stdin !== undefined && typeof raw.stdin !== 'string') return { ok: false, error: 'exec: stdin must be a string' }
+  const known = new Set(['cmd', 'cwd', 'timeoutSec', 'stdin'])
   for (const key of Object.keys(raw)) {
     if (!known.has(key)) return { ok: false, error: `exec: unknown field "${key}"` }
   }
@@ -85,55 +89,10 @@ export function parseOneShotExecBody(body: unknown): OneShotExecParsed {
     ok: true,
     value: {
       cmd: raw.cmd,
+      ...(raw.stdin === undefined ? {} : { stdin: raw.stdin }),
       ...(raw.cwd === undefined ? {} : { cwd: raw.cwd }),
       ...(raw.timeoutSec === undefined ? {} : { timeoutSec: raw.timeoutSec }),
     },
-  }
-}
-
-/**
- * A capped tail-retaining accumulator: `total` counts every byte ever seen,
- * `ring` keeps at most EXEC_RING_HARD_CAP of the most recent ones.
- */
-class TailRing {
-  total = 0
-  private chunks: Buffer[] = []
-  private retained = 0
-
-  push(chunk: Buffer): void {
-    this.total += chunk.length
-    this.chunks.push(chunk)
-    this.retained += chunk.length
-    if (this.retained > EXEC_RING_HARD_CAP) {
-      let drop = this.retained - EXEC_RING_HARD_CAP
-      while (drop > 0 && this.chunks.length > 0) {
-        const head = this.chunks[0]
-        if (head.length <= drop) {
-          drop -= head.length
-          this.retained -= head.length
-          this.chunks.shift()
-        } else {
-          this.chunks[0] = head.subarray(drop)
-          this.retained -= drop
-          drop = 0
-        }
-      }
-    }
-  }
-
-  tail(maxBytes: number): Buffer {
-    if (this.retained <= maxBytes) return Buffer.concat(this.chunks)
-    let skip = this.retained - maxBytes
-    const out: Buffer[] = []
-    for (const chunk of this.chunks) {
-      if (skip >= chunk.length) {
-        skip -= chunk.length
-        continue
-      }
-      out.push(skip === 0 ? chunk : chunk.subarray(skip))
-      skip = 0
-    }
-    return Buffer.concat(out)
   }
 }
 
@@ -143,15 +102,17 @@ class TailRing {
  */
 export async function runOneShotExec(input: OneShotExecInput, log?: A2aLogFn): Promise<OneShotExecResult> {
   const started = Date.now()
-  const stdout = new TailRing()
-  const stderr = new TailRing()
+  const stdout = new ByteTailRing(EXEC_RING_HARD_CAP)
+  const stderr = new ByteTailRing(EXEC_RING_HARD_CAP)
   const timeoutSec = input.timeoutSec ?? EXEC_DEFAULT_TIMEOUT_SEC
   let terminationRequested = false
   const child = spawn('bash', ['-lc', input.cmd], {
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
     detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
+  child.stdin.on('error', () => { /* EPIPE on early exit: process outcome is authoritative. */ })
+  child.stdin.end(input.stdin)
   child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
   child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
   let graceTimer: NodeJS.Timeout | undefined
@@ -176,10 +137,11 @@ export async function runOneShotExec(input: OneShotExecInput, log?: A2aLogFn): P
   })
   clearTimeout(killTimer)
   if (graceTimer !== undefined) clearTimeout(graceTimer)
-  const outText = stdout.tail(EXEC_TAIL_WINDOW).toString('utf8')
+  const outTail = stdout.tail(EXEC_TAIL_WINDOW), errTail = stderr.tail(EXEC_TAIL_WINDOW)
+  const outText = outTail.toString('utf8')
   const errText = spawnError !== undefined
     ? `exec: spawn failed — ${spawnError}${input.cwd === undefined ? '' : ` (cwd: ${input.cwd})`}`
-    : stderr.tail(EXEC_TAIL_WINDOW).toString('utf8')
+    : errTail.toString('utf8')
   const timedOut = terminationRequested
   const outcome: OneShotExecResult['outcome'] = spawnError !== undefined
     ? 'spawn-error'
@@ -193,7 +155,8 @@ export async function runOneShotExec(input: OneShotExecInput, log?: A2aLogFn): P
     stdout: outText,
     stderr: errText,
     durationMs: Date.now() - started,
-    truncated: stdout.total > EXEC_TAIL_WINDOW || stderr.total > EXEC_TAIL_WINDOW,
+    truncated: stdout.total > outTail.length || stderr.total > errTail.length,
+    outputStats: { stdout: stdout.stats(outTail.length), stderr: stderr.stats(errTail.length) },
     timedOut,
     outcome,
   }
@@ -253,5 +216,21 @@ export async function postOneShotExec(
     truncated: raw.truncated === true,
     timedOut,
     outcome,
+    ...(parseOutputStats(raw.outputStats) === undefined ? {} : { outputStats: parseOutputStats(raw.outputStats) }),
   }
+}
+
+
+/** Older peers omit metrics: do not derive exact totals from their returned tail. */
+function parseOutputStats(value: unknown): StreamOutputStats | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const raw = value as Record<string, unknown>
+  const valid = (stats: unknown): stats is StreamOutputStats['stdout'] => {
+    if (typeof stats !== 'object' || stats === null) return false
+    const s = stats as StreamOutputStats['stdout']
+    return (s.unit === 'bytes' || s.unit === 'utf16') && [s.total, s.retained, s.dropped, s.returned, s.retentionLimit].every(n => Number.isSafeInteger(n) && n >= 0)
+      && s.total === s.retained + s.dropped && s.retained <= s.retentionLimit && s.returned <= s.retained
+  }
+  if (!valid(raw.stdout) || (raw.stderr !== undefined && !valid(raw.stderr))) return undefined
+  return { stdout: raw.stdout, ...(raw.stderr === undefined ? {} : { stderr: raw.stderr as StreamOutputStats['stdout'] }) }
 }

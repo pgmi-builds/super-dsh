@@ -57,7 +57,7 @@ export interface HubToolExecFace {
    * machine) shell that KEEPS its cwd/env across dispatches. Throws typed
    * Errors: unknown machine / exec disabled / transport failure.
    */
-  pty(sessionKey: string, machine: string, cmd: string, opts?: { timeoutSec?: number }): Promise<import('./exec-pty-session.js').PtyDispatchResult>
+  pty(sessionKey: string, machine: string, cmd: string, opts?: { timeoutSec?: number; stdin?: string }): Promise<import('./exec-pty-session.js').PtyDispatchResult>
 }
 import type {
   A2aAddress,
@@ -124,6 +124,8 @@ export interface HubRosterView {
 
 /** Everything the factory needs, all injected (pure module — see header). */
 export interface HubToolDeps {
+  /** Explicit compatibility opt-in, never applied to receiving peer executors. */
+  localExec?: boolean
   /** The A2A conversation service (T2 core behind T3's host assembly). */
   service: HubToolService
   /** T3's delivery face: live-agent routing + the bounded unread buffer. */
@@ -341,7 +343,7 @@ const DESCRIPTION =
   '  {action:"send", agent?, conversationId?, title?, message, delivery?} → open-or-resume: omit conversationId to OPEN (then agent = the recipient, REQUIRED; title optional; message is the first turn); pass conversationId to RESUME (agent optional — the hub derives the route; a wrong agent is refused). Receipt {outcome: delivered|accepted|failed, messageId, conversationId, sessionId, created, error?, note?}: `delivered` = end-to-end complete; `accepted` = the hub took it and the SAME in-flight request keeps running (its `delivered`/`undelivered` outcome arrives as a notice — do not resend); `failed` = immediate rejection.\n' +
   '  {action:"read"} → sweep messages buffered for this session while it was not live.\n' +
   '  {action:"stop", conversationId, agent?, scope?} → cancel the conversation\'s ACTIVE turn (the session owner is derived from the conversation id; agent is optional). `stopped:true` means this call cancelled a live turn; a turn that finished on its own is IDLE, never `stopped` — so stop answers stopped:false with a note when nothing was running.\n' +
-  '  {action:"exec", cmd, machine?, cwd?, timeoutSec?, mode?} → run one shell command on a machine (default: this machine). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}; cwd sets its working directory. mode "pty": a PERSISTENT shell per (your session, machine) — the shell OWNS its cwd and env and they SURVIVE across dispatches (cd once inside the command, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. cwd is oneshot-only: passing it with mode "pty" is refused (use `cd <dir> && …` inside the command). Prefer oneshot for independent commands; pty when shell state matters.\n' +
+  '  {action:"exec", cmd, machine?, cwd?, stdin?, timeoutSec?, mode?} → run one shell command on a remote machine (machine required; self/local execution disabled unless localExec is explicitly enabled). mode "oneshot" (default): {exit, stdout (last 30k), stderr, durationMs, truncated, timedOut, outcome}; cwd sets its working directory. String stdin is piped and closed in oneshot; in PTY it is written immediately after cmd (REPL input, not script mode). Hub oneshot hard retention is 4MiB bytes per stream, PTY is 4,000,000 UTF-16 code units. outputStats reports real total/retained/dropped/returned and units; discarded head cannot be recovered by restarting. mode "pty": a PERSISTENT shell per (your session, machine) — the shell OWNS its cwd and env and they SURVIVE across dispatches (cd once inside the command, then keep working); {output (tail 30k), exit, cwd, timedOut, reconnected, durationMs}. cwd is oneshot-only: passing it with mode "pty" is refused (use `cd <dir> && …` inside the command). Prefer oneshot for independent commands; pty when shell state matters.\n' +
   'Addresses are "<m4>-<a6>" (machine-agent); call agents first to list valid ids. delivery: "queue" (default) is injected into the peer\'s session as a waking turn — it never interrupts an active turn, it queues behind it; "steer" submits steering for the peer\'s nearest step boundary — use it only when urgency demands. NEVER poll for a reply: the peer\'s reply arrives in this conversation as a new message WHEN THE PEER SENDS one (peers that never use the channel get their last output at turn end delivered as their reply instead, form=transcript); a turn that ends with no channel artifact yields one notice whose reason= distinguishes peer-silent (ended, said nothing) / peer-error (stream died or turn aborted) / stopped-by-initiator (you stopped it). read only sweeps what was buffered while this session was down. stop is a hard stop of the peer\'s active turn (the UI stop button); scope "session" degrades to turn-only — no session-close exists upstream — and the conversation stays resumable: send again to resume it. agent_status reads a cache refreshed by the 5-minute sweep (collectedAt says when); the window is alive-first, ≤5 rows, newest first, and not being in it implies nothing; a `note` says why when the window has no collection behind it (the last collection failed, or none has happened yet). MESSAGING HAS NO STATUS QUERY: to check whether a peer is idle or running, call agent_status (a 5-minute cache — never a delivery receipt); if that is not enough and you cannot wait, send another message.'
 
 /**
@@ -387,7 +389,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
       },
       machine: {
         type: 'string',
-        description: 'exec target: an m4 machine id (defaults to this machine). The initiator-side registry row may disable exec per machine (execEnabled).',
+        description: 'exec target: a remote m4 machine id (required; self disabled unless localExec is enabled). The initiator-side registry row may disable exec per machine (execEnabled).',
       },
       cmd: {
         type: 'string',
@@ -397,6 +399,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
         type: 'string',
         description: 'exec oneshot: optional absolute working directory. Not accepted with mode "pty" (the persistent shell keeps its own session cwd — pass `cd <dir> && …` in the command).',
       },
+      stdin: { type: 'string', description: 'exec input: oneshot pipes this string then closes stdin; PTY writes it immediately after cmd. This is not a script carrier; use remote script for local files.' },
       timeoutSec: {
         type: 'integer',
         description: 'exec: timeout in seconds, 1–600 (default 120). SIGTERM then SIGKILL to the process group.',
@@ -438,11 +441,16 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           stdout: { type: 'json', description: 'exec: the last 30k of stdout' },
           stderr: { type: 'json', description: 'exec: the last 30k of stderr' },
           durationMs: { type: 'integer', description: 'exec: wall-clock duration' },
+          outputStats: { type: 'json', description: 'exec per-stream counters with explicit bytes/utf16 units; total, retained, dropped head, returned payload (excludes banners), retentionLimit. Absent on older peers: exact metrics unavailable.' },
           truncated: { type: 'boolean', description: 'exec: a stream\'s total output exceeded the returned tail window' },
           timedOut: { type: 'boolean', description: 'exec: the timeout fired (SIGTERM→SIGKILL to the group)' },
         },
       },
-      render: (_args, value): ContentBlock[] => [{ type: 'text', text: JSON.stringify(value) }],
+      render: (_args, value): ContentBlock[] => [{ type: 'text', text: JSON.stringify(
+        value.action === 'exec' && value.outputStats === undefined
+          ? { ...value, note: 'Peer output metrics omitted: exact total/retained/dropped unavailable; returned tail only.' }
+          : value,
+      ) }],
     },
     async execute(args, exec) {
       // One uniform gate first: every leg is session-bound A2A (D9 — replies
@@ -564,6 +572,8 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
         }
 
         case 'exec': {
+          if (!deps.localExec && (!args.machine || args.machine === deps.exec.selfM4()))
+            throw new Error('[E_LOCAL_EXEC_DISABLED] superd-hub: select a remote machine from agents; local execution is disabled (localExec=false)')
           if (args.mode === 'pty') {
             if (typeof args.cmd !== 'string' || args.cmd.trim() === '') throw new Error('[E_BAD_EXEC] superd-hub: exec: cmd must be a non-empty string')
             // F1 (0.1.7-n, PC 0.1.7-m first-person): cwd was silently ignored on
@@ -575,13 +585,14 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
             const sessionKey = initiatorOfExec(deps, exec).sessionId
             const machine = args.machine ?? deps.exec.selfM4()
             try {
-              const r = await deps.exec.pty(sessionKey, machine, args.cmd, { ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }) })
-              const out = tailWindow(r.output, EXEC_TAIL_WINDOW)
+              const r = await deps.exec.pty(sessionKey, machine, args.cmd, { ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }), ...(args.stdin === undefined ? {} : { stdin: args.stdin }) })
+              const out = tailWindow(r.output, EXEC_TAIL_WINDOW, r.outputStats?.stdout)
               return {
                 action,
                 mode: 'pty',
                 machine,
                 output: out.text,
+                ...(out.stats ? { outputStats: { stdout: out.stats } } : {}),
                 exit: r.exit,
                 cwd: r.cwd,
                 timedOut: r.timedOut,
@@ -595,6 +606,7 @@ export function createSuperdHubTool(deps: HubToolDeps): ToolDefinition {
           }
           const parsed = parseOneShotExecBody({
             cmd: args.cmd,
+            ...(args.stdin === undefined ? {} : { stdin: args.stdin }),
             ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
             ...(args.timeoutSec === undefined ? {} : { timeoutSec: args.timeoutSec }),
           })

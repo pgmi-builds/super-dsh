@@ -1341,6 +1341,9 @@
     {
       "source": "legacy/better-dash/docs/dev-test-environment-notes.md",
       "target": "dev-test-environment-notes.md"
-    }
+    },
+    "remote-tools.md",
+    "adr/0015-independent-bundles-agent-remote.md",
+    "specs/remote-tool-enhancement/spec.md"
   ]
 }

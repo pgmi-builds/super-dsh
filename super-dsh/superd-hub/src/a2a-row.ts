@@ -48,14 +48,11 @@ import { setSweepCollectors } from './mesh-link.js'
 import { consoleA2aLog, type A2aLogFn } from './a2a-log.js'
 import { createA2aService } from './a2a-service.js'
 import { resolveA2aGatewayFor, localA2aInitiator } from './a2a-host.js'
-import { registerA2aRpc, registerExecRpc } from './mesh-rpc.js'
-import { runOneShotExec, postOneShotExec } from './exec.js'
+import { registerA2aRpc } from './mesh-rpc.js'
 import { ensureSelf, listRemotes } from './machines.js'
-import { cookieOf } from './mesh-link.js'
-import type { HubToolExecFace, HubRosterView } from './hub-tool.js'
-import { PtyPool } from './exec-pty-session.js'
-import { LocalScriptChannel, WsPtyChannel, type PtyChannel } from './exec-pty-channel.js'
-import { PTY_EXEC_PATH } from './exec-pty-rpc.js'
+import type { HubRosterView } from './hub-tool.js'
+import { createHubExec } from './remote-provider.js'
+import z from '@deepseek-ai/schemastery'
 import type { RawTypertGatewayFace } from './a2a-host.js'
 import type { A2aAgentHandle, A2aDeliveryCtx } from './a2a-delivery.js'
 import type { A2aGateway } from './a2a-service.js'
@@ -67,6 +64,7 @@ import { refreshAgyNativeEndpoint } from './foreign-agy.js'
 
 /** Stable Cordis plugin (row) name. */
 export const name = 'superd-a2a'
+export const Config = z.object({ localExec: z.boolean().default(false) })
 
 /** Zero static injects — the tools/typertGateway legs are dynamic (dormancy). */
 export const inject: string[] = []
@@ -75,6 +73,7 @@ export const inject: string[] = []
 export interface HubToolRowOptions {
   /** Hub home backing the registries; defaults to `resolveDshHome()` at wiring time. */
   home?: string
+  localExec?: boolean
 }
 
 /** The live-agent registry face (structural subset of ctx.agents / AgentRegistry). */
@@ -147,65 +146,14 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
     // /api fence like the machines route; registered on the same inject scope
     // (they live and die with the typertGateway seam).
     registerA2aRpc(t, ingestRef)
-    // P4: the exec endpoint rides the same shared /api fence (spec §8.1).
-    registerExecRpc(t, alog)
-    // P4 exec face: the local executing side + the wire leg over the pairing
-    // cookie. The initiator-side per-machine knob (execEnabled) is honored
-    // here, before any bytes leave (spec §5).
-    const execFace: Omit<HubToolExecFace, 'pty'> = {
-      selfM4: () => ensureSelf(home, 'local').id,
-      run: (input) => runOneShotExec(input, alog),
-      post: async (machineId, input) => {
-        const row = listRemotes(home).find((r) => r.id === machineId)
-        if (row === undefined) throw new Error(`unknown machine "${machineId}" — call agents for the roster`)
-        if (row.execEnabled === false) throw new Error(`exec is disabled for machine "${machineId}" on this registry row (execEnabled=false)`)
-        alog?.('info', 'exec.remote', { machine: machineId, cmd: input.cmd, timeoutSec: input.timeoutSec ?? 120 })
-        const result = await postOneShotExec(row.origin, input, { cookie: cookieOf(row.id, home) })
-        // F6 (first-person 0.1.7-d finding): the initiator side needs its own
-        // completion line — without it a remote result lives only in the tool
-        // response and the initiator's journal stays blind to the outcome.
-        alog?.('info', 'exec.remote.done', {
-          machine: machineId,
-          exit: result.exit ?? 'none',
-          durationMs: result.durationMs,
-          ...(result.outcome === 'exited' ? {} : { outcome: result.outcome }),
-          ...(result.truncated ? { truncated: true } : {}),
-        })
-        return result
-      },
-    }
-    // P4 §8.2 initiator half: the PTY pool. Session key = (calling DSH
-    // session, machine) — per-agent direct, no central allocation (D12).
-    const ptyPool = new PtyPool({ idleTtlSec: 600 })
-    ctx.effect(() => () => { void ptyPool.disposeAll() }, 'superd-a2a: pty pool teardown')
-    const execPty: HubToolExecFace['pty'] = async (sessionKey, machine, cmd, opts = {}) => {
-      const channelOf = (): PtyChannel => {
-        if (machine === ensureSelf(home, 'local').id) return new LocalScriptChannel()
-        const row = listRemotes(home).find((r) => r.id === machine)
-        if (row === undefined) throw new Error(`unknown machine "${machine}" — call agents for the roster`)
-        if (row.execEnabled === false) throw new Error(`exec is disabled for machine "${machine}" on this registry row (execEnabled=false)`)
-        alog?.('info', 'exec.pty.dial', { machine, session: sessionKey })
-        return new WsPtyChannel(`${row.origin.replace(/^http/, 'ws')}${PTY_EXEC_PATH}`, { cookie: cookieOf(row.id, home) })
-      }
-      const session = ptyPool.getOrCreate(`${sessionKey}|m:${machine}`, channelOf)
-      const result = await session.dispatch(cmd, { ...(opts.timeoutSec === undefined ? {} : { timeoutSec: opts.timeoutSec }) })
-      alog?.('info', 'exec.pty.run', {
-        machine,
-        cmd: cmd.length > 120 ? `${cmd.slice(0, 117)}...` : cmd,
-        exit: result.exit ?? 'none',
-        ...(result.cwd !== null ? { cwd: result.cwd } : {}),
-        durationMs: result.durationMs,
-        ...(result.reconnected ? { reconnected: true } : {}),
-        ...(result.timedOut ? { timedOut: true } : {}),
-      })
-      return result
-    }
-    const execFaceFull: HubToolExecFace = { ...execFace, pty: execPty }
+    const exec = createHubExec(home, alog)
+    t.effect(() => () => exec.dispose(), 'superd-a2a: exec initiator cleanup')
     // the a2a endpoints (POST /api/superd/a2a + GET /api/superd/a2a/outbox) ride the shared
     const toolDeps = {
       service,
       delivery,
-      exec: execFaceFull,
+      exec: exec.face,
+      localExec: opts.localExec ?? false,
       // R6: the agent_status leg reads the R5 cache (the sweep's legs fill it)
       status: () => loadAgentStatus(home),
       roster: () => rosterViewOf(home),
@@ -229,8 +177,8 @@ export function wireHubToolRow(ctx: Context, opts: HubToolRowOptions = {}): void
 }
 
 /** MUST stay an arrow (RM0/better-dash note: function declarations get `new`-called, disposers lost). */
-export const apply = (ctx: Context): void => {
-  wireHubToolRow(ctx)
+export const apply = (ctx: Context, config: { localExec?: boolean } = {}): void => {
+  wireHubToolRow(ctx, config)
 }
 
-export default { name, inject, apply }
+export default { name, inject, Config, apply }

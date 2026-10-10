@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { packPackage } from './pack-package.mjs'
+import { buildRemote } from './build-remote.mjs'
 import { buildBetterDash } from './build-better.mjs'
 import { verifyPackagePair } from './verify-package-pair.mjs'
 import { buildPiBundle, verifyPiBundle, PI_PACKAGE } from './build-pi.mjs'
@@ -22,6 +23,7 @@ mkdirSync(PACK_DIR, { recursive: true })
 rmSync(join(PACK_DIR, 'pair.json'), { force: true })
 const manifest = JSON.parse(readFileSync(join(LINE, 'package.json'), 'utf8'))
 const betterDash = buildBetterDash(LINE, REPO, PACK_DIR, manifest)
+await buildRemote()
 
 const run = (cmd, cwd) => execSync(cmd, {
   cwd,
@@ -84,7 +86,7 @@ console.log(`[pack] tarball: ${PACK_DIR}/super-dsh-${version}.tgz`)
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex')
 const superDash = { name: manifest.name, version, source: LINE, tarball: join(PACK_DIR, `super-dsh-${version}.tgz`) }
 verifyPiBundle(superDash.tarball, manifest.dependencies[PI_PACKAGE])
-const independentPackages = verifyPackagePair(superDash.tarball, betterDash.tarball)
+const independentPackages = verifyPackagePair(superDash.tarball, betterDash.tarball, REPO)
 console.log('[pack] verified independent synchronized packages; no Better dependency or payload in Super')
 const pair = { independentPackages, builtAt: new Date().toISOString(), betterDash: { ...betterDash, sha256: sha256(betterDash.tarball) }, superDash: { ...superDash, sha256: sha256(superDash.tarball) } }
 writeFileSync(join(PACK_DIR, 'pair.json'), JSON.stringify(pair, null, 2) + '\n')

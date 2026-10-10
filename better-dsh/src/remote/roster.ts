@@ -26,6 +26,7 @@ import { runOneShot, type OneShotOptions, type OneShotResult } from './oneshot.t
 import { parseSshConfig } from './ssh-config.ts'
 
 export interface RosterOptions {
+  byosshLabels?: readonly string[]
   /** 测试缝：替代 runOneShot 的容器扫描执行器。 */
   runner?: (argv: string[], opts?: OneShotOptions) => Promise<OneShotResult>
   /** 测试缝：替代 ~/.ssh/config 读取。 */
@@ -70,6 +71,8 @@ export async function renderRoster(
   } catch (error) {
     lines.push(`ssh hosts: no readable ~/.ssh/config (${error instanceof Error ? error.message : String(error)})`)
   }
+
+  lines.push(`byossh labels (this Agent, in memory): ${opts.byosshLabels?.map(label => `byossh:${label}`).join(', ') || '(none)'}`)
 
   // docker containers
   const docker = await runner(['docker', 'ps', '-a', '--format', '{{.Names}}\t{{.State}}'], { timeoutSec: hard })

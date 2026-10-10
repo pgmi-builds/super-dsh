@@ -222,19 +222,17 @@ echo "--- pnpm install (complete local pack, native default script policy)"
 (cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$DEV_WEBMCP" --prefer-offline)
 
 # ---- 3. boot via the repo build's dsh CLI (no custom boot code) ----
-# ---- test preparation (2026-09-24 user ruling; spec: docs/07 §7) — the line
-# must see the world production sees, or the test tests the wrong thing:
-#   1. provider keys: copy the prod home's .env into the line home (the
-#      launcher's env layering is inherited > invoking-dir > HOME .env; an
-#      inherited EMPTY value would BLOCK the file layer, so we deliberately
-#      do NOT pass DEEPSEEK_API_KEY through the unit env);
-#   2. web-trust: the shipped bundle owns authentication-only admission
-#      for both the ctx0 server gate and browser; no launcher override.
-if [ ! -f "$HOME/.dsh/.env" ]; then
-  echo "refusing: $HOME/.dsh/.env missing — test preparation cannot provide provider keys" >&2
-  exit 1
+# ---- test preparation (2026-10-10 test-only isolation; docs/07 §7) ----
+# Keep retained test credentials. An explicit test-only source can seed a new
+# home; production homes are never read. Do not pass empty provider keys through
+# the unit environment: they would shadow the home .env layer.
+if [ ! -f "$DSH_HOME_DIR/.env" ]; then
+  if [ -z "${SUPERD_TEST_ENV_FILE:-}" ] || [ ! -f "$SUPERD_TEST_ENV_FILE" ]; then
+    echo "refusing: test home .env missing; provide SUPERD_TEST_ENV_FILE with a test-only env file" >&2
+    exit 1
+  fi
+  cp -- "$SUPERD_TEST_ENV_FILE" "$DSH_HOME_DIR/.env"
 fi
-cp -f "$HOME/.dsh/.env" "$DSH_HOME_DIR/.env"
 chmod 600 "$DSH_HOME_DIR/.env"
 
 # Auth seed awareness (2026-09-27 user ruling; shared file since 2026-10-04):
@@ -309,7 +307,7 @@ systemd-run --user --unit="$UNIT" "${PROXY_ARGS[@]}" \
   --property=Environment="SUPERD_KEEP=1" \
   --property=Environment="SUPERD_TRACE=${SUPERD_TRACE:-0}" \
   --property='UnsetEnvironment=DISPLAY WAYLAND_DISPLAY' \
-  --property=Environment="PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  --property=Environment="PATH=${SUPERD_TEST_BIN_DIR:+${SUPERD_TEST_BIN_DIR}:}$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   --property=StandardOutput=append:"$LOG" \
   --property=StandardError=append:"$LOG" \
   "$NODE_BIN" "$CLI" \

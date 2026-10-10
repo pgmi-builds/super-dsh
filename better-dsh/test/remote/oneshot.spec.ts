@@ -4,6 +4,16 @@ import { runOneShot } from '../../src/remote/oneshot.ts'
 const BASH = (cmd: string): string[] => ['bash', '-c', cmd]
 
 describe('runOneShot', () => {
+  it('retains the final sentinel beyond the native hard cap and reports real per-stream counts', async () => {
+    const r = await runOneShot(BASH(`head -c 4000005 /dev/zero | tr '\\0' x; printf LAST; printf ERR >&2`))
+    expect(r.stdout).toHaveLength(4_000_000)
+    expect(r.stdout.endsWith('LAST')).toBe(true)
+    expect(r.stderr).toBe('ERR')
+    expect(r).toMatchObject({ outputStats: {
+      stdout: { unit: 'utf16', total: 4_000_009, retained: 4_000_000, dropped: 9, returned: 4_000_000, retentionLimit: 4_000_000 },
+      stderr: { unit: 'utf16', total: 3, retained: 3, dropped: 0, returned: 3, retentionLimit: 4_000_000 },
+    } })
+  })
   it('captures stdout, stderr and the binary exit code', async () => {
     const r = await runOneShot(BASH('echo out; echo err >&2; exit 42'))
     expect(r.exit).toBe(42)

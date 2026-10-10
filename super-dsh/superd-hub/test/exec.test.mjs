@@ -22,6 +22,32 @@ const req = (method, body, url = `http://x${EXEC_API_BASE}`) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
+test('oneshot stdin validation, script carrier, EOF and early-exit EPIPE are real', async () => {
+  assert.deepEqual(parseOneShotExecBody({ cmd: 'cat', stdin: '' }), { ok: true, value: { cmd: 'cat', stdin: '' } })
+  assert.equal(parseOneShotExecBody({ cmd: 'cat', stdin: 1 }).ok, false)
+  assert.equal(parseOneShotExecBody({ cmd: 'x'.repeat(4097), stdin: '' }).ok, false)
+  const response = await handleExecPost(req('POST', { cmd: 'bash -s', stdin: '#'.repeat(5000) + "\ncat <<'EOF'\n$HOME $(echo WRONG) `echo WRONG` 中🙂\nEOF\nprintf ERR >&2\n" }))
+  assert.equal(response.status, 200)
+  const r = await response.json()
+  assert.equal(r.stdout, '$HOME $(echo WRONG) `echo WRONG` 中🙂\n')
+  assert.equal(r.stderr, 'ERR')
+  assert.equal((await runOneShotExec({ cmd: 'cat', stdin: 'ends at EOF' })).stdout, 'ends at EOF')
+  assert.equal((await runOneShotExec({ cmd: 'exit 7', stdin: 'x'.repeat(2_000_000) })).exit, 7)
+})
+
+test('Hub byte cap and returned UTF8 boundary report truthful counters and final sentinel', async () => {
+  const r = await runOneShotExec({ cmd: `head -c 4194310 /dev/zero | tr '\\0' x; printf LAST; printf '中🙂' >&2` })
+  assert.ok(r.stdout.endsWith('LAST'))
+  assert.deepEqual(r.outputStats, {
+    stdout: { unit: 'bytes', total: 4_194_314, retained: 4_194_304, dropped: 10, returned: 30_000, retentionLimit: 4_194_304 },
+    stderr: { unit: 'bytes', total: 7, retained: 7, dropped: 0, returned: 7, retentionLimit: 4_194_304 },
+  })
+  const unicode = await runOneShotExec({ cmd: `python3 -c 'import sys;sys.stdout.write("🙂"*8000+"LAST")'` })
+  assert.equal(unicode.stdout, '🙂'.repeat(7499) + 'LAST')
+  assert.equal(unicode.outputStats.stdout.returned, 30_000)
+  assert.ok(!unicode.stdout.includes('\ufffd'))
+})
+
 // ---------------------------------------------------------------- parser
 
 test('parseOneShotExecBody: accepts minimal and full shapes, rejects every rule break', () => {
@@ -185,4 +211,5 @@ test('outcome matrix: exited / signaled / timeout / spawn-error are disambiguate
   assert.equal(spawnErr.timedOut, false)
   assert.match(spawnErr.stderr, /exec: spawn failed/)
   assert.match(spawnErr.stderr, /nonexistent-xyz-777/)
+  assert.deepEqual(spawnErr.outputStats.stderr, { unit: 'bytes', total: 0, retained: 0, dropped: 0, returned: 0, retentionLimit: 4_194_304 })
 })

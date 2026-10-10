@@ -1,9 +1,19 @@
 import { describe, expect, it } from 'vitest'
+import { descendantIsLive, killFixtureDescendant } from './disposal-fixture.ts'
 import { PtyPool, PtySession } from '../../src/remote/pty-session.ts'
 
 const OPTS = { idleTtlSec: 600 }
 
 describe('PtySession over plain local bash', () => {
+  it('counts the whole oversized dispatch, retains its sentinel and resets counts for the next dispatch', async () => {
+    const s = new PtySession({ key: 'tail-counts', argv: ['bash'], ...OPTS })
+    try {
+      const r = await s.dispatch(`head -c 4000005 /dev/zero | tr '\\0' x; printf LAST`)
+      expect(r.output.endsWith('LAST')).toBe(true)
+      expect(r).toMatchObject({ outputStats: { stdout: { unit: 'utf16', total: 4_000_009, retained: 4_000_000, dropped: 9 } } })
+      expect(await s.dispatch('printf NEXT')).toMatchObject({ output: 'NEXT', outputStats: { stdout: { total: 4, retained: 4, dropped: 0 } } })
+    } finally { await s.dispose() }
+  })
   it('cold starts, frames output/exit/cwd', async () => {
     const s = new PtySession({ key: 'k', argv: ['bash'], ...OPTS })
     const r = await s.dispatch('echo hello && cd /tmp && pwd')
@@ -124,6 +134,34 @@ describe('PtySession over script(1)-hosted PTY (BYO-PTY shape)', () => {
     expect(() => process.kill(-pid!, 0)).toThrow()
     await s.dispose()
   }, 20_000)
+  it.each(['sleep 30', "bash -c 'trap \"\" TERM; exec sleep 30'"])('disposal reaps redirected background descendants running %s', async command => {
+    const s = new PtySession({ key: 'background-child', argv: ['bash'], ...OPTS })
+    let child: number | undefined
+    let group: number | null = null
+    try {
+      const result = await s.dispatch(`${command} </dev/null >/dev/null 2>&1 & printf %s "$!"`)
+      child = Number(result.output)
+      group = s.snapshot.pid
+      expect(descendantIsLive(child)).toBe(true)
+      await s.dispose()
+      expect(descendantIsLive(child)).toBe(false)
+      expect(s.dispose()).toBe(s.dispose())
+    } finally {
+      killFixtureDescendant(child)
+      if (group) { try { process.kill(-group, 'SIGKILL') } catch { /* already cleaned */ } }
+      await s.dispose()
+    }
+  })
+  it('cleanup also settles after the session child process has already closed', async () => {
+    const s = new PtySession({ key: 'already-closed', argv: ['bash'], ...OPTS })
+    await s.dispatch('echo ready')
+    await s.dispatch('exit 3')
+    const completion = await Promise.race([
+      s.dispose().then(() => 'closed'),
+      new Promise(resolve => setTimeout(() => resolve('hung'), 500)),
+    ])
+    expect(completion).toBe('closed')
+  })
   it('dispose is terminal: stale-reference dispatch rejects E_SESSION_DISPOSED', async () => {
     const s = new PtySession({ key: 'k', argv: ['bash'], ...OPTS })
     await s.dispatch('echo hi')

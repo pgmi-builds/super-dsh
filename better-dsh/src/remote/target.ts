@@ -1,6 +1,7 @@
+import type { SshConnection } from './ssh-targets.ts'
 /** 解析后的传输计划：三种 CLI 传输之一。 */
 export type TargetPlan =
-  | { kind: 'ssh'; host: string }
+  | { kind: 'ssh'; host: string; connection?: SshConnection }
   | { kind: 'docker'; container: string }
   | { kind: 'incus'; container: string }
 

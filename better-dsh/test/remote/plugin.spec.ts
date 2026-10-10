@@ -7,17 +7,12 @@ describe('dashr-remote row', () => {
     const c = Config(undefined) as { execTimeoutSec: number; idleTtlSec: number; maxOutputChars: number }
     expect(c).toMatchObject({ execTimeoutSec: 120, idleTtlSec: 600, maxOutputChars: 30_000 })
   })
-  it('mounts dormant without tools, registers the remote tool when tools compose, disposer is safe', () => {
+  it('mounts dormant and installs only an Agent creation listener', () => {
     expect(name).toBe('dashr-remote')
-    const registered: Array<{ name: string }> = []
-    const fakeCtx = {
-      inject: (_deps: string[], fn: (c: unknown) => void) => {
-        fn({ tools: { register: (t: { name: string }) => registered.push(t) } })
-      },
-    } as unknown as Context
-    const disposer = apply(fakeCtx, Config(undefined) as never) as () => void
-    expect(registered).toHaveLength(1)
-    expect(registered[0]!.name).toBe('remote')
+    const events: string[] = []
+    const fakeCtx = { on: (event: string) => { events.push(event); return () => {} } } as unknown as Context
+    const disposer = apply(fakeCtx, Config(undefined) as never)
+    expect(events).toEqual(['agent/created'])
     expect(() => disposer()).not.toThrow()
   })
   it('patch row and build wiring are in place', async () => {

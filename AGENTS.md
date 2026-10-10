@@ -90,3 +90,5 @@
 - 浏览器 module table 同 id、Cordis 同 scope 同名 service 都是硬冲突；官方 UI 遮蔽遵守 slot priority 规则。
 - UI 只寻址官方服务、语义属性和控件，第三方 DOM 不作状态输入；客户端类型检查、外部化与模块单实例均属交付契约。
 - 热插拔遵循 Comply or Explain：先核实官方热更新能力与实际生效窗口；确需重启时解释原因并复验。
+
+- **remote 窄范围构建复用例外（2026-10-10）**：`better-dsh/src/remote/` 是唯一可编辑源码；Super 仅生成独立 `remote/` ESM/dts 闭包及源码 SHA-256 provenance，导出 `super-dsh/remote`。生成物不手改，不含 Better 整包、client、其他工具或 npm 依赖边；两条 remote 行默认开，按 Agent 官方创建事件竞争注册。除此例外，原独立双包边界不变。

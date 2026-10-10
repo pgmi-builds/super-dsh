@@ -51,6 +51,9 @@
     # get their own injection in P5, spec §10). Dormant without tools.
     # Off: restate with `disabled: true` or drop the row — nothing else
     # registers the tool.
+    # Independent build of Better's canonical remote source; default-on per Agent.
+    - id: superd-remote
+      name: 'super-dsh/remote'
     - id: superd-a2a
       name: 'super-dsh/a2a'
     - id: agent-omp

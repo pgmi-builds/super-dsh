@@ -1,6 +1,6 @@
 {
   "name": "super-dsh",
-  "version": "0.3.0-f",
+  "version": "0.3.0-g",
   "description": "Super D for the DeepSeek Harness (DSH) — one dsh plugin that mounts the superd hub (runtime selector, roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
   "type": "module",
   "license": "MIT",
@@ -27,7 +27,11 @@
     "./package.json": "./package.json",
     "./fusion-transport": "./superd-hub/dist/fusion-transport.js",
     "./a2a": "./superd-hub/dist/a2a-row.js",
-    "./setup": "./superd-hub/dist/bundle-setup.js"
+    "./setup": "./superd-hub/dist/bundle-setup.js",
+    "./remote": {
+      "types": "./remote/plugin.d.ts",
+      "default": "./remote/plugin.js"
+    }
   },
   "files": [
     "cordis.patch.yml",
@@ -68,7 +72,8 @@
     "agent-agy-sdk/dist",
     "agent-agy-sdk/package.json",
     "agent-agy-sdk/cordis.patch.yml",
-    "agent-agy-sdk/bridge"
+    "agent-agy-sdk/bridge",
+    "remote"
   ],
   "dsh": {
     "bundle": {
@@ -106,7 +111,8 @@
     "@deepseek-ai/dsh-app-boot": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-atomic-write": ">=0.1.5-0 <0.3.0-0",
     "@deepseek-ai/dsh-cmdline": ">=0.1.5-0 <0.3.0-0",
-    "@deepseek-ai/dsh-plugin-manager": ">=0.1.5-0 <0.3.0-0"
+    "@deepseek-ai/dsh-plugin-manager": ">=0.1.5-0 <0.3.0-0",
+    "@deepseek-ai/dsh-jobs": ">=0.1.5-0 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -167,6 +173,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-plugin-manager": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-jobs": {
       "optional": true
     }
   },

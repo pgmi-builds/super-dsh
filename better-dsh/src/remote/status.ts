@@ -1,3 +1,4 @@
+import { sshArgv } from './ssh-targets.ts'
 import { runOneShot, type OneShotOptions, type OneShotResult } from './oneshot.ts'
 import type { SessionSnapshot } from './pty-session.ts'
 import type { TargetPlan } from './target.ts'
@@ -30,7 +31,7 @@ export async function probeTarget(plan: TargetPlan, opts: ProbeOptions = {}): Pr
   const started = Date.now()
   const argv =
     plan.kind === 'ssh'
-      ? ['ssh', '-o', 'BatchMode=yes', '-o', `ConnectTimeout=${ct}`, '-T', '--', plan.host, 'true']
+      ? sshArgv(plan.connection ?? { host: plan.host }, { extraArgs: ['-o', `ConnectTimeout=${ct}`], command: 'true' })
       : plan.kind === 'docker'
         ? ['docker', 'inspect', '--format', '{{.State.Status}}', plan.container]
         : ['incus', 'list', plan.container, '--format', 'csv', '--columns', 'ns']

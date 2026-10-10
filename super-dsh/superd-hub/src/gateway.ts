@@ -1,3 +1,5 @@
+import { registerRemoteFileRpc } from './remote-file-rpc.js'
+import { installHubRemoteTransport } from './remote-row.js'
 /**
  * @pgmi-builds/superd-hub — plugin entry (host half).
  *
@@ -92,6 +94,7 @@ export function apply(ctx: Context, config?: HubConfig): void {
   ctx.inject(['webServer', 'connection'], (host) => {
     const real = host.get('webServer')
     if (real instanceof WorldWebServer) return
+    installHubRemoteTransport(host, { home })
     registerPairingAuth(host)
     const connection = host.get('connection') as {
       authorizeIndex(req: unknown, res: unknown): boolean
@@ -129,9 +132,13 @@ export function apply(ctx: Context, config?: HubConfig): void {
     }), 'superd-hub: /hub route family')
     // P4 §8.2: the PTY executor's upgrade route — same gate as the /hub family
     // (authorizeIndex cookie auth first, then the browser-trust fence). The
-    // dumb pump lives in exec-pty-rpc.ts; a2a-row owns the initiator half.
+    // dumb pump lives in exec-pty-rpc.ts; remote-provider owns the shared initiator implementation.
     // The async effect belongs to this Connection injection: disposal waits
     // for setup and releases its route even when setup finishes during unload.
+    host.effect(() => registerRemoteFileRpc(real as RealWebServerFace, {
+      authorize: (req, res) => connection.authorizeIndex(req, res),
+      requestRejection: req => connection.requestRejection(req),
+    }), 'superd-hub: binary file upgrade route')
     host.effect(async () => {
       try {
         return await registerPtyExecutor(real as RealWebServerFace, {
