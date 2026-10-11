@@ -1,49 +1,96 @@
-import { sshArgv, type SshConnection } from './ssh-targets.ts'
-import { shQuote } from './transports.ts'
+import type { SshConnection } from './ssh-targets.ts'
 import { checkAbsolute } from './archive.ts'
-import { withSshRelay, preflightRsync, preflightRelaySource, runCommand, nativeRsyncPath, withNativeRsyncOwner, RELAY_SSH_OPTIONS, type RelayOptions, type CommandResult } from './ssh-relay.ts'
+import { checkArgv, runNative, type RunResult } from './native-copy.ts'
+import { relayRsync, type RelayRsyncOptions } from './ssh-rsync-native-relay.ts'
 
-// rsync -e has its OWN quoting grammar: doubled quotes, not shell backslashes
-// or the shell's adjacent single/double-quote idiom (rsync(1) --rsh).
-const rshQuote = (value: string) => "'" + value.replaceAll("'", "''") + "'"
-
-export interface RsyncRequest { src: string; dst: string; dryRun?: boolean; delete?: boolean; excludes?: readonly string[]; preserve?: boolean }
+export interface RsyncRequest { src: string; dst: string; argv?: string[] }
 export interface RsyncEndpoint { path: string; connection?: SshConnection }
-export interface RsyncReceipt extends CommandResult {
-  action: 'rsync'; src: string; dst: string; dryRun: boolean; delete: boolean; preserve: boolean
-  itemizedChanges: string[]; literalBytes?: number; matchedBytes?: number; sentBytes?: number; receivedBytes?: number; transferredBytes?: number
+export interface RsyncReceipt extends RunResult {
+  action: 'rsync'; src: string; dst: string; argv: string[]
+  command: string
+  /** Populated only when the CLI actually printed --stats output. */
+  itemizedChanges?: string[]; literalBytes?: number; matchedBytes?: number; sentBytes?: number; receivedBytes?: number; transferredBytes?: number
+  /** Two-SSH route actually used, when applicable. */
+  route?: 'local-ssh' | 'ssh-ssh-forward' | 'ssh-ssh-stdio'
 }
-export async function runRsync(request: RsyncRequest, source: RsyncEndpoint, destination: RsyncEndpoint, signal: AbortSignal, options: RelayOptions = {}): Promise<RsyncReceipt> {
+
+/**
+ * Native rsync with ordered caller options. Local↔SSH runs rsync directly with
+ * the endpoint's SSH identity wired as RSYNC_RSH; explicit -e/--rsh in argv
+ * overrides that wiring per rsync's own rules (the receipt shows the argv).
+ * SSH↔SSH delegates to the native relay routes (forwarding first, stdio second).
+ * No option is injected: no archive, no timeout, no dry-run, no remote owner.
+ */
+export async function runRsync(request: RsyncRequest, source: RsyncEndpoint, destination: RsyncEndpoint, signal: AbortSignal, options: RelayRsyncOptions = {}): Promise<RsyncReceipt> {
   signal.throwIfAborted()
   checkAbsolute(source.path); checkAbsolute(destination.path)
-  if (!source.connection && !destination.connection) throw new Error('rsync requires at least one SSH endpoint; local-only is unsupported')
-  if (request.excludes !== undefined && (!Array.isArray(request.excludes) || request.excludes.some(value => typeof value !== 'string' || value.includes('\0')))) throw new Error('rsync excludes must be strings without NUL')
-  const dryRun = request.dryRun ?? true, remove = request.delete ?? false, preserve = request.preserve ?? true
-  const args = ['rsync', preserve ? '-a' : '-r', '--no-compress', '--stats', '--itemize-changes', '--timeout=10', ...(dryRun ? ['--dry-run'] : []), ...(remove ? ['--delete'] : []), ...(request.excludes ?? []).map(value => '--exclude=' + value)]
-  const ssh = options.ssh ?? sshArgv
-  let result: CommandResult
-  if (source.connection && destination.connection) {
-    await preflightRelaySource(source.connection, source.path, signal, ssh)
-    result = await withSshRelay(source.connection, destination.connection, destination.path, signal, relay => relay.run([...args, '--', source.path, relay.url]), options)
-  } else {
-    const remote = source.connection ?? destination.connection!
-    await preflightRsync(undefined, signal, ssh); await preflightRsync(remote, signal, ssh)
-    // rsync parses host/user/IPv6 itself. Consume its fixed placeholder on the
-    // origin, then exec the COMPLETE canonical SSH argv + native server args.
-    // Neither this placeholder nor the identity options enter the remote command.
-    const adapter = 'shift; exec ' + ssh(remote, { extraArgs: RELAY_SSH_OPTIONS }).map(shQuote).join(' ') + ' "$@"'
-    const transport = ['bash', '-c', adapter, 'rsync-ssh'].map(rshQuote).join(' ')
-    const src = source.connection ? `rsync-peer:${source.path}` : source.path
-    const dst = destination.connection ? `rsync-peer:${destination.path}` : destination.path
-    result = await withNativeRsyncOwner(remote, signal, directory => {
-      const argv = [...args, '--secluded-args', '-e', transport, '--rsync-path=' + nativeRsyncPath(directory), '--', src, dst]
-      return runCommand(['bash', '-c', 'LC_ALL=C exec ' + argv.map(shQuote).join(' ')], signal)
-    }, ssh)
+  const argv = checkArgv('argv', request.argv)
+  if ('pullArgv' in request || 'pushArgv' in request) throw new Error('remote: rsync takes argv only; pullArgv/pushArgv are copy-only fields')
+  for (const legacy of ['dryRun', 'delete', 'excludes', 'preserve', 'verify', 'mkdir'] as const) {
+    if (legacy in (request as unknown as Record<string, unknown>)) throw new Error(`remote: rsync field "${legacy}" was removed — pass native options through argv instead (e.g. "--dry-run", "--delete", "--exclude=<pattern>", "-a"/"-r"; verify/mkdir belong to the copy Hub/local lane)`)
   }
+  if (!source.connection && !destination.connection) throw new Error('rsync requires at least one SSH endpoint; local-only is unsupported')
+
+  let result: RunResult
+  let route: RsyncReceipt['route']
+  if (source.connection && destination.connection) {
+    const relayed = await relayRsync(argv, { connection: source.connection, path: source.path }, { connection: destination.connection, path: destination.path }, signal, options)
+    result = relayed
+    route = relayed.route
+  }
+  else {
+    route = 'local-ssh'
+    const remote = source.connection ?? destination.connection!
+    const wrap: (argv: string[]) => string[] = options.wrapArgv ?? (value => value)
+    // Caller-supplied -e/--rsh overrides the tool's SSH wiring per rsync's
+    // own precedence: the real host goes into the operand for rsync to parse,
+    // and no RSYNC_RSH is set. Otherwise the placeholder host is consumed on
+    // the origin by RSYNC_RSH, which execs the canonical SSH argv.
+    const callerRsh = argv.some(token => token === '-e' || token === '--rsh'
+      || token.startsWith('--rsh=')
+      // short-option clusters: rsync bundles like -avze put the rsh flag last
+      || (/^-[a-zA-Z]+e$/.test(token) && !token.startsWith('--')))
+    const hostSpec = (connection: SshConnection) => {
+      const host = connection.host.includes(':') && !connection.host.startsWith('[') ? `[${connection.host}]` : connection.host
+      return connection.user !== undefined ? `${connection.user}@${host}` : host
+    }
+    const env: NodeJS.ProcessEnv = callerRsh ? {} : { RSYNC_RSH: rsyncRsh(remote, wrap) }
+    const src = source.connection ? (callerRsh ? `${hostSpec(source.connection)}:${source.path}` : `rsync-native:${source.path}`) : source.path
+    const dst = destination.connection ? (callerRsh ? `${hostSpec(destination.connection)}:${destination.path}` : `rsync-native:${destination.path}`) : destination.path
+    result = await runNative(wrap(['rsync', ...argv, '--', src, dst]), signal, env)
+  }
+
   const number = (label: string) => { const match = new RegExp(`^${label}: ([\\d,]+)(?: bytes)?$`, 'm').exec(result.stdout); return match ? Number(match[1]!.replaceAll(',', '')) : undefined }
   const sentBytes = number('Total bytes sent'), receivedBytes = number('Total bytes received')
-  return { ...result, action: 'rsync', src: request.src, dst: request.dst, dryRun, delete: remove, preserve,
-    itemizedChanges: result.stdout.split('\n').filter(line => /^[<>ch.*][fdLDS.]/.test(line) || line.startsWith('*deleting')),
-    literalBytes: number('Literal data'), matchedBytes: number('Matched data'), sentBytes, receivedBytes,
-    transferredBytes: sentBytes !== undefined && receivedBytes !== undefined ? sentBytes + receivedBytes : undefined }
+  const literalBytes = number('Literal data'), matchedBytes = number('Matched data')
+  const itemized = result.stdout.split('\n').filter(line => /^[<>ch.*][fdLDS.]/.test(line) || line.startsWith('*deleting'))
+  return {
+    ...result, action: 'rsync', src: request.src, dst: request.dst, argv, route,
+    command: `rsync ${argv.join(' ')}`,
+    ...(itemized.length > 0 || argv.includes('--itemize-changes') || argv.includes('-i') ? { itemizedChanges: itemized } : {}),
+    ...(literalBytes === undefined ? {} : { literalBytes }),
+    ...(matchedBytes === undefined ? {} : { matchedBytes }),
+    ...(sentBytes === undefined ? {} : { sentBytes }),
+    ...(receivedBytes === undefined ? {} : { receivedBytes }),
+    ...(sentBytes !== undefined && receivedBytes !== undefined ? { transferredBytes: sentBytes + receivedBytes } : {}),
+  }
 }
+
+/** RSYNC_RSH value: rsync word-splits this string with its own quote
+ * convention (single quotes, internal quotes doubled); the adapter drops the
+ * placeholder host rsync appends and execs the canonical SSH argv. All tokens
+ * are tool-built argv (identity options/aliases), never model text. */
+function rsyncRsh(connection: SshConnection, wrap: (argv: string[]) => string[]): string {
+  const args = ['ssh', '-o', 'BatchMode=yes', '-T']
+  if (connection.user !== undefined) args.push('-l', connection.user)
+  if (connection.port !== undefined) args.push('-p', String(connection.port))
+  if (connection.key !== undefined) args.push('-i', connection.key)
+  if (connection.proxyJump !== undefined) args.push('-J', connection.proxyJump)
+  args.push('--', connection.host)
+  const sshArgv = wrap(args)
+  const adapter = ['bash', '-c', `shift; exec ${sshArgv.map(rshQuote).join(' ')} "$@"`, 'rsync-rsh']
+  return adapter.map(rshQuote).join(' ')
+}
+
+/** rsync -e/RSYNC_RSH grammar: doubled quotes, not shell backslashes (rsync(1) --rsh). */
+const rshQuote = (value: string) => "'" + value.replaceAll("'", "''") + "'"

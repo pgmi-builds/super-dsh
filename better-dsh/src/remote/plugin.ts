@@ -48,4 +48,3 @@ export { localFileEndpoint, FILE_FRAME_BYTES, FILE_MAX_ENTRIES, FILE_MAX_METADAT
 export { runFileWorker } from './file-worker.ts'
 export { runRsync } from './rsync.ts'
 export type { RsyncRequest, RsyncEndpoint, RsyncReceipt } from './rsync.ts'
-export { withSshRelay } from './ssh-relay.ts'

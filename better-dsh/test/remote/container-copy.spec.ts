@@ -6,6 +6,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RemoteDriver } from '../../src/remote/driver.ts';
+import type { NativeCopyReceipt } from '../../src/remote/native-copy.ts';
 const run = promisify(execFile);
 const command = (program: string, args: string[]) => {
     const pending = run(program, args, { timeout: 120000 });
@@ -13,7 +14,7 @@ const command = (program: string, args: string[]) => {
     pending.child.stdin?.end();
     return pending;
 };
-it.each(['docker', 'incus'] as const)('%s actual isolated local-image fixture roundtrips binary without TTY or helper installation', async (engine) => {
+it.each(['docker', 'incus'] as const)('%s native CLI roundtrips binary without helper installation and never claims verification', async (engine) => {
     const name = `superd-task6-${randomUUID().slice(0, 8)}`, dir = await mkdtemp(join(tmpdir(), 'container-copy-')), driver = new RemoteDriver();
     let created = false;
     try {
@@ -24,15 +25,29 @@ it.each(['docker', 'incus'] as const)('%s actual isolated local-image fixture ro
         created = true;
         if (engine === 'incus')
             await command('incus', ['start', name]);
-        // Prerequisite failure is evidence, never trigger an install in the fixture.
-        await command(engine, engine === 'docker' ? ['exec', name, 'python3', '--version'] : ['exec', name, '--', 'python3', '--version']);
+        // Native CLIs do not create destination parents; the fixture pre-creates them.
+        if (engine === 'docker')
+            await command('docker', ['exec', name, 'mkdir', '-p', '/root/task6']);
+        else
+            await command('incus', ['exec', name, '--', 'mkdir', '-p', '/root/task6']);
         const bytes = randomBytes(190000), src = join(dir, 'source'), dst = join(dir, 'result'), remote = `${engine}:${name}:/root/task6/雪\nfile`;
         bytes[0] = 0;
         bytes[1] = 255;
         await writeFile(src, bytes);
-        expect((await driver.copy({ src, dst: remote }, AbortSignal.timeout(20000))).verified).toBe(true);
-        expect((await driver.copy({ src: remote, dst }, AbortSignal.timeout(20000))).verified).toBe(true);
+        const up = await driver.copy({ src, dst: remote }, new AbortController().signal) as NativeCopyReceipt;
+        expect(up.route).toContain(engine);
+        expect(up.exits).toEqual([0]);
+        expect(up.verified).toBe(false);
+        const down = await driver.copy({ src: remote, dst }, new AbortController().signal) as NativeCopyReceipt;
+        expect(down.exits).toEqual([0]);
+        expect(down.verified).toBe(false);
         expect(await readFile(dst)).toEqual(bytes);
+        // Native failure passes through: a missing remote path is the CLI's exit.
+        const missing = await driver.copy({ src: `${engine}:${name}:/root/no-such-file`, dst: join(dir, 'never') }, new AbortController().signal) as NativeCopyReceipt;
+        expect(missing.exits[0]).not.toBe(0);
+        expect(missing.stderr.join('\n')).toMatch(/no such file|No such file|not found|error/i);
+        expect(missing.verified).toBe(false);
+        expect(missing.route).toContain(engine);
     }
     finally {
         await driver.dispose();
@@ -45,23 +60,41 @@ it.each(['docker', 'incus'] as const)('%s actual isolated local-image fixture ro
         await rm(dir, { recursive: true, force: true });
     }
 }, 180000);
-it('missing Python 3 fails loudly without destination writes in a real Docker peer', async () => {
-    const name = `superd-task6-${randomUUID().slice(0, 8)}`, dir = await mkdtemp(join(tmpdir(), 'container-copy-')), driver = new RemoteDriver();
-    let created = false;
-    try {
-        await command('docker', ['run', '--pull=never', '-d', '--network', 'none', '--env', 'PATH=/missing', '--name', name, 'python:3.14-slim', '/bin/sleep', '60']);
-        created = true;
-        const src = join(dir, 'binary');
-        await writeFile(src, randomBytes(500000));
-        // Ruling26 surface: the receiving-owner prerequisite probe rejects loudly before
-        // any transfer (no destination writes) instead of the legacy in-helper Python check.
-        await expect(driver.copy({ src, dst: `docker:${name}:/tmp/no-python-output` }, AbortSignal.timeout(10000))).rejects.toThrow(/native receiving recovery prerequisite failed: Bash4\.1\+, Python3\.7\+/);
-        await command('docker', ['exec', name, '/bin/test', '!', '-e', '/tmp/no-python-output']);
-    }
-    finally {
-        await driver.dispose();
-        if (created)
+
+// Two-segment cross-endpoint copy: SSH↔Docker pulls to origin staging then
+// pushes; pullArgv/pushArgv carry per-half native options.
+it('copies SSH↔Docker with two native commands, per-half argv and origin staging', async () => {
+    const { withSshFixture } = await import('./ssh-fixture.ts');
+    await withSshFixture(async f => {
+        const name = `superd-seg-${randomUUID().slice(0, 8)}`, dir = await mkdtemp(join(tmpdir(), 'container-copy-')), driver = new RemoteDriver({ nativeArgvFor: argv => (argv[0] === 'ssh' || argv[0] === 'scp') ? f.isolateOpts(argv) : argv });
+        try {
+            await command('docker', ['run', '--pull=never', '-d', '--network', 'none', '--name', name, 'python:3.14-slim', 'sleep', '120']);
+            await command('docker', ['exec', name, 'mkdir', '-p', '/root/seg-dst']);
+            driver.registerSsh('byossh:src', f.jump);
+            const remote = join(f.directory, 'seg-src');
+            const { mkdir } = await import('node:fs/promises');
+            await mkdir(remote);
+            await writeFile(join(remote, 'seg-file'), 'seg-payload');
+            const receipt = await driver.copy({ src: `byossh:src:${remote}/`, dst: `docker:${name}:/root/seg-dst`, pullArgv: ['-r'], pushArgv: ['-a'] }, new AbortController().signal) as NativeCopyReceipt;
+            expect(receipt.route).toContain('two native commands');
+            expect(receipt.argv).toHaveLength(2);
+            expect(receipt.argv[0]).toContain('-r');
+            expect(receipt.argv[1]).toContain('-a');
+            expect(receipt.exits).toEqual([0, 0]);
+            expect(receipt.verified).toBe(false);
+            expect(receipt.cleanup).toBe('released');
+            // Each segment's native CLI decides layout: scp stages the source
+            // tree under the staging dir, docker cp copies that staging dir
+            // itself into the container destination.
+            const { stdout } = await command('docker', ['exec', name, 'cat', '/root/seg-dst/staged/seg-file']);
+            expect(stdout).toBe('seg-payload');
+            // Mixing argv with pull/push is refused before any work.
+            await expect(driver.copy({ src: `byossh:src:${remote}`, dst: `docker:${name}:/root/x`, argv: ['-r'], pullArgv: ['-r'], pushArgv: [] }, new AbortController().signal)).rejects.toThrow(/argv/);
+        }
+        finally {
+            await driver.dispose();
             await command('docker', ['rm', '--force', name]);
-        await rm(dir, { recursive: true, force: true });
-    }
-}, 20000);
+            await rm(dir, { recursive: true, force: true });
+        }
+    })
+}, 120000);

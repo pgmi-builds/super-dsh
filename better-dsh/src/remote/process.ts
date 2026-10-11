@@ -12,12 +12,14 @@ export interface ProcessOptions {
   /** Hub retains raw bytes; native transports retain decoded UTF16 units. */
   unit?: 'bytes' | 'utf16'
   onOutput?: () => void
+  /** Overlay on process.env (tool-built values only, e.g. RSYNC_RSH). */
+  env?: NodeJS.ProcessEnv
 }
 
 /** Real detached process. Completion includes group cleanup, even after its leader closes. */
-export function startBinaryProcess(argv: string[], options: Pick<ProcessOptions, 'cwd' | 'timeoutSec'> = {}): { stdout: Readable; stderr: Readable; stdin: Writable; cancel(): void; done: RemoteProcess['done']; diagnostic(): string | undefined } {
+export function startBinaryProcess(argv: string[], options: Pick<ProcessOptions, 'cwd' | 'timeoutSec' | 'env'> = {}): { stdout: Readable; stderr: Readable; stdin: Writable; cancel(): void; done: RemoteProcess['done']; diagnostic(): string | undefined } {
   const started = Date.now()
-  const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+  const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env === undefined ? process.env : { ...process.env, ...options.env }, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
   let diagnostic: string | undefined
   let timedOut = false, finished = false, cancelled = false
   let cleanup: Promise<void> | undefined

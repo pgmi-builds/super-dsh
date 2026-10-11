@@ -58,7 +58,7 @@ export async function createSshFixture(options: SshFixtureOptions = {}) {
       await writeFile(join(dir, 'authorized_keys'), await readFile(key + '.pub'))
       const n = await port(); ports.push(n)
       const config = join(dir, 'sshd.conf')
-      await writeFile(config, `Port ${n}\nListenAddress 127.0.0.1\nHostKey ${host}\nPidFile ${dir}/pid\nAuthorizedKeysFile ${dir}/authorized_keys\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nAllowUsers ${userInfo().username}\nAllowTcpForwarding ${options.forwarding?.[name] ?? 'yes'}\nAllowAgentForwarding ${options.agentForwarding ? 'yes' : 'no'}\nPermitTTY yes\nGatewayPorts no\nLogLevel ERROR\n`)
+      await writeFile(config, `Port ${n}\nListenAddress 127.0.0.1\nHostKey ${host}\nPidFile ${dir}/pid\nAuthorizedKeysFile ${dir}/authorized_keys\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nAllowUsers ${userInfo().username}\nSubsystem sftp internal-sftp\nAllowTcpForwarding ${options.forwarding?.[name] ?? 'yes'}\nAllowAgentForwarding ${options.agentForwarding ? 'yes' : 'no'}\nPermitTTY yes\nGatewayPorts no\nLogLevel ERROR\n`)
       if (options.ipv6) await writeFile(config,(await readFile(config,'utf8')).replace('ListenAddress 127.0.0.1','ListenAddress 127.0.0.1\nListenAddress ::1'))
       const child = spawn('/usr/sbin/sshd', ['-D', '-e', '-f', config], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
       let errors = ''; child.stderr!.on('data', chunk => { errors += chunk.toString() }); children.push(child)
@@ -76,7 +76,11 @@ export async function createSshFixture(options: SshFixtureOptions = {}) {
     await writeFile(config, `Host fixture-jump\n HostName 127.0.0.1\n Port ${endpoints[0]!.port}\n IdentityFile ${endpoints[0]!.key}\nHost fixture-native\n HostName 127.0.0.1\n Port ${endpoints[1]!.port}\n IdentityFile ${endpoints[1]!.key}\nHost *\n User ${userInfo().username}\n UserKnownHostsFile ${knownHosts}\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking yes\n IdentitiesOnly yes\n IdentityAgent none\n ForwardAgent no\n ConnectTimeout 3\n`)
     return { directory, config, jump: endpoints[0]!, destination: endpoints[1]!, cleanup,
       // Isolation remains in this fixture, never in product sshArgv.
-      isolate: (argv: string[]) => [argv[0]!, '-F', config, ...argv.slice(1)] }
+      isolate: (argv: string[]) => [argv[0]!, '-F', config, ...argv.slice(1)],
+      // -o based isolation: works for both ssh and scp and coexists with a
+      // product-generated -F config (last -F would otherwise win and lose the
+      // fixture's UserKnownHostsFile).
+      isolateOpts: (argv: string[]) => [argv[0]!, '-o', `UserKnownHostsFile=${knownHosts}`, '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'StrictHostKeyChecking=yes', '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'ForwardAgent=no', ...argv.slice(1)] }
   } catch (error) { await cleanup(); throw error }
 }
 

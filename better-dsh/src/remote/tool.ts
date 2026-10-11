@@ -30,6 +30,26 @@ interface RemoteToolValue {
 
 const NO_SESSION_KEY = 'remote:no-session'
 
+/**
+ * The model-visible surface of the `remote` tool. Kept as ONE template
+ * literal so it can be edited here directly — no string concatenation and no
+ * apostrophe escaping. Plain text only: no backticks and no "${" inside.
+ */
+const REMOTE_TOOL_DESCRIPTION = `Remote execution and file transfer over ssh / docker / incus, plus persistent named shells. Pick the call shape:
+  {}                       → roster (local scan, no dialing)
+  {target}                 → status probe: reachable / unreachable — <native error>, or container state + session layer
+  {target, cmd}            → run cmd — oneshot by default; mode "pty" for a persistent shell
+  {target, script:"/abs"}  → LOCAL script over stdin to a fixed bash -s (oneshot only; no cmd/stdin/spawn/mode mix)
+  {target:"byossh:lbl", ssh:{host,user?,port?,key?,proxyJump?}} → register this Agent's SSH identity (no cmd = register only); reuse the target later with ssh omitted. Same spec idempotent; different spec refused — use another label. key is an existing origin file, never inline material; nothing written or persisted; a new Agent registers again.
+  {target:"byop:lbl", spawn, cmd} → create the named shell once; reuse as {target:"byop:lbl", cmd} (no spawn)
+Bare names resolve ssh config → docker → incus → live pty; unmatched goes to ssh and its native error surfaces. Prefixes ssh: / docker: / incus: / byop: force a channel. byop: same spawn repeated is reused; a different spawn is refused ([E_LABEL_CONFLICT], nothing runs); unknown or idle-expired → [E_NO_SESSION] (spawn is not retained — pass it again); a failed spawn frees the label.
+
+oneshot: stateless bash -lc, stdout/stderr separate, exit code verbatim; the endpoint needs bash only (no Python). A POSIX wrapper reaps backgrounded children on completion and kills the whole group on timeout/cancel — they never outlive the call or hold the channel. pty: one shell per (agent, target); cwd/env survive, streams merge, Ctrl-C interrupts without killing, idle reap after 600s.
+
+Files — {action:"copy" | "rsync", src:"[target:]abs", dst:"[target:]abs", argv:["-a"]}: argv tokens pass verbatim before src/dst — no whitelist, no forced defaults (dry run = pass "--dry-run" yourself); the CLI's own exit code and stderr come back in the receipt. copy: local↔SSH scp; SSH↔SSH scp -3 through the origin (identities stay local); docker cp; incus file push/pull; any other pair = two commands with origin staging (per-half options via pullArgv/pushArgv, exclusive with argv); scp -R refused; success is NOT independently verified; verify/mkdir only on the Hub↔local lane. rsync: local↔SSH, or SSH↔SSH with one protocol conversation between the peers (real delta; forwarding denied → honest error, never full copy). rsync src trailing slash copies contents, no slash the directory itself.
+
+Output: pty tails at ~30k chars ("[truncated: …]" header) — redirect bulk output to a file. Hard retention 4,000,000 UTF-16 units per stream (Hub 4MiB bytes); outputStats reports the rest; restart cannot recover discarded output. stdin feeds the command; timeout (seconds) interrupts then kills. run_in_background:true (oneshot) → jobId for job_output/job_kill. Native transport errors pass through verbatim — self-correct from them.`
+
 export function createRemoteTool(
   driver: RemoteDriver,
   opts: { getSessionKey?: (exec: ToolRunContext) => string } = {},
@@ -37,47 +57,17 @@ export function createRemoteTool(
   const getSessionKey = opts.getSessionKey ?? ((exec: ToolRunContext) => exec.agent?.id ?? NO_SESSION_KEY)
   const tool = defineTool({
     name: 'remote',
-    description:
-      'Native rsync: {action:"rsync",src:"[target:]/absolute/path",dst:"[target:]/absolute/path",dryRun:true,delete:false,excludes:["pattern"],preserve:true}. SSH/byossh only, optionally one local endpoint; no Docker/Incus/Hub/BYO-PTY and no copy fallback. Requires Bash/native rsync on the origin; SSH endpoints need Bash 4.1+ coprocess/dynamic-FD support and Python 3.7+ (macOS 3.10+) shared cross-process non-adjustable monotonic clock and Unix fcntl.flock (preflighted, no auto-install). Default dry-run makes no destination data changes; deletion is opt-in; preserve uses native archive (-a), false uses recursive (-r). Source trailing slash copies contents; no slash copies the named directory. Local↔SSH supports native files/new destinations. SSH↔SSH requires an existing non-symlink destination directory (files/new paths, percent-containing paths and trim-sensitive/newline destinations refused, module never widened); source symlinks are refused before transfer because its confined non-chroot daemon cannot preserve their values. Use an ordinary local↔SSH rsync leg or materialize files first. Relay source inspection also requires native find. Two-remote relay SOURCE uses a task-owned Python loopback byte proxy over its authenticated SSH work stream, bridged on the origin into the destination SSH -L tunnel; no source Linux /proc, pidfd, privileged sshd descriptor access or remote forwarding is required. Native find remains required for source inspection. The exact route must return a real rsync greeting before transfer. Identities stay on the origin, agent forwarding and reusable multiplexing are disabled; native SSH config/ProxyJump remain honored. Normal two-remote startup uses 12 SSH launches: source prerequisite/inspection clock/inspection (3), source+destination prerequisites (2), destination clock/daemon+tunnel (2), source proxy clock/owner/work (3), source rsync clock/work (2). Lost admission may require additional authenticated cleanup reconnects; no transfer retry. Native delta is uncompressed; receipt includes real exit/stdout/stderr, itemized changes and native byte stats when available. Receipt stdout/stderr retain at most 2,097,152 UTF-16 code units each; outputTruncated marks trimmed tails (changes/stats may then be incomplete). Operation/disposal settlement waits for owned tunnels/daemon/config cleanup, not pre-existing SSH sessions. Each owned command uses an extra clock-only SSH round trip and a private transient receiving lock/record. If startup loses its closed control channel before a receipt, cancellation reconnects using the same SSH identity, fences late entry through the original 8-second entry cutoff, and waits for actual owned cleanup. Restore control connectivity if observation is pending; recovery never restarts the transfer. A still-live but hidden startup or unavailable cleanup helper can keep settlement pending; receiver progress and usable authenticated control connectivity are required.\n' +
-      'Copy files/trees: {action:"copy",src:"[target:]/absolute/path",dst:"[target:]/absolute/path",verify:true,mkdir:true}. Local/SSH/byossh/Docker/Incus/Hub binary transport; BYO-PTY unsupported. CLI peers require Bash 4.1+, Python 3.7+ (macOS 3.10+), Unix fcntl.flock/shared non-adjustable monotonic clock and mktemp/mv/rm/sleep; Linux containers additionally require stdlib ctypes/permitted PR_SET_CHILD_SUBREAPER. No auto-install or origin Python requirement. Each remote export/import/digest uses three native transport starts (clock, receiving owner, raw binary work), with extra authenticated cleanup recovery only on faults. A verified local-to-CLI copy uses six starts (import plus destination digest); CLI-to-local uses six (export plus source digest); CLI-to-CLI uses twelve. verify:false skips digests, reducing these counts to three/three/six. Cancellation/failure settlement waits for actual receiving helper/group/temp cleanup. Normal binary success requires complete stream drain; there is no successful truncated-output timeout. Local/Hub file lanes are unchanged. Full origin staging, no delta/resume. Directories merge without deletion; SHA-256 verifies transferred entries only. Receipt sourceDigest/destinationDigest are canonical transferred-entry manifest digests, not a raw file sha256sum, even for one file. Copy has no dryRun; omit all rsync-only options including dryRun:false. Failures report retained scratch for diagnosis; success removes owned staging. Symlinks must resolve through incoming tree entries only; dangling links and destination aliases are rejected.\n' +
-      'Owned SSH/byossh oneshot commands (foreground, background, script and stdin) require remote Bash 4.1+, Python 3.7+ (macOS 3.10+), Unix fcntl.flock with a shared non-adjustable monotonic clock, and mktemp/mv/rm/sleep. No rsync is needed for ordinary commands; no new origin Python prerequisite or Linux/pidfd requirement. Each command uses three SSH startups: clock-only prerequisite, separate receiving owner/control, and literal-stdio work. Cancellation/timeout/Agent or plugin disposal waits for receiving helper and child/group cleanup; a lost startup receipt can require same-identity cleanup reconnect and restored connectivity. Receiver progress is required, not a hard-real-time guarantee. Work output gets up to 2500ms to drain after cleanup proof; unavailable drain reports incomplete output separately, and counters describe only received data. PTY/BYO-PTY behavior is unchanged.\n' +
-      'Docker/Incus oneshot commands use the same receiving owner: remote Bash 4.1+, Python 3.7+, fcntl/shared monotonic clock and mktemp/mv/rm/sleep; three native exec startups per command (clock, owner, work). Linux containers additionally require Python stdlib ctypes and permitted unprivileged PR_SET_CHILD_SUBREAPER, checked before business work; the helper reaps its own/adopted descendants, including containers without an init. No image/config installation, origin Python, rsync or pidfd is added. PTY paths are unchanged.\n' +
-      'Remote execution over three transports (ssh / docker / incus) plus named persistent BYO shells. Pick the call shape first:\n' +
-      '  {}                                 → roster: known target names from a local scan (no dialing)\n' +
-      '  {target}                           → on-demand status probe of that one target (for "byop:<label>": its session state)\n' +
-      '  {target:"byossh:<label>", ssh:{host,user?,port?,key?,proxyJump?}, cmd?} → register SSH identity in this Agent; optional cmd executes. No cmd means register only, no dialing. Later omit ssh and reuse target. Same spec is idempotent; different spec conflicts: use another label. key is an existing file on the origin, never inline private key. Native SSH config and ProxyJump are honored; no config writes, copied keys or credential persistence. Cold/new Agent must register again.\n' +
-      '  {target, cmd}                      → run cmd — oneshot by default; mode "pty" for a persistent shell\n' +
-      '  {target, script:"/absolute/path.sh"} → read a LOCAL script before dialing; oneshot only, sent raw over stdin to fixed `bash -s`. No cmd/stdin/spawn/PTY combination. Large scripts do not expand into argv.\n' +
-      '  {target:"byop:<label>", spawn, cmd} → BYO-PTY: create the persistent shell you named <label>\n' +
-      '  {target:"byop:<label>", cmd}        → reuse that shell (spawn is only needed to create)\n' +
-      'BYO-PTY labels are yours to choose, and the label alone is the whole reuse mechanism: "byop:dev3" is created once ' +
-      'with `spawn` (the command that starts an interactive shell, e.g. "docker exec -it img bash"), and from then on you ' +
-      'address it as {target:"byop:dev3", cmd} with no spawn. Repeating the same spawn for a live label is reused and the ' +
-      'result tells you to drop it; repeating a *different* spawn is refused with [E_LABEL_CONFLICT] and nothing runs — ' +
-      'reuse the label, or pick a new one. A label that was never created, or was reaped after the idle TTL, answers ' +
-      '[E_NO_SESSION]: spawn is not retained, so pass it again to re-create. A spawn that fails to come up (e.g. a ' +
-      'bad host) leaves nothing behind either — the label stays free, so just retry with a corrected spawn. ' +
-      'Bare names match in order — ssh config, then docker, then incus, then a live pty label (on a collision the earlier ' +
-      'source wins; a name matching none of them goes to ssh and its native error surfaces). "byop:<label>" / ' +
-      '"docker:<name>" / "incus:<name>" / "ssh:<name>" force a channel when you must be explicit. oneshot: stateless ' +
-      '`bash -lc`, stdout/stderr separate, the exit code is the remote process\'s own. pty: one persistent shell per ' +
-      '(agent, target) — cwd/env survive across calls, streams merge, Ctrl-C interrupts without killing the session, ' +
-      'idle sessions are reaped after 600s (a reconnect notice precedes the fresh shell). Output is tail-truncated at ' +
-      '~30k chars with a "[truncated: …]" header — redirect bulk output to a file yourself. Native/PTY hard retention is 4,000,000 UTF-16 code units per stream, not bytes; Hub oneshot is 4MiB bytes per stream. outputStats reports total/retained/dropped/returned and units; restart cannot recover discarded output. `stdin` feeds the command; ' +
-      '`timeout` (seconds) interrupts then kills. Native transport errors pass through verbatim — self-correct from them. ' +
-      'run_in_background:true starts an official DSH job (oneshot only); use job_output/job_kill and host completion notices. Requires the jobs service and controller. Background has no default foreground timeout; an explicit timeout still applies. Status probes report ' +
-      '"reachable"/"unreachable — <native error>" or the factual container state plus the session layer ' +
-      '("idle Ns" / "busy" / "none — dials on first exec"), always probed at call time.',
+    description: REMOTE_TOOL_DESCRIPTION,
+
     parameters: {
       action: { type: 'string', enum: ['copy', 'rsync'], description: 'Optional file action; omit for execution/status/roster.' },
       src: { type: 'string', description: 'copy/rsync source [target:]absolute path; rsync retains trailing-slash semantics' },
       dst: { type: 'string', description: 'copy/rsync destination [target:]absolute path' },
-      verify: { type: 'boolean', description: 'copy independent SHA-256 verification (default true)' },
-      mkdir: { type: 'boolean', description: 'copy create missing destination parents (default true)' },
-      dryRun: { type: 'boolean', description: 'rsync native dry-run (default true); false permits writes' },
-      delete: { type: 'boolean', description: 'rsync delete extraneous destination entries (default false)' },
-      excludes: { type: 'array', items: { type: 'string' }, description: 'rsync native exclude patterns, passed as separate argv options' },
-      preserve: { type: 'boolean', description: 'rsync archive -a (default true) versus recursive -r; remote relay refuses source symlinks' },
+      argv: { type: 'array', items: { type: 'string' }, description: 'Ordered native CLI options and values for one-command routes (e.g. rsync ["-a","--partial","--dry-run"], scp ["-p"], docker cp ["-a"], incus file push/pull). One element = one argv token, appended verbatim before src/dst; no shell parsing, no whitelist, no forced defaults — unknown options fail in the native CLI itself. rsync only (SSH endpoints): explicit -e/--rsh overrides the tool\'s SSH wiring. Two-segment cross-endpoint copy uses pullArgv/pushArgv instead.' },
+      pullArgv: { type: 'array', items: { type: 'string' }, description: 'Options for the PULL half (source endpoint → origin staging) of a two-command cross-endpoint copy (e.g. SSH↔Docker, SSH↔Incus, Docker↔Incus). Mutually exclusive with argv; must be paired with pushArgv. Only options valid for the pull half\'s CLI.' },
+      pushArgv: { type: 'array', items: { type: 'string' }, description: 'Options for the PUSH half (origin staging → destination endpoint) of a two-command cross-endpoint copy. Mutually exclusive with argv; must be paired with pullArgv. Only options valid for the push half\'s CLI.' },
+      verify: { type: 'boolean', description: 'copy only, Hub↔local↔local staged lane only: independent SHA-256 verification (default true). Native CLI routes do not verify and report that fact.' },
+      mkdir: { type: 'boolean', description: 'copy only, Hub↔local↔local staged lane only: create missing destination parents (default true). Native CLI routes let the CLI decide.' },
       run_in_background: { type: 'boolean', description: 'Oneshot only: return a native jobId immediately, read with job_output, cancel with job_kill; output is available while running. Requires official jobs service/controller.' },
       target: { type: 'string', description: 'Single entry point. byossh:<label> reuses this Agent-scoped registered SSH identity (pass ssh on first call; no cmd registers only). Bare name / IP / domain matches in order: ssh config, then docker, then incus, then a live pty label (a collision goes to the earlier source). "byop:<label>" / "docker:<name>" / "incus:<name>" / "ssh:<name>" force a channel. For "byop:<label>", pass spawn the first time to create it and omit spawn afterwards to reuse it. Omit cmd → status probe.' },
       ssh: { type: 'object', description: 'Only for byossh:<label>: register origin-side connection; omit on reuse. No inline keys or arbitrary SSH options.', additionalProperties: false, properties: {
@@ -122,18 +112,24 @@ export function createRemoteTool(
       if (args.action === 'copy' || args.action === 'rsync') {
         if (!args.src || !args.dst) throw new Error(`${args.action} requires src and dst absolute endpoints`)
         if ([args.cmd,args.script,args.stdin,args.spawn,args.ssh,args.target,args.mode,args.timeout,args.run_in_background].some(value => value !== undefined)) throw new Error(`${args.action} cannot be combined with execution/PTY/job arguments; register byossh separately first`)
+        // Removed high-level file switches: parameter roots are open, so these
+        // must be rejected here, before any dialing (spec: no silent retention).
+        for (const legacy of ['dryRun', 'delete', 'excludes', 'preserve'] as const) {
+          const value = (args as Record<string, unknown>)[legacy]
+          if (value !== undefined) throw new Error(`${legacy} was removed: pass native options through argv instead (e.g. ${legacy === 'dryRun' ? '"--dry-run"' : legacy === 'delete' ? '"--delete"' : legacy === 'excludes' ? '"--exclude=<pattern>"' : '"-a" / "-r"'})`)
+        }
         if (args.action === 'rsync') {
-          if ([args.verify,args.mkdir].some(value => value !== undefined)) throw new Error('rsync cannot be combined with copy verify/mkdir options')
+          if (args.pullArgv !== undefined || args.pushArgv !== undefined) throw new Error('rsync takes argv only; pullArgv/pushArgv are copy-only fields')
+          if ([args.verify,args.mkdir].some(value => value !== undefined)) throw new Error('rsync cannot be combined with copy verify/mkdir options; the Hub/local staged lane is copy-only')
           const start = Date.now()
-          const receipt = await driver.rsync({src:args.src,dst:args.dst,dryRun:args.dryRun,delete:args.delete,excludes:args.excludes,preserve:args.preserve},exec.signal,{sessionKey:getSessionKey(exec)})
+          const receipt = await driver.rsync({src:args.src,dst:args.dst,...(args.argv === undefined ? {} : {argv:args.argv})},exec.signal,{sessionKey:getSessionKey(exec)})
           if (receipt.exit !== 0) throw new Error(JSON.stringify(receipt))
           return {kind:'rsync',text:JSON.stringify(receipt),receipt:receipt as unknown as import('@deepseek-ai/dsh-util-values').JsonValue,exit:receipt.exit,durationMs:Date.now()-start}
         }
-        if ([args.dryRun,args.delete,args.excludes,args.preserve].some(value => value !== undefined)) throw new Error('copy cannot be combined with rsync options')
-        const receipt = await driver.copy({ src:args.src,dst:args.dst,verify:args.verify,mkdir:args.mkdir },exec.signal,{sessionKey:getSessionKey(exec)})
+        const receipt = await driver.copy({ src:args.src,dst:args.dst,...(args.verify === undefined ? {} : {verify:args.verify}),...(args.mkdir === undefined ? {} : {mkdir:args.mkdir}),...(args.argv === undefined ? {} : {argv:args.argv}),...(args.pullArgv === undefined ? {} : {pullArgv:args.pullArgv}),...(args.pushArgv === undefined ? {} : {pushArgv:args.pushArgv}) },exec.signal,{sessionKey:getSessionKey(exec)})
         return { kind:'copy',text:JSON.stringify(receipt),receipt:receipt as unknown as import('@deepseek-ai/dsh-util-values').JsonValue,exit:null,durationMs:0 }
       }
-      if ([args.src,args.dst,args.verify,args.mkdir,args.dryRun,args.delete,args.excludes,args.preserve].some(value => value !== undefined)) throw new Error('file fields require action copy or rsync')
+      if ([args.src,args.dst,args.argv,args.pullArgv,args.pushArgv,args.verify,args.mkdir].some(value => value !== undefined)) throw new Error('file fields require action copy or rsync')
       const hasCmd = typeof args.cmd === 'string' && args.cmd.length > 0
       const hasTarget = typeof args.target === 'string' && args.target.length > 0
       const hasSpawn = typeof args.spawn === 'string' && args.spawn.length > 0
