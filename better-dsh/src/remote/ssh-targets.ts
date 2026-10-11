@@ -3,6 +3,9 @@ import { homedir } from 'node:os'
 import { resolve, join } from 'node:path'
 
 /** Origin-owned identity reference, never key contents or a persistent credential store. */
+/** argv seam for transports/tests: builds the native SSH argv for one connection. */
+export type SshBuilder = typeof sshArgv
+
 export interface SshConnection {
   readonly host: string
   readonly user?: string

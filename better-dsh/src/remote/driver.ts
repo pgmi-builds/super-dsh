@@ -1,8 +1,8 @@
 import { copyTree, type CopyRequest, type TransferReceipt } from './copy.ts'
 import { runRsync, type RsyncRequest, type RsyncReceipt } from './rsync.ts'
-import type { SshBuilder } from './ssh-relay.ts'
+import { nativeCopy, type NativeCopyReceipt, type CopyPlan } from './native-copy.ts'
 import { localFileEndpoint } from './archive.ts'
-import { parseFileEndpoint, cliFileEndpoint } from './endpoints.ts'
+import { parseFileEndpoint } from './endpoints.ts'
 import { SshTargets, type SshConnection } from './ssh-targets.ts'
 import { randomUUID } from 'node:crypto'
 import type { HubRemoteTransport, RemoteInput, PreparedRemoteInput, StreamOutputStats, RemoteProcess } from './hub-contract.ts'
@@ -52,13 +52,14 @@ export interface RemoteAuditRecord {
 
 export interface RemoteDriverOptions {
   /** Fixture transport seam; normal consumers use the canonical native SSH builder. */
-  rsyncSshArgv?: SshBuilder
+  /** Fixture transport seam for native copy CLIs (scp/docker/incus argv isolation). */
+  nativeArgvFor?: (argv: string[]) => string[]
   getHub?: () => HubRemoteTransport | undefined
   execTimeoutSec?: number
   idleTtlSec?: number
   maxOutputChars?: number
   onAudit?: (r: RemoteAuditRecord) => void
-  oneshotArgvFor?: (plan: TargetPlan, cmd: string) => string[]
+  oneshotArgvFor?: (plan: TargetPlan, cmd: string, options: { cleanupTag?: string }) => string[]
   ptyArgvFor?: (plan: TargetPlan) => string[]
   spawnArgvFor?: (spawnCommand: string) => string[]
   probeRunner?: ProbeOptions['runner']
@@ -114,24 +115,50 @@ export class RemoteDriver {
     }
   }
 
-  copy(request: CopyRequest, signal: AbortSignal, callCtx: { sessionKey?: string } = {}): Promise<TransferReceipt> {
+  /** Native-first copy routing (spec: remote-native-shortcut): CLI peers run
+   * their native CLI verbatim; only Hub↔local↔local stays on the staged tree
+   * lane with verify/mkdir. Mixed pairs (Hub↔CLI peer) are refused: Hub has no
+   * native CLI and the tree lane has no CLI options. */
+  copy(request: CopyRequest & { argv?: unknown; pullArgv?: unknown; pushArgv?: unknown }, signal: AbortSignal, callCtx: { sessionKey?: string } = {}): Promise<TransferReceipt | NativeCopyReceipt> {
     const combined = AbortSignal.any([signal, this.fileAbort.signal])
     const work = (async () => {
       this.assertOpen(); combined.throwIfAborted()
-      const endpoint = async (value: string) => {
+      const resolve = async (value: string) => {
         const parsed = parseFileEndpoint(value)
-        if (!parsed.target) return { path: parsed.path, endpoint: localFileEndpoint() }
-        if (parsed.target.startsWith('hub:')) {
-          const hub = this.requireHub(); this.hubProviders.add(hub)
-          return { path: parsed.path, endpoint: hub.fileEndpoint(parsed.target.slice(4)) }
-        }
+        if (!parsed.target) return { kind: 'local' as const, path: parsed.path }
+        if (parsed.target.startsWith('hub:')) return { kind: 'hub' as const, path: parsed.path, machine: parsed.target.slice(4) }
         const plan = await this.resolveConnectionTarget(parsed.target, callCtx)
         this.assertOpen(); combined.throwIfAborted()
-        return { path: parsed.path, endpoint: cliFileEndpoint(plan) }
+        return { kind: 'cli' as const, path: parsed.path, plan }
       }
-      const source = await endpoint(request.src), destination = await endpoint(request.dst)
+      const src = await resolve(request.src), dst = await resolve(request.dst)
       this.assertOpen(); combined.throwIfAborted()
-      return copyTree(request, source, destination, combined)
+      if (src.kind === 'hub' || dst.kind === 'hub') {
+        if (src.kind === 'hub' && dst.kind === 'local') {
+          const hub = this.requireHub(); this.hubProviders.add(hub)
+          return copyTree(request, { path: src.path, endpoint: hub.fileEndpoint(src.machine) }, { path: dst.path, endpoint: localFileEndpoint() }, combined)
+        }
+        if (src.kind === 'local' && dst.kind === 'hub') {
+          const hub = this.requireHub(); this.hubProviders.add(hub)
+          return copyTree(request, { path: src.path, endpoint: localFileEndpoint() }, { path: dst.path, endpoint: hub.fileEndpoint(dst.machine) }, combined)
+        }
+        if (src.kind === 'hub' && dst.kind === 'hub') {
+          const hub = this.requireHub(); this.hubProviders.add(hub)
+          return copyTree(request, { path: src.path, endpoint: hub.fileEndpoint(src.machine) }, { path: dst.path, endpoint: hub.fileEndpoint(dst.machine) }, combined)
+        }
+        throw new Error('copy: Hub endpoints pair only with local paths or another Hub machine (native CLI peers have no Hub lane and the Hub has no CLI options)')
+      }
+      if (src.kind === 'local' && dst.kind === 'local')
+        return copyTree(request, { path: src.path, endpoint: localFileEndpoint() }, { path: dst.path, endpoint: localFileEndpoint() }, combined)
+      // At least one CLI peer: native route (local↔peer is still one command).
+      // verify/mkdir belong to the staged Hub/local lane only; refusing them
+      // here (instead of silently dropping) keeps the contract symmetric with
+      // copyTree refusing CLI options.
+      if (request.verify !== undefined || request.mkdir !== undefined) throw new Error('copy: verify/mkdir apply to the Hub/local staged lane only; native CLI routes do not verify or create parents (mirror the CLI\'s own behavior with argv like -r)')
+      const planOf = (end: typeof src | typeof dst) => end.kind === 'cli' ? end.plan : end.kind === 'local' ? ({ kind: 'local' } as const) : undefined
+      const srcPlan = planOf(src), dstPlan = planOf(dst)
+      if (srcPlan === undefined || dstPlan === undefined) throw new Error('copy: unreachable route resolution')
+      return nativeCopy({ src: request.src, dst: request.dst, ...(request.argv === undefined ? {} : { argv: request.argv as string[] }), ...(request.pullArgv === undefined ? {} : { pullArgv: request.pullArgv as string[] }), ...(request.pushArgv === undefined ? {} : { pushArgv: request.pushArgv as string[] }) }, { src: { plan: srcPlan, path: src.path }, dst: { plan: dstPlan, path: dst.path } }, combined, { wrapArgv: this.opts.nativeArgvFor })
     })()
     this.starting.add(work)
     void work.then(() => this.starting.delete(work), () => this.starting.delete(work))
@@ -153,7 +180,7 @@ export class RemoteDriver {
       }
       const source = await endpoint(request.src), destination = await endpoint(request.dst)
       this.assertOpen(); combined.throwIfAborted()
-      return runRsync(request, source, destination, combined, { ssh: this.opts.rsyncSshArgv })
+      return runRsync(request, source, destination, combined, { wrapArgv: this.opts.nativeArgvFor })
     })()
     this.starting.add(work)
     void work.then(() => this.starting.delete(work), () => this.starting.delete(work))
@@ -190,10 +217,21 @@ export class RemoteDriver {
   }
 
   private nativeProcess(plan: TargetPlan, params: PreparedRemoteInput, timeoutSec?: number, signal = this.fileAbort.signal): Promise<RemoteProcess> {
-    // Explicit fixture overrides retain their existing local transport semantics.
-    const work = !this.opts.oneshotArgvFor
-      ? startOwnedNativeProcess(plan, params.cmd, { stdin: params.stdin, timeoutSec, signal, ssh: this.opts.rsyncSshArgv })
-      : Promise.resolve(startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, params.cmd), { stdin: params.stdin, timeoutSec }))
+    // Plain native oneshot: the endpoint wrapper reaps backgrounded children
+    // on normal completion (EXIT trap). Cancellation/timeout kills the LOCAL
+    // transport at once; sshd delivers no signal to a no-PTY session, so the
+    // remote tree is cleaned through its own session reading the pidfile the
+    // wrapper left (same explicit-cleanup shape as the rsync daemon route).
+    const cleanupTag = randomUUID().slice(0, 8)
+    const process = startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, params.cmd, { cleanupTag }), { stdin: params.stdin, timeoutSec })
+    void process.done.then(result => {
+      if (!result.cancelled && !result.timedOut) return
+      const pidfile = `"\${TMPDIR:-/tmp}/superd-oneshot-${cleanupTag}.pgid"`
+      const cleanup = `p=$(cat ${pidfile} 2>/dev/null) && { kill -TERM -- "-$p" 2>/dev/null; sleep 0.3; kill -KILL -- "-$p" 2>/dev/null; }; rm -f ${pidfile}`
+      const killer = startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, cleanup, {}), { timeoutSec: 15 })
+      killer.done.catch(() => {})
+    }).catch(() => {})
+    const work = Promise.resolve(process)
     this.starting.add(work)
     void work.then(() => this.starting.delete(work), () => this.starting.delete(work))
     return work

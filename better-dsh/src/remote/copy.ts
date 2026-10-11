@@ -26,7 +26,9 @@ export interface TransferReceipt {
 export class CopyError extends Error {
     constructor(readonly receipt: TransferReceipt) { super(`copy failed: ${JSON.stringify(receipt)}`); }
 }
-export async function copyTree(request: CopyRequest, source: {
+/** Tree lane (Hub/local binary endpoints) with staged archive and digest
+ * verification. CLI-option fields are rejected: this lane has no native CLI. */
+export async function copyTree(request: CopyRequest & { argv?: unknown; pullArgv?: unknown; pushArgv?: unknown }, source: {
     endpoint: BinaryFileEndpoint;
     path: string;
 }, destination: {
@@ -34,6 +36,8 @@ export async function copyTree(request: CopyRequest, source: {
     path: string;
 }, signal: AbortSignal, scratchRoot = join(process.cwd(), '.scratch')): Promise<TransferReceipt> {
     signal.throwIfAborted();
+    if (request.argv !== undefined || request.pullArgv !== undefined || request.pushArgv !== undefined)
+        throw new Error('copy: argv/pullArgv/pushArgv are native CLI options; the Hub/local staged lane does not accept CLI options');
     await mkdir(scratchRoot, { recursive: true });
     signal.throwIfAborted();
     const scratch = await mkdtemp(join(scratchRoot, 'remote-copy-')), payload = join(scratch, 'payload.bin');

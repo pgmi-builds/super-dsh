@@ -1,131 +1,315 @@
 import { it, expect } from 'vitest'
-import { mkdir, writeFile, readFile, readdir, access, stat, chmod, symlink, lstat, readlink, copyFile } from 'node:fs/promises'
+import { mkdir, writeFile, readFile, readdir, access, symlink, lstat, readlink, utimes } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomBytes, createHash } from 'node:crypto'
 import { RemoteDriver } from '../../src/remote/driver.ts'
-import { sshArgv } from '../../src/remote/ssh-targets.ts'
 import { withSshFixture } from './ssh-fixture.ts'
 import { createRealRemoteHarness } from './real-harness.ts'
 
-// Break caught: missing relay/default dry-run or replacing native delta with full copy.
-it('relays native binary delta with origin-held BYO identities and defaults to dry-run/no-delete', async () => {
+// Task 1 (native shortcut spec): argv is an ordered native option array; no
+// forced archive/timeout/dry-run; removed high-level fields are rejected
+// explicitly rather than silently ignored (parameter roots are open objects,
+// so schema removal alone would let them pass through).
+it('passes ordered native argv tokens without forced options and rejects removed high-level fields', async () => {
   await withSshFixture(async f => {
-    const calls: {connection:Parameters<typeof sshArgv>[0],options:Parameters<typeof sshArgv>[1]}[] = []
-    const destination = {...f.destination,host:'fixture-native',proxyJump:'fixture-jump'}
-    const d = new RemoteDriver({ rsyncSshArgv: (c, o) => {calls.push({connection:c,options:o});return f.isolate(sshArgv(c, o))} })
-    const timings: {elapsedMs:number,exit:number|null}[]=[]
-    const sync=async(...args:Parameters<RemoteDriver['rsync']>)=>{
-      const started=Date.now(),result=await d.rsync(...args)
-      timings.push({elapsedMs:Date.now()-started,exit:result.exit})
-      await writeFile('../.scratch/task-1/task7-fix4-native-timings.json',JSON.stringify(timings,null,2)+'\n')
-      return result
-    }
-    try {
-      const src = join(f.directory, "source with 'quote"), dst = join(f.directory, "destination with 'quote")
-      await mkdir(src); await mkdir(dst)
-      const file = join(src, 'binary'), bytes = randomBytes(8 * 1024 * 1024)
-      await writeFile(file, bytes); await writeFile(join(dst, 'extra'), 'keep')
-      d.registerSsh('byossh:source', f.jump); d.registerSsh('byossh:destination', destination)
-      expect(d).toHaveProperty('rsync')
-      const req = { src: `byossh:source:${src}/`, dst: `byossh:destination:${dst}/` }
-      const dry = await sync(req, new AbortController().signal)
-      expect(dry).toMatchObject({ exit: 0, dryRun: true, delete: false })
-      await expect(access(join(dst, 'binary'))).rejects.toThrow()
-      expect(await readFile(join(dst, 'extra'), 'utf8')).toBe('keep')
-      const initial = await sync({ ...req, dryRun: false }, new AbortController().signal)
-      expect(initial).toMatchObject({ exit: 0, literalBytes: bytes.length })
-      bytes.write('SMALL-DELTA\0\xff', 4000000, 'latin1'); await writeFile(file, bytes)
-      // Explicit content check defeats same-size/same-second quick-check.
-      const { utimes } = await import('node:fs/promises'); const old = await stat(join(dst, 'binary')); await utimes(file, old.atime, new Date(old.mtimeMs + 5000))
-      const delta = await sync({ ...req, dryRun: false }, new AbortController().signal)
-      expect(delta.exit).toBe(0); expect(delta.matchedBytes).toBeGreaterThan(8e6)
-      expect(delta.transferredBytes).toBeLessThan(bytes.length / 4)
-      expect(createHash('sha256').update(await readFile(join(dst, 'binary'))).digest('hex')).toBe(createHash('sha256').update(await readFile(file)).digest('hex'))
-      expect(await readFile(join(dst, 'extra'), 'utf8')).toBe('keep')
-      expect(await readdir(dst)).toEqual(['binary', 'extra'])
-      for(const call of calls) {
-        expect(call.connection).toEqual(call.connection.host==='fixture-native'?destination:f.jump)
-        expect(call.options?.extraArgs).toContain('-a');expect(call.options?.extraArgs).toContain('ForwardAgent=no');if(!call.options?.extraArgs?.includes('ControlMaster=yes')&&!call.options?.extraArgs?.includes('forward'))expect(call.options?.extraArgs).toContain('ControlPath=none')
-        expect(call.options?.command ?? '').not.toContain(f.jump.key);expect(call.options?.command ?? '').not.toContain(destination.key)
-      }
-      const sourceHash=createHash('sha256').update(await readFile(file)).digest('hex'),destinationHash=createHash('sha256').update(await readFile(join(dst,'binary'))).digest('hex')
-      await writeFile('../.scratch/task-1/task7-native-evidence.json',JSON.stringify({size:bytes.length,initial,delta,sourceHash,destinationHash,sourceConnection:{host:f.jump.host,user:f.jump.user,port:f.jump.port,identity:'origin fixture source key'},destinationConnection:{host:destination.host,user:destination.user,port:destination.port,identity:'origin fixture destination key',proxyJump:destination.proxyJump},canonicalCalls:calls.length},null,2)+'\n')
-      await writeFile(join(src,'excluded\nfile'),'skip')
-      const deleted=await sync({...req,dryRun:false,delete:true,excludes:['excluded\nfile']},new AbortController().signal)
-      expect(deleted.exit).toBe(0);expect(deleted.itemizedChanges.some(line=>line.startsWith('*deleting'))).toBe(true)
-      expect(await readdir(dst)).toEqual(['binary'])
-      await sync({src:`byossh:source:${src}`,dst:`byossh:destination:${dst}`,dryRun:false,preserve:false,excludes:['excluded\nfile']},new AbortController().signal)
-      expect(createHash('sha256').update(await readFile(join(dst,"source with 'quote",'binary'))).digest('hex')).toBe(sourceHash)
-    } finally { await d.dispose() }
-  })
-// Five complete relay lifecycles now each include receiving clock-only SSH roundtrips.
-}, 60000)
-
-// Break caught: forcing all routes through directory-only daemon; losing native options/slash semantics.
-it('supports local-SSH file/new destination plus native excludes/delete/preserve and directory slash semantics', async () => {
-  await withSshFixture(async f => {
-    const d = new RemoteDriver({ rsyncSshArgv: (c, o) => f.isolate(sshArgv(c, o)) })
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
     try {
       d.registerSsh('byossh:remote', f.destination)
-      const src = join(f.directory, 'tree'), dst = join(f.directory, 'native-new')
-      await mkdir(src); await writeFile(join(src, 'keep'), 'binary\0\xff'); await chmod(join(src, 'keep'), 0o751)
-      await writeFile(join(src, 'excluded'), 'skip'); await symlink('keep', join(src, 'link'))
-      const odd="odd\nname'$(false)";await writeFile(join(src,odd),'byte-safe name')
-      const req = { src: src + '/', dst: `byossh:remote:${dst}/`, excludes: ['excluded'] }
-      expect(await d.rsync(req, new AbortController().signal)).toMatchObject({ dryRun: true, exit: 0 })
-      await expect(access(dst)).rejects.toThrow()
-      expect(await d.rsync({ ...req, dryRun: false }, new AbortController().signal)).toMatchObject({ exit: 0, preserve: true })
-      expect(await readFile(join(dst, 'keep'), 'utf8')).toBe('binary\0\xff')
-      expect(await readFile(join(dst,odd),'utf8')).toBe('byte-safe name')
-      expect((await stat(join(dst, 'keep'))).mode & 0o777).toBe(0o751)
-      expect((await lstat(join(dst, 'link'))).isSymbolicLink()).toBe(true); expect(await readlink(join(dst, 'link'))).toBe('keep')
-      await expect(access(join(dst, 'excluded'))).rejects.toThrow()
-      await writeFile(join(dst, 'extra'), 'remove'); await d.rsync({ ...req, dryRun: false, delete: true }, new AbortController().signal)
-      await expect(access(join(dst, 'extra'))).rejects.toThrow()
-      const file = join(f.directory, 'download with quote\'file')
-      expect(await d.rsync({ src: `byossh:remote:${dst}/keep`, dst: file, dryRun: false, preserve: false }, new AbortController().signal)).toMatchObject({ exit: 0, preserve: false })
-      expect(await readFile(file, 'utf8')).toBe('binary\0\xff')
-      const key=join(f.directory,"origin key with ' quote");await copyFile(f.destination.key,key)
-      d.registerSsh('byossh:user-host',{...f.destination,key,host:f.destination.user+'@127.0.0.1',user:undefined})
-      const userHostFile=join(f.directory,'%USER%user-host-file')
-      expect(await d.rsync({src:file,dst:`byossh:user-host:${userHostFile}`,dryRun:false},new AbortController().signal)).toMatchObject({exit:0})
-      expect(await readFile(userHostFile,'utf8')).toBe('binary\0\xff')
-      const nested = join(f.directory, 'nested'); await mkdir(nested)
-      await d.rsync({ src, dst: `byossh:remote:${nested}`, dryRun: false }, new AbortController().signal)
-      expect(await readFile(join(nested, 'tree', 'keep'), 'utf8')).toBe('binary\0\xff')
-      const bad = await d.rsync({ src: join(f.directory, 'missing'), dst: `byossh:remote:${nested}`, dryRun: false }, new AbortController().signal)
-      expect(bad.exit).not.toBe(0); expect(bad.stderr).toContain('No such file')
-      await expect(d.rsync({ src: `docker:x:${src}`, dst: file }, new AbortController().signal)).rejects.toThrow(/SSH/)
+      const src = join(f.directory, 'argv-source'), dst = join(f.directory, 'argv-dst')
+      await writeFile(src, 'argv-token-payload\n')
+      // No argv: plain rsync defaults — a file copy works without any hidden
+      // --dry-run, and no archive/-a/--timeout is injected. Directories would
+      // need -r by native semantics (no forced recursion either).
+      const plain = await d.rsync({ src, dst: `byossh:remote:${dst}` }, new AbortController().signal)
+      expect(plain.exit).toBe(0)
+      expect(await readFile(dst, 'utf8')).toBe('argv-token-payload\n')
+      expect(plain.argv).toEqual([])
+      expect(plain.command).toContain('rsync')
+      expect(plain.command).not.toContain('--dry-run')
+      expect(plain.command).not.toContain('--timeout')
+      // Explicit ordered argv passes through verbatim, one token per element.
+      const dry = await d.rsync({ src, dst: `byossh:remote:${dst}`, argv: ['--itemize-changes', '--dry-run'] }, new AbortController().signal)
+      expect(dry.exit).toBe(0)
+      expect(dry.argv).toEqual(['--itemize-changes', '--dry-run'])
+      // --dry-run means no destination write.
+      await writeFile(src, 'changed-payload\n')
+      await d.rsync({ src, dst: `byossh:remote:${dst}`, argv: ['--dry-run'] }, new AbortController().signal)
+      expect(await readFile(dst, 'utf8')).toBe('argv-token-payload\n')
+      // Removed high-level fields are refused before dialing.
+      for (const legacy of [ { dryRun: true }, { dryRun: false }, { delete: true }, { excludes: ['x'] }, { preserve: false } ])
+        await expect(d.rsync({ src, dst: `byossh:remote:${dst}`, ...(legacy as object) } as never, new AbortController().signal)).rejects.toThrow(/dryRun|delete|excludes|preserve/)
     } finally { await d.dispose() }
   })
 }, 40000)
 
-// Break caught: action still rejected by real tool schema, or nonzero rsync presented as success.
-it('declares native rsync Surface and returns defaults through the real scoped tool', async () => {
+it('rejects malformed argv shapes before dialing', async () => {
   await withSshFixture(async f => {
-    const h = await createRealRemoteHarness({ copies: 1, driverOptions: { rsyncSshArgv: (c, o) => f.isolate(sshArgv(c, o)) } })
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:remote', f.destination)
+      const dst = join(f.directory, 'shape-dst')
+      for (const bad of [ 'string', 5, {}, [5], [null], ['ok', undefined as unknown as string] ])
+        await expect(d.rsync({ src: '/no/dial', dst: `byossh:remote:${dst}`, argv: bad as never }, new AbortController().signal)).rejects.toThrow(/argv/)
+      await expect(d.rsync({ src: '/no/dial', dst: `byossh:remote:${dst}`, argv: ['-a'], pullArgv: ['-a'] } as never, new AbortController().signal)).rejects.toThrow(/pullArgv|pushArgv|argv/)
+      await expect(d.rsync({ src: '/no/dial', dst: `byossh:remote:${dst}`, argv: [] , pushArgv: [] } as never, new AbortController().signal)).rejects.toThrow(/pullArgv|pushArgv|argv/)
+      // rsync never had pull/push segmentation: those fields are refused outright.
+      await expect(d.rsync({ src: '/no/dial', dst: `byossh:remote:${dst}`, pullArgv: ['-a'], pushArgv: ['-p'] } as never, new AbortController().signal)).rejects.toThrow(/pullArgv/)
+    } finally { await d.dispose() }
+  })
+}, 20000)
+
+// Task 3 (native shortcut spec): local↔SSH native rsync with caller-chosen
+// options. --dry-run writes nothing; --delete/--exclude/--partial/--inplace are
+// the caller's choice and only the caller's choice; a large file with a small
+// change produces real native delta (Matched data) when --stats is requested;
+// trailing-slash semantics stay rsync-native.
+it('runs local↔SSH native rsync with caller options, dry-run discipline and native delta', async () => {
+  await withSshFixture(async f => {
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:remote', f.destination)
+      const src = join(f.directory, 'delta-src'), dst = join(f.directory, 'delta-dst')
+      await mkdir(src); await mkdir(dst)
+      const file = join(src, 'binary'), bytes = randomBytes(8 * 1024 * 1024)
+      await writeFile(file, bytes)
+      // Explicit --dry-run: no destination data changes.
+      const dry = await d.rsync({ src: `${src}/`, dst: `byossh:remote:${dst}/`, argv: ['-a', '--dry-run'] }, new AbortController().signal)
+      expect(dry.exit).toBe(0)
+      await expect(access(join(dst, 'binary'))).rejects.toThrow()
+      // Real sync with -a and --stats; the receipt parses only what the CLI printed.
+      const initial = await d.rsync({ src: `${src}/`, dst: `byossh:remote:${dst}/`, argv: ['-a', '--stats'] }, new AbortController().signal)
+      expect(initial.exit).toBe(0)
+      expect(createHash('sha256').update(await readFile(join(dst, 'binary'))).digest('hex')).toBe(createHash('sha256').update(bytes).digest('hex'))
+      expect(initial.literalBytes).toBeGreaterThan(0)
+      expect(initial.command).toContain('--stats')
+      // Small change: real native delta — matched bytes dominate when --stats is present.
+      bytes.write('SMALL-DELTA\0\xff', 4000000, 'latin1'); await writeFile(file, bytes)
+      await utimes(file, new Date(), new Date(Date.now() + 5000))
+      const delta = await d.rsync({ src: `${src}/`, dst: `byossh:remote:${dst}/`, argv: ['-a', '--stats'] }, new AbortController().signal)
+      expect(delta.exit).toBe(0)
+      expect(delta.matchedBytes ?? 0).toBeGreaterThan(8e6)
+      expect(createHash('sha256').update(await readFile(join(dst, 'binary'))).digest('hex')).toBe(createHash('sha256').update(await readFile(file)).digest('hex'))
+      // Without --stats no fields are fabricated: literal/matched stay undefined.
+      const plain = await d.rsync({ src: file, dst: `byossh:remote:${join(dst, 'binary')}`, argv: ['-a'] }, new AbortController().signal)
+      expect(plain.exit).toBe(0)
+      expect(plain.literalBytes).toBeUndefined()
+      expect(plain.matchedBytes).toBeUndefined()
+    } finally { await d.dispose() }
+  })
+}, 60000)
+
+// Caller-chosen destructive options stay exactly that: --delete removes
+// destination extras; --exclude skips entries; nothing is forced on.
+it('honors caller --delete/--exclude and native trailing-slash semantics', async () => {
+  await withSshFixture(async f => {
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:remote', f.destination)
+      const src = join(f.directory, 'tree'), dst = join(f.directory, 'tree-dst')
+      await mkdir(src); await mkdir(dst)
+      await writeFile(join(src, 'keep'), 'binary\0\xff')
+      await writeFile(join(src, 'excluded'), 'skip')
+      await writeFile(join(dst, 'extra'), 'remove')
+      // Trailing slash on src copies contents; no slash copies the named directory.
+      const up = await d.rsync({ src: `${src}/`, dst: `byossh:remote:${dst}/`, argv: ['-a', '--exclude=excluded'] }, new AbortController().signal)
+      expect(up.exit).toBe(0)
+      expect(await readdir(dst)).toEqual(['extra', 'keep'])
+      const deleted = await d.rsync({ src: `${src}/`, dst: `byossh:remote:${dst}/`, argv: ['-a', '--delete', '--exclude=excluded'] }, new AbortController().signal)
+      expect(deleted.exit).toBe(0)
+      expect(await readdir(dst)).toEqual(['keep'])
+      // No-slash source copies the named directory itself.
+      const nested = join(f.directory, 'nested'); await mkdir(nested)
+      await d.rsync({ src, dst: `byossh:remote:${nested}/`, argv: ['-a'] }, new AbortController().signal)
+      expect(await readFile(join(nested, 'tree', 'keep'), 'utf8')).toBe('binary\0\xff')
+      // Symlinks survive -a; caller can choose other semantics natively.
+      await symlink('keep', join(src, 'link'))
+      const linked = await d.rsync({ src: `${src}/`, dst: `byossh:remote:${dst}/`, argv: ['-a'] }, new AbortController().signal)
+      expect(linked.exit).toBe(0)
+      expect((await lstat(join(dst, 'link'))).isSymbolicLink()).toBe(true)
+      expect(await readlink(join(dst, 'link'))).toBe('keep')
+      // Native failure: missing source surfaces the CLI's own error.
+      const bad = await d.rsync({ src: join(f.directory, 'missing'), dst: `byossh:remote:${nested}/`, argv: ['-a'] }, new AbortController().signal)
+      expect(bad.exit).not.toBe(0)
+      expect(bad.stderr).toContain('No such file')
+      // Mixed transports remain rejected.
+      await expect(d.rsync({ src: `docker:x:${src}`, dst: join(f.directory, 'x'), argv: ['-a'] }, new AbortController().signal)).rejects.toThrow(/SSH|rsync supports/)
+    } finally { await d.dispose() }
+  })
+}, 60000)
+
+// Real scoped tool: argv passes through the schema, defaults are gone, and the
+// description no longer advertises forced dry-run or Python prerequisites.
+it('declares native argv Surface and returns native receipts through the real scoped tool', async () => {
+  await withSshFixture(async f => {
+    const h = await createRealRemoteHarness({ copies: 1, driverOptions: { nativeArgvFor: (argv: string[]) => argv[0] === 'ssh' ? f.isolate(argv) : argv } })
     try {
       const a = await h.createAgent('rsync-tool'), src = join(f.directory, 'source'), dst = join(f.directory, 'dest')
       await mkdir(src); await mkdir(dst); await writeFile(join(src, 'test'), 'content')
       await h.invoke(a, { target: 'byossh:dest', ssh: f.destination })
-      expect(h.visibleTools(a).find(t => t.name === 'remote')!.description).toContain('rsync')
-      const receipt = JSON.parse((await h.invoke(a, { action: 'rsync', src: src + '/', dst: `byossh:dest:${dst}/` })).text)
-      expect(receipt).toMatchObject({ action: 'rsync', dryRun: true, delete: false, exit: 0 })
-      await expect(access(join(dst, 'test'))).rejects.toThrow()
-      await expect(h.invoke(a, { action: 'rsync', src, dst: `byossh:dest:${dst}`, cmd: 'true' })).rejects.toThrow(/cannot be combined/)
-      await expect(h.invoke(a, { action: 'rsync', src: join(src, 'missing'), dst: `byossh:dest:${dst}`, dryRun: false })).rejects.toThrow(/No such file/)
+      const description = h.visibleTools(a).find(t => t.name === 'remote')!.description
+      expect(description).toContain('argv')
+      // The file-action section needs no Python at all (native CLIs only);
+      // the Modes section carries the explicit "no Python" claim.
+      const fileSection = description.slice(description.indexOf('Files —'))
+      expect(fileSection).not.toContain('Python')
+      expect(description).toContain('no Python')
+      const receipt = JSON.parse((await h.invoke(a, { action: 'rsync', src: `${src}/`, dst: `byossh:dest:${dst}/`, argv: ['-a'] })).text)
+      expect(receipt).toMatchObject({ action: 'rsync', exit: 0 })
+      expect(receipt.argv).toEqual(['-a'])
+      expect(receipt.verified).toBeUndefined()
+      expect(await readFile(join(dst, 'test'), 'utf8')).toBe('content')
+      // A real native failure is reported, not hidden as a schema error.
+      await expect(h.invoke(a, { action: 'rsync', src: join(src, 'missing'), dst: `byossh:dest:${dst}/`, argv: ['-a'] })).rejects.toThrow(/No such file/)
     } finally { await h.dispose() }
+  })
+}, 40000)
+
+// IPv6 and BYO identity survive the native RSYNC_RSH wiring: the placeholder
+// host is consumed on the origin, the canonical ssh argv carries the address.
+it('uses the full canonical IPv6 SSH identity without rsync misparsing the host', async () => {
+  await withSshFixture(async f => {
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:v6', { ...f.destination, host: '::1' })
+      const src = join(f.directory, 'binary'), dst = join(f.directory, 'v6-copy')
+      await writeFile(src, Buffer.from([0, 255, 128, 13, 10]))
+      expect(await d.rsync({ src, dst: `byossh:v6:${dst}`, argv: ['-a'] }, new AbortController().signal)).toMatchObject({ exit: 0 })
+      expect(await readFile(dst)).toEqual(await readFile(src))
+    } finally { await d.dispose() }
+  }, { ipv6: true })
+}, 20000)
+
+// An explicit -e/--rsh in argv overrides the tool's SSH wiring per rsync's
+// own rules: the real host operand is passed and rsync parses it natively.
+it('lets caller -e override the default SSH wiring', async () => {
+  await withSshFixture(async f => {
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:remote', f.destination)
+      const src = join(f.directory, 'override-src'), dst = join(f.directory, 'override-dst')
+      await writeFile(src, 'override-payload\n')
+      // The caller's -e replaces the tool's SSH wiring entirely: the command
+      // must carry its own port/key/config (that is what "override" means).
+      const sshCommand = `ssh -p ${f.destination.port} -i ${f.destination.key} -F ${f.config}`
+      const receipt = await d.rsync({ src, dst: `byossh:remote:${dst}`, argv: ['-a', '-e', sshCommand] }, new AbortController().signal)
+      expect(receipt.exit).toBe(0)
+      expect(receipt.argv).toEqual(['-a', '-e', sshCommand])
+      expect(await readFile(dst, 'utf8')).toBe('override-payload\n')
+    } finally { await d.dispose() }
   })
 }, 30000)
 
-it('uses the full canonical IPv6 SSH identity without rsync misparsing the host',async()=>{
-  await withSshFixture(async f=>{
-    const d=new RemoteDriver({rsyncSshArgv:(c,o)=>f.isolate(sshArgv(c,o))})
+// Task 4 (native shortcut spec): dual-SSH rsync through the native forwarding
+// route — destination loopback daemon + dest -L + source -R; the two peers run
+// ONE rsync protocol conversation, and a large existing destination file with
+// a small change produces real delta (Matched data >> literal), not a copy.
+it('relays dual-SSH rsync through native port forwards with real delta and origin-held identities', async () => {
+  await withSshFixture(async f => {
+    const spawned: string[][] = []
+    const d = new RemoteDriver({ nativeArgvFor: argv => { if (argv[0] === 'ssh') { spawned.push(argv); return f.isolate(argv) } return argv } })
     try {
-      d.registerSsh('byossh:v6',{...f.destination,host:'::1'})
-      const src=join(f.directory,'binary'),dst=join(f.directory,'v6-copy');await writeFile(src,Buffer.from([0,255,128,13,10]))
-      expect(await d.rsync({src,dst:`byossh:v6:${dst}`,dryRun:false},new AbortController().signal)).toMatchObject({exit:0})
-      expect(await readFile(dst)).toEqual(await readFile(src))
-    } finally {await d.dispose()}
-  },{ipv6:true})
-},10000)
+      d.registerSsh('byossh:src', f.jump)
+      d.registerSsh('byossh:dst', f.destination)
+      const src = join(f.directory, 'relay-src'), dst = join(f.directory, 'relay-dst')
+      await mkdir(src); await mkdir(dst)
+      const file = join(src, 'binary'), bytes = randomBytes(8 * 1024 * 1024)
+      await writeFile(file, bytes)
+      const initial = await d.rsync({ src: `byossh:src:${src}/`, dst: `byossh:dst:${dst}/`, argv: ['-a', '--stats'] }, new AbortController().signal)
+      expect(initial.exit).toBe(0)
+      expect(initial.route).toBe('ssh-ssh-forward')
+      expect(createHash('sha256').update(await readFile(join(dst, 'binary'))).digest('hex')).toBe(createHash('sha256').update(bytes).digest('hex'))
+      // Small change over the large existing destination file: one protocol
+      // conversation with real delta — matched data must dominate.
+      bytes.write('SMALL-DELTA\0\xff', 4000000, 'latin1'); await writeFile(file, bytes)
+      await utimes(file, new Date(), new Date(Date.now() + 5000))
+      const delta = await d.rsync({ src: `byossh:src:${src}/`, dst: `byossh:dst:${dst}/`, argv: ['-a', '--stats'] }, new AbortController().signal)
+      expect(delta.exit).toBe(0)
+      expect(delta.route).toBe('ssh-ssh-forward')
+      expect(delta.matchedBytes ?? 0).toBeGreaterThan(8e6)
+      expect(delta.literalBytes ?? 8e6).toBeLessThan(8e6 / 4)
+      expect(createHash('sha256').update(await readFile(join(dst, 'binary'))).digest('hex')).toBe(createHash('sha256').update(await readFile(file)).digest('hex'))
+      // All identities stayed on the origin: every spawned ssh argv carries
+      // an origin-held key path for its own side, and no remote command line
+      // (the argument after '--') contains any key path.
+      expect(spawned.length).toBeGreaterThan(0)
+      // Each rsync call spawns one -L and one -R session; two calls ran.
+      expect(spawned.filter(argv => argv.some(token => token === '-L' || token === '-R')).length).toBeGreaterThanOrEqual(2)
+      for (const argv of spawned) {
+        const dash = argv.indexOf('--')
+        const remotePart = dash >= 0 ? argv.slice(dash + 2) : []
+        expect(remotePart.join(' ')).not.toContain(f.jump.key)
+        expect(remotePart.join(' ')).not.toContain(f.destination.key)
+        expect(argv.some(token => token === f.jump.key || token === f.destination.key)).toBe(true)
+      }
+      // The destination-side daemon temp dir (rsyncd.conf) must be removed by
+      // the dedicated cleanup session — the fixture's "remote" /tmp is this
+      // machine's /tmp, so count superd-rsync.* leftovers across both rsync
+      // calls (regression: remote residue was once left on every run).
+      const { readdir: lsTmp } = await import('node:fs/promises')
+      const residue = (await lsTmp('/tmp')).filter(name => name.startsWith('superd-rsync.'))
+      expect(residue).toEqual([])
+    } finally { await d.dispose() }
+  })
+}, 90000)
+
+// Forwarding refused on the source side AND the stdio route reports itself
+// unavailable on this SSH/rsync combination: the combined facts surface and
+// nothing is copied — never a silent full copy.
+it('reports combined route unavailability when source -R is refused; no full-copy fallback', async () => {
+  await withSshFixture(async f => {
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:src', f.jump)
+      d.registerSsh('byossh:dst', f.destination)
+      const src = join(f.directory, 'denied-src'), dst = join(f.directory, 'denied-dst')
+      await mkdir(src); await mkdir(dst)
+      const file = join(src, 'binary'), bytes = randomBytes(1024 * 1024)
+      await writeFile(file, bytes)
+      await expect(d.rsync({ src: `byossh:src:${src}/`, dst: `byossh:dst:${dst}/`, argv: ['-a'] }, new AbortController().signal)).rejects.toThrow(/forwarding route denied|stdio route unavailable|no full-copy/)
+      await expect(access(join(dst, 'binary'))).rejects.toThrow()
+    } finally { await d.dispose() }
+  }, { forwarding: { jump: 'no' } })
+}, 60000)
+
+// Both routes fail (nonexistent destination directory): the combined facts
+// are reported and nothing is copied.
+it('marks dual-SSH rsync unavailable when both routes fail; no full-copy fallback', async () => {
+  await withSshFixture(async f => {
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:src', f.jump)
+      d.registerSsh('byossh:dst', f.destination)
+      const src = join(f.directory, 'unavail-src')
+      await mkdir(src)
+      await writeFile(join(src, 'binary'), randomBytes(1024))
+      await expect(d.rsync({ src: `byossh:src:${src}/`, dst: `byossh:dst:${join(f.directory, 'missing-dst')}/`, argv: ['-a'] }, new AbortController().signal)).rejects.toThrow(/unavailable|no full-copy|directory/)
+      await expect(access(join(f.directory, 'missing-dst'))).rejects.toThrow()
+    } finally { await d.dispose() }
+  }, { forwarding: { jump: 'no' } })
+}, 60000)
+
+// Task 5 (native shortcut spec): with BOTH endpoints denying TCP forwarding,
+// the stdio route would be the only option. On this SSH/rsync combination it
+// reports itself unavailable (see the verdict in ssh-rsync-native-relay.ts:
+// the source-side rsync client with a stdio adapter makes ssh tear down the
+// session stdin channel before the protocol starts). The error must say so
+// honestly and nothing may be staged or copied.
+it('reports stdio route unavailability when both forwards are denied; no full staging', async () => {
+  await withSshFixture(async f => {
+    const d = new RemoteDriver({ nativeArgvFor: argv => argv[0] === 'ssh' ? f.isolate(argv) : argv })
+    try {
+      d.registerSsh('byossh:src', f.jump)
+      d.registerSsh('byossh:dst', f.destination)
+      const src = join(f.directory, 'stdio-src'), dst = join(f.directory, 'stdio-dst')
+      await mkdir(src); await mkdir(dst)
+      await writeFile(join(src, 'binary'), randomBytes(8 * 1024 * 1024))
+      await expect(d.rsync({ src: `byossh:src:${src}/`, dst: `byossh:dst:${dst}/`, argv: ['-a', '--stats'] }, new AbortController().signal)).rejects.toThrow(/stdio route unavailable|no full-copy/)
+      await expect(access(join(dst, 'binary'))).rejects.toThrow()
+      // The origin staged nothing either: no remote-native-copy scratch dir.
+      const { readdir } = await import('node:fs/promises')
+      const scratch = join(process.cwd(), '.scratch')
+      const staged = (await readdir(scratch, { recursive: true }).catch(() => [] as string[])).filter(name => String(name).startsWith('remote-native-copy'))
+      expect(staged).toEqual([])
+    } finally { await d.dispose() }
+  }, { forwarding: { jump: 'no', destination: 'no' } })
+}, 60000)

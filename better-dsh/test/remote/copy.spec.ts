@@ -23,7 +23,7 @@ it('copies binary trees, verifies transferred entries while preserving destinati
         expect(await readFile(join(dst, '雪\nname'))).toEqual(bytes);
         expect(await readFile(join(dst, 'unrelated'), 'utf8')).toBe('keep');
         expect(await readdir(join(dst, 'empty'))).toEqual([]);
-        expect(receipt.scratch).toBeUndefined();
+        expect((receipt as { scratch?: string }).scratch).toBeUndefined();
     }
     finally {
         await driver.dispose();
@@ -65,7 +65,7 @@ it('real scoped tool advertises binary copy and returns a declared verified rece
         const agent = await h.createAgent('copy'), src = join(home, 'source'), dst = join(home, 'dest');
         await writeFile(src, Buffer.from([0, 255, 128]));
         const schema = h.visibleTools(agent).find(t => t.name === 'remote')!;
-        expect(schema.description).toContain('Python 3');
+        expect(schema.description).toContain('bash only (no Python)');
         const result = await h.invoke(agent, { action: 'copy', src, dst });
         expect(JSON.parse(result.text)).toMatchObject({ action: 'copy', verified: true, bytes: 3, entries: 1 });
         await expect(h.invoke(agent, { action: 'copy', src, dst, cmd: 'true' })).rejects.toThrow(/cannot be combined/);
@@ -194,3 +194,171 @@ it('real scoped Agent disposal awaits partitioned Hub worker, socket and origin 
         await rm(home, { recursive: true, force: true });
     }
 }, 20000);
+
+// Task 1 (native shortcut spec): copy takes ordered native argv; one-shot
+// CLI routes use argv, two-segment cross-endpoint routes use mutually
+// exclusive pullArgv/pushArgv; verify/mkdir stay only on the Hub/local lane.
+it('accepts argv for CLI peers and pullArgv/pushArgv for two-segment routes; Hub/local lane rejects CLI options', async () => {
+    const { createRealRemoteHarness } = await import('./real-harness.ts');
+    const h = await createRealRemoteHarness({ copies: 1 }), home = await mkdtemp(join(tmpdir(), 'copy-argv-'));
+    try {
+        const a = await h.createAgent('copy-argv');
+        const src = join(home, 'src'), dst = join(home, 'dst');
+        await mkdir(src); await writeFile(join(src, 'f'), 'payload');
+        // Pure local lane: argv is not a declared capability of the old channel.
+        await expect(h.invoke(a, { action: 'copy', src, dst, argv: ['-p'] })).rejects.toThrow(/argv|not supported|native/);
+        // verify/mkdir remain valid on the local lane.
+        const local = JSON.parse((await h.invoke(a, { action: 'copy', src, dst, verify: true, mkdir: true })).text);
+        expect(local.verified).toBe(true);
+        // argv + pull/push mixes are rejected before any work.
+        await expect(h.invoke(a, { action: 'copy', src, dst, argv: ['-p'], pullArgv: ['-a'] })).rejects.toThrow(/pullArgv|pushArgv|argv/);
+        await expect(h.invoke(a, { action: 'copy', src, dst, pullArgv: ['-a'], pushArgv: ['-p'] })).rejects.toThrow(/copy|pull|push/);
+        // Removed rsync-only fields on copy are still rejected.
+        await expect(h.invoke(a, { action: 'copy', src, dst, dryRun: true })).rejects.toThrow(/dryRun/);
+        // Malformed shapes fail before dialing.
+        await expect(h.invoke(a, { action: 'copy', src, dst, argv: 'not-an-array' })).rejects.toThrow(/argv/);
+        await expect(h.invoke(a, { action: 'copy', src, dst, argv: [7] })).rejects.toThrow(/argv/);
+        await expect(h.invoke(a, { action: 'copy', src, dst, argv: [null] })).rejects.toThrow(/argv/);
+    }
+    finally {
+        await h.dispose();
+        await rm(home, { recursive: true, force: true });
+    }
+});
+
+// Task 2 (native shortcut spec): real scp routes with BYO identities; spaces,
+// quotes and newlines in paths survive; success never claims verification.
+it('copies local↔SSH with native scp and ordered argv; no forced verification claim', async () => {
+    const { withSshFixture } = await import('./ssh-fixture.ts');
+    await withSshFixture(async f => {
+        const d = new RemoteDriver({ nativeArgvFor: argv => (argv[0] === 'ssh' || argv[0] === 'scp') ? f.isolateOpts(argv) : argv });
+        try {
+            d.registerSsh('byossh:remote', f.destination);
+            const odd = join(f.directory, "copy 'quote 雪\nfile");
+            const remote = join(f.directory, 'scp-remote');
+            await mkdir(remote);
+            await writeFile(odd, 'native-scp-payload');
+            const up = await d.copy({ src: odd, dst: `byossh:remote:${remote}/`, argv: ['-p'] }, new AbortController().signal) as import('../../src/remote/native-copy.ts').NativeCopyReceipt;
+            expect(up.route).toBe('scp');
+            expect(up.exits).toEqual([0]);
+            expect(up.verified).toBe(false);
+            expect(up.argv[0]).toContain('-p');
+            expect(await readFile(join(remote, "copy 'quote 雪\nfile"), 'utf8')).toBe('native-scp-payload');
+            const down = join(f.directory, 'scp-back');
+            await mkdir(down);
+            const back = await d.copy({ src: `byossh:remote:${remote}/`, dst: down, argv: ['-r'] }, new AbortController().signal) as import('../../src/remote/native-copy.ts').NativeCopyReceipt;
+            expect(back.exits).toEqual([0]);
+            expect(await readFile(join(down, 'scp-remote', "copy 'quote 雪\nfile"), 'utf8')).toBe('native-scp-payload');
+            const missing = await d.copy({ src: join(f.directory, 'missing-src'), dst: `byossh:remote:${remote}` }, new AbortController().signal) as import('../../src/remote/native-copy.ts').NativeCopyReceipt;
+            expect(missing.exits[0]).not.toBe(0);
+            expect(missing.stderr.join('\n')).toMatch(/No such file|does not exist/i);
+            expect(missing.verified).toBe(false);
+        }
+        finally { await d.dispose() }
+    })
+}, 40000);
+
+// Native CLI routes refuse verify/mkdir (staged-lane-only fields) instead of
+// silently dropping them; scp -R also hides inside short-option clusters.
+it('native scp routes refuse verify/mkdir and reject -R inside option clusters', async () => {
+    const { withSshFixture } = await import('./ssh-fixture.ts');
+    await withSshFixture(async f => {
+        const d = new RemoteDriver({ nativeArgvFor: argv => (argv[0] === 'ssh' || argv[0] === 'scp') ? f.isolateOpts(argv) : argv });
+        try {
+            d.registerSsh('byossh:remote', f.destination);
+            const local = join(f.directory, 'guard-src'), remote = join(f.directory, 'guard-remote');
+            await mkdir(local); await mkdir(remote);
+            await writeFile(join(local, 'f'), 'guard-payload');
+            await expect(d.copy({ src: local, dst: `byossh:remote:${remote}/`, argv: ['-r'], verify: true }, new AbortController().signal)).rejects.toThrow(/verify.*Hub\/local|staged lane only/);
+            await expect(d.copy({ src: local, dst: `byossh:remote:${remote}/`, argv: ['-r'], mkdir: false }, new AbortController().signal)).rejects.toThrow(/mkdir.*Hub\/local|staged lane only/);
+            await expect(d.copy({ src: local, dst: `byossh:remote:${remote}/`, argv: ['-pR'] }, new AbortController().signal)).rejects.toThrow(/-R/);
+            await expect(d.copy({ src: local, dst: `byossh:remote:${remote}/`, argv: ['--'] }, new AbortController().signal)).rejects.toThrow(/--/);
+            // Nothing ran: the destination stayed empty.
+            expect(await readdir(remote)).toEqual([]);
+        }
+        finally { await d.dispose() }
+    })
+}, 40000);
+
+// Caller-supplied identity options come AFTER the registered identity in the
+// scp argv, so scp's last-option-wins lets the caller override -i/-P (spec:
+// explicit caller options win over the tool's chosen identity).
+it('caller -i in argv overrides the registered scp identity (last option wins)', async () => {
+    const { withSshFixture } = await import('./ssh-fixture.ts');
+    await withSshFixture(async f => {
+        const seen: string[][] = [];
+        const d = new RemoteDriver({ nativeArgvFor: argv => {
+            if (argv[0] === 'ssh') return f.isolateOpts(argv);
+            if (argv[0] === 'scp') { seen.push([...argv]); return f.isolateOpts(argv) }
+            return argv;
+        } });
+        try {
+            d.registerSsh('byossh:remote', f.destination);
+            const local = join(f.directory, 'override-src'), remote = join(f.directory, 'override-remote');
+            await mkdir(local); await mkdir(remote);
+            await writeFile(join(local, 'f'), 'override-payload');
+            const callerKey = join(f.directory, 'caller-key');
+            await writeFile(callerKey, 'not-a-real-key');
+            const receipt = await d.copy({ src: join(local, 'f'), dst: `byossh:remote:${remote}/`, argv: ['-i', callerKey] }, new AbortController().signal) as import('../../src/remote/native-copy.ts').NativeCopyReceipt;
+            // The caller's -i must appear AFTER the registered identity's -i.
+            const scpArgv = seen[0]!;
+            const registered = scpArgv.indexOf('-i', 1), caller = scpArgv.lastIndexOf('-i');
+            expect(registered).toBeGreaterThan(0);
+            expect(caller).toBeGreaterThan(registered);
+            expect(scpArgv[caller + 1]).toBe(callerKey);
+            // Fixture identity wins only because both point at the same key
+            // semantics; the structural guarantee (caller last) is the assertion.
+            expect(receipt.exits).toEqual([0]);
+            expect(await readFile(join(remote, 'f'), 'utf8')).toBe('override-payload');
+        }
+        finally { await d.dispose() }
+    })
+}, 40000);
+
+// Two different BYO identities via scp -3 through the origin; identities stay
+// on the origin (temp config only), scp -R is refused.
+it('copies SSH↔SSH through the origin with two different BYO keys; refuses scp -R', async () => {
+    const { withSshFixture } = await import('./ssh-fixture.ts');
+    await withSshFixture(async f => {
+        const d = new RemoteDriver({ nativeArgvFor: argv => (argv[0] === 'ssh' || argv[0] === 'scp') ? f.isolateOpts(argv) : argv });
+        try {
+            d.registerSsh('byossh:src', f.jump);
+            d.registerSsh('byossh:dst', f.destination);
+            const remote = join(f.directory, 'hop-src');
+            await mkdir(remote);
+            await writeFile(join(remote, 'hop-file'), 'hop-payload');
+            const receipt = await d.copy({ src: `byossh:src:${remote}/`, dst: `byossh:dst:${join(f.directory, 'hop-final')}/`, argv: ['-r'] }, new AbortController().signal) as import('../../src/remote/native-copy.ts').NativeCopyReceipt;
+            expect(receipt.route).toContain('-3');
+            expect(receipt.exits).toEqual([0]);
+            expect(receipt.verified).toBe(false);
+            expect(await readFile(join(f.directory, 'hop-final', 'hop-file'), 'utf8')).toBe('hop-payload');
+            expect(receipt.cleanup).toBe('released');
+            await expect(d.copy({ src: `byossh:src:${remote}`, dst: `byossh:dst:${join(f.directory, 'never')}`, argv: ['-R'] }, new AbortController().signal)).rejects.toThrow(/-R/);
+            const { readdir } = await import('node:fs/promises');
+            const { tmpdir } = await import('node:os');
+            const leftovers = (await readdir(tmpdir())).filter(n => n.startsWith('superd-scp3-'));
+            expect(leftovers).toEqual([]);
+        }
+        finally { await d.dispose() }
+    })
+}, 60000);
+
+// `ssh:<alias>` targets reach the scp -3 temp config verbatim: a newline in
+// the alias must be refused before any config file is written (config-line
+// injection guard), and nothing may be copied.
+it('refuses newline-bearing ssh: aliases before writing the scp -3 temp config', async () => {
+    const { withSshFixture } = await import('./ssh-fixture.ts');
+    await withSshFixture(async f => {
+        const d = new RemoteDriver({ nativeArgvFor: argv => (argv[0] === 'ssh' || argv[0] === 'scp') ? f.isolateOpts(argv) : argv });
+        try {
+            d.registerSsh('byossh:src', f.jump);
+            const injected = `ssh:alias\nHost evil\n  ProxyCommand /bin/false`;
+            await expect(d.copy({ src: `byossh:src:${join(f.directory, 'hop-src')}/`, dst: `${injected}:${join(f.directory, 'never')}/`, argv: ['-r'] }, new AbortController().signal)).rejects.toThrow(/newline.*SSH host|SSH host.*newline|config injection/);
+            const { readdir } = await import('node:fs/promises');
+            const { tmpdir } = await import('node:os');
+            const leftovers = (await readdir(tmpdir())).filter(n => n.startsWith('superd-scp3-'));
+            expect(leftovers).toEqual([]);
+        }
+        finally { await d.dispose() }
+    })
+}, 60000);
