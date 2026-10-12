@@ -1,0 +1,26 @@
+{
+  "removed": 125,
+  "kinds": {
+    "atomic_fact": 88,
+    "foresight": 33,
+    "episode": 4
+  },
+  "sourceFiles": 3,
+  "retainedBlocksVerified": 767,
+  "backup": "/home/u1/.local/state/corti/cleanup-release-031a-2026-10-12",
+  "entryCountHighWaterPreserved": true,
+  "nativeSessionFilesRetained": true,
+  "projectionRowsRemaining": {
+    "episode": 0,
+    "atomic_fact": 0,
+    "foresight": 0
+  },
+  "sourceIndexSetsEqual": {
+    "episode": true,
+    "atomic_fact": true,
+    "foresight": true
+  },
+  "clusterMembershipsRemaining": 0,
+  "actualMemoryGetStatus": 200,
+  "removedEpisodesAbsentFromGet": true
+}

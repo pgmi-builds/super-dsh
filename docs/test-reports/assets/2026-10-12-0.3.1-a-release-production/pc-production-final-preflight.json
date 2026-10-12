@@ -1,0 +1,106 @@
+{
+  "base": "http://127.0.0.1:3080",
+  "home": "/home/u1/.dsh",
+  "profile": "web",
+  "anonymousShellStatus": 200,
+  "passwordForm": true,
+  "anonymousApiStatus": 401,
+  "authenticatedShellStatus": 200,
+  "modelCatalogReady": true,
+  "roster": [
+    {
+      "key": "native",
+      "machine": "local",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "agy",
+      "machine": "local",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "claude",
+      "machine": "local",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "codex",
+      "machine": "local",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "hermes",
+      "machine": "local",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "omp",
+      "machine": "local",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "pi",
+      "machine": "local",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "0kdzjk",
+      "machine": "bfwu",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "yuaisr",
+      "machine": "bfwu",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "9xpbi4",
+      "machine": "bfwu",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "92tgxg",
+      "machine": "bfwu",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "dqsdy4",
+      "machine": "bfwu",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "0yijnn",
+      "machine": "bfwu",
+      "ready": true,
+      "failed": false
+    },
+    {
+      "key": "ea3yvg",
+      "machine": "bfwu",
+      "ready": true,
+      "failed": false
+    }
+  ],
+  "packages": {
+    "better-dsh": {
+      "version": "0.3.1-a",
+      "path": "/home/u1/.dsh/profiles/web/node_modules/better-dsh"
+    },
+    "super-dsh": {
+      "version": "0.3.1-a",
+      "path": "/home/u1/.dsh/profiles/web/node_modules/super-dsh"
+    }
+  }
+}

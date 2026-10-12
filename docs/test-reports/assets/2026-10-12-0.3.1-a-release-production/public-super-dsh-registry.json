@@ -1,0 +1,11 @@
+{
+  "name": "super-dsh",
+  "version": "0.3.1-a",
+  "latest": "0.3.1-a",
+  "tarball": "https://registry.npmjs.org/super-dsh/-/super-dsh-0.3.1-a.tgz",
+  "sha256": "643c8722cdbd3c5a43d7b189d37f08edfdd06e0a93420477d52b22f8656ca595",
+  "sha1": "c9a9cf2a73520495b2a51f6dc86aeb0213c95218",
+  "integrity": "sha512-1Fb1uTOy5pGlmEti94fi+04DpnflW7gRvHq7KGDl9OV10uZC1lmogM8wRyd0sEWjQxhxPSj+2aVKScWLN5RX0w==",
+  "bytes": 21141836,
+  "verifiedAt": "2026-10-12T15:30:10.069Z"
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "log": "2026-10-12T15_13_16_368Z-debug-0.log",
+    "put": "32 http fetch PUT 202 https://registry.npmjs.org/better-dsh 3216ms"
+  },
+  {
+    "log": "2026-10-12T15_18_55_729Z-debug-0.log",
+    "put": "37 http fetch PUT 202 https://registry.npmjs.org/super-dsh 4761ms"
+  }
+]
