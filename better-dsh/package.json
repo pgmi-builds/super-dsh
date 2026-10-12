@@ -1,6 +1,6 @@
 {
   "name": "better-dsh",
-  "version": "0.3.1",
+  "version": "0.3.1-a",
   "description": "Make your dsh ready for serious coding tasks. (Tools x Schemas)^REPL. `skill://`, `ctx://`, `agent://`, `dvc://`, `dsh://`, Python REPL, Context as Variables, cross compactions recallable, full context revive. `hash-edit`, `dvc://browser`, subagent as function, workflow as function.",
   "type": "module",
   "main": "lib/index.js",
@@ -71,7 +71,7 @@
     "cordis.patch.yml",
     "eval-description.md",
     "url-schemes-instruction.md",
-    "scripts/kernel-provision.mjs"
+    "scripts/kernel-check.mjs"
   ],
   "scripts": {
     "prebuild": "node scripts/copy-docs.mjs",
@@ -81,7 +81,7 @@
     "typecheck:client": "tsc -p tsconfig.client.json",
     "test": "vitest --run",
     "test:watch": "vitest",
-    "kernel:venv": "node scripts/kernel-provision.mjs",
+    "kernel:check": "node scripts/kernel-check.mjs",
     "build-client": "tsx scripts/build-client.ts"
   },
   "license": "MIT",

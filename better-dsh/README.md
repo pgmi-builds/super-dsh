@@ -18,7 +18,11 @@ Super Dash installs Better as a separate native bundle. `../dev-webmcp` is a dev
 npm install better-dsh
 ```
 
-The runtime requires Python >=3.9. Configure `python` (or the bundle's `DASHR_KERNEL_PYTHON` hint) to select one. The default `python3` compatibility path prepares a managed environment using uv or system Python, without kernel package installs. uv may download the selected interpreter when it is absent; an explicit interpreter path uses your existing installation. Better probes the interpreter and ships the runner, checkpoint helper and dill0.4.1 sources; it does not run pip to install kernel packages. Python is not bundled by this change. A missing or unsupported interpreter produces an actionable error.
+Better uses an existing Python interpreter. An explicit `python` setting (or `DASHR_KERNEL_PYTHON`) takes precedence; otherwise discovery checks the active virtual/Conda environment, an existing workspace `.venv` or `venv`, then PATH `python3` and `python`. Candidates are actually probed, and a broken automatically discovered candidate does not hide a working fallback. Relative explicit paths resolve against the session workspace. No CPython implementation or Python3.11 version is selected. The packaged dill0.4.1 checkpoint helper requires Python >=3.9.
+
+Better does not install Python, invoke uv/pip, or create a virtual environment. When none of the existing candidates works, the error lists the attempts and asks for an existing interpreter or a Python installation. `npm run kernel:check` checks availability without changing the environment. The runner and dill sources ship in the package; runtime checkpoints belong under the native profile home, and package upgrades do not require rebuilding a package-local Python environment.
+
+The old `kernelEnvDir`, `kernelPythonVersion` and `kernelAutoInstall` provisioning fields and `kernel:venv` command are removed. Existing package-local `.venv-kernel` / `.uv-cache` directories are no longer selected automatically or modified; an existing interpreter can still be selected explicitly. A checkpoint made with another interpreter/environment may be incompatible and produces the usual explicit recovery notice; it is never replayed into a new environment.
 
 The original OMP runner's source commit/hash and MIT license, and dill's source hashes/version and BSD-3-Clause license, accompany the packaged resources. Better's integration code is separate from these original files. OMP-specific Agent helpers are not exposed as DSH features.
 
@@ -28,7 +32,7 @@ Runtime fields remain configurable through the ordinary Cordis row. The implemen
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `python` | `python3` | Interpreter selection; no Jupyter installation requirement. |
+| `python` | automatic discovery | Existing executable name/path; explicit selection bypasses discovery. |
 | `startupTimeoutMs` | `30000` | Budget for child startup and initialization. |
 | `runTimeoutMs` | `120000` | Wall budget per user cell. |
 | `interruptGraceMs` | `2000` | Grace after an interrupt before terminating an unresponsive child. |
@@ -38,9 +42,6 @@ Runtime fields remain configurable through the ordinary Cordis row. The implemen
 | `maxOutputBytes` | `67108864` | Cap for serialized logs, completion and error output; overflow is reported. |
 | `snapshotDir` | native profile checkpoint directory | Explicit directory overrides the native profile default; `""` disables persistence and retains only live process state. Standalone runtimes must explicitly configure persistence. |
 | `snapshotSizeCapBytes` | `268435456` | Checkpoint payload cap; failed or over-cap saves preserve the previous committed generation. |
-| `kernelEnvDir` | `<package>/.venv-kernel` | Managed environment location used by the `python3` compatibility selection. |
-| `kernelPythonVersion` | `3.11` | Interpreter version requested from uv for a new managed environment. |
-| `kernelAutoInstall` | `true` | Allow creation of the managed environment on first use. |
 | `username` | `dashr` | Retained compatibility field. |
 
 ## Cells and recovery

@@ -12,6 +12,7 @@ import { extractStream } from './output.ts'
 
 export interface KernelBridgeOptions {
   python: string
+  env?: NodeJS.ProcessEnv
   cwd?: string
   startupTimeoutMs: number
   disposeTimeoutMs: number
@@ -124,7 +125,7 @@ export class IpyKernelBridge {
         ...this.options.cwd ? { cwd: this.options.cwd } : {},
         detached: process.platform !== 'win32',
         stdio: process.platform === 'win32' ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+        env: { ...process.env, ...this.options.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
           PYTHONDONTWRITEBYTECODE: '1', PYTHONPATH: [resources, process.env.PYTHONPATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'), ...callbackEnv },
       })
       this.child = child

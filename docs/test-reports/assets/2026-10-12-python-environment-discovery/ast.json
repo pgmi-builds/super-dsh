@@ -1,0 +1,22 @@
+[
+  {
+    "file": "better-dsh/src/kernel-env.ts",
+    "line": 55,
+    "call": "uvVenvArgs(venvDir, options.pythonVersion ?? DEFAULT_KERNEL_PYTHON_VERSION)"
+  },
+  {
+    "file": "better-dsh/src/kernel-env.ts",
+    "line": 56,
+    "call": "venvFallbackArgs(venvDir)"
+  },
+  {
+    "file": "better-dsh/src/runtime.ts",
+    "line": 543,
+    "call": "resolveKernelEnv({\n      python: this.config.python,\n      venvDir: this.config.kernelEnvDir,\n      pythonVersion: this.config.kernelPythonVersion,\n      autoInstall: this.config.kernelAutoInstall,\n      log: (level, message) => {\n        if (level === 'warn') this.logger.warn(message)\n        else this.logger.info(message)\n      },\n    })"
+  },
+  {
+    "file": "better-dsh/src/index.ts",
+    "line": 983,
+    "call": "resolveKernelEnv({\n      python: kernelConfig.python,\n      venvDir: kernelConfig.kernelEnvDir,\n      pythonVersion: kernelConfig.kernelPythonVersion,\n      autoInstall: kernelConfig.kernelAutoInstall ?? true,\n      log: (level, message) => { logger[level](message) },\n    })"
+  }
+]

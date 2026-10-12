@@ -2,11 +2,13 @@
 
 Implementation and acceptance are tracked in the [plan](../../superpowers/plans/2026-10-12-omp-python-repl-port.md). The [spec](spec.md) defines the recovery boundary; this guide explains the consumer contract being implemented.
 
-Better runs a persistent Python child for each DSH session. Node communicates with an unchanged, pinned OMP runner over JSON lines. Better owns tool bindings, cancellation, output mapping and checkpoint management. The runtime requires Python >=3.9; the compatibility managed-environment path may let uv download that interpreter, while an explicit path uses an existing installation. Better ships the Python runner and dill 0.4.1 source. It does not install Jupyter, IPython, ZeroMQ or dill into the consumer's interpreter. OMP's Agent-specific prelude is not exposed as a DSH feature.
+Better runs a persistent Python child for each DSH session. Node communicates with an unchanged, pinned OMP runner over JSON lines. Better owns tool bindings, cancellation, output mapping and checkpoint management. Interpreter discovery reuses an explicitly configured interpreter, otherwise an active/project environment then PATH `python3` or `python`. It probes candidates and falls back from broken automatically discovered environments; it never invokes uv/pip, installs Python or creates a venv. Explicit relative paths and project environments resolve against the session workspace. Python >=3.9 is required by the packaged dill0.4.1 checkpoint helper; no3.11 or CPython implementation is selected. Better ships the Python runner and dill 0.4.1 source. It does not install Jupyter, IPython, ZeroMQ or dill into the consumer's interpreter. OMP's Agent-specific prelude is not exposed as a DSH feature.
 
 Variables, functions, classes and imports remain available across cells while the child lives. Top-level await works; a top-level return is invalid. The final expression supplies the completion value and print supplies logs. Host tools remain callable with `await tool.<name>({...})`. Internal initialization and checkpoint cells do not appear as user results or user scratchpad variables.
 
 `tool.read` forwards to the current DSH native read tool with its usual permissions, scheduling and results. Better supplies the call-site helper required by OMP's compiler without enabling OMP speculative reads. Interactive `input()` is unsupported and returns an actionable error. Output uses the existing text/log/result contract; a nontext-only display produces an explicit MIME notice.
+
+`npm run kernel:check` checks existing interpreter availability without provisioning. Legacy provisioning fields `kernelEnvDir`, `kernelPythonVersion`, `kernelAutoInstall` and the `kernel:venv` command are removed. Old package-local environments/caches are left untouched and are not auto-selected. An interpreter change may make existing checkpoints incompatible; recovery reports that condition explicitly.
 
 ## Checkpoint boundary
 

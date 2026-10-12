@@ -21,7 +21,7 @@
     - id: dashr-repl
       name: 'better-dsh'
       config:
-        python: !!js process.env.DASHR_KERNEL_PYTHON ?? 'python3'
+        python: !!js process.env.DASHR_KERNEL_PYTHON
 
     # URL-aware I/O + hashline + devices. Gates ride THIS row's config
     # (schema defaults: both ON — opt-out), no longer the core row's.

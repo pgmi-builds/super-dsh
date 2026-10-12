@@ -1,5 +1,7 @@
 # kernel-provisioning Specification
 
+> Historical iKernel contract, superseded on2026-10-12. Do not apply the provisioning requirements below to current Better. The active [existing-interpreter discovery contract](../../specs/kernel-provisioning/spec.md) removes uv/pip provisioning,3.11 selection and package-local venv creation.
+
 ## Purpose
 better-dsh 的 REPL kernel（IPython）供给契约：独占 managed venv（插件包目录内，`kernelEnvDir` 可显式覆盖）、版本锁定（ipykernel 7.3.0 / dill 0.4.1，uv 与 pip 双路径）、三级触发供给（postinstall 加速器 / daemon spin-up 主路径 / 首用 lazy 兜底）全 fail-open 且幂等、供给状态可观测；npm 包不内嵌预建 venv（供给能力随包，供给结果不随包）。
 

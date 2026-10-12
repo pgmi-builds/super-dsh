@@ -1,53 +1,25 @@
-# kernel-provisioning Specification
+# Existing Python interpreter discovery
 
-## Purpose
-better-dsh 的 REPL kernel（IPython）供给契约：独占 managed venv（插件包目录内，`kernelEnvDir` 可显式覆盖）、版本锁定（ipykernel 7.3.0 / dill 0.4.1，uv 与 pip 双路径）、三级触发供给（postinstall 加速器 / daemon spin-up 主路径 / 首用 lazy 兜底）全 fail-open 且幂等、供给状态可观测；npm 包不内嵌预建 venv（供给能力随包，供给结果不随包）。
+Updated 2026-10-12 by explicit user correction. This replaces the former iKernel managed-provisioning contract. Execution and recovery are specified in [OMP Python REPL](../omp-python-repl-port/spec.md); consumer behavior is in its [runtime guide](../omp-python-repl-port/runtime-guide.md).
 
 ## Requirements
 
-### Requirement: Exclusive managed kernel venv
+### Existing interpreters only
 
-The plugin SHALL provision its REPL kernel interpreter exclusively inside a managed venv rooted in the plugin's own package directory (web-profile scope in production deployments, `kernelEnvDir` as the explicit override), and SHALL NOT install into, mutate, or depend on the user's global Python environment; kernel probes MUST NOT import user-site modules, and the distributed npm package MUST NOT embed a prebuilt venv (provisioning capability ships, not provisioning results).
+Better SHALL run an existing Python interpreter. It SHALL NOT invoke uv/pip, download Python, create or repair a virtual environment, or place Python environment/cache state in the installed npm package. No CPython implementation or Python3.11 preference is applied. The packaged dill0.4.1 checkpoint helper requires Python >=3.9.
 
-#### Scenario: Venv lives inside the plugin territory
+### Explicit selection
 
-- **WHEN** the plugin is installed into a web profile and the kernel is provisioned
-- **THEN** the venv root is inside the plugin's package directory (or the explicitly configured `kernelEnvDir`), and no file outside that territory is required for kernel operation
+An explicit `python` executable name/path SHALL bypass automatic discovery. Bare `python3` is an explicit executable name, not a provisioning sentinel. Relative paths SHALL resolve against the session workspace and `~/` against the user's home. An unusable explicit selection SHALL report the actual failure without silently substituting another interpreter. Existing explicit virtual environments SHALL receive their activation environment.
 
-#### Scenario: User global environment untouched
+### Automatic discovery
 
-- **WHEN** provisioning runs on a host with an existing global Python installation
-- **THEN** no package is installed into, and no configuration of, the user's global environment is modified
+Without explicit selection, Better SHALL probe an existing active virtual/Conda environment or workspace `.venv`/`venv`, then PATH `python3` and `python`. A broken automatically discovered candidate SHALL permit a working fallback without repair. Resolved executable identity and activation environment SHALL reach the spawned child. One session's project interpreter SHALL NOT be cached as the choice for another workspace.
 
-### Requirement: Robust provisioning with pinned versions
+### Readiness and failure
 
-Provisioning SHALL redirect its tool caches (uv) to a plugin-territory location so read-only home directories cannot block it, SHALL fall back to `python3 -m venv` + ensurepip when `uv` is unavailable, and SHALL install pinned, tested versions of `ipykernel` and `dill` alongside the pinned CPython version; provisioning MUST be idempotent (a complete venv is reused; a partial one is repaired).
+Availability is checked when the session needs its Python child. Plugin mounting SHALL NOT provision an environment. With no working candidate, the error SHALL identify attempted interpreters and explain how to install Python or configure an existing executable. `npm run kernel:check` SHALL perform discovery only, with no installation side effects.
 
-#### Scenario: Read-only home cache does not block
+### Runtime state and migration
 
-- **WHEN** the kernel is provisioned on a host whose `~/.cache` is read-only
-- **THEN** provisioning succeeds using the redirected cache location
-
-#### Scenario: Pinned versions installed
-
-- **WHEN** provisioning creates or repairs the venv
-- **THEN** the installed `ipykernel` and `dill` match the pinned tested versions, verifiable by the kernel probe
-
-### Requirement: Provisioning ladder — install-time, daemon spin-up, first-use
-
-The plugin SHALL provision the kernel through a three-trigger ladder converging on the same managed venv, every trigger fail-open (a failure or suppression at any level degrades to a logged status message and NEVER blocks package installation, daemon startup, or plugin mounting, and never asks the user for approval): (1) an install-time postinstall best-effort step that runs only when the package manager executes build scripts; (2) a daemon spin-up check as the PRIMARY path — when the plugin is brought up on the host plane by the host daemon, it asynchronously verifies the kernel environment and provisions it immediately when absent (uv → `python3 -m venv` → explicit configuration), so an agent session never discovers a missing kernel at first use; (3) first-use lazy provisioning as the final fallback. Provisioning status (provisioning/ready/degraded/failed) SHALL be logged, and failure messages MUST name the available remedies (`npm run kernel:venv`, `kernelAutoInstall`, explicit `python`).
-
-#### Scenario: Daemon spin-up provisions before any agent session
-
-- **WHEN** the host daemon starts and brings the plugin up on the host plane, and the managed venv is absent
-- **THEN** the plugin asynchronously provisions the kernel within the spin-up window without blocking daemon startup or plugin mounting, and a new agent session's first REPL cell finds the kernel already in place
-
-#### Scenario: Suppressed postinstall still reaches a working kernel
-
-- **WHEN** the package manager skips the plugin's postinstall script and the daemon later starts
-- **THEN** the spin-up check provisions the kernel and REPL cells execute, with the install itself never having failed and no approval ever having been requested
-
-#### Scenario: Failure is non-blocking and visible
-
-- **WHEN** provisioning fails on a constrained host at any trigger
-- **THEN** the installation, daemon startup, and plugin mounting all succeed; the surfaced error names the concrete remedy commands/configuration paths
+Checkpoints SHALL remain under the native profile home (or explicitly configured snapshot directory), isolated by profile/session. Old `kernelEnvDir`, `kernelPythonVersion`, `kernelAutoInstall` fields and `kernel:venv` command are removed. Existing package-local `.venv-kernel`/`.uv-cache` files SHALL be left untouched and SHALL NOT be selected automatically. An interpreter/environment change SHALL pass the existing checkpoint compatibility checks and report incompatible recovery explicitly; no user cell is replayed.

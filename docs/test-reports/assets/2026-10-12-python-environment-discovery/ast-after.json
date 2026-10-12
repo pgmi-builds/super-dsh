@@ -1,0 +1,17 @@
+[
+  {
+    "file": "better-dsh/src/kernel-env.ts",
+    "line": 31,
+    "call": "exec(python, ['-c', 'import ast, asyncio, json, sys; assert sys.version_info >= (3, 9), \"Packaged dill checkpoints require Python >=3.9\"; print(json.dumps({\"python\": sys.executable, \"version\": sys.version.split()[0]}))'], {\n    timeout: 15_000, cwd, env: { ...env, PYTHONDONTWRITEBYTECODE: '1' },\n  })"
+  },
+  {
+    "file": "better-dsh/src/runtime.ts",
+    "line": 544,
+    "call": "resolveKernelEnv({ python: this.config.python, cwd: kernelCwd })"
+  },
+  {
+    "file": "better-dsh/src/kernel.ts",
+    "line": 124,
+    "call": "spawn(this.options.python, ['-u', fileURLToPath(new URL('./omp-python/runner.py', import.meta.url))], {\n        ...this.options.cwd ? { cwd: this.options.cwd } : {},\n        detached: process.platform !== 'win32',\n        stdio: process.platform === 'win32' ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],\n        env: { ...process.env, ...this.options.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',\n          PYTHONDONTWRITEBYTECODE: '1', PYTHONPATH: [resources, process.env.PYTHONPATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'), ...callbackEnv },\n      })"
+  }
+]

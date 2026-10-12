@@ -1,15 +1,11 @@
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { onTestFinished } from 'vitest'
 import { DashrRuntime } from '../src/index.ts'
 import type { Config } from '../src/index.ts'
 
-const venvPython = fileURLToPath(new URL('../.venv-kernel/bin/python', import.meta.url))
-
-/** Interpreter for real-kernel tests: explicit override, package venv, then PATH. */
-export const KERNEL_PYTHON = process.env.DASHR_TEST_PYTHON ?? (existsSync(venvPython) ? venvPython : 'python3')
+/** Real-kernel tests use the same existing-interpreter contract as consumers. */
+export const KERNEL_PYTHON = process.env.DASHR_TEST_PYTHON ?? 'python3'
 
 /** Boot a fresh context with the eval provider mounted, worker-thread test style. */
 export async function setupRuntime(config: Config = {}): Promise<{ fiber: Awaited<ReturnType<Context['plugin']>>, runtime: DashrRuntime }> {

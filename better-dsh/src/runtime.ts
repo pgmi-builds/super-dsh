@@ -32,12 +32,11 @@ import { buildRunCell } from './python.ts'
 import type { NamespaceSpecs } from './python.ts'
 import { MIN_OUTPUT_BYTES, extractStream, finalizeOutput, plainTraceback } from './output.ts'
 import { resolveKernelEnv } from './kernel-env.ts'
-import type { KernelEnv } from './kernel-env.ts'
 import type { ReplVarQuery } from './runtime-surface.ts'
 
 /** Plugin config: every tunable, changeable from `cordis.yml` (no hardcoded tunables). */
 export interface Config {
-  /** Python >=3.9 interpreter. The bare sentinel `python3` (or absent) selects a managed venv under {@link Config.kernelEnvDir}. */
+  /** Existing interpreter path/name; absent discovers active/project environments then PATH. */
   python?: string
   /** Budget for kernel spawn → ready, in milliseconds. */
   startupTimeoutMs?: number
@@ -60,17 +59,11 @@ export interface Config {
   snapshotDir?: string
   /** Serialized graph cap in bytes; each over-cap attempt reports the last successful checkpoint. */
   snapshotSizeCapBytes?: number
-  /** Managed venv directory (used when `python` is absent/`python3`); defaults to `<package>/.venv-kernel`. */
-  kernelEnvDir?: string
-  /** Preferred CPython version for a managed venv. */
-  kernelPythonVersion?: string
-  /** Provision a stdlib-only managed venv on first use; default true. */
-  kernelAutoInstall?: boolean
   username?: string
 }
 
 /** {@link Config} after schemastery fills the defaults. */
-type ResolvedConfig = Required<Omit<Config, 'snapshotDir' | 'kernelEnvDir' | 'kernelPythonVersion'>> & Pick<Config, 'snapshotDir' | 'kernelEnvDir' | 'kernelPythonVersion'>
+type ResolvedConfig = Required<Omit<Config, 'snapshotDir' | 'python'>> & Pick<Config, 'snapshotDir' | 'python'>
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -134,7 +127,7 @@ type RestoreOutcome =
  */
 export class DashrRuntime extends ReplRuntime {
   static Config: z<Config> = z.object({
-    python: z.string().default('python3'),
+    python: z.string(),
     startupTimeoutMs: z.number().default(30_000),
     runTimeoutMs: z.number().default(120_000),
     interruptGraceMs: z.number().default(2_000),
@@ -144,9 +137,6 @@ export class DashrRuntime extends ReplRuntime {
     maxOutputBytes: z.number().default(67_108_864),
     snapshotDir: z.string(),
     snapshotSizeCapBytes: z.number().default(268_435_456),
-    kernelEnvDir: z.string(),
-    kernelPythonVersion: z.string(),
-    kernelAutoInstall: z.boolean().default(true),
     username: z.string().default('dashr'),
   })
 
@@ -159,8 +149,6 @@ export class DashrRuntime extends ReplRuntime {
   private readonly kernels = new Map<string, KeyedKernel>()
   private disposed = false
   private readonly transactions = new Map<string, Promise<unknown>>()
-  /** Lazily-resolved (and, when managed, provisioned) kernel interpreter. */
-  private kernelEnvPromise: Promise<KernelEnv> | undefined
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
@@ -538,27 +526,6 @@ export class DashrRuntime extends ReplRuntime {
     return { ok: true, result: value }
   }
 
-  /** Resolve (and provision, when managed) the kernel interpreter once per runtime. */
-  private resolveKernelPython(): Promise<KernelEnv> {
-    this.kernelEnvPromise ??= resolveKernelEnv({
-      python: this.config.python,
-      venvDir: this.config.kernelEnvDir,
-      pythonVersion: this.config.kernelPythonVersion,
-      autoInstall: this.config.kernelAutoInstall,
-      log: (level, message) => {
-        if (level === 'warn') this.logger.warn(message)
-        else this.logger.info(message)
-      },
-    }).catch((error: unknown) => {
-      // A failed provision must not cache a rejected promise forever: the
-      // next ensureKernel retries (e.g. after the user installs uv/venv).
-      this.kernelEnvPromise = undefined
-      throw error
-    })
-    return this.kernelEnvPromise
-  }
-
-
   /**
    * Spawn-or-reuse the kernel for one key. The lazy map guarantees one
    * entry is created here and nowhere else, so a key that never runs never
@@ -574,11 +541,13 @@ export class DashrRuntime extends ReplRuntime {
       // a removed directory). Spawning with a missing cwd is a hard ENOENT, so
       // degrade to spawn-time inherit rather than fail the whole kernel.
       const kernelCwd = cwd && existsSync(cwd) ? cwd : undefined
+      const environment = await resolveKernelEnv({ python: this.config.python, cwd: kernelCwd })
       entry = {
         key,
         cwd: kernelCwd,
         bridge: new IpyKernelBridge({
-          python: (await this.resolveKernelPython()).python,
+          python: environment.python,
+          env: environment.env,
           ...kernelCwd ? { cwd: kernelCwd } : {},
           startupTimeoutMs: this.config.startupTimeoutMs,
           disposeTimeoutMs: this.config.disposeTimeoutMs,

@@ -78,7 +78,6 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import { DashrRuntime } from './runtime.ts'
-import { resolveKernelEnv } from './kernel-env.ts'
 import type { Config as RuntimeConfig } from './runtime.ts'
 import z from '#schemastery'
 import { defineTool, TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
@@ -953,7 +952,6 @@ const RUNTIME_CONFIG_KEYS = [
   'python', 'cwd', 'startupTimeoutMs', 'runTimeoutMs', 'interruptGraceMs',
   'interruptConfirmMs', 'disposeTimeoutMs', 'snapshotTimeoutMs',
   'maxOutputBytes', 'snapshotDir', 'snapshotSizeCapBytes', 'username',
-  'kernelEnvDir', 'kernelPythonVersion', 'kernelAutoInstall',
 ] as const
 /** The runtime slice of the merged config — the keys `DashrRuntime` owns. */
 function pickRuntimeConfig(config: Config): RuntimeConfig {
@@ -970,26 +968,6 @@ export function apply(ctx: Context, config: Config): void {
   ctx.plugin(DashrRuntime, pickRuntimeConfig(config))
   const logger = ctx.logger('dashr-repl')
   const maxParallel = resolveMaxParallelSubCalls(config.maxParallelSubCalls)
-
-  // Daemon spin-up kernel check — the PRIMARY provisioning path (2026-09-03
-  // ruling): this plugin comes up with the host daemon, so verify/provision
-  // the kernel environment NOW; an agent session must never discover a
-  // missing kernel at first use. Fire-and-forget: provisioning never blocks
-  // mounting, failures only log, and first-use lazy provisioning (inside
-  // DashrRuntime) remains the final fallback. Idempotent: present venvs are
-  // reused untouched, so recurring spin-ups just pass.
-  {
-    const kernelConfig = pickRuntimeConfig(config)
-    void resolveKernelEnv({
-      python: kernelConfig.python,
-      venvDir: kernelConfig.kernelEnvDir,
-      pythonVersion: kernelConfig.kernelPythonVersion,
-      autoInstall: kernelConfig.kernelAutoInstall ?? true,
-      log: (level, message) => { logger[level](message) },
-    }).catch((error: unknown) => {
-      logger.error(`dashr-repl: spin-up kernel check failed (non-blocking): ${error instanceof Error ? error.message : String(error)}`)
-    })
-  }
 
   // The wait is the loud failure: a preset row still pending on `replRuntime`
   // is what the preset mount audit reports as an unusable row, naming this

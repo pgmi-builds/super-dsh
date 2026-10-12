@@ -59,3 +59,10 @@ Best effort 不应退回普通标准库 `pickle`，否则对 REPL 函数、闭�
 5. 资源句柄、网络连接和其他进程副作用始终超出承诺；用户代码应能检测和重建这些资源。
 
 因此，第二阶段的目标是“尽可能恢复模型的 Python scratchpad 变量，并准确报告缺口”，不是恢复整个 Python 进程。是否加这一阶段，不影响先完成 OMP 执行链移植与去除 Jupyter/ZMQ 依赖。
+
+
+## 2026-10-12 interpreter discovery correction
+
+After the0.3.1 release, user rejected retaining the old iKernel-era uv/3.11 provisioning path and package-local venv. The correction reuses an explicitly configured interpreter; otherwise it probes an existing active/project environment and PATH `python3` then `python`. A broken automatic candidate may fall back; a broken explicit selection is reported. Relative paths/project environments belong to the session workspace. No interpreter is downloaded, no uv/pip process is launched, and no venv or cache is created in the installed package. Original OMP/dill resources and checkpoint ownership remain unchanged. Packaged dill0.4.1 has a Python >=3.9 support floor; there is no3.11 or CPython implementation preference.
+
+Legacy provisioning fields and command are removed, replaced by a read-only `kernel:check`. Existing old environment files are left untouched. Interpreter/environment changes may invalidate old checkpoints and must produce an explicit recovery notice. Delivery and target acceptance are recorded in [environment correction report](../../test-reports/2026-10-12-python-environment-discovery.md). This correction has separate test artifacts and does not authorize an npm release.
