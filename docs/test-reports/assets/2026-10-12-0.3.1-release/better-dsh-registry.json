@@ -1,0 +1,11 @@
+{
+  "name": "better-dsh",
+  "version": "0.3.1",
+  "latest": "0.3.1",
+  "tarball": "https://registry.npmjs.org/better-dsh/-/better-dsh-0.3.1.tgz",
+  "sha256": "6bb78bd2cd54ddf6df92ebc3c25ee32de333e7cb62d621f95c1b8d98a9e9af89",
+  "sha1": "1e06a567428a15f6c999a30b9b82236dd979d7c2",
+  "integrity": "sha512-RFWLyKva9v70denlOza9U045za2RUbtzBPmFfM+GvmTOKpQmuKmE/TxuiFVFLaETOjOQuxQ7W5x0pAlo75ethQ==",
+  "bytes": 5352335,
+  "verifiedAt": "2026-10-12T00:34:12.950Z"
+}

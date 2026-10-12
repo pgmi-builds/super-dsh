@@ -1,0 +1,39 @@
+{
+  "initialLatestRequest": {
+    "stage": "enable",
+    "target": "better-dsh",
+    "enabled": true,
+    "changed": true,
+    "application": "restart-required",
+    "registries": [
+      "https://registry.npmjs.org/"
+    ],
+    "packageResult": {
+      "exitCode": 0,
+      "output": "✓ Lockfile passes supply-chain policies (verified 12m ago)\nPackages: +97\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\nProgress: resolved 97, reused 96, downloaded 0, added 97, done\n\ndependencies:\n- better-dsh 0.3.1\n+ better-dsh 0.3.0\n\nDone in 1s using pnpm v12.10.1\n",
+      "truncated": false,
+      "logPath": "/home/u1/workspaces/superd/.tests/superd/profiles/superd-pub/.plugin-manager/logs/operation-6T9TEl/pnpm.log"
+    },
+    "bundle": "better-dsh",
+    "version": "0.3.0"
+  },
+  "exactResolvedLatestRequest": {
+    "stage": "enable",
+    "target": "better-dsh",
+    "enabled": true,
+    "changed": true,
+    "application": "restart-required",
+    "registries": [
+      "https://registry.npmjs.org/"
+    ],
+    "packageResult": {
+      "exitCode": 0,
+      "output": "✓ Lockfile passes supply-chain policies (verified 3m ago)\nAdded 1 entry to minimumReleaseAgeExclude in pnpm-workspace.yaml (set minimumReleaseAgeStrict to true to gate these updates with a prompt):\n  better-dsh@0.3.1\nPackages: +2\n++\nProgress: resolved 97, reused 96, downloaded 0, added 2, done\n\ndependencies:\n- better-dsh 0.3.0\n+ better-dsh 0.3.1\n\nDone in 757ms using pnpm v12.10.1\n",
+      "truncated": false,
+      "logPath": "/home/u1/workspaces/superd/.tests/superd/profiles/superd-pub/.plugin-manager/logs/operation-h7DMKk/pnpm.log"
+    },
+    "bundle": "better-dsh",
+    "version": "0.3.1"
+  },
+  "diagnosis": "pnpm 12.10.1 built-in 1440-minute minimumReleaseAge non-strict default selects the previous mature release for @latest. Exact 0.3.1 adds a narrow minimumReleaseAgeExclude entry and installs the requested version. Verified using installed pnpm CHANGELOG.md and native operation output; no upstream/business patch."
+}
