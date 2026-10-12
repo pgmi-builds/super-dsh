@@ -1,0 +1,174 @@
+{
+  "shellStatus": 200,
+  "roster": {
+    "available": [
+      "native",
+      "agy",
+      "ifgo5p",
+      "ddqmtp",
+      "mbvkp8",
+      "1lthlo",
+      "m5fp2b",
+      "pfnm35",
+      "mq6abi",
+      "codex",
+      "omp",
+      "claude",
+      "hermes",
+      "pi"
+    ],
+    "agents": [
+      {
+        "id": "flklr1",
+        "key": "native",
+        "runtimeId": "native",
+        "label": "DSH",
+        "path": "/",
+        "machine": "local",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "o6r45j",
+        "key": "agy",
+        "runtimeId": "agent-agy",
+        "label": "Antigravity",
+        "path": "/agy/",
+        "machine": "local",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "70vnxu",
+        "key": "claude",
+        "runtimeId": "agent-claude",
+        "label": "Claude",
+        "path": "/claude/",
+        "machine": "local",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "1rhs4x",
+        "key": "codex",
+        "runtimeId": "agent-codex",
+        "label": "Codex",
+        "path": "/codex/",
+        "machine": "local",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "7rii4t",
+        "key": "hermes",
+        "runtimeId": "agent-hermes",
+        "label": "Hermes",
+        "path": "/hermes/",
+        "machine": "local",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "d73qdi",
+        "key": "omp",
+        "runtimeId": "agent-omp",
+        "label": "OMP",
+        "path": "/omp/",
+        "machine": "local",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "uowfwm",
+        "key": "pi",
+        "runtimeId": "agent-pi",
+        "label": "Pi",
+        "path": "/pi/",
+        "machine": "local",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "ifgo5p",
+        "key": "ifgo5p",
+        "runtimeId": "native",
+        "label": "DSH",
+        "path": "/hub/?agent=ifgo5p",
+        "machine": "egv8",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "ddqmtp",
+        "key": "ddqmtp",
+        "runtimeId": "agent-agy",
+        "label": "Antigravity",
+        "path": "/hub/?agent=ddqmtp",
+        "machine": "egv8",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "mbvkp8",
+        "key": "mbvkp8",
+        "runtimeId": "agent-claude",
+        "label": "Claude",
+        "path": "/hub/?agent=mbvkp8",
+        "machine": "egv8",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "1lthlo",
+        "key": "1lthlo",
+        "runtimeId": "agent-codex",
+        "label": "Codex",
+        "path": "/hub/?agent=1lthlo",
+        "machine": "egv8",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "m5fp2b",
+        "key": "m5fp2b",
+        "runtimeId": "agent-hermes",
+        "label": "Hermes",
+        "path": "/hub/?agent=m5fp2b",
+        "machine": "egv8",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "pfnm35",
+        "key": "pfnm35",
+        "runtimeId": "agent-omp",
+        "label": "OMP",
+        "path": "/hub/?agent=pfnm35",
+        "machine": "egv8",
+        "ready": true,
+        "failed": false
+      },
+      {
+        "id": "mq6abi",
+        "key": "mq6abi",
+        "runtimeId": "agent-pi",
+        "label": "Pi",
+        "path": "/hub/?agent=mq6abi",
+        "machine": "egv8",
+        "ready": true,
+        "failed": false
+      }
+    ],
+    "hub": {
+      "machineId": "7nep",
+      "label": "local",
+      "version": "0.3.1"
+    }
+  },
+  "versions": {
+    "better-dsh": "0.3.1",
+    "super-dsh": "0.3.1"
+  },
+  "profile": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub",
+  "hostVersion": "0.2.1-alpha.1"
+}

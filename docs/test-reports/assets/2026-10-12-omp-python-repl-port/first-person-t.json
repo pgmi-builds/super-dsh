@@ -1,0 +1,289 @@
+{
+  "kind": "first-person-evidence",
+  "report": "docs/test-reports/2026-10-12-omp-python-repl-port-first-person.md",
+  "date": "2026-10-12",
+  "timezone": "Asia/Hong_Kong",
+  "author": "the model itself, via its own live eval tool calls",
+  "target": {
+    "launcher": "super-dsh/test/start-4999.sh",
+    "dshHome": "/home/u1/workspaces/superd/.tests/superd",
+    "profile": "superd-pub",
+    "package": "/home/u1/workspaces/superd/.tests/superd/profiles/superd-pub/node_modules/better-dsh",
+    "betterVersion": "0.3.0-t",
+    "superVersion": "0.3.0-t"
+  },
+  "tarballs": {
+    "better-dsh-0.3.0-t.tgz": "a9b908e75c1292b066d912fd01b2098906df3adfc2c1fea90da66cd75b28064d",
+    "super-dsh-0.3.0-t.tgz": "95ed98db2f32311df121b02c4d281ccc4d3967807eccfd4d2f2b3c52d4d2cadf"
+  },
+  "resources": {
+    "runner.py.sha256": "e0e660ca44193735a2de467254b050109bb23028aca71af01b9365b9ab88e974",
+    "runner.py.bytes": 90278,
+    "eval-description.md.bytes": 3029,
+    "vendorDillRuntimeFiles": 14,
+    "retiredInLib": [
+      "kernel-transport.ts",
+      "kernel-bridge.py"
+    ],
+    "residualNames": [
+      "lib/kernel-env.js",
+      "private class name IpyKernelBridge in lib/index.js"
+    ],
+    "realJupyterDeps": []
+  },
+  "session": "session-60e31824-4a37-41fe-8eea-5a4b1033cc76",
+  "checkpointDir": "/home/u1/workspaces/superd/.tests/superd/better-dsh/python-repl/0b20ba864208b04c6d9d3a51a9decf4fd46c24812dffc08c3ab9223ff9d87547/session-60e31824-4a37-41fe-8eea-5a4b1033cc76",
+  "methodNote": {
+    "bashToolSandbox": "bwrap --ro-bind / / --dev /dev --unshare-pid --proc /proc --die-with-parent --tmpfs /tmp --bind <workspace> <workspace>",
+    "consequence": "The bash tool has a private /tmp tmpfs and a private PID namespace per call; out-of-band observation of the eval child must use the shared workspace, not /tmp. The eval child itself sees the host's real /tmp (proved by listing omp-firstperson markers written from a cell)."
+  },
+  "probes": [
+    {
+      "id": "A1 substrate identity",
+      "cell": "sys.version / sys.executable / __main__.__file__ / find_spec over jupyter deps",
+      "result": {
+        "python": "3.11.17",
+        "executable": "/home/u1/workspaces/superd/.tests/superd/profiles/superd-pub/node_modules/better-dsh/.venv-kernel/bin/python",
+        "main_file": "lib/omp-python/runner.py",
+        "jupyter_deps": [],
+        "dill_visible_to_user_cell": true
+      },
+      "verdict": "pass"
+    },
+    {
+      "id": "B cross-cell graph",
+      "result": {
+        "cross_cell_omp_x_plus_2": 42,
+        "dill_origin": "lib/omp-python/vendor/dill/__init__.py",
+        "lambda_omp_f_4": 5,
+        "class_omp_box_bump": 11,
+        "alias_identity": true
+      },
+      "verdict": "pass"
+    },
+    {
+      "id": "C native tool bridge",
+      "result": {
+        "read": "hashline text for docs/README.md lines 1-3",
+        "concurrent_glob_grep": "asyncio.gather returned both",
+        "missing_file": "ToolCallError toolName=read [E_NOT_FOUND]",
+        "bad_args": "ToolCallError toolName=read [E_BAD_SHAPE]",
+        "tool_members": 31,
+        "bash": {
+          "stdout": "cell-bash-ok\\n/home/u1/workspaces/superd",
+          "stderr": "cell-bash-err",
+          "exit_key_absent": true
+        }
+      },
+      "verdict": "pass"
+    },
+    {
+      "id": "D output mapping",
+      "result": {
+        "stdout_and_stderr": "both surfaced",
+        "scalar_value": "42",
+        "exception": "Error: code run failed (exception): ValueError: omp-first-person-boom",
+        "traceback_extra_frame": "better_support.py:364 run -> runner._exec_source_async(ast.unparse(tree), ns)",
+        "value_retained_after_exception": 73
+      },
+      "verdict": "pass with a minor Surface observation"
+    },
+    {
+      "id": "E checkpoint cross-check",
+      "manifestExample": {
+        "turn": 3,
+        "bindingNames": [
+          "ToolCallError",
+          "tool"
+        ],
+        "names": [
+          "OmpBox",
+          "asyncio",
+          "importlib",
+          "leaks",
+          "names",
+          "omp_alias",
+          "omp_box",
+          "omp_dill_origin",
+          "omp_f",
+          "omp_list",
+          "omp_probe",
+          "omp_x",
+          "sys"
+        ],
+        "dependencies": {
+          "omp_f": [
+            "omp_list"
+          ]
+        },
+        "dillVersion": "0.4.1",
+        "snapshotFormat": 2,
+        "protocol": 4,
+        "coverage": "best-effort",
+        "skipped": false,
+        "sizeBytes": 1499,
+        "omitted": {},
+        "previousPayload": "state-62bd2e05548748deb53a7182b566538f.dill"
+      },
+      "invariants": {
+        "manifestSha256EqualsPayloadFile": true,
+        "directoryMode": "0700",
+        "manifestMode": "0600",
+        "payloadMode": "0600",
+        "generationsRetained": 2,
+        "dunderSeamNamesAdmitted": false
+      },
+      "verdict": "pass"
+    },
+    {
+      "id": "F timeout/interrupt",
+      "result": {
+        "message": "Error: code run failed (timeout): Python cell exceeded 2000ms",
+        "sideEffectMarkerBytes": 1,
+        "preInterruptMutation": "ran-before-interrupt",
+        "nextCellValue": 42,
+        "repeatAfterRecovery": 1
+      },
+      "verdict": "pass; no automatic replay"
+    },
+    {
+      "id": "G dying cell + fresh-child restore",
+      "result": {
+        "message": "the kernel for this session died; its namespace was restored from the turn-11 snapshot. Changes after that checkpoint may be lost. This cell may have executed partially, including external side effects; inspect their state before choosing any retry. No user code was replayed.",
+        "restored": {
+          "omp_x": 40,
+          "omp_before_error": 73,
+          "omp_f_4": 5,
+          "omp_box_bump": 11,
+          "alias_identity": true,
+          "omp_timeout_side_effect": "ran-before-interrupt"
+        },
+        "postCheckpointMutationLost": true,
+        "markerBytes": 1,
+        "pidBefore": 1050438,
+        "pidAfter": 1051039
+      },
+      "verdict": "pass"
+    },
+    {
+      "id": "H degraded restore validation",
+      "variants": [
+        {
+          "tamper": "manifest invalid JSON",
+          "reason": "JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 24 (char 23)",
+          "result": "EMPTY namespace"
+        },
+        {
+          "tamper": "payload byte flip",
+          "reason": "ValueError: payload integrity hash mismatch",
+          "result": "EMPTY namespace"
+        },
+        {
+          "tamper": "environmentHash replaced",
+          "reason": "ValueError: checkpoint environment mismatch: environmentHash",
+          "result": "EMPTY namespace"
+        }
+      ],
+      "verdict": "pass; never silently accepted, never replayed"
+    },
+    {
+      "id": "I reset:true",
+      "result": {
+        "memoryCleared": true,
+        "oldPayloadsDeleted": true,
+        "newTurn": 1,
+        "newNames": [],
+        "previousPayload": null
+      },
+      "verdict": "pass"
+    },
+    {
+      "id": "J %reset -f magic",
+      "result": {
+        "memoryCleared": true,
+        "toolReinstalled": true,
+        "displayReinstalled": true,
+        "ToolCallErrorReinstalled": true,
+        "diskCleared": true,
+        "visibleOutput": "[Python display: application/x-omp-status]",
+        "turnContinued": 3
+      },
+      "verdict": "pass with two minor observations"
+    },
+    {
+      "id": "K late callback admission",
+      "result": {
+        "lateCallOutcome": "ToolCallError: host callback rejected: its cell is no longer active"
+      },
+      "verdict": "pass"
+    },
+    {
+      "id": "L internal-name isolation",
+      "result": {
+        "whoList": "only user names plus injected bindings tool/display/ToolCallError",
+        "checkpointNamesContainInternal": false,
+        "dunderSeamNamesInGlobals": [
+          "__omp_current_run_id__",
+          "__omp_display",
+          "__omp_magic",
+          "__omp_magic_async",
+          "__omp_magic_cell",
+          "__omp_run_id__",
+          "__omp_shell",
+          "__omp_with_call_site__"
+        ]
+      },
+      "verdict": "pass with a low-severity Surface observation"
+    },
+    {
+      "id": "M omissions are honest",
+      "result": [
+        "[dashr] turn-19 checkpoint saved; partial coverage, omitted _r (UnsupportedResource: captured Better/runner binding), _state (UnsupportedResource: unsupported live resource TextIOWrapper)",
+        "[dashr] turn-5 checkpoint saved; partial coverage, omitted _omp_late_task (UnsupportedResource: unsupported live resource Task)"
+      ],
+      "verdict": "pass; cell still succeeded"
+    },
+    {
+      "id": "N output size smoke",
+      "result": {
+        "printed_chars": 8000,
+        "begin_marker": "present",
+        "end_marker": "present"
+      },
+      "verdict": "pass at smoke level only; the 64 MiB cap was not reachable first-person"
+    }
+  ],
+  "entrances": {
+    "publicHttps": "https://test.pc.internal.test/ (200)",
+    "pcLan4999": "http://192.0.2.130:4999/ (200)",
+    "dev3Lan4996": "http://192.0.2.130:4996/ (200)"
+  },
+  "testAuthoringErrors": [
+    "_cap.stdout placed inside the %%capture body, so the body raised NameError before the magic could bind the name; expected behavior, not a defect.",
+    "A later cleanup cell referenced _leaks instead of _omp_leaks and raised NameError; the marker cleanup lines had already run.",
+    "The first timeout marker used /tmp, which the bash tool cannot observe (private tmpfs); re-run with a workspace path."
+  ],
+  "notFirstPersonTestable": [
+    "native UI cancellation and its structured abort reason ([object Object] deferred minor)",
+    "snapshot size cap / timeout config paths",
+    "setVar/queryVar seam (no tool surface)",
+    "byte-exact model-wire eval-description diff",
+    "Windows lifecycle parity"
+  ],
+  "controllerVerification": {
+    "sessionId": "session-60e31824-4a37-41fe-8eea-5a4b1033cc76",
+    "version": "0.3.0-t",
+    "method": "Controller read-only verification of retained native session history; no eval rerun",
+    "throughEventSeq": 547,
+    "evalCallCount": 41,
+    "evalResultCount": 41,
+    "errorResultCount": 10,
+    "surface": {
+      "headerSeq": 13,
+      "descriptionBytes": 3029,
+      "descriptionSha256": "7966bacfc69e7e82c2a378812ca3f560ebcef4a66bc25191668dec4e878297dc",
+      "matchesInstalled": true
+    },
+    "nativeEvidence": "first-person-t-native.json"
+  }
+}

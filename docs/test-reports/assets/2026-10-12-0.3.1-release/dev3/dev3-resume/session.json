@@ -1,0 +1,11 @@
+{
+  "base": "http://127.0.0.1:4998",
+  "home": "/home/u1/workspaces/superd/.tests/foreign-substrate",
+  "sessionId": "session-73e7e3f8-41d2-49d9-95a9-8579f65e15e7",
+  "requestId": "31120fad-64e3-4422-9c3f-e9390e5df64b",
+  "selection": {
+    "provider": "deepseek-official",
+    "model": "deepseek-flash"
+  },
+  "afterSeq": 33
+}

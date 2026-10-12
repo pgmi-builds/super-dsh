@@ -1344,6 +1344,8 @@
     },
     "remote-tools.md",
     "adr/0015-independent-bundles-agent-remote.md",
-    "specs/remote-tool-enhancement/spec.md"
+    "specs/remote-tool-enhancement/spec.md",
+    "specs/omp-python-repl-port/spec.md",
+    "specs/omp-python-repl-port/runtime-guide.md"
   ]
 }

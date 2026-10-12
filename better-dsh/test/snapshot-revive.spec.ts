@@ -9,7 +9,7 @@ import { setupRuntime } from './helpers.ts'
  * restore-on-first-boot, and the death→revive chain that respawns onto the
  * nearest replayable snapshot. Real kernels throughout; every provider is
  * disposed through the helper's onTestFinished hook, and the orphan gate
- * (`pgrep ipykernel_launcher`) runs after the suite.
+ * verifies only owned OMP runner PIDs; production processes are untouched.
  */
 
 const snapshotDirs: string[] = []
@@ -106,7 +106,8 @@ describe('DashrRuntime — snapshot, restore, revive', () => {
     const observed = await runtime.run({ program: 'print("never")', bindings: [], principal: 'sess-revive' })
     expect(observed.error?.kind).toBe('worker-exit')
     expect(observed.error?.message).toContain('restored from the turn-2 snapshot')
-    expect(observed.error?.message).toContain('1 round')
+    expect(observed.error?.message).toContain('This observing call did not execute')
+    expect(observed.error?.message).not.toContain('must be replayed')
 
     // The next run executes on the restored namespace: both a and b survive.
     const revived = await runtime.run({ program: 'print(a + b)', bindings: [], principal: 'sess-revive' })
@@ -115,7 +116,7 @@ describe('DashrRuntime — snapshot, restore, revive', () => {
     expect(runtime.kernelPids[0]).not.toBe(deadPid)
   }, 30_000)
 
-  it('skips an over-cap turn-end snapshot and warns the model exactly once', async () => {
+  it('skips an over-cap turn-end snapshot and reports each over-cap attempt and keeps the previous generation', async () => {
     const snapshotDir = mkdtempSync(join(tmpdir(), 'dashr-snapshot-'))
     snapshotDirs.push(snapshotDir)
     const { runtime } = await setupRuntime({ snapshotDir, snapshotSizeCapBytes: 10_000 })
@@ -128,9 +129,9 @@ describe('DashrRuntime — snapshot, restore, revive', () => {
     expect(existsSync(join(snapshotDir, '(agentless)', 'manifest.json'))).toBe(false)
     expect(existsSync(join(snapshotDir, '(agentless)', 'state.dill'))).toBe(false)
 
-    // The warning is one-time: a second over-cap run skips silently.
+    // Every failed attempt exposes current recovery coverage.
     const second = await runtime.run({ program: 'big2 = "y" * 50000', bindings: [] })
     expect(second.error).toBeUndefined()
-    expect(second.logs.some(line => line.includes('namespace snapshot skipped'))).toBe(false)
+    expect(second.logs.some(line => line.includes('namespace snapshot skipped'))).toBe(true)
   }, 30_000)
 })

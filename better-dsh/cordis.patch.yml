@@ -14,8 +14,9 @@
 # a PTC session resolves to UNKNOWN_TOOL). DASHR ships no PTC mode, so that
 # rule never bites here.
 #
-# `python` is only a hint: the runtime OWNS the kernel environment. An
-# explicit interpreter (DASHR_KERNEL_PYTHON) is verified; the bare
+# An explicit DASHR_KERNEL_PYTHON interpreter is verified. The default
+# python3 compatibility path may prepare a managed Python environment;
+# the packaged OMP runner needs no Jupyter or kernel package installation.
 - insert:
     - id: dashr-repl
       name: 'better-dsh'

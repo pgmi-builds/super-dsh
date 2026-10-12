@@ -173,7 +173,7 @@ describe('DashrRuntime — per-session kernel keying', () => {
 
     for (const [key, marker] of [['sess-snap-a', 'x'], ['sess-snap-b', 'y']] as const) {
       const dir = join(snapshotDir, key)
-      expect(existsSync(join(dir, 'state.dill'))).toBe(true)
+      expect(existsSync(join(dir, JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')).payload))).toBe(true)
       const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as { names: string[] }
       expect(manifest.names).toContain(marker)
     }

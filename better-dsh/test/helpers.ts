@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
@@ -16,10 +17,16 @@ export async function setupRuntime(config: Config = {}): Promise<{ fiber: Awaite
   const fiber = await ctx.plugin(DashrRuntime, { python: KERNEL_PYTHON, ...config })
   const runtime = ctx.replRuntime as DashrRuntime
   // Dispose even when a spec forgets to: kernel children are not killed with
-  // the worker process, so an undisposed fiber leaks an idle ipykernel
+  // the worker process, so an undisposed fiber leaks an idle OMP
   // subprocess forever (208 leaked orphans were found mid-project). Double
   // disposal is safe — the fiber disposer is single-shot.
-  onTestFinished(() => fiber.dispose())
+  onTestFinished(async () => {
+    const ownedPids = runtime.kernelPids
+    await fiber.dispose()
+    for (const pid of ownedPids) {
+      assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, `owned OMP child ${pid} survived disposal`)
+    }
+  })
   return { fiber, runtime }
 }
 
@@ -87,7 +94,7 @@ export async function setupPresentation(
     const runtimeFiber = await runtime(ctx)
     // The runtime service (a real kernel provider owns a subprocess) must be
     // torn down with the test: its fiber disposer snapshots/shuts the kernel
-    // down, and skipping it leaks an ipykernel_launcher orphan (§10.9).
+    // down, and skipping it leaks an OMP runner orphan (§10.9).
     if (runtimeFiber && typeof (runtimeFiber as { dispose?: unknown }).dispose === 'function') {
       onTestFinished(async () => { await (runtimeFiber as { dispose(): Promise<void> }).dispose() })
     }
@@ -146,7 +153,7 @@ export function fakeAgent(): { agent: Agent; events: { type: string; data: unkno
  * `DashrRuntime` from `dashr-repl`). One kernel boots
  * per test; the fiber's registered disposer shuts it down
  * (`onTestFinished`), and the acceptance gate asserts no orphan
- * `ipykernel_launcher` processes remain (blueprint §10.9).
+ * `OMP runner` processes remain (blueprint §10.9).
  */
 export async function setupKernel(
   presentationConfig: Config = {},

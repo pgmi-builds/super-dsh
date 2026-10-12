@@ -1,38 +1,15 @@
 /**
- * `DashrRuntime`: DASHR's STATEFUL `ctx.replRuntime` backend (our vendored
- * Service Definition, blueprint v0.5 §7.6), the standing-mount layer of the
- * v0.1.5 architecture — between the profile-level DashrDaemon concept (a v0.1.5
- * empty shell: named, not yet built) and the session-level ipykernel
- * subprocess (a pure Python interpreter with no harness awareness). One
- * instance per standing mount owns a map of one persistent kernel subprocess
- * per SESSION (the run's `principal`) — the upstream "plugins key their
- * state by Session/Agent" model, which the roster's per-mount realm cannot
- * provide on its own (blueprint §7.4.1: an entry-local realm is one instance
- * per MOUNT, and every session joined to a standing mount shares it) — which
- * makes DashrRuntime the DE FACTO daemon today: it listens for `agent/disposed`,
- * keys kernels per session, snapshots them, and dispatches loopback host
- * requests. Each `run()` is exactly one cell on that session's kernel;
- * variables assigned in run N survive into run N+1 (blueprint §1.1 channel ②
- * — state codification, deliberately NOT the per-run isolation the
- * worker-thread backend provides), and two sessions never see each other's
- * variables. Kernels spawn lazily on a key's first run and die with their
- * session (the dsh `agent/disposed` event) or with the plugin. Binding
- * namespaces are materialized kernel-side as callable Python objects whose
- * calls travel back to the host over the `dashr.host` comm target (the PA
- * `host_request()` pattern). This is a capability seam, not a security
- * boundary.
- *
- * M3-B adds the namespace persistence half: turn-end snapshots (size-capped,
- * blueprint §8.3), restore-on-first-boot, and the death→revive chain (§8.3
- * "kernel death 行为链") that respawns onto the nearest replayable snapshot
- * instead of M3-A's fresh-empty respawn.
- * @module dashr-repl/runtime
+ * Stateful Python REPL backed by one owned OMP child per principal.
+ * Whole per-principal transactions serialize boot, restore, cells, queries,
+ * assignments and reset. Completed cells and assignments save best-effort
+ * object graphs; recovery never replays user code or external effects.
  */
 
-import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import type { ProfileContext } from '@deepseek-ai/dsh-app-boot'
 import z from '#schemastery'
 import { snapshotJsonValue } from './snapshot-json.ts'
 import {
@@ -50,7 +27,7 @@ import type {
   CodeRunResult,
 } from './vendored/repl-runtime.ts'
 import { IpyKernelBridge } from './kernel.ts'
-import type { CellOutcome, HostRequestOutcome, QueryVarOutcome, SetVarOutcome, SnapshotSpec } from './kernel.ts'
+import type { CellOutcome, HostRequestOutcome, QueryVarOutcome, SetVarOutcome, SnapshotOutcome, SnapshotSpec } from './kernel.ts'
 import { buildRunCell } from './python.ts'
 import type { NamespaceSpecs } from './python.ts'
 import { MIN_OUTPUT_BYTES, extractStream, finalizeOutput, plainTraceback } from './output.ts'
@@ -60,7 +37,7 @@ import type { ReplVarQuery } from './runtime-surface.ts'
 
 /** Plugin config: every tunable, changeable from `cordis.yml` (no hardcoded tunables). */
 export interface Config {
-  /** Python interpreter with `ipykernel` installed. The bare sentinel `python3` (or absent) selects a managed venv under {@link Config.kernelEnvDir}. */
+  /** Python >=3.9 interpreter. The bare sentinel `python3` (or absent) selects a managed venv under {@link Config.kernelEnvDir}. */
   python?: string
   /** Budget for kernel spawn → ready, in milliseconds. */
   startupTimeoutMs?: number
@@ -69,8 +46,7 @@ export interface Config {
   /** Grace between a timeout/abort interrupt and the force-settle, in milliseconds. */
   interruptGraceMs?: number
   /**
-   * Confirm window between the control-channel interrupt and the SIGALRM
-   * escalation, in milliseconds; must stay below {@link Config.interruptGraceMs}.
+   * Confirm window before repeating SIGINT, in milliseconds; must stay below {@link Config.interruptGraceMs}.
    * See the bridge's two-phase interrupt for why the escalation is deferred.
    */
   interruptConfirmMs?: number
@@ -80,15 +56,15 @@ export interface Config {
   snapshotTimeoutMs?: number
   /** Hard cap for serialized log-array, completion-value, and failure-message payloads. */
   maxOutputBytes?: number
-  /** Directory for per-session namespace snapshots (`state.dill` + `manifest.json`); none when absent. */
+  /** Per-session immutable checkpoints. Defaults to the official profile home; empty string disables, standalone callers opt in. */
   snapshotDir?: string
-  /** Serialized-size cap for a turn-end snapshot, in bytes; over-cap snapshots are skipped with a one-time model warning. */
+  /** Serialized graph cap in bytes; each over-cap attempt reports the last successful checkpoint. */
   snapshotSizeCapBytes?: number
   /** Managed venv directory (used when `python` is absent/`python3`); defaults to `<package>/.venv-kernel`. */
   kernelEnvDir?: string
   /** Preferred CPython version for a managed venv. */
   kernelPythonVersion?: string
-  /** Provision the managed venv (ipykernel + dill) on first use; default true. */
+  /** Provision a stdlib-only managed venv on first use; default true. */
   kernelAutoInstall?: boolean
   username?: string
 }
@@ -98,16 +74,8 @@ type ResolvedConfig = Required<Omit<Config, 'snapshotDir' | 'kernelEnvDir' | 'ke
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-/**
- * Names the kernel-side shim owns (`_dashr`/`__dashr` prefixed, any case —
- * bootstrap helpers plus the per-run `__dashr_completion__` and
- * `__dashr_injected__`), refused as binding globals on top of the seam's
- * shared set.
- */
-const KERNEL_OWNED_NAME = /^_+dashr/i
-
-/** Manifest format version; a snapshot written under a different version is not replayable. */
-const SNAPSHOT_FORMAT = 1
+/** Runner internals and legacy reserved shim prefix are never injectable variables. */
+const KERNEL_OWNED_NAME = /^(?:_+dashr|__omp_)/i
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -144,8 +112,6 @@ interface KeyedKernel {
   turn: number
   /** Turn number of the last successfully written snapshot, when one exists. */
   lastSnapshotTurn?: number
-  /** Whether the one-time snapshot-size-cap warning has been delivered to the model. */
-  warnedSnapshotSkip?: boolean
   /** Whether restore-from-snapshot has been attempted for this entry (once per boot). */
   restoreAttempted?: boolean
   /** One-run notice (restore/degrade outcome) to surface on the next completed run. */
@@ -155,15 +121,8 @@ interface KeyedKernel {
 /** What `restoreEntry` found and did, for the first-run notice and revive messaging. */
 type RestoreOutcome =
   | { kind: 'none' }
-  | { kind: 'restored', turn: number }
+  | { kind: 'restored', turn: number, omitted: Record<string, string> }
   | { kind: 'degraded', reason: string }
-
-/** Manifest fields the host reads before dispatching the restore cell. */
-interface SnapshotManifest {
-  snapshotFormat?: unknown
-  skipped?: unknown
-  turn?: unknown
-}
 
 /**
  * The {@link ReplRuntime} backend this package registers (`ctx.replRuntime`)
@@ -199,12 +158,14 @@ export class DashrRuntime extends ReplRuntime {
   /** One entry per session principal that has run code (lazy — never pre-seeded). */
   private readonly kernels = new Map<string, KeyedKernel>()
   private disposed = false
+  private readonly transactions = new Map<string, Promise<unknown>>()
   /** Lazily-resolved (and, when managed, provisioned) kernel interpreter. */
   private kernelEnvPromise: Promise<KernelEnv> | undefined
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
-    this.config = config as ResolvedConfig
+    const profile: ProfileContext | undefined = ctx.get('profileContext')
+    this.config = { ...config, snapshotDir: config.snapshotDir ?? (profile ? join(profile.home, 'better-dsh', 'python-repl', createHash('sha256').update(profile.dir).digest('hex')) : undefined) } as ResolvedConfig
     // Schemastery filled the defaults; the cast records that. Positivity is a
     // semantic check the schema's plain number type does not carry.
     for (const key of ['startupTimeoutMs', 'runTimeoutMs', 'interruptGraceMs', 'disposeTimeoutMs', 'snapshotTimeoutMs'] as const) {
@@ -213,9 +174,7 @@ export class DashrRuntime extends ReplRuntime {
         throw new Error(`dashr-repl: config.${key} must be a positive number, got ${String(value)}`)
       }
     }
-    // The SIGALRM escalation must fire strictly inside the force-settle grace,
-    // or it would never get its chance to break a busy cell before the run
-    // resolves.
+    // The repeat SIGINT must fire before the hard cancellation deadline.
     if (!(this.config.interruptConfirmMs > 0 && this.config.interruptConfirmMs < this.config.interruptGraceMs)) {
       throw new Error(`dashr-repl: config.interruptConfirmMs must be positive and below interruptGraceMs (${this.config.interruptGraceMs}), got ${String(this.config.interruptConfirmMs)}`)
     }
@@ -269,9 +228,21 @@ export class DashrRuntime extends ReplRuntime {
    * @param request - the program, its bindings, and the abort signal.
    * @returns the run's outcome per the seam contract.
    */
-  async run(request: CodeRunRequest): Promise<CodeRunResult> {
+  private transaction<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const result = (this.transactions.get(key) ?? Promise.resolve()).catch(() => undefined).then(operation)
+    this.transactions.set(key, result)
+    void result.finally(() => { if (this.transactions.get(key) === result) this.transactions.delete(key) }).catch(() => undefined)
+    return result
+  }
+
+  run(request: CodeRunRequest): Promise<CodeRunResult> {
+    return this.transaction(request.principal || AGENTLESS_KEY, () => this.runTransaction(request))
+  }
+
+  private async runTransaction(request: CodeRunRequest): Promise<CodeRunResult> {
     if (this.disposed) throw new Error('dashr-repl: run() after disposal')
     const bindings = this.validateBindings(request)
+    const bindingNames = request.bindings.flatMap(binding => [binding.global, ...binding.errorClass ? [binding.errorClass.name] : []])
     if (request.signal?.aborted) {
       return { logs: [], error: { kind: 'abort', message: String(request.signal.reason) } }
     }
@@ -287,7 +258,7 @@ export class DashrRuntime extends ReplRuntime {
     // its namespace is gone, and executing the program would surface a
     // misleading NameError instead of the substrate truth. The first run to
     // observe the death resolves with the explicit error (M3-B: after
-    // respawning onto the nearest replayable snapshot, so the message can
+    // respawning onto the nearest usable checkpoint, so the message can
     // name the turn) and the NEXT run continues on that restored kernel.
     // A kernel that died before ever completing a cell carried no user state
     // and is simply replaced (a prior SESSION's on-disk snapshot, if any, is
@@ -296,7 +267,7 @@ export class DashrRuntime extends ReplRuntime {
     if (dead?.bridge.isDead) {
       this.kernels.delete(key)
       if (dead.ranCells) {
-        return await this.reviveAfterDeath(key, dead)
+        return await this.reviveAfterDeath(key, dead, false, bindingNames)
       }
     }
 
@@ -312,9 +283,9 @@ export class DashrRuntime extends ReplRuntime {
     // namespace came from (turn-N restored, or degraded-empty).
     if (!entry.restoreAttempted) {
       entry.restoreAttempted = true
-      const restore = await this.restoreEntry(entry)
+      const restore = await this.restoreEntry(entry, bindingNames)
       if (restore.kind === 'restored') {
-        entry.pendingNotice = `namespace restored from the turn-${restore.turn} snapshot`
+        entry.pendingNotice = `namespace restored from the turn-${restore.turn} snapshot${this.omissionNotice(restore.omitted)}`
       } else if (restore.kind === 'degraded') {
         entry.pendingNotice = `snapshot not replayable (${restore.reason}); started from an EMPTY namespace — re-create any state you need`
       }
@@ -346,27 +317,16 @@ export class DashrRuntime extends ReplRuntime {
       // first-cell death has no state to lose and the run's own worker-exit
       // failure is the whole story.
       if (this.kernels.get(key) === entry) this.kernels.delete(key)
-      if (entry.ranCells) {
-        return await this.reviveAfterDeath(key, entry)
-      }
+      const revived = await this.reviveAfterDeath(key, entry, true, bindingNames)
+      return finalizeOutput(extractStream(outcome.streamText, sentinel).logs, revived.value, revived.error, this.config.maxOutputBytes)
     }
     let result = this.assembleResult(outcome, sentinel)
 
     if (outcome.outcome === 'completed') {
-      // Turn-end snapshot (M3-B, blueprint §8.3): after every successful run,
-      // size-capped. The cap warning is delivered ONCE per kernel to the
-      // model through the run's own logs; the first-run restore notice rides
-      // the same channel. Both are re-finalized so the outer-output cap stays
-      // honest even with the notices appended.
+      // Save completed cells even after user exceptions. Recovery notices
+      // share the same output ledger as user output.
       const snapshot = await this.snapshotTurnEnd(entry)
-      const notices: string[] = []
-      if (snapshot.skipped && !entry.warnedSnapshotSkip) {
-        entry.warnedSnapshotSkip = true
-        const detail = snapshot.estimateBytes !== undefined
-          ? `estimated ${snapshot.estimateBytes} bytes`
-          : `${snapshot.sizeBytes ?? 'unknown'} bytes serialized`
-        notices.push(`[dashr] namespace snapshot skipped: ${detail} exceeds snapshotSizeCapBytes (${this.config.snapshotSizeCapBytes}) — later turn-end snapshots are skipped while the namespace stays this large`)
-      }
+      const notices: string[] = snapshot ? [snapshot] : []
       if (entry.pendingNotice) {
         notices.push(`[dashr] ${entry.pendingNotice}`)
         entry.pendingNotice = undefined
@@ -389,7 +349,10 @@ export class DashrRuntime extends ReplRuntime {
    * @param name - the variable name, or empty to list namespace names.
    * @param principal - the session key (absent → the shared default).
    */
-  async queryVar(name: string, principal?: string): Promise<ReplVarQuery> {
+  queryVar(name: string, principal?: string): Promise<ReplVarQuery> {
+    return this.transaction(principal || AGENTLESS_KEY, () => this.queryTransaction(name, principal))
+  }
+  private async queryTransaction(name: string, principal?: string): Promise<ReplVarQuery> {
     if (this.disposed) throw new Error('dashr-repl: queryVar() after disposal')
     const key = principal && principal.length > 0 ? principal : AGENTLESS_KEY
     const bridge = this.kernels.get(key)?.bridge
@@ -421,7 +384,10 @@ export class DashrRuntime extends ReplRuntime {
    * @param value - the lossless-JSON value to bind.
    * @param principal - the session key (absent → the shared default).
    */
-  async setVar(name: string, value: unknown, principal?: string): Promise<void> {
+  setVar(name: string, value: unknown, principal?: string): Promise<void> {
+    return this.transaction(principal || AGENTLESS_KEY, () => this.setTransaction(name, value, principal))
+  }
+  private async setTransaction(name: string, value: unknown, principal?: string): Promise<void> {
     if (this.disposed) throw new Error('dashr-repl: setVar() after disposal')
     const trimmed = name.trim()
     if (trimmed.length === 0) {
@@ -430,7 +396,7 @@ export class DashrRuntime extends ReplRuntime {
     if (!IDENTIFIER.test(trimmed)) {
       throw new Error(`dashr-repl: setVar() name ${JSON.stringify(trimmed)} is not a usable identifier`)
     }
-    if (KERNEL_OWNED_NAME.test(trimmed)) {
+    if (KERNEL_OWNED_NAME.test(trimmed) || RESERVED_BINDING_GLOBALS.has(trimmed) || trimmed === '__doc__') {
       throw new Error(`dashr-repl: setVar() name ${JSON.stringify(trimmed)} is reserved by the kernel`)
     }
     const jsonValue = snapshotJsonValue(value)
@@ -446,6 +412,9 @@ export class DashrRuntime extends ReplRuntime {
     if (outcome.kind === 'failed') {
       throw new Error(`dashr-repl: setVar(${JSON.stringify(trimmed)}) failed: ${outcome.reason}`)
     }
+    const entry = this.kernels.get(key)!
+    const notice = await this.snapshotTurnEnd(entry)
+    if (notice) entry.pendingNotice = [entry.pendingNotice, notice].filter(Boolean).join('; ')
   }
 
   /** Map one cell outcome onto the seam's result shape under the output ledger. */
@@ -616,130 +585,109 @@ export class DashrRuntime extends ReplRuntime {
           interruptConfirmMs: this.config.interruptConfirmMs,
           snapshotTimeoutMs: this.config.snapshotTimeoutMs,
           username: this.config.username,
+          snapshotDirectory: this.config.snapshotDir ? join(this.config.snapshotDir, keyDirectoryName(key)) : undefined,
+          snapshotSizeCapBytes: this.config.snapshotSizeCapBytes,
         }),
         ranCells: false,
         turn: 0,
       }
       this.kernels.set(key, entry)
     }
+    if (this.disposed) { await entry.bridge.dispose(); throw new Error('runtime disposed during startup') }
     await entry.bridge.start()
     return entry
   }
 
-  /**
-   * Restore a key's on-disk snapshot into a freshly booted kernel, when one
-   * exists and its manifest is plausible. Called once per entry boot. The
-   * kernel-side restore cell performs the authoritative environment checks
-   * (python version, interpreter identity, skills); this method only gates on
-   * the manifest the host can read cheaply, then records the turn so the
-   * first-run notice and the revive chain can name it.
-   */
-  private async restoreEntry(entry: KeyedKernel): Promise<RestoreOutcome> {
+  /** Restore once before user admission; any degraded load retires that child. */
+  private async restoreEntry(entry: KeyedKernel, bindingNames: string[]): Promise<RestoreOutcome> {
     if (!this.config.snapshotDir) return { kind: 'none' }
     const dir = join(this.config.snapshotDir, keyDirectoryName(entry.key))
-    const payloadPath = join(dir, 'state.dill')
     const manifestPath = join(dir, 'manifest.json')
-    const manifest = this.readSnapshotManifest(entry.key)
-    if (manifest === undefined) return { kind: 'none' }
-    if (manifest.snapshotFormat !== SNAPSHOT_FORMAT) {
-      return { kind: 'degraded', reason: `snapshot format ${String(manifest.snapshotFormat)} is not replayable` }
-    }
-    if (manifest.skipped === true) return { kind: 'none' }
-    if (!existsSync(payloadPath)) return { kind: 'degraded', reason: 'snapshot payload is missing' }
-    const restored = await entry.bridge.restoreState(payloadPath, manifestPath)
+    if (!existsSync(manifestPath)) return { kind: 'none' }
+    const restored = await entry.bridge.restoreState(join(dir, 'state.dill'), manifestPath, bindingNames)
     if (restored.kind === 'restored') {
-      entry.turn = typeof manifest.turn === 'number' && Number.isSafeInteger(manifest.turn) && manifest.turn >= 0 ? manifest.turn : 0
-      entry.lastSnapshotTurn = entry.turn
+      entry.turn = restored.turn
+      entry.lastSnapshotTurn = restored.turn
       entry.ranCells = true
-      return { kind: 'restored', turn: entry.turn }
+      return { kind: 'restored', turn: restored.turn, omitted: restored.omitted }
     }
+    // A malicious/failed reducer can mutate globals before failing. Retire the
+    // whole attempted interpreter before admitting any user cell.
+    await entry.bridge.dispose()
+    this.kernels.delete(entry.key)
+    const fresh = await this.ensureKernel(entry.key, entry.cwd)
+    entry.bridge = fresh.bridge
+    this.kernels.set(entry.key, entry)
     return { kind: 'degraded', reason: restored.reason }
   }
 
-  /** Read the per-key manifest's host-relevant fields; absent when unreadable/missing. */
-  private readSnapshotManifest(key: string): SnapshotManifest | undefined {
-    if (!this.config.snapshotDir) return undefined
-    try {
-      const manifest = JSON.parse(readFileSync(join(this.config.snapshotDir, keyDirectoryName(key), 'manifest.json'), 'utf8')) as SnapshotManifest
-      return manifest
-    } catch {
-      return undefined
-    }
+  private omissionNotice(omitted: Record<string, string>): string {
+    const entries = Object.entries(omitted)
+    return entries.length ? `; partial coverage, omitted ${entries.map(([name, reason]) => `${name} (${reason})`).join(', ')}` : ''
   }
 
-  /**
-   * Revive one session's kernel after death: respawn a fresh kernel, restore
-   * the nearest replayable snapshot onto it (the normal restore path), and
-   * return the death-observing run's explicit error naming the turn. When no
-   * replayable snapshot exists the message falls back to M3-A's fresh-empty
-   * contract. The run itself does NOT execute — an error that lies about a
-   * NameError costs the model more than one dropped cell (blueprint §8.3).
-   * @param key - the run principal.
-   * @param dead - the entry that died (its `turn` is the last completed turn).
-   */
-  private async reviveAfterDeath(key: string, dead: KeyedKernel): Promise<CodeRunResult> {
+  /** Restore a fresh child and report whether the observing call had started. */
+  private async reviveAfterDeath(key: string, dead: KeyedKernel, started: boolean, bindingNames: string[]): Promise<CodeRunResult> {
+    const execution = started
+      ? 'This cell may have executed partially, including external side effects; inspect their state before choosing any retry. No user code was replayed.'
+      : 'This observing call did not execute. No user code was replayed.'
     let entry: KeyedKernel
     try {
       entry = await this.ensureKernel(key, dead.cwd)
     } catch (error: unknown) {
       return finalizeOutput([], undefined, {
         kind: 'worker-exit',
-        message: `kernel died and respawn failed (${messageOf(error)}); the next run will retry a fresh kernel`,
+        message: `kernel died and respawn failed (${messageOf(error)}); the next run will retry a fresh kernel. ${execution}`,
       }, this.config.maxOutputBytes)
     }
     entry.restoreAttempted = true
-    const restore = await this.restoreEntry(entry)
-    const observingTurn = dead.turn + 1
+    const restore = await this.restoreEntry(entry, bindingNames)
+    entry.turn = Math.max(entry.turn, dead.turn)
     if (restore.kind === 'restored') {
-      const lost = observingTurn - restore.turn
-      const rounds = lost === 1 ? 'round' : 'rounds'
       return finalizeOutput([], undefined, {
         kind: 'worker-exit',
-        message: `the kernel for this session died; its namespace was restored from the turn-${restore.turn} snapshot — the last ${lost} ${rounds} of variable operations must be replayed. This run did not execute.`,
+        message: `the kernel for this session died; its namespace was restored from the turn-${restore.turn} snapshot${this.omissionNotice(restore.omitted)}. Changes after that checkpoint may be lost. ${execution}`,
       }, this.config.maxOutputBytes)
     }
     const detail = restore.kind === 'degraded' ? ` (${restore.reason})` : ''
     return finalizeOutput([], undefined, {
       kind: 'worker-exit',
-      message: `the kernel for this session died and no replayable snapshot was available${detail}; the next run starts a fresh kernel with an EMPTY namespace — re-create any state you still need. This run did not execute.`,
+      message: `the kernel for this session died and no usable snapshot was available${detail}; the next run uses an EMPTY namespace. ${execution}`,
     }, this.config.maxOutputBytes)
   }
 
-  /**
-   * Write one key's turn-end snapshot, when a snapshot directory is
-   * configured. A size-cap skip is reported (so the run can warn the model
-   * once); other failures log without disturbing the run.
-   */
-  private async snapshotTurnEnd(entry: KeyedKernel): Promise<{ skipped: boolean, estimateBytes?: number, sizeBytes?: number }> {
-    if (!this.config.snapshotDir) return { skipped: false }
-    const kernel = entry.bridge
-    if (!kernel.isRunning) return { skipped: false }
+  /** Save completed mutations and expose partial/failed coverage within output limits. */
+  private async snapshotTurnEnd(entry: KeyedKernel): Promise<string | undefined> {
+    if (!this.config.snapshotDir || !entry.bridge.isRunning || this.disposed) return
     const dir = join(this.config.snapshotDir, keyDirectoryName(entry.key))
-    mkdirSync(dir, { recursive: true })
     const spec: SnapshotSpec = { turn: entry.turn, skills: [], sizeCapBytes: this.config.snapshotSizeCapBytes }
-    const outcome = await kernel.snapshotState(join(dir, 'state.dill'), join(dir, 'manifest.json'), spec)
+    let outcome: SnapshotOutcome
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      outcome = await entry.bridge.snapshotState(join(dir, 'state.dill'), join(dir, 'manifest.json'), spec)
+    } catch (error: unknown) {
+      // Persistence is best-effort: the cell or assignment already completed.
+      outcome = { kind: 'failed', reason: messageOf(error) }
+    }
     if (outcome.kind === 'ok') {
-      entry.lastSnapshotTurn = entry.turn
-      return { skipped: false }
+      entry.lastSnapshotTurn = outcome.turn
+      const omission = this.omissionNotice(outcome.omitted)
+      const warning = outcome.warning ? `; ${outcome.warning}` : ''
+      return omission || warning ? `[dashr] turn-${outcome.turn} checkpoint saved${omission}${warning}` : undefined
     }
-    if (outcome.kind === 'skipped') {
-      return { skipped: true, ...outcome.estimateBytes !== undefined ? { estimateBytes: outcome.estimateBytes } : {}, ...outcome.sizeBytes !== undefined ? { sizeBytes: outcome.sizeBytes } : {} }
-    }
-    this.logger.warn(`turn-end snapshot for ${JSON.stringify(entry.key)} failed: ${outcome.reason}`)
-    return { skipped: false }
+    const latest = entry.lastSnapshotTurn === undefined ? 'no successful checkpoint available' : `latest successful checkpoint is turn-${entry.lastSnapshotTurn}`
+    return `[dashr] namespace snapshot ${outcome.kind === 'skipped' ? 'skipped' : 'failed'}: ${outcome.reason}; ${latest}`
   }
 
-  /**
-   * Dispose to quiescence: snapshot every live key's namespace when a
-   * snapshot directory is configured (each under its own per-key
-   * subdirectory), then shut the subprocesses down. Registered as the
-   * plugin's `ctx.effect` disposer.
-   */
+  /** Cancel active work, drain admitted transactions, and reap every owned child. */
   private async teardown(): Promise<void> {
     this.disposed = true
-    const entries = [...this.kernels.values()]
+    // Cancel active children before draining transactions, so disposal never
+    // waits for a user cell's full timeout. Completed mutations already save.
+    await Promise.all([...this.kernels.values()].map(entry => entry.bridge.dispose()))
+    await Promise.allSettled([...this.transactions.values()])
+    await Promise.all([...this.kernels.values()].map(entry => entry.bridge.dispose()))
     this.kernels.clear()
-    await Promise.all(entries.map(entry => this.teardownKernel(entry)))
   }
 
   /**
@@ -748,15 +696,18 @@ export class DashrRuntime extends ReplRuntime {
    * which is what makes hearing every agent's disposal safe.
    */
   private async destroyKey(key: string): Promise<void> {
-    const entry = this.kernels.get(key)
-    if (!entry) return
-    this.kernels.delete(key)
-    await this.teardownKernel(entry)
+    await this.kernels.get(key)?.bridge.dispose()
+    await this.transaction(key, async () => {
+      const entry = this.kernels.get(key)
+      this.kernels.delete(key)
+      await entry?.bridge.dispose()
+    })
   }
+
   /**
    * Reset one session's kernel to a fresh, empty namespace: dispose the live
    * subprocess WITHOUT a turn-end snapshot and clear its on-disk snapshot, so
-   * the next ensureKernel spawns empty (restore finds nothing to replay).
+   * the next ensureKernel spawns empty (restore finds no checkpoint).
    */
   private async resetKey(key: string): Promise<void> {
     const entry = this.kernels.get(key)
@@ -769,26 +720,7 @@ export class DashrRuntime extends ReplRuntime {
     }
   }
 
-  /** Snapshot (when configured) then dispose one key's kernel; failures log, never throw into a listener. */
-  private async teardownKernel(entry: KeyedKernel): Promise<void> {
-    const kernel = entry.bridge
-    if (this.config.snapshotDir && kernel.isRunning) {
-      try {
-        // Per-key subdirectory: sessions sharing one snapshotDir must not
-        // overwrite each other's state.dill.
-        const dir = join(this.config.snapshotDir, keyDirectoryName(entry.key))
-        mkdirSync(dir, { recursive: true })
-        const spec: SnapshotSpec = { turn: entry.turn, skills: [], sizeCapBytes: this.config.snapshotSizeCapBytes }
-        const saved = await kernel.snapshotState(join(dir, 'state.dill'), join(dir, 'manifest.json'), spec)
-        if (saved.kind !== 'ok' && saved.kind !== 'skipped') {
-          this.logger.warn(`kernel namespace snapshot for ${JSON.stringify(entry.key)} failed: ${saved.reason}`)
-        }
-      } catch (error: unknown) {
-        this.logger.warn(`kernel namespace snapshot for ${JSON.stringify(entry.key)} failed: ${messageOf(error)}`)
-      }
-    }
-    await kernel.dispose()
-  }
+
 }
 
 export default DashrRuntime

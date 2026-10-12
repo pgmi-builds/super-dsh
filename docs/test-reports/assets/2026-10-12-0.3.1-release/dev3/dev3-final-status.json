@@ -1,0 +1,10 @@
+{
+  "testUnitState": "active",
+  "registryState": "active",
+  "relayState": "active",
+  "worldFailedCount": 0,
+  "checkpointTurn": 3,
+  "checkpointSha256": "f0909eeb41f0bfaad20853ee3c9c2562f3479c60fad400e46ecd974bc6f9d244",
+  "profileBetterRealPath": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub/node_modules/better-dsh",
+  "profileSuperRealPath": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub/node_modules/super-dsh"
+}

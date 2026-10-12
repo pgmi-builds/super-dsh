@@ -1,197 +1,70 @@
-> Part of [Super D](../README.md). This is the independently installable `better-dsh` package. Super Dash embeds the same local build and registers it as a separate native Plugin Manager row, with its own enable/disable switch; both packages share version 0.3.0-a. Active source is this directory, with shared specifications and references under root `docs/`.
+> Part of [Super D](../README.md). `better-dsh` is an independently installable native DSH bundle. Super Dash installs it through the native Plugin Manager; both packages use synchronized versions and independent enable/disable controls. Canonical shared specifications are in root `docs/`.
 
-# Better Dsh — Dashr
+# Better Dash — Dashr
 
-DASHR is a persistent-kernel REPL for the DeepSeek Harness (dsh): a
-**stateful `ctx.replRuntime` provider** (one persistent IPython kernel
-subprocess **per session**, the run's `principal`, held in a map inside the
-one service instance per mount). Each `run()` is one cell on the calling
-session's kernel; variables, imports, and definitions assigned in run N
-survive into run N+1 — *state codification* (blueprint §1.1 channel ②),
-deliberately NOT the per-run isolation a one-shot execution backend
-provides — and two sessions sharing one service instance never see each
-other's variables.
+Better provides a stateful `ctx.replRuntime` and the model-facing `eval` tool. Each DSH session has its own persistent Python child: variables, imports and definitions survive across cells, while sessions remain isolated. `DashrRuntime` owns the children and their lifecycle; the presentation layer exposes the Python SDK and bridges calls to the current session's host tools.
 
-Naming (v0.1.5 layer model): the runtime class is **`DashrRuntime`** — the
-standing-mount-layer component (one instance per mount holding the
-cross-session kernel map), and therefore the de facto daemon while the
-profile-level `DashrDaemon` concept stays an empty shell; the session layer
-is the ipykernel subprocess itself, a pure interpreter with no harness
-awareness.
-
-The presentation half — the `eval` transport tool, the Python SDK renderer,
-and the tool→binding bridge — lives in the SAME package (merged in v0.1.8;
-the pre-merge `dsh-rlm-mode`/`dashr-presentation` sibling split is gone).
-The runtime registers the service key `replRuntime` through its own vendored
-Service Definition (see `src/vendored/repl-runtime.ts`), so it carries **zero
-dsh runtime package dependencies**: only `@deepseek-ai/cordis` (peer),
-`schemastery`, and `zeromq`.
-
-## Package positioning
-
-- npm name: `better-dsh` (unscoped; formerly `@pgmi-builds/better-dsh`, which
-  now stays published only as a deprecated pointer to this name).
-- A standard Cordis plugin (`Context` + schemastery `Config`, every tunable
-  configurable from `cordis.yml`, no hardcoded tunables).
-- "Registrations are effects": the kernel lifecycle (lazy spawn on a key's
-  first `run()`, teardown on that session's `agent/disposed`, optional
-  snapshot at either teardown) is effect-owned, so plugin disposal tears
-  every subprocess down.
-- Published surface: `lib/` only (`files: ["lib"]`, `main`/`types`/`exports`
-  pointing at `lib/index.js` / `lib/index.d.ts`) — the build emits beside the
-  manifest (`outDir: 'lib'`; the tsdown default `dist/` left the exports map
-  dangling, fixed in M2B). The root also re-exports the vendored Service
-  Definition's public contract (`ReplRuntime` plus the `CodeRun*` /
-  `CodeBinding*` / `CodeJsonValue` types) so consumers depend on the
-  published shape instead of reaching into sources. The declaration keeps
-  dependency imports external (`dts: { resolve: false }`): bundled copies
-  would create duplicate type identities in a consumer's program.
+The execution path is Node → JSON lines → an unchanged, pinned OMP Python runner → Python. Better adapts the host interfaces and packages the runner resources with compiled JavaScript. No OMP package, Bun, IPython, Jupyter or ZeroMQ is required by this path. Host modules remain optional peers and keep their runtime identity; Better's own JavaScript dependencies are bundled at build time.
 
 ## Native Web policies
 
-The bundle owns native DSH Web policies as independently toggleable components.
-`dashr-web-trust` accepts authenticated serving Host/Origin values while retaining
-native cookie authentication. The native WebServer and HMR remain in place;
-Better contributes WebTrust, mobile behavior and its password page through the
-public WebServer interfaces. Listener address and port follow native CLI policy.
-Automatic credential onboarding is disabled; users can still configure models.
+The bundle owns independently toggleable WebTrust, mobile behavior, password-page and onboarding contributions through native DSH interfaces. Native WebServer/HMR and CLI listener policy remain in place. `dashr-welcome-notice` shadows the native welcome entry and calls its public completion callback; disabling that component restores the native welcome item.
 
-`dashr-welcome-notice` shadows only the native `welcome-notice` onboarding entry
-at a higher precedence and calls the shell's public completion callback every
-time it mounts, including new chats and explicitly reopened notices. It renders
-no dialog and writes no native acknowledgement state. Disabling the component
-withdraws its client contribution and restores the native welcome item; other
-onboarding steps retain their own behavior.
+Super Dash installs Better as a separate native bundle. `../dev-webmcp` is a development-only test bundle and is not shipped in either product tarball.
 
-```yaml
-- id: dashr-welcome-notice
-  disabled: true
-```
-
-Super Dash installs Better through the native Plugin Manager as a separate
-bundle. Better Dash remains independently installable. `../dev-webmcp` is an
-unshipped development-only bundle owned by this repository.
-
-## Install
+## Install and interpreter
 
 ```sh
 npm install better-dsh
 ```
 
-The runtime OWNS its kernel environment. With `python` left at the
-`python3` sentinel (or absent), it provisions a managed venv under the
-package (`.venv-kernel`) on first use, installing `ipykernel` + `dill`
-(CPython 3.11) — no `/tmp` symlink, no blind trust in a host `python3`.
-An explicit `python` (or `DASHR_KERNEL_PYTHON`) is verified instead. For
-development and tests, pre-create the venv:
+The runtime requires Python >=3.9. Configure `python` (or the bundle's `DASHR_KERNEL_PYTHON` hint) to select one. The default `python3` compatibility path prepares a managed environment using uv or system Python, without kernel package installs. uv may download the selected interpreter when it is absent; an explicit interpreter path uses your existing installation. Better probes the interpreter and ships the runner, checkpoint helper and dill0.4.1 sources; it does not run pip to install kernel packages. Python is not bundled by this change. A missing or unsupported interpreter produces an actionable error.
 
-```sh
-npm run kernel:venv        # uv venv .venv-kernel --python 3.11 + ipykernel + dill
-```
-
-Tests pick the kernel interpreter from `DASHR_TEST_PYTHON`, falling back to
-`./.venv-kernel/bin/python`, then `python3` — see `test/helpers.ts`.
+The original OMP runner's source commit/hash and MIT license, and dill's source hashes/version and BSD-3-Clause license, accompany the packaged resources. Better's integration code is separate from these original files. OMP-specific Agent helpers are not exposed as DSH features.
 
 ## Configuration
 
-Every field of the plugin `Config` (schemastery defaults shown):
+Runtime fields remain configurable through the ordinary Cordis row. The implementation's schema is authoritative; the principal controls are:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `python` | `python3` | Explicit interpreter with `ipykernel`; the bare `python3` sentinel (or absent) selects a managed venv under `kernelEnvDir`. |
-| `startupTimeoutMs` | `30000` | Budget for kernel spawn → ready, in milliseconds. |
-| `runTimeoutMs` | `120000` | Wall budget per run; expiry interrupts the kernel then force-settles. |
-| `interruptGraceMs` | `2000` | Grace between a timeout/abort interrupt and the force-settle. |
-| `interruptConfirmMs` | `250` | Confirm window between the control-channel interrupt and the SIGALRM escalation (must be `< interruptGraceMs`); see "Interrupts" below. |
-| `disposeTimeoutMs` | `5000` | Budget for graceful kernel teardown (shutdown_request → SIGKILL). |
-| `snapshotTimeoutMs` | `30000` | Budget for internal snapshot/restore cells (dill dump/load). |
-| `maxOutputBytes` | `67108864` | Hard cap for serialized log-array, completion-value, and failure-message payloads. |
-| `snapshotDir` | *(unset)* | Base directory for per-session namespace snapshots (`<dir>/<principal>/state.dill` + `manifest.json`); none when absent. |
-| `snapshotSizeCapBytes` | `268435456` | Serialized-size cap for a turn-end snapshot; over-cap snapshots are skipped (one-time model warning). |
-| `username` | `dashr` | Jupyter username stamped on wire messages. |
-| `kernelEnvDir` | *(unset)* | Managed venv directory (defaults to `<package>/.venv-kernel`). |
-| `kernelPythonVersion` | *(unset)* | Preferred CPython version for a managed venv (default `3.11`). |
-| `kernelAutoInstall` | `true` | Provision the managed venv (`ipykernel` + `dill`) on first use. |
+| `python` | `python3` | Interpreter selection; no Jupyter installation requirement. |
+| `startupTimeoutMs` | `30000` | Budget for child startup and initialization. |
+| `runTimeoutMs` | `120000` | Wall budget per user cell. |
+| `interruptGraceMs` | `2000` | Grace after an interrupt before terminating an unresponsive child. |
+| `interruptConfirmMs` | `250` | Delay before confirming an interrupt that has not finished the cell. |
+| `disposeTimeoutMs` | `5000` | Bound on graceful child teardown before forced cleanup. |
+| `snapshotTimeoutMs` | `30000` | Budget for internal save/restore operations. |
+| `maxOutputBytes` | `67108864` | Cap for serialized logs, completion and error output; overflow is reported. |
+| `snapshotDir` | native profile checkpoint directory | Explicit directory overrides the native profile default; `""` disables persistence and retains only live process state. Standalone runtimes must explicitly configure persistence. |
+| `snapshotSizeCapBytes` | `268435456` | Checkpoint payload cap; failed or over-cap saves preserve the previous committed generation. |
+| `kernelEnvDir` | `<package>/.venv-kernel` | Managed environment location used by the `python3` compatibility selection. |
+| `kernelPythonVersion` | `3.11` | Interpreter version requested from uv for a new managed environment. |
+| `kernelAutoInstall` | `true` | Allow creation of the managed environment on first use. |
+| `username` | `dashr` | Retained compatibility field. |
 
-## Persistent-state semantics
+## Cells and recovery
 
-- **Cell semantics**: each `run({ program })` is one cell on the calling
-  session's kernel namespace (`user_ns`) — a pure IPython REPL. Top-level
-  `await` works; a top-level `return` is a SyntaxError, exactly as in a
-  native IPython cell. The completion value is the LAST expression's value
-  (REPL displayhook-style): a statement-ending cell or a `None` final
-  expression yields no `value` field, and a non-JSON value comes back as its
-  repr text.
-- **Session keying** (M3-A): one kernel per distinct `request.principal`
-  (the presentation bridge passes the calling agent's session id); runs
-  without a principal share one default key, preserving M1 semantics. The
-  service instance count is unchanged — one per mount — the keying is a
-  `Map<principal, kernel>` inside the provider.
-- **Kernel lifetime**: lazy start on a key's first `run()`; teardown when
-  that session's agent is disposed (the dsh `agent/disposed` event, payload
-  `{ agent: { id } }`, listened through the untyped cordis event service to
-  keep this package's zero-dsh-dependency rule) and on plugin disposal
-  (`shutdown_request`, then SIGKILL after `disposeTimeoutMs`). A kernel that
-  dies unexpectedly is never reused in-process: it respawns onto its nearest
-  replayable snapshot (or a fresh empty kernel when none exists) and the run
-  that observed the death gets an explicit `worker-exit` naming what was lost.
-- **Turn-end snapshots** (M3-B): with `snapshotDir` configured, every
-  successful run is followed by a size-capped snapshot cell that dumps the
-  user namespace to `<snapshotDir>/<principal>/state.dill` + `manifest.json`
-  (`turn`, `pythonVersion`, `venvPath` = the kernel's own `sys.executable`,
-  `skills`, `names`, `sizeBytes`). A namespace whose serialized size exceeds
-  `snapshotSizeCapBytes` is skipped — estimated BEFORE any dill IO by a
-  bounded walk that reads numpy/pandas in-memory footprints, then confirmed
-  against the actual `.part` dump — and the model is warned once through the
-  run's own logs. Skipped snapshots never replace the previous good one.
-- **Restore-on-first-boot** (M3-B): a key's first kernel boot restores its
-  on-disk snapshot before running user code. The kernel validates the
-  manifest itself (python version, interpreter identity, skills); a
-  non-replayable snapshot degrades to an EMPTY namespace and the first run
-  tells the model so. Variable state and the append-only transcript are NOT
-  transactionally consistent (blueprint §8.3): the snapshot is a point-in-time
-  namespace capture that can lag the transcript, and a degraded restore never
-  fabricates variables the transcript once saw.
-- **Interrupts** (M3-A hardened): aborts/timeouts escalate in two phases —
-  the zmq control `interrupt_request` first, then SIGALRM only after
-  `interruptConfirmMs` if the cell has still not settled. The kernel-side
-  bootstrap installs a busy guard that only raises `KeyboardInterrupt` while
-  a dashr cell is actually executing, so a signal landing on an idle or
-  booting kernel is swallowed instead of terminating the process (the M1
-  same-tick dual send killed idle kernels deterministically — 10/10
-  same-tick, 8/10 at +1-2ms, 40/40 during cold boot; see
-  `test/interrupt-race.spec.ts`). The hard-abort contract is intact: a busy
-  `while True: pass` still breaks inside the grace (blueprint §10.4).
-- **Concurrency**: the bridge serializes cells per kernel (`executeCell`
-  awaits the previous cell), so concurrent `run()` calls on one session
-  queue rather than interleave; see `test/parallel.spec.ts`. Runs on
-  DIFFERENT principals execute on their own kernels concurrently.
-- **What snapshots do NOT carry**: nothing outside the kernel namespace is
-  ever in scope — the v0.1.8b removal deleted the Continual Harness
-  (`refine()`, `harnessDir`) entirely, so the snapshot/restore cycle's only
-  persistence channel is the kernel namespace itself (blueprint §8.4).
-  Anything a cell stores in ordinary variables follows the snapshot rules
-  above as before.
+One `eval` call runs one Python cell. Top-level `await` works and top-level `return` is invalid. The final expression supplies the completion value; a final `None` or statement produces no value. Non-JSON completions return repr text. Printed stdout/stderr become logs. Tools use `await tool.<name>({...})` and failures raise `ToolCallError`.
+
+Operations for one session serialize, including initialization, user cells, checkpointing, variable access and reset. Different sessions can execute concurrently; one cell can fan out independent asynchronous host tool calls.
+
+Completed cells attempt a checkpoint, including cells that raise after changing state. The helper saves an admitted user object graph, preserving shared references among retained values. Serialization failures, resource exclusions and partial coverage are reported to the model. A complete generation is committed atomically; a failed attempt before commit retains the previous valid checkpoint. If interruption prevents confirmation of the commit, Better reports that uncertainty.
+
+On a fresh child, Better validates and attempts restoration once before admitting user code. The notice identifies the saved cell and any omissions. A damaged or incompatible checkpoint starts empty and reports why. Runner plumbing, tool bindings and OS resources are excluded. Current tools are recreated from the host; files, sockets, subprocesses, threads, locks, connections, environment mutations and external side effects are not restored as a Python process.
+
+A dying or interrupted cell may already have performed side effects. Better never automatically retries it or blindly replays historical cells. Read the recovery notice and inspect real state before deciding which work to repeat. `reset: true` clears the session's memory and disk checkpoints.
+
+For the full boundary and source provenance contract, see [the runtime guide](docs/specs/omp-python-repl-port/runtime-guide.md) and [spec](docs/specs/omp-python-repl-port/spec.md).
 
 ## Testing
 
 ```sh
-npm install
-npm run kernel:venv     # once; or export DASHR_TEST_PYTHON=/path/to/python
-npm run typecheck       # tsc --noEmit
-npm test                # vitest --run (fileParallelism: false)
+npm run typecheck
+DASHR_TEST_PYTHON=python3 npm test
 ```
 
-Teardown discipline: every test context is disposed through
-`onTestFinished`, and CI must assert no orphan kernels remain:
-
-```sh
-pgrep -cf -- '-[m] ipykernel_launcher' || echo no-orphans
-```
-
-(The `-[m]` trick prevents `pgrep` from matching itself; 208 orphaned
-kernels once exhausted machine memory while every unit test stayed green —
-blueprint §10.8/§10.9.)
+Tests create real Python children and dispose their contexts. Stdlib-only interpreter coverage verifies that external kernel packages are unnecessary. Consumer acceptance additionally requires the root dual-tarball launcher and dev3 installed behavior; source tests and process liveness alone are insufficient.
 
 ---
 
@@ -199,7 +72,7 @@ blueprint §10.8/§10.9.)
 
 The DASHR agent-plane presentation (blueprint §7.4): the plugin half that
 presents the persistent-kernel runtime to the model as **cells on one
-persistent IPython kernel**. It contributes:
+persistent Python runner**. It contributes:
 
 - **`eval`** — the cell transport tool: one call = one cell on the calling
   session's kernel (the `ctx.replRuntime` service). Variables, imports, and
@@ -304,15 +177,12 @@ unknown id, or an infrastructure rejection all map to an `error` string.
 
 ```sh
 npm install
-npm run kernel:venv     # once; or export DASHR_TEST_PYTHON=/path/to/python
+export DASHR_TEST_PYTHON=python3  # or an explicit supported interpreter
 npm run typecheck
 npm test                # vitest --run
 ```
 
-The suite needs a Python interpreter with `ipykernel` (+ `dill` for the
-snapshot tiers) for the real-kernel specs; it resolves one from
-`DASHR_TEST_PYTHON`, then `./.venv-kernel/bin/python`, then `python3` —
-see `test/helpers.ts`.
+The suite needs a supported Python interpreter; the runner and checkpoint serializer are supplied by Better. `DASHR_TEST_PYTHON` selects the test interpreter.
 
 ## Relationship to upstream
 

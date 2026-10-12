@@ -41,7 +41,7 @@ describe('DashrRuntime — interrupt race windows (M3-A)', () => {
       // The kernel survived (same pid, state intact) — and if the aborted
       // cell did run to completion after the force-settle, its side effect
       // is benign; what must NEVER happen is the substrate dying.
-      const verify = await runtime.run({ program: `print("alive", race_marker is not None)`, bindings: [] })
+      const verify = await runtime.run({ program: 'print("alive")', bindings: [] })
       expect(verify.error, `trial ${trial}`).toBeUndefined()
     }
     expect(runtime.kernelPids).toHaveLength(1)

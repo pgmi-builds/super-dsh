@@ -1,0 +1,54 @@
+[
+  {
+    "type": "tool/call",
+    "seq": 44,
+    "time": 1791764372184,
+    "data": {
+      "turn": 2,
+      "step": 1,
+      "callId": "call_00_BnYB3SQtVyAjBw0Uo7kv0874",
+      "name": "eval",
+      "arguments": "{\"cell\": \"assert release_031_value == 73\\nprint(\\\"RELEASE-031-COLD-RESTORED\\\", release_031_value)\\nrelease_031_value\", \"description\": \"Cold-recovery assertion of release_031_value\"}"
+    }
+  },
+  {
+    "type": "tool/result",
+    "seq": 45,
+    "time": 1791764372421,
+    "data": {
+      "turn": 2,
+      "step": 1,
+      "message": {
+        "role": "tool",
+        "source": {
+          "kind": "tool",
+          "callId": "call_00_BnYB3SQtVyAjBw0Uo7kv0874"
+        },
+        "toolCallId": "call_00_BnYB3SQtVyAjBw0Uo7kv0874",
+        "content": [
+          {
+            "type": "text",
+            "text": "RELEASE-031-COLD-RESTORED 73\n[dashr] namespace restored from the turn-2 snapshot\n73"
+          }
+        ],
+        "isError": false,
+        "id": "73c58e98-146d-404b-85c7-ffdfa3cb71a5"
+      }
+    },
+    "sourceEventSeqs": [
+      44
+    ],
+    "surfaceOp": "append"
+  },
+  {
+    "type": "turn/end",
+    "seq": 53,
+    "time": 1791764374647,
+    "data": {
+      "turn": 2,
+      "reason": {
+        "kind": "completed"
+      }
+    }
+  }
+]

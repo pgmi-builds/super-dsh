@@ -1,0 +1,18 @@
+{
+  "independentPackages": true,
+  "builtAt": "2026-10-12T00:16:50.862Z",
+  "betterDash": {
+    "name": "better-dsh",
+    "version": "0.3.1",
+    "source": "/home/u1/workspaces/superd/better-dsh",
+    "tarball": "/home/u1/workspaces/superd/.scratch/superd-pack/better-dsh-0.3.1.tgz",
+    "sha256": "6bb78bd2cd54ddf6df92ebc3c25ee32de333e7cb62d621f95c1b8d98a9e9af89"
+  },
+  "superDash": {
+    "name": "super-dsh",
+    "version": "0.3.1",
+    "source": "/home/u1/workspaces/superd/super-dsh",
+    "tarball": "/home/u1/workspaces/superd/.scratch/superd-pack/super-dsh-0.3.1.tgz",
+    "sha256": "832103fe729c286cd9e3e06f6d9ab5dae8bce701b48a4494aaf546c4aa8fd935"
+  }
+}

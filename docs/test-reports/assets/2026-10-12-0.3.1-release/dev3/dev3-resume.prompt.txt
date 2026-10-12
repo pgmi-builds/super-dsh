@@ -1,0 +1,1 @@
+隔离测试宿主已重启，这是同一会话最终发布0.3.1冷恢复验收。只调用一次eval：assert release_031_value==73；print("RELEASE-031-COLD-RESTORED",release_031_value)；最后表达式release_031_value。不要重建变量、不reset、不重试、不安装依赖、不联系其他agent。报告工具实际输出和原样恢复提示。

@@ -1,13 +1,45 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { onTestFinished } from 'vitest'
 import { describe, expect, it } from 'vitest'
 import type { CodeRunResult } from '../src/vendored/repl-runtime.ts'
-import { setupRuntime } from './helpers.ts'
+import { KERNEL_PYTHON, setupRuntime } from './helpers.ts'
 
 /**
- * Integration suite over a REAL ipykernel subprocess (no mocks — kernels are
+ * Integration suite over a REAL OMP Python subprocess (no mocks — kernels are
  * local and cheap once booted, per dsh's real-over-mock policy). Each test
  * builds a fresh context and shares nothing with the others.
  */
 describe('DashrRuntime — programs on a persistent kernel', () => {
+  it('runs persistent Python without pip, ipykernel, Jupyter, ZMQ or external dill', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'better-stdlib-'))
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }))
+    execFileSync('python3', ['-m', 'venv', '--without-pip', dir])
+    const python = join(dir, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+    const { fiber, runtime } = await setupRuntime({ python })
+    const first = await runtime.run({ program: 'x = 40', bindings: [] })
+    expect(first.error).toBeUndefined()
+    const second = await runtime.run({ program: 'x + 2', bindings: [] })
+    expect(second.error).toBeUndefined()
+    expect(second.value).toBe(42)
+    await fiber.dispose()
+  })
+
+  it('preserves OMP magic and shell source transformation, including helpers after %reset', async () => {
+    const { runtime } = await setupRuntime()
+    const result = await runtime.run({ program: '!echo omp-shell\n%pwd', bindings: [] })
+    expect(result.error).toBeUndefined()
+    expect(result.logs.join('\n')).toContain('omp-shell')
+    expect(typeof result.value).toBe('string')
+    const reset = await runtime.run({ program: '%reset', bindings: [] })
+    expect(reset.error).toBeUndefined()
+    const after = await runtime.run({ program: '40 + 2', bindings: [] })
+    expect(after.error).toBeUndefined()
+    expect(after.value).toBe(42)
+  })
+
   it('registers with the seam descriptors', async () => {
     const { runtime } = await setupRuntime()
     expect(runtime.language).toBe('python')
@@ -47,7 +79,7 @@ describe('DashrRuntime — programs on a persistent kernel', () => {
     expect(result.value).toBe('SELECT\n  id,\n  name\nFROM users')
   })
 
-  it('keeps function docstrings intact', async () => {
+  it('matches native Python docstring semantics', async () => {
     const { runtime } = await setupRuntime()
     const program = [
       'def helper():',
@@ -58,7 +90,16 @@ describe('DashrRuntime — programs on a persistent kernel', () => {
     ].join('\n')
     const result = await runtime.run({ program, bindings: [] })
     expect(result.error).toBeUndefined()
-    expect(result.value).toBe('First summary line.\n    Details follow.')
+    // Python >=3.13 removes common docstring indentation in the compiler.
+    // Compare the untouched source with the SAME interpreter, so the adapter
+    // must preserve native semantics rather than a pre-3.13 spelling.
+    const nativeDoc: unknown = JSON.parse(execFileSync(KERNEL_PYTHON, ['-c', [
+      'import json, sys',
+      'namespace = {}',
+      'exec(compile(sys.argv[1], "<native-docstring>", "exec"), namespace)',
+      'print(json.dumps(namespace["helper"].__doc__))',
+    ].join('\n'), program], { encoding: 'utf8', timeout: 15_000 }))
+    expect(result.value).toBe(nativeDoc)
   })
 
   it('suppresses a None completion and omits value for a statement-ending cell', async () => {

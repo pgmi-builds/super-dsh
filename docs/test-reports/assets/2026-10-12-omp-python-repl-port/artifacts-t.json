@@ -1,0 +1,12 @@
+{
+  "version": "0.3.0-t",
+  "archiveSha256": "a9b908e75c1292b066d912fd01b2098906df3adfc2c1fea90da66cd75b28064d",
+  "runnerSha256": "e0e660ca44193735a2de467254b050109bb23028aca71af01b9365b9ab88e974",
+  "dillVersion": "0.4.1",
+  "originalDillFiles": 15,
+  "runtimePythonFiles": 14,
+  "licenses": true,
+  "helpers": true,
+  "obsoleteTransportAbsent": true,
+  "consumerInstallHooksAbsent": true
+}

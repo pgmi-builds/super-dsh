@@ -233,7 +233,7 @@ describe('v0.2.1b — model-surface contracts (eval description, mask list, esca
     const { ctx, agent } = await setupPresentation(fakeRuntime)
     // The real wire parameter names of the tools the description exemplifies.
     const wireParams: Record<string, string[]> = {
-      read: ['path', 'offset', 'limit'],
+      read: ['file_path', 'offset', 'limit'],
       bash: ['command', 'description', 'timeoutMs', 'workdir', 'run_in_background', 'sandbox_permissions', 'justification'],
       grep: ['pattern', 'path', 'include'],
       glob: ['pattern', 'path'],

@@ -64,7 +64,7 @@ describe('DashrRuntime — lifecycle as effects', () => {
     // (this test's runs carry no principal, so the agentless default key).
     const keyDir = join(snapshotDir, '(agentless)')
     const manifestPath = join(keyDir, 'manifest.json')
-    expect(existsSync(join(keyDir, 'state.dill'))).toBe(true)
+    expect(existsSync(join(keyDir, JSON.parse(readFileSync(join(keyDir, 'manifest.json'), 'utf8')).payload))).toBe(true)
     expect(existsSync(manifestPath)).toBe(true)
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { names: string[], pythonVersion: string }
     expect(manifest.names).toContain('x')

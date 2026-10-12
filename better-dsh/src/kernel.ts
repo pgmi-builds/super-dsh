@@ -1,892 +1,366 @@
-/**
- * Minimal IPython kernel bridge: spawns `python -m ipykernel_launcher`, speaks
- * the Jupyter wire protocol over ZeroMQ (shell/iopub/control), serializes cell
- * execution, and bridges kernel-side host requests (binding calls) over comms.
- * Ported from PA's `KernelManager` (prime-agent/packages/coding-agent/src/core/kernel/index.ts)
- * down to the subset DASHR needs; see README for the build-vs-reuse decision.
- *
- * Lifecycle is owned by the caller (the Cordis plugin registers it as a
- * `ctx.effect`); this class installs no process-level signal handlers, unlike
- * its PA ancestor.
- * @module dashr/kernel
- */
-
-import { type ChildProcess, spawn } from 'node:child_process'
+/** One persistent, serialized OMP Python child. No Jupyter ports or dependencies. */
+import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
-import { KernelTransport } from './kernel-transport.ts'
-import type { TransportChannel, TransportMessage } from './kernel-transport.ts'
-import { HOST_COMM_TARGET, KERNEL_BOOTSTRAP } from './bootstrap.ts'
-import { buildQueryVarCell, buildRestoreCell, buildSetVarCell, buildSnapshotCell } from './python.ts'
+import { createServer, type Server } from 'node:http'
+import { createInterface } from 'node:readline'
+import type { Readable, Writable } from 'node:stream'
+import { fileURLToPath } from 'node:url'
+import { KERNEL_BOOTSTRAP } from './bootstrap.ts'
+import { buildQueryVarCell, buildSetVarCell, buildSnapshotCell, buildRestoreCell } from './python.ts'
 import type { SnapshotSpec } from './python.ts'
 import { extractStream } from './output.ts'
 
-/** Constructor options; every deployment-varying value arrives validated. */
 export interface KernelBridgeOptions {
-  /** Absolute or PATH-resolved python interpreter with `ipykernel` installed. */
   python: string
-  /** Working directory for the kernel subprocess. */
   cwd?: string
-  /** Budget for spawn → kernel_info reply, in milliseconds. */
   startupTimeoutMs: number
-  /** Budget for graceful dispose (shutdown_request → SIGTERM → SIGKILL), in milliseconds. */
   disposeTimeoutMs: number
-  /**
-   * Confirm window between the control-channel interrupt and the SIGALRM
-   * escalation, in milliseconds; must stay below every execute's grace.
-   */
+  /** Retained configuration seam; OMP interrupts with SIGINT directly. */
   interruptConfirmMs: number
-  /** Budget for internal snapshot/restore cells (dill dump/load), in milliseconds. */
   snapshotTimeoutMs: number
-  /** Jupyter username stamped on every message. */
   username: string
+  snapshotDirectory?: string
+  snapshotSizeCapBytes?: number
 }
-
-/** Host-supplied inputs a snapshot cell records beside the dill payload. */
 export type { SnapshotSpec }
-
-/** One snapshot attempt's terminal outcome, parsed from the cell envelope. */
 export type SnapshotOutcome =
-  | { kind: 'ok', sizeBytes: number, names: number }
+  | { kind: 'ok', sizeBytes: number, names: string[], omitted: Record<string, string>, turn: number, warning?: string }
   | { kind: 'skipped', reason: string, estimateBytes?: number, sizeBytes?: number, capBytes: number }
   | { kind: 'failed', reason: string }
-
-/** One restore attempt's terminal outcome, parsed from the cell envelope. */
-export type RestoreStateOutcome =
-  | { kind: 'restored', count: number }
-  | { kind: 'degraded', reason: string }
-
-/** One user-namespace variable query, parsed from the cell envelope. */
-export type QueryVarOutcome =
-  | { kind: 'json', text: string }
-  | { kind: 'repr', text: string }
-  | { kind: 'names', names: string[] }
-  | { kind: 'missing' }
-  | { kind: 'failed', reason: string }
-
-/** One user-namespace variable assignment, parsed from the cell envelope. */
-export type SetVarOutcome =
-  | { kind: 'ok' }
-  | { kind: 'failed', reason: string }
-
-
-/** One host-request resolution: ok carries the reply payload, not-ok a message. */
+export type RestoreStateOutcome = { kind: 'restored', count: number, turn: number, omitted: Record<string, string> } | { kind: 'degraded', reason: string }
+export type QueryVarOutcome = { kind: 'json' | 'repr', text: string } | { kind: 'names', names: string[] } | { kind: 'missing' } | { kind: 'failed', reason: string }
+export type SetVarOutcome = { kind: 'ok' } | { kind: 'failed', reason: string }
 export type HostRequestOutcome = { ok: true, result: unknown } | { ok: false, message: string }
-
-/** Dispatches one typed request from kernel-side code. */
 export type HostRequestHandler = (data: Record<string, unknown>) => Promise<HostRequestOutcome>
-
 export interface ExecuteCellOptions {
-  /** Wall budget for the cell; interrupts then force-settles on expiry. */
   timeoutMs: number
-  /** Grace between interrupt and force-settle, in milliseconds. */
   interruptGraceMs: number
-  /**
-   * Confirm window between the control-channel interrupt and the SIGALRM
-   * escalation, in milliseconds; must stay below {@link interruptGraceMs}.
-   * The zmq interrupt alone settles any cell that yields to the kernel event
-   * loop, so SIGALRM — the channel that can terminate an idle kernel (see
-   * {@link IpyKernelBridge.interrupt | interrupt}) — is only sent when the
-   * cell provably ignored phase one. The kernel-side busy guard makes a
-   * signal that still sneaks onto an idle kernel harmless.
-   */
   interruptConfirmMs: number
-  /** Aborting interrupts the kernel and settles the cell as aborted. */
   signal?: AbortSignal
-  /** Host-request dispatcher active while this cell executes. */
   hostRequestHandler?: HostRequestHandler
 }
-
-/** A cell's terminal outcome; substrate-level failures arrive as `forced`. */
 export type CellOutcome =
-  | {
-    outcome: 'completed'
-    status: 'ok' | 'error'
-    streamText: string
-    cellError?: { ename: string, evalue: string, traceback: string[] }
-  }
-  | {
-    outcome: 'forced'
-    failure: { kind: 'timeout' | 'abort' | 'worker-exit', message: string }
-    streamText: string
-  }
-
-const PROTOCOL_VERSION = '5.3'
-/** Loopback PUB/SUB subscription propagation guard before the first execute. */
-const IOPUB_SUBSCRIBE_DELAY_MS = 50
-const CONNECT_POLL_MS = 25
-const SHUTDOWN_DRAIN_MS = 200
-
-interface ConnectionInfo {
-  ip: string
-  transport: 'tcp'
-  shell_port: number
-  iopub_port: number
-  stdin_port: number
-  control_port: number
-  hb_port: number
-  signature_scheme: 'hmac-sha256'
-  key: string
-  kernel_name: string
-}
-
-/** The bridge relays exactly this shape; the alias keeps call sites unchanged. */
-type JupyterMessage = TransportMessage
-
-interface ActiveExecution {
-  requestMsgId: string
+  | { outcome: 'completed', status: 'ok' | 'error', streamText: string, cellError?: { ename: string, evalue: string, traceback: string[] } }
+  | { outcome: 'forced', failure: { kind: 'timeout' | 'abort' | 'worker-exit', message: string }, streamText: string }
+type Failure = Extract<CellOutcome, { outcome: 'forced' }>['failure']
+interface Active {
+  id: string
   opts: ExecuteCellOptions
   streamText: string
-  cellError?: { ename: string, evalue: string, traceback: string[] }
-  status: 'ok' | 'error'
-  settled: boolean
+  started: boolean
+  error?: { ename: string, evalue: string, traceback: string[] }
+  pendingForce?: Failure
   resolve: (outcome: CellOutcome) => void
-  forceTimer?: ReturnType<typeof setTimeout>
-  timeoutTimer?: ReturnType<typeof setTimeout>
-  /** The phase-two SIGALRM escalation timer; cleared on every settle path like the others. */
-  alarmTimer?: ReturnType<typeof setTimeout>
-  /** Detach the caller signal's abort listener; EVERY settle path must run it exactly once. */
-  detachSignal?: () => void
-  /** Set when the budget/abort interrupt was sent; the interrupt's own error must not masquerade as a program exception. */
-  pendingForce?: { kind: 'timeout' | 'abort', message: string }
+  timeout?: ReturnType<typeof setTimeout>
+  force?: ReturnType<typeof setTimeout>
+  detach?: () => void
+  confirm?: ReturnType<typeof setTimeout>
+  rejectCallbacks: Set<() => void>
+}
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function buildMessage(msgType: string, content: Record<string, unknown>, session: string, username: string): JupyterMessage {
-  return {
-    header: {
-      msg_id: randomUUID(),
-      session,
-      username,
-      date: new Date().toISOString(),
-      msg_type: msgType,
-      version: PROTOCOL_VERSION,
-    },
-    parent_header: {},
-    content,
-  }
-}
-
-function makeConnection(): { path: string, tempDir: string } {
-  const info: ConnectionInfo = {
-    ip: '127.0.0.1',
-    transport: 'tcp',
-    shell_port: 0,
-    iopub_port: 0,
-    stdin_port: 0,
-    control_port: 0,
-    hb_port: 0,
-    signature_scheme: 'hmac-sha256',
-    key: randomBytes(16).toString('hex'),
-    kernel_name: 'python3',
-  }
-  const tempDir = mkdtempSync(join(tmpdir(), 'dashr-kernel-'))
-  const path = join(tempDir, 'connection.json')
-  writeFileSync(path, JSON.stringify(info, null, 2), { mode: 0o600 })
-  return { path, tempDir }
-}
-
-function readResolvedConnection(path: string): ConnectionInfo | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-    if (!isRecord(parsed) || parsed.ip !== '127.0.0.1' || parsed.transport !== 'tcp' || parsed.signature_scheme !== 'hmac-sha256' || typeof parsed.key !== 'string') return null
-    for (const port of ['shell_port', 'iopub_port', 'stdin_port', 'control_port', 'hb_port'] as const) {
-      const value = parsed[port]
-      if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) return null
-    }
-    return parsed as unknown as ConnectionInfo
-  } catch {
-    return null
-  }
-}
-
-/**
- * One persistent IPython kernel subprocess with its ZeroMQ channels. Cell
- * execution is serialized on an internal queue (the Jupyter shell channel is
- * request/reply).
- */
+/** Historical class name retained for the runtime's private integration seam. */
 export class IpyKernelBridge {
-  private readonly session = randomUUID()
   private state: 'idle' | 'starting' | 'running' | 'shutdown' = 'idle'
+  private child?: ChildProcess
   private startPromise?: Promise<void>
-  private kernel?: ChildProcess
-  private transport?: KernelTransport
-  private connection?: ConnectionInfo
-  private tempDir?: string
-  private kernelStderr = ''
-  private executionQueue: Promise<unknown> = Promise.resolve()
-  private activeExec?: ActiveExecution
-  private readonly commTargets = new Map<string, string>()
-  private readonly servedComms = new Set<string>()
+  private disposePromise?: Promise<void>
+  private queue: Promise<unknown> = Promise.resolve()
+  private active?: Active
+  private stderr = ''
+  private deathFailure?: Failure
+  private callbackServer?: Server
+  private closePromise?: Promise<void>
+  private readonly ownedReaders: ReturnType<typeof createInterface>[] = []
 
   constructor(private readonly options: KernelBridgeOptions) {}
+  get pid(): number | undefined { return this.child?.pid }
+  get isRunning(): boolean { return this.state === 'running' }
+  get isDead(): boolean { return this.state === 'shutdown' }
 
-  /** The kernel subprocess pid, for lifecycle assertions; absent before spawn. */
-  get pid(): number | undefined {
-    return this.kernel?.pid
-  }
-
-  get isRunning(): boolean {
-    return this.state === 'running'
-  }
-
-  /**
-   * Whether the subprocess is gone (crashed or disposed). A dead bridge is
-   * never resurrected — the owning provider replaces it with a fresh one
-   * (respawn, M3-A), because kernel state is unrecoverable in-process.
-   */
-  get isDead(): boolean {
-    return this.state === 'shutdown'
-  }
-
-  /**
-   * Start the kernel (idempotent; concurrent callers share one startup).
-   * @throws when the subprocess cannot spawn, ports never resolve, the
-   *   kernel_info probe times out, or the bootstrap cell fails.
-   */
-  async start(): Promise<void> {
-    if (!this.startPromise) {
-      this.startPromise = this.doStart().catch((error: unknown) => {
-        this.startPromise = undefined
-        throw error
-      })
-    }
+  start(): Promise<void> {
+    this.startPromise ??= this.doStart()
     return this.startPromise
   }
 
-  private stderrTail(): string {
-    return this.kernelStderr.slice(-1024) || '(empty)'
+  private async windowsCallbacks(): Promise<Record<string, string>> {
+    const token = randomBytes(32).toString('hex')
+    const server = createServer((req, response) => {
+      if (req.method !== 'POST' || req.url !== '/callback' || req.headers.authorization !== `Bearer ${token}`) {
+        response.writeHead(403).end()
+        return
+      }
+      let body = ''
+      req.setEncoding('utf8')
+      req.on('data', (data: string) => { body += data })
+      req.on('end', () => {
+        let parsed: unknown
+        try { parsed = JSON.parse(body) } catch { response.writeHead(400).end(); return }
+        void this.callback(parsed).then(reply => {
+          if (!response.destroyed) response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(reply))
+        })
+      })
+    })
+    this.callbackServer = server
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve() })
+    })
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('callback endpoint unavailable')
+    return { BETTER_CALLBACK_URL: `http://127.0.0.1:${address.port}/callback`, BETTER_CALLBACK_TOKEN: token }
   }
 
   private async doStart(): Promise<void> {
-    if (this.state !== 'idle') return
+    if (this.state !== 'idle') throw new Error('Python bridge cannot restart after shutdown')
     this.state = 'starting'
-    const { path, tempDir } = makeConnection()
-    this.tempDir = tempDir
-    // Scrubbed environment: the interpreter is invoked by absolute path, and
-    // the kernel needs no ambient credentials; HOME backs IPython's optional
-    // history writes.
-    const kernel = spawn(this.options.python, ['-m', 'ipykernel_launcher', '-f', path], {
-      cwd: this.options.cwd,
-      env: {
-        PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-        LANG: 'C.UTF-8',
-        HOME: process.env.HOME ?? tmpdir(),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    this.kernel = kernel
-    kernel.stderr?.on('data', (buf: Buffer) => { this.kernelStderr += buf.toString() })
-    kernel.on('error', (error: Error) => {
-      this.kernelStderr += `spawn error: ${error.message}\n`
-      this.onKernelDeath()
-    })
-    kernel.on('exit', (code, signal) => {
-      if (this.state !== 'shutdown') this.kernelStderr += `unexpected exit code=${code} signal=${signal}\n`
-      this.onKernelDeath()
-    })
-
-    let conn: ConnectionInfo
     try {
-      conn = await this.waitForConnection(path)
-      this.connection = conn
-    } catch (error) {
-      this.cleanupResources()
-      this.state = 'idle'
-      throw error
-    }
-
-    const transport = new KernelTransport({
-      python: this.options.python,
-      connectionFile: path,
-      ...this.options.cwd === undefined ? {} : { cwd: this.options.cwd },
-      readyTimeoutMs: this.options.startupTimeoutMs,
-    })
-    this.transport = transport
-    transport.onMessage((channel, message) => { this.handleTransportMessage(channel, message) })
-    transport.onExit(() => {
-      if (this.state !== 'shutdown') {
-        this.forceSettleActive({
-          kind: 'worker-exit',
-          message: `kernel bridge died. stderr tail:\n${transport.stderrTail()}`,
+      const resources = fileURLToPath(new URL('./omp-python/', import.meta.url))
+      const callbackEnv = process.platform === 'win32' ? await this.windowsCallbacks() : {}
+      if (this.isDead) throw new Error('Python startup cancelled by disposal')
+      const child = spawn(this.options.python, ['-u', fileURLToPath(new URL('./omp-python/runner.py', import.meta.url))], {
+        ...this.options.cwd ? { cwd: this.options.cwd } : {},
+        detached: process.platform !== 'win32',
+        stdio: process.platform === 'win32' ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+          PYTHONDONTWRITEBYTECODE: '1', PYTHONPATH: [resources, process.env.PYTHONPATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'), ...callbackEnv },
+      })
+      this.child = child
+      this.closePromise = new Promise(resolve => child.once('close', () => resolve()))
+      child.on('error', error => this.died(`Python process error: ${error.message}`))
+      child.on('exit', (code, signal) => this.died(`Python process exited (${signal ?? code}); stderr: ${this.stderr.slice(-2048)}`))
+      child.stdin?.on('error', error => this.died(`Python input pipe failed: ${error.message}`))
+      child.stderr?.setEncoding('utf8').on('data', (data: string) => { this.stderr = (this.stderr + data).slice(-8192) })
+      const frames = createInterface({ input: child.stdout! })
+      this.ownedReaders.push(frames)
+      frames.on('line', line => {
+        try { this.frame(JSON.parse(line)) } catch { this.died('Python emitted invalid NDJSON protocol') }
+      })
+      if (process.platform !== 'win32') {
+        const requests = createInterface({ input: child.stdio[3] as Readable })
+        this.ownedReaders.push(requests)
+        const replies = child.stdio[4] as Writable
+        replies.on('error', () => { /* death/disposal closes callback pipes */ })
+        requests.on('line', line => {
+          let data: unknown
+          try { data = JSON.parse(line) } catch { return }
+          void this.callback(data).then(reply => {
+            if (!replies.destroyed && !replies.writableEnded) replies.write(JSON.stringify(reply) + '\n')
+          })
         })
       }
-    })
-    try {
-      await transport.start()
-    } catch (error) {
-      this.cleanupResources()
-      this.state = 'idle'
-      throw error
-    }
-    // Loopback PUB/SUB propagation guard: the kernel publishes iopub only once
-    // the bridge's subscriber is connected.
-    await sleep(IOPUB_SUBSCRIBE_DELAY_MS)
-
-    try {
-      await this.probeReady()
-    } catch (error) {
-      this.cleanupResources()
-      this.state = 'idle'
-      throw error
-    }
-
-    const bootstrap = await this.executeCell(KERNEL_BOOTSTRAP, {
-      timeoutMs: this.options.startupTimeoutMs,
-      interruptGraceMs: 1_000,
-      interruptConfirmMs: Math.min(this.options.interruptConfirmMs, 500),
-    })
-    if (bootstrap.outcome !== 'completed' || bootstrap.status !== 'ok') {
-      const detail = bootstrap.outcome === 'completed' && bootstrap.cellError
-        ? `${bootstrap.cellError.ename}: ${bootstrap.cellError.evalue}`
-        : 'bootstrap cell failed'
-      this.cleanupResources()
-      this.state = 'idle'
-      throw new Error(`dashr kernel bootstrap failed: ${detail}`)
-    }
-
-    this.state = 'running'
-  }
-
-  private async waitForConnection(path: string): Promise<ConnectionInfo> {
-    const deadline = Date.now() + this.options.startupTimeoutMs
-    while (Date.now() < deadline) {
-      if (this.state === 'shutdown') {
-        throw new Error(`kernel exited before resolving ports. stderr:\n${this.stderrTail()}`)
-      }
-      const info = readResolvedConnection(path)
-      if (info) return info
-      await sleep(CONNECT_POLL_MS)
-    }
-    throw new Error(`kernel did not resolve connection ports within ${this.options.startupTimeoutMs}ms. stderr tail:\n${this.stderrTail()}`)
-  }
-
-  private async probeReady(): Promise<void> {
-    const transport = this.transport
-    if (!transport) throw new Error('kernel channels are not connected')
-    const msg = buildMessage('kernel_info_request', {}, this.session, this.options.username)
-    const requestMsgId = msg.header.msg_id
-    transport.send('shell', msg)
-
-    const reply = await transport.waitFor(
-      'shell',
-      incoming => incoming.header.msg_type === 'kernel_info_reply'
-        && (incoming.parent_header as { msg_id?: string }).msg_id === requestMsgId,
-      this.options.startupTimeoutMs,
-    )
-    if (reply) return
-    const bridgeTail = transport.stderrTail()
-    if (this.state === 'shutdown') {
-      throw new Error(`kernel exited during startup. kernel stderr:\n${this.stderrTail()}\nbridge stderr:\n${bridgeTail}`)
-    }
-    throw new Error(`kernel did not answer kernel_info_request within ${this.options.startupTimeoutMs}ms. kernel stderr:\n${this.stderrTail()}\nbridge stderr:\n${bridgeTail}`)
-  }
-
-  /**
-   * Execute one cell on the persistent kernel, serialized against all other
-   * executions. Resolves with the cell's outcome — never rejects for
-   * cell-level failures (program errors, timeouts, aborts, kernel death).
-   * @param code - complete cell source.
-   * @param opts - budgets, abort signal, and the host-request dispatcher.
-   */
-  async executeCell(code: string, opts: ExecuteCellOptions): Promise<CellOutcome> {
-    const prev = this.executionQueue
-    let releaseQueue!: () => void
-    this.executionQueue = new Promise<void>(resolve => { releaseQueue = resolve })
-    await prev
-    try {
-      if (this.state === 'shutdown' || this.state === 'idle') {
-        return { outcome: 'forced', failure: { kind: 'worker-exit', message: 'kernel has been shut down' }, streamText: '' }
-      }
-      return await this.executeInner(code, opts)
-    } finally {
-      releaseQueue()
-    }
-  }
-
-  private executeInner(code: string, opts: ExecuteCellOptions): Promise<CellOutcome> {
-    const transport = this.transport
-    if (!transport) {
-      return Promise.resolve({ outcome: 'forced', failure: { kind: 'worker-exit', message: 'kernel channels are not connected' }, streamText: '' })
-    }
-
-    const msg = buildMessage('execute_request', {
-      code,
-      silent: false,
-      store_history: false,
-      user_expressions: {},
-      allow_stdin: false,
-      stop_on_error: true,
-    }, this.session, this.options.username)
-
-    return new Promise<CellOutcome>(resolve => {
-      const execution: ActiveExecution = {
-        requestMsgId: msg.header.msg_id,
-        opts,
-        streamText: '',
-        status: 'ok',
-        settled: false,
-        resolve,
-      }
-      this.activeExec = execution
-
-      const settle = (outcome: CellOutcome): void => {
-        if (execution.settled) return
-        execution.settled = true
-        if (execution.forceTimer) clearTimeout(execution.forceTimer)
-        if (execution.timeoutTimer) clearTimeout(execution.timeoutTimer)
-        if (execution.alarmTimer) clearTimeout(execution.alarmTimer)
-        execution.detachSignal?.()
-        if (this.activeExec === execution) this.activeExec = undefined
-        resolve(outcome)
-      }
-
-      // Interrupt in two phases, then force-settle with the failure after the
-      // grace period. Phase one is the control-channel interrupt alone: it
-      // settles any cell that yields to the kernel event loop and is harmless
-      // to an idle kernel (measured: an idle ipykernel survives a bare
-      // interrupt_request). SIGALRM — the phase that CAN terminate the
-      // process when it lands outside cell execution — escalates only after
-      // the confirm window, and only when this execution still needs
-      // breaking. When an interrupt DOES break the cell, the resulting
-      // KeyboardInterrupt reports as the armed failure kind, not as a program
-      // exception.
-      const interruptAndForce = (failure: { kind: 'timeout' | 'abort', message: string }): void => {
-        // A stale interrupt (signal/timer fired after this execution left the
-        // active slot) must never reach the kernel: even phase one has no
-        // business hitting a cell that is no longer active.
-        if (this.activeExec !== execution) return
-        if (execution.pendingForce === undefined) execution.pendingForce = failure
-        void this.sendInterrupt(execution)
-        execution.forceTimer = setTimeout(() => {
-          settle({ outcome: 'forced', failure, streamText: execution.streamText })
-        }, opts.interruptGraceMs)
-        execution.forceTimer.unref?.()
-      }
-
-      const onAbort = (): void => {
-        interruptAndForce({ kind: 'abort', message: String(opts.signal?.reason) })
-      }
-
-      execution.timeoutTimer = setTimeout(() => {
-        interruptAndForce({ kind: 'timeout', message: `cell exceeded ${opts.timeoutMs}ms wall budget` })
-      }, opts.timeoutMs)
-      execution.timeoutTimer.unref?.()
-
-      opts.signal?.addEventListener('abort', onAbort, { once: true })
-      // Detach on EVERY settle path (the `settle` closure here,
-      // `settleCompleted`, and `forceSettleActive`): a listener surviving a
-      // completed cell would fire interruptAndForce at an IDLE kernel on the
-      // caller's next abort, and SIGALRM-ing an idle kernel kills it.
-      execution.detachSignal = () => opts.signal?.removeEventListener('abort', onAbort)
-      if (opts.signal?.aborted) onAbort()
-
-      try {
-        transport.send('shell', msg)
-      } catch {
-        settle({ outcome: 'forced', failure: { kind: 'worker-exit', message: 'shell channel send failed' }, streamText: execution.streamText })
-      }
-    })
-  }
-
-  /**
-   * Route one relayed message. Only iopub drives executions and comms; shell
-   * replies serve the startup probe (via `waitFor`), and control is inbound
-   * for host replies.
-   */
-  private handleTransportMessage(channel: TransportChannel, incoming: JupyterMessage): void {
-    if (channel !== 'iopub') return
-    const msgType = incoming.header.msg_type
-    if (msgType === 'comm_open' || msgType === 'comm_msg' || msgType === 'comm_close') {
-      this.handleCommMessage(incoming)
-      return
-    }
-    this.handleExecutionMessage(incoming)
-  }
-
-  private forceSettleActive(failure: { kind: 'timeout' | 'abort' | 'worker-exit', message: string }): void {
-    const execution = this.activeExec
-    if (!execution || execution.settled) return
-    execution.settled = true
-    if (execution.forceTimer) clearTimeout(execution.forceTimer)
-    if (execution.timeoutTimer) clearTimeout(execution.timeoutTimer)
-    if (execution.alarmTimer) clearTimeout(execution.alarmTimer)
-    execution.detachSignal?.()
-    this.activeExec = undefined
-    execution.resolve({ outcome: 'forced', failure, streamText: execution.streamText })
-  }
-
-  private handleExecutionMessage(incoming: JupyterMessage): void {
-    const execution = this.activeExec
-    if (!execution || execution.settled) return
-    if ((incoming.parent_header as { msg_id?: string }).msg_id !== execution.requestMsgId) return
-    const msgType = incoming.header.msg_type
-    if (msgType === 'stream') {
-      const content = incoming.content as { text?: string }
-      if (typeof content.text === 'string') execution.streamText += content.text
-    } else if (msgType === 'error') {
-      const content = incoming.content as { ename?: string, evalue?: string, traceback?: string[] }
-      execution.cellError = {
-        ename: typeof content.ename === 'string' ? content.ename : 'Error',
-        evalue: typeof content.evalue === 'string' ? content.evalue : '',
-        traceback: Array.isArray(content.traceback) ? content.traceback : [],
-      }
-      execution.status = 'error'
-    } else if (msgType === 'status') {
-      const content = incoming.content as { execution_state?: string }
-      if (content.execution_state === 'idle') {
-        this.settleCompleted(execution)
-      }
-    }
-  }
-
-  private settleCompleted(execution: ActiveExecution): void {
-    if (execution.settled) return
-    execution.settled = true
-    if (execution.forceTimer) clearTimeout(execution.forceTimer)
-    if (execution.timeoutTimer) clearTimeout(execution.timeoutTimer)
-    if (execution.alarmTimer) clearTimeout(execution.alarmTimer)
-    execution.detachSignal?.()
-    if (this.activeExec === execution) this.activeExec = undefined
-    if (execution.pendingForce !== undefined) {
-      execution.resolve({ outcome: 'forced', failure: execution.pendingForce, streamText: execution.streamText })
-      return
-    }
-    execution.resolve({
-      outcome: 'completed',
-      status: execution.status,
-      streamText: execution.streamText,
-      ...execution.cellError ? { cellError: execution.cellError } : {},
-    })
-  }
-
-  private handleCommMessage(incoming: JupyterMessage): void {
-    const content = incoming.content
-    const commId = content.comm_id
-    if (typeof commId !== 'string') return
-    const msgType = incoming.header.msg_type
-
-    if (msgType === 'comm_close') {
-      this.commTargets.delete(commId)
-      this.servedComms.delete(commId)
-      return
-    }
-    if (msgType === 'comm_open') {
-      // Registration only: the shim opens the comm empty and carries its one
-      // request as the first comm_msg.
-      const targetName = content.target_name
-      if (typeof targetName === 'string') this.commTargets.set(commId, targetName)
-      return
-    }
-    if (msgType === 'comm_msg' && this.commTargets.get(commId) === HOST_COMM_TARGET) {
-      this.serveHostRequest(commId, content.data)
-    }
-  }
-
-  private serveHostRequest(commId: string, data: unknown): void {
-    // One request per comm: the kernel-side shim closes the comm after its
-    // reply, and duplicate delivery must not double-dispatch.
-    if (this.servedComms.has(commId)) return
-    this.servedComms.add(commId)
-
-    const handler = this.activeExec?.opts.hostRequestHandler
-    if (!handler) {
-      void this.replyComm(commId, { status: 'error', error: 'no host request handler is active' }).catch(() => undefined)
-      return
-    }
-    if (!isRecord(data)) {
-      void this.replyComm(commId, { status: 'error', error: 'host request payload must be an object' }).catch(() => undefined)
-      return
-    }
-    void (async () => {
-      try {
-        const outcome = await handler(data)
-        if (outcome.ok) {
-          await this.replyComm(commId, { status: 'ok', result: outcome.result })
-        } else {
-          await this.replyComm(commId, { status: 'error', error: outcome.message })
-        }
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error)
-        await this.replyComm(commId, { status: 'error', error: message }).catch(() => undefined)
-      }
-    })().catch(() => undefined)
-  }
-
-  private async replyComm(commId: string, data: Record<string, unknown>): Promise<void> {
-    const transport = this.transport
-    if (!transport) throw new Error('kernel channels are not connected')
-    transport.send('control', buildMessage('comm_msg', { comm_id: commId, data }, this.session, this.options.username))
-  }
-
-  /**
-   * Phase one NOW, phase two on a timer: send the control-channel interrupt,
-   * then — after the confirm window, and only if the execution has still not
-   * settled — escalate to SIGALRM. The zmq interrupt only lands when the cell
-   * yields to the kernel event loop; a busy sync cell ('while True: pass')
-   * never does, which is why the escalation exists at all. Sending both
-   * channels in the same tick (the M1 design) made SIGALRM the FIRST signal
-   * an idle-or-booting kernel saw on timeout/abort: its handler raised
-   * KeyboardInterrupt at the top level and the process exited cleanly — a
-   * deterministic kill (10/10 same-tick aborts, 8/10 at +1-2ms, 40/40 during
-   * cold boot; dev/m2a-report.md §5.1). Two-phase escalation plus the
-   * kernel-side busy guard closes that window while keeping the hard-abort
-   * contract: a busy loop still breaks, one confirm window later.
-   */
-  private async sendInterrupt(execution: ActiveExecution): Promise<void> {
-    const transport = this.transport
-    if (!transport) return
-    try {
-      transport.interrupt()
-    } catch {
-      // Channels closed mid-interrupt (kernel death owns the settle).
-    }
-    execution.alarmTimer = setTimeout(() => {
-      // The execution settled inside the window — the zmq interrupt was
-      // enough (an awaiting cell, or one that finished) — no signal needed.
-      if (execution.settled) return
-      if (this.kernel?.exitCode === null) {
-        try { this.kernel.kill('SIGALRM') } catch { /* already gone */ }
-      }
-    }, execution.opts.interruptConfirmMs)
-    execution.alarmTimer.unref?.()
-  }
-
-  /**
-   * Snapshot the user namespace via an internal dill cell. Requires `dill` in
-   * the kernel environment. The cell reports its outcome through a nonce
-   * envelope (skipped-for-size vs written); a failed/skipped dump NEVER
-   * replaces a previous good snapshot on disk.
-   * @param payloadPath - dill payload destination.
-   * @param manifestPath - JSON manifest destination (turn, names, python
-   *   version, venv path, skills, size).
-   * @param spec - turn counter, skills list, and the size cap.
-   */
-  async snapshotState(payloadPath: string, manifestPath: string, spec: SnapshotSpec): Promise<SnapshotOutcome> {
-    if (!this.isRunning) return { kind: 'failed', reason: 'kernel is not running' }
-    const sentinel = `__dashr_snapshot_${randomBytes(9).toString('hex')}__`
-    const outcome = await this.executeCell(buildSnapshotCell(payloadPath, manifestPath, spec, sentinel), {
-      timeoutMs: this.options.snapshotTimeoutMs,
-      interruptGraceMs: 1_000,
-      interruptConfirmMs: Math.min(this.options.interruptConfirmMs, 500),
-    })
-    if (outcome.outcome !== 'completed' || outcome.status !== 'ok') {
-      return { kind: 'failed', reason: 'snapshot cell failed' }
-    }
-    return this.parseSnapshotEnvelope(outcome.streamText, sentinel)
-  }
-
-  /** Parse one snapshot cell's nonce envelope into its outcome. */
-  private parseSnapshotEnvelope(streamText: string, sentinel: string): SnapshotOutcome {
-    const capture = extractStream(streamText, sentinel)
-    if (capture.envelope === undefined) return { kind: 'failed', reason: 'snapshot cell produced no envelope' }
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(capture.envelope)
-    } catch {
-      return { kind: 'failed', reason: 'snapshot envelope was not valid JSON' }
-    }
-    if (typeof envelope !== 'object' || envelope === null) return { kind: 'failed', reason: 'snapshot envelope was not an object' }
-    const record = envelope as { ok?: unknown, skipped?: unknown, reason?: unknown, sizeBytes?: unknown, names?: unknown, estimateBytes?: unknown, capBytes?: unknown }
-    if (record.ok === true) {
-      return {
-        kind: 'ok',
-        sizeBytes: typeof record.sizeBytes === 'number' ? record.sizeBytes : 0,
-        names: typeof record.names === 'number' ? record.names : 0,
-      }
-    }
-    if (record.skipped === true) {
-      return {
-        kind: 'skipped',
-        reason: typeof record.reason === 'string' ? record.reason : 'size cap',
-        ...typeof record.estimateBytes === 'number' ? { estimateBytes: record.estimateBytes } : {},
-        ...typeof record.sizeBytes === 'number' ? { sizeBytes: record.sizeBytes } : {},
-        capBytes: typeof record.capBytes === 'number' ? record.capBytes : 0,
-      }
-    }
-    return { kind: 'failed', reason: typeof record.reason === 'string' ? record.reason : 'snapshot failed' }
-  }
-
-  /**
-   * Restore a dill snapshot into the user namespace via an internal cell. The
-   * kernel validates the manifest (python version, interpreter identity,
-   * skills) and reports restored vs degraded through a nonce envelope; a
-   * degraded restore leaves the namespace empty.
-   * @param payloadPath - dill payload source.
-   * @param manifestPath - JSON manifest source.
-   */
-  async restoreState(payloadPath: string, manifestPath: string): Promise<RestoreStateOutcome> {
-    if (!this.isRunning) return { kind: 'degraded', reason: 'kernel is not running' }
-    const sentinel = `__dashr_restore_${randomBytes(9).toString('hex')}__`
-    const outcome = await this.executeCell(buildRestoreCell(payloadPath, manifestPath, sentinel), {
-      timeoutMs: this.options.snapshotTimeoutMs,
-      interruptGraceMs: 1_000,
-      interruptConfirmMs: Math.min(this.options.interruptConfirmMs, 500),
-    })
-    if (outcome.outcome !== 'completed' || outcome.status !== 'ok') {
-      return { kind: 'degraded', reason: 'restore cell failed' }
-    }
-    const capture = extractStream(outcome.streamText, sentinel)
-    if (capture.envelope === undefined) return { kind: 'degraded', reason: 'restore cell produced no envelope' }
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(capture.envelope)
-    } catch {
-      return { kind: 'degraded', reason: 'restore envelope was not valid JSON' }
-    }
-    if (typeof envelope !== 'object' || envelope === null) return { kind: 'degraded', reason: 'restore envelope was not an object' }
-    const record = envelope as { ok?: unknown, restored?: unknown, reason?: unknown }
-    if (record.ok === true) {
-      return { kind: 'restored', count: typeof record.restored === 'number' ? record.restored : 0 }
-    }
-    return { kind: 'degraded', reason: typeof record.reason === 'string' ? record.reason : 'snapshot not replayable' }
-  }
-
-  /**
-   * Read one user-namespace variable by name (or list the namespace's user
-   * names when `name` is `null`) via an internal cell. JSON-serializable
-   * values cross as `kind: 'json'` text; anything else falls back to `repr`
-   * text (`kind: 'repr'`) so a non-JSON variable is still readable. A missing
-   * name reports `kind: 'missing'` rather than failing the cell.
-   * @param name - the exact variable name, or `null` to list namespace names.
-   */
-  async queryVar(name: string | null): Promise<QueryVarOutcome> {
-    if (!this.isRunning) return { kind: 'failed', reason: 'kernel is not running' }
-    const sentinel = `__dashr_query_${randomBytes(9).toString('hex')}__`
-    const outcome = await this.executeCell(buildQueryVarCell(name, sentinel), {
-      timeoutMs: this.options.snapshotTimeoutMs,
-      interruptGraceMs: 1_000,
-      interruptConfirmMs: Math.min(this.options.interruptConfirmMs, 500),
-    })
-    if (outcome.outcome !== 'completed' || outcome.status !== 'ok') {
-      return { kind: 'failed', reason: 'query cell failed' }
-    }
-    const capture = extractStream(outcome.streamText, sentinel)
-    if (capture.envelope === undefined) return { kind: 'failed', reason: 'query cell produced no envelope' }
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(capture.envelope)
-    } catch {
-      return { kind: 'failed', reason: 'query envelope was not valid JSON' }
-    }
-    if (!isRecord(envelope)) return { kind: 'failed', reason: 'query envelope was not an object' }
-    if (envelope.ok !== true) {
-      return { kind: 'failed', reason: typeof envelope.reason === 'string' ? envelope.reason : 'query failed' }
-    }
-    const kind = envelope.kind
-    if (kind === 'names') {
-      const names = Array.isArray(envelope.names) ? envelope.names.filter((name): name is string => typeof name === 'string') : []
-      return { kind: 'names', names }
-    }
-    if (kind === 'missing') return { kind: 'missing' }
-    if (kind === 'json' || kind === 'repr') {
-      return typeof envelope.text === 'string'
-        ? { kind, text: envelope.text }
-        : { kind: 'failed', reason: 'query envelope carried no text' }
-    }
-    return { kind: 'failed', reason: `unknown query kind ${JSON.stringify(kind)}` }
-  }
-
-  /**
-   * Assign one pre-serialized JSON value into the user namespace under
-   * `name` via an internal cell. The host already validated the name and the
-   * value; the cell only decodes and binds. Uses the same busy guard and
-   * internal-cell budget as the snapshot cells.
-   * @param name - the validated identifier to assign under.
-   * @param valueJson - the lossless-JSON text to decode and bind.
-   */
-  async setVar(name: string, valueJson: string): Promise<SetVarOutcome> {
-    if (!this.isRunning) return { kind: 'failed', reason: 'kernel is not running' }
-    const sentinel = `__dashr_set_${randomBytes(9).toString('hex')}__`
-    const outcome = await this.executeCell(buildSetVarCell(name, valueJson, sentinel), {
-      timeoutMs: this.options.snapshotTimeoutMs,
-      interruptGraceMs: 1_000,
-      interruptConfirmMs: Math.min(this.options.interruptConfirmMs, 500),
-    })
-    if (outcome.outcome !== 'completed' || outcome.status !== 'ok') {
-      return { kind: 'failed', reason: 'set cell failed' }
-    }
-    const capture = extractStream(outcome.streamText, sentinel)
-    if (capture.envelope === undefined) return { kind: 'failed', reason: 'set cell produced no envelope' }
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(capture.envelope)
-    } catch {
-      return { kind: 'failed', reason: 'set envelope was not valid JSON' }
-    }
-    if (!isRecord(envelope) || envelope.ok !== true) {
-      return { kind: 'failed', reason: isRecord(envelope) && typeof envelope.reason === 'string' ? envelope.reason : 'set failed' }
-    }
-    return { kind: 'ok' }
-  }
-
-  private onKernelDeath(): void {
-    this.state = 'shutdown'
-    this.forceSettleActive({ kind: 'worker-exit', message: `kernel process died. stderr tail:\n${this.stderrTail()}` })
-    this.cleanupResources()
-  }
-
-  private cleanupResources(): void {
-    void this.transport?.dispose()
-    this.transport = undefined
-    this.connection = undefined
-    try {
-      this.kernel?.kill('SIGKILL')
-    } catch {
-      // Kernel already exited.
-    }
-    this.kernel = undefined
-    if (this.tempDir) {
-      try {
-        rmSync(this.tempDir, { recursive: true, force: true })
-      } catch {
-        // Leave the temp dir for OS tmp cleanup.
-      }
-    }
-    this.tempDir = undefined
-  }
-
-  /** Graceful teardown: shutdown_request, then SIGKILL after the dispose budget. */
-  async dispose(): Promise<void> {
-    if (this.state === 'shutdown') {
-      this.cleanupResources()
-      return
-    }
-    this.state = 'shutdown'
-    try {
-      if (this.transport) {
-        this.transport.send('control', buildMessage('shutdown_request', { restart: false }, this.session, this.options.username))
-        await sleep(SHUTDOWN_DRAIN_MS)
-      }
-    } catch {
-      // Fall through to the kill path.
-    }
-    const kernel = this.kernel
-    this.cleanupResources()
-    if (kernel && kernel.exitCode === null && kernel.signalCode === null) {
-      await new Promise<void>(resolve => {
-        const timer = setTimeout(() => {
-          kernel.removeListener('exit', onExit)
-          try {
-            kernel.kill('SIGKILL')
-          } catch {
-            // Already gone.
-          }
-          resolve()
-        }, this.options.disposeTimeoutMs)
-        timer.unref?.()
-        const onExit = (): void => {
-          clearTimeout(timer)
-          resolve()
-        }
-        kernel.once('exit', onExit)
+      const result = await this.perform(KERNEL_BOOTSTRAP + `\n__import__('better_snapshot').configure(${JSON.stringify(this.options.snapshotDirectory ?? '')}, ${this.options.snapshotSizeCapBytes ?? 268435456}, ${this.options.snapshotTimeoutMs})`, {
+        timeoutMs: this.options.startupTimeoutMs, interruptGraceMs: 1_000, interruptConfirmMs: this.options.interruptConfirmMs,
       })
+      if (result.outcome !== 'completed' || result.status !== 'ok') {
+        throw new Error(`OMP Python initialization failed: ${JSON.stringify(result)}`)
+      }
+      if (this.isDead) throw new Error('Python exited during initialization')
+      this.state = 'running'
+    } catch (error) {
+      await this.dispose()
+      throw error
     }
+  }
+
+  private async callback(data: unknown): Promise<Record<string, unknown>> {
+    const identity = record(data) ? { id: data.id, run: data.run } : {}
+    const active = this.active
+    if (!record(data) || !active || active.id !== data.run || active.pendingForce || !active.opts.hostRequestHandler) {
+      return { ...identity, ok: false, message: 'host callback rejected: its cell is no longer active' }
+    }
+    const revoked = { ...identity, ok: false, message: 'host callback cancelled: its cell ended' }
+    return new Promise(resolve => {
+      let settled = false
+      const finish = (reply: Record<string, unknown>): void => {
+        if (settled) return
+        settled = true
+        active.rejectCallbacks.delete(reject)
+        resolve(reply)
+      }
+      const reject = (): void => finish(revoked)
+      active.rejectCallbacks.add(reject)
+      // Calls are concurrent within the single active cell; every resolution
+      // is checked again after user code or cancellation may have finished.
+      void active.opts.hostRequestHandler!(data).then(reply => {
+        finish(this.active === active && !active.pendingForce ? { ...identity, ...reply } : revoked)
+      }, error => finish({ ...identity, ok: false, message: String(error) }))
+    })
+  }
+
+  private frame(frame: unknown): void {
+    if (!record(frame) || frame.id !== this.active?.id) return
+    const active = this.active!
+    if (frame.type === 'started') {
+      active.started = true
+      if (active.pendingForce) this.signal('SIGINT')
+    } else if (frame.type === 'stdout' || frame.type === 'stderr') {
+      if (typeof frame.data === 'string') active.streamText += frame.data
+    } else if (frame.type === 'display' || frame.type === 'result') {
+      // Rich displays remain explicit text when the runtime seam has no image field.
+      if (record(frame.bundle)) {
+        const text = frame.bundle['text/plain'] ?? frame.bundle['text/markdown'] ?? frame.bundle['text/html']
+        if (typeof text === 'string') active.streamText += `${text}\n`
+        else if (frame.bundle['application/json'] !== undefined) active.streamText += `${JSON.stringify(frame.bundle['application/json'])}\n`
+        else active.streamText += `[Python display: ${Object.keys(frame.bundle).join(', ')}]\n`
+      }
+    } else if (frame.type === 'error') {
+      active.error = { ename: String(frame.ename), evalue: String(frame.evalue),
+        traceback: Array.isArray(frame.traceback) ? frame.traceback.map(String) : [] }
+    } else if (frame.type === 'done') {
+      this.settle(active.pendingForce
+        ? { outcome: 'forced', failure: active.pendingForce, streamText: active.streamText }
+        : { outcome: 'completed', status: frame.status === 'ok' ? 'ok' : 'error', streamText: active.streamText,
+          ...active.error ? { cellError: active.error } : {} })
+    }
+  }
+
+  executeCell(code: string, opts: ExecuteCellOptions): Promise<CellOutcome> {
+    const task = this.queue.then(() => {
+      if (!this.isRunning) return { outcome: 'forced' as const, failure: { kind: 'worker-exit' as const, message: 'Python is not running' }, streamText: '' }
+      return this.perform(code, opts)
+    })
+    this.queue = task.catch(() => undefined)
+    return task
+  }
+
+  private perform(code: string, opts: ExecuteCellOptions): Promise<CellOutcome> {
+    if (opts.signal?.aborted) return Promise.resolve({ outcome: 'forced', failure: { kind: 'abort', message: String(opts.signal.reason) }, streamText: '' })
+    return new Promise(resolve => {
+      const active: Active = { id: randomUUID(), opts, streamText: '', started: false, resolve, rejectCallbacks: new Set() }
+      this.active = active
+      active.timeout = setTimeout(() => this.interrupt(active, { kind: 'timeout', message: `Python cell exceeded ${opts.timeoutMs}ms` }), opts.timeoutMs)
+      if (opts.signal) {
+        const signal = opts.signal
+        const abort = (): void => this.interrupt(active, { kind: 'abort', message: String(signal.reason) })
+        signal.addEventListener('abort', abort, { once: true })
+        active.detach = () => signal.removeEventListener('abort', abort)
+      }
+      this.child?.stdin?.write(JSON.stringify({ id: active.id, code, ...this.options.cwd ? { cwd: this.options.cwd } : {} }) + '\n')
+    })
+  }
+
+  private interrupt(active: Active, failure: Failure): void {
+    if (this.active !== active || active.pendingForce) return
+    active.pendingForce = failure
+    for (const revoke of [...active.rejectCallbacks]) revoke()
+    // Never signal an idle runner: defer until its started frame if necessary.
+    if (active.started) this.signal('SIGINT')
+    active.confirm = setTimeout(() => {
+      if (this.active === active && active.started && active.pendingForce) this.signal('SIGINT')
+    }, active.opts.interruptConfirmMs)
+    active.force = setTimeout(() => {
+      // A nonresponsive native operation cannot be left executing when the
+      // queue advances. Reap the entire owned group before returning.
+      void this.dispose()
+    }, active.opts.interruptGraceMs)
+  }
+
+  private settle(outcome: CellOutcome): void {
+    const active = this.active
+    if (!active) return
+    this.active = undefined
+    clearTimeout(active.timeout)
+    clearTimeout(active.force)
+    clearTimeout(active.confirm)
+    active.detach?.()
+    for (const revoke of [...active.rejectCallbacks]) revoke()
+    active.resolve(outcome)
+  }
+
+  private signal(signal: NodeJS.Signals): void {
+    try { this.child?.kill(signal) } catch { /* already exited */ }
+  }
+  private killGroup(): void {
+    const pid = this.child?.pid
+    if (pid === undefined) return
+    try {
+      if (process.platform !== 'win32') process.kill(-pid, 'SIGKILL')
+      else this.child?.kill('SIGKILL')
+    } catch { /* already reaped */ }
+  }
+  private died(message: string): void {
+    this.state = 'shutdown'
+    this.deathFailure ??= { kind: 'worker-exit', message }
+    this.killGroup() // leader exit must also retire owned descendants
+    // Exit is not close: callers settle only after close/drain in doDispose.
+    void this.dispose()
+  }
+
+  private async internal(code: string, sentinel: string): Promise<Record<string, unknown> | undefined> {
+    const result = await this.executeCell(code, { timeoutMs: this.options.snapshotTimeoutMs, interruptGraceMs: 1_000, interruptConfirmMs: this.options.interruptConfirmMs })
+    if (result.outcome !== 'completed' || result.status !== 'ok') return undefined
+    try {
+      const envelope: unknown = JSON.parse(extractStream(result.streamText, sentinel).envelope ?? '')
+      return record(envelope) ? envelope : undefined
+    } catch { return undefined }
+  }
+  async queryVar(name: string | null): Promise<QueryVarOutcome> {
+    const sentinel = `__better_query_${randomBytes(12).toString('hex')}__`
+    const reply = await this.internal(buildQueryVarCell(name, sentinel), sentinel)
+    if (reply?.kind === 'names' && Array.isArray(reply.names)) return { kind: 'names', names: reply.names.filter((name): name is string => typeof name === 'string') }
+    if (reply?.kind === 'missing') return { kind: 'missing' }
+    if ((reply?.kind === 'json' || reply?.kind === 'repr') && typeof reply.text === 'string') return { kind: reply.kind, text: reply.text }
+    return { kind: 'failed', reason: 'Python variable query failed' }
+  }
+  async setVar(name: string, valueJson: string): Promise<SetVarOutcome> {
+    const sentinel = `__better_set_${randomBytes(12).toString('hex')}__`
+    const reply = await this.internal(buildSetVarCell(name, valueJson, sentinel), sentinel)
+    return reply?.ok === true ? { kind: 'ok' } : { kind: 'failed', reason: 'Python variable assignment failed' }
+  }
+  async snapshotState(payloadPath: string, manifestPath: string, spec: SnapshotSpec): Promise<SnapshotOutcome> {
+    const sentinel = `__better_save_${randomBytes(12).toString('hex')}__`
+    const reply = await this.internal(buildSnapshotCell(payloadPath, manifestPath, spec, sentinel), sentinel)
+    if (reply?.kind === 'ok' && Array.isArray(reply.names) && typeof reply.sizeBytes === 'number' && typeof reply.turn === 'number' && record(reply.omitted)) {
+      return { kind: 'ok', sizeBytes: reply.sizeBytes, names: reply.names as string[], omitted: reply.omitted as Record<string, string>, turn: reply.turn, ...typeof reply.warning === 'string' ? { warning: reply.warning } : {} }
+    }
+    if (reply?.kind === 'skipped') return { kind: 'skipped', reason: String(reply.reason), capBytes: spec.sizeCapBytes }
+    return { kind: 'failed', reason: typeof reply?.reason === 'string' ? reply.reason : 'checkpoint helper timed out, failed, or exited; commit status could not be confirmed' }
+  }
+  async restoreState(payloadPath: string, manifestPath: string, bindings: string[] = []): Promise<RestoreStateOutcome> {
+    const sentinel = `__better_restore_${randomBytes(12).toString('hex')}__`
+    const reply = await this.internal(buildRestoreCell(payloadPath, manifestPath, sentinel, bindings), sentinel)
+    if (reply?.kind === 'restored' && typeof reply.count === 'number' && typeof reply.turn === 'number' && record(reply.omitted)) {
+      return { kind: 'restored', count: reply.count, turn: reply.turn, omitted: reply.omitted as Record<string, string> }
+    }
+    return { kind: 'degraded', reason: typeof reply?.reason === 'string' ? reply.reason : 'checkpoint restore helper failed or timed out' }
+  }
+
+  dispose(): Promise<void> {
+    this.disposePromise ??= this.doDispose()
+    return this.disposePromise
+  }
+  private async doDispose(): Promise<void> {
+    this.state = 'shutdown'
+    const child = this.child
+    if (!child) {
+      this.callbackServer?.closeAllConnections()
+      this.callbackServer?.close()
+      return
+    }
+    const active = this.active
+    // In-flight disposal or cancellation reaps immediately; idle shutdown
+    // first asks the original runner to exit and bounds its drain.
+    if (!active && child.exitCode === null && child.signalCode === null) {
+      child.stdin?.end(JSON.stringify({ type: 'exit' }) + '\n')
+      await this.waitClose(Math.min(200, this.options.disposeTimeoutMs))
+    }
+    this.killGroup()
+    await this.waitClose(this.options.disposeTimeoutMs)
+    if (this.active) this.settle({ outcome: 'forced', failure: this.active.pendingForce ?? this.deathFailure ?? { kind: 'worker-exit', message: 'Python disposed during cell execution' }, streamText: this.active.streamText })
+    for (const reader of this.ownedReaders) reader.close()
+    for (const stream of child.stdio) (stream as Readable | null)?.destroy()
+    this.callbackServer?.closeAllConnections()
+    this.callbackServer?.close()
+    this.child = undefined
+  }
+  private async waitClose(ms: number): Promise<void> {
+    if (!this.closePromise) return
+    await new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, ms)
+      void this.closePromise!.then(() => { clearTimeout(timer); resolve() })
+    })
   }
 }

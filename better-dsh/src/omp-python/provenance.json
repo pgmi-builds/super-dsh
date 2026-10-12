@@ -1,0 +1,13 @@
+{
+  "upstream": "https://github.com/can1357/oh-my-pi",
+  "commit": "fa5ff4a3a977a28b93d025f4cf50f046e019f18c",
+  "files": {
+    "runner.py": {
+      "path": "packages/coding-agent/src/eval/py/runner.py",
+      "sha256": "e0e660ca44193735a2de467254b050109bb23028aca71af01b9365b9ab88e974",
+      "modified": false
+    }
+  },
+  "license": "OMP-LICENSE",
+  "adaptation": "Better-owned better_support.py runs runner.transform_cell and runner._exec_source_async without patching either. It wraps final expression display for lossless JSON, owns bindings, stdlib callback pipes on POSIX and authenticated loopback HTTP on Windows, namespace filtering and unsupported input(). The OMP Agent prelude is neither executed nor shipped. Better supplies the compiler-required __omp_with_call_site__ forwarding helper without speculative caching, restores current bindings/input guard immediately after native reset using its own AST adapter, and uses the default cell filename to avoid synthetic user state. Better tracks per-cell descendant birth identities and SIGINT receipt, cleans new foreground descendants on cancellation with bounded TERM/KILL/reaping, and restores the prior signal handler. Prior persistent children are retained; unproven cleanup retires the runner."
+}

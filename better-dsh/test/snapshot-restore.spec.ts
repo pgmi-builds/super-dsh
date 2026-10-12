@@ -63,9 +63,8 @@ describe('eval snapshot path with live bindings (M4-A N1)', () => {
     expect(manifest.turn).toBe(1)
     // USER state is captured...
     for (const name of ['kept', 'math', 'handle']) expect(manifest.names).toContain(name)
-    // ...alongside the flat binding surface itself (dill captures the
-    // callable proxies and the error class — plain non-shim globals).
-    for (const name of ['tool', 'ToolCallError']) expect(manifest.names).toContain(name)
+    // Host proxies are recreated on the fresh runtime, never persisted.
+    for (const name of ['tool', 'ToolCallError']) expect(manifest.names).not.toContain(name)
     // The pre-0.1.5 holder name and the deleted rlm_await are gone.
     for (const name of ['tools', 'rlm_await']) expect(manifest.names).not.toContain(name)
     // No flat tool global ever leaks: every tool (native or bridged) is a

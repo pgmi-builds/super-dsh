@@ -6,7 +6,7 @@
 
 import type { CodeJsonValue, CodeRunFailure, CodeRunResult } from './vendored/repl-runtime.ts'
 
-/** ANSI color escapes, which ipykernel embeds in published tracebacks. */
+/** ANSI color escapes, which Python may embed in tracebacks. */
 const ANSI_ESCAPE = /\x1b\[[0-9;]*[A-Za-z]/g
 
 /** Smallest cap that can represent an empty logs array plus a quoted message. */
@@ -44,7 +44,7 @@ export function extractStream(streamText: string, sentinel: string): StreamCaptu
   return { logs, envelope: envelope === '' ? undefined : envelope }
 }
 
-/** Strip ANSI escapes from an ipykernel traceback for a model-facing message. */
+/** Strip ANSI escapes from a Python traceback for a model-facing message. */
 export function plainTraceback(ename: string, evalue: string, traceback: string[]): string {
   const body = traceback.map(line => line.replace(ANSI_ESCAPE, '')).join('\n')
   return body.length > 0 ? `${ename}: ${evalue}\n${body}` : `${ename}: ${evalue}`

@@ -1,0 +1,16 @@
+{
+  "version": "0.3.1",
+  "artifacts": {
+    "better-dsh": "6bb78bd2cd54ddf6df92ebc3c25ee32de333e7cb62d621f95c1b8d98a9e9af89",
+    "super-dsh": "832103fe729c286cd9e3e06f6d9ab5dae8bce701b48a4494aaf546c4aa8fd935"
+  },
+  "packages": {
+    "better-dsh": "0.3.1",
+    "super-dsh": "0.3.1"
+  },
+  "units": {
+    "superd-4998-test": "active",
+    "superd-4998-pair-registry": "active",
+    "superd-lan-4998-relay": "active"
+  }
+}

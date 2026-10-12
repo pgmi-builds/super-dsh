@@ -1,0 +1,230 @@
+[
+  {
+    "sessionId": "session-ac39f460-2d53-4e84-be77-b01f497c4f13",
+    "path": ".tests/foreign-substrate/better-dsh/python-repl/3d4c7eb4f48fe687e640f2d9cb29e75df7050e160d7d7631c2a89f71bfffc593/session-ac39f460-2d53-4e84-be77-b01f497c4f13/manifest.json",
+    "manifest": {
+      "bindingNames": [
+        "ToolCallError",
+        "tool"
+      ],
+      "coverage": "partial",
+      "dependencies": {
+        "asyncio": [],
+        "content": [],
+        "g": [],
+        "marker_count": [],
+        "omp_alias": [],
+        "omp_before_error": [],
+        "omp_f": [
+          "omp_x"
+        ],
+        "omp_x": [],
+        "r": []
+      },
+      "dillVersion": "0.4.1",
+      "environmentHash": "8a417c9ae4f50103ac6881f7a238df3a4d62ed780214b3eb7aaf53c9ba1fefed",
+      "implementation": "CPython",
+      "interpreter": "/home/u1/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11",
+      "limitations": [
+        "Dynamic globals/eval and arbitrary extension resources cannot be exhaustively inspected."
+      ],
+      "names": [
+        "asyncio",
+        "content",
+        "g",
+        "marker_count",
+        "omp_alias",
+        "omp_before_error",
+        "omp_f",
+        "omp_x",
+        "r"
+      ],
+      "omitted": {
+        "stream": "UnsupportedResource: unsupported live resource TextIOWrapper"
+      },
+      "payload": "state-be3bae8d2984463a93eb92df7b778ed9.dill",
+      "previousPayload": "state-4d5aea25062d48bc9933bef8ba5b68b6.dill",
+      "protocol": 4,
+      "pythonVersion": "3.11.15",
+      "sha256": "6257b184cfd0bfd74c77655c7c95e907338108018cf8e3a4d7bdf0e9ade70de3",
+      "sizeBytes": 167366,
+      "skills": [],
+      "skipped": false,
+      "snapshotFormat": 2,
+      "turn": 8,
+      "venvPath": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub/node_modules/better-dsh/.venv-kernel"
+    },
+    "payloadSha256": "6257b184cfd0bfd74c77655c7c95e907338108018cf8e3a4d7bdf0e9ade70de3",
+    "directoryMode": "0o700",
+    "manifestMode": "0o600",
+    "payloadMode": "0o600"
+  },
+  {
+    "sessionId": "session-5cc1f998-d523-4fc7-a85b-b09956f652a0",
+    "path": ".tests/foreign-substrate/better-dsh/python-repl/3d4c7eb4f48fe687e640f2d9cb29e75df7050e160d7d7631c2a89f71bfffc593/session-5cc1f998-d523-4fc7-a85b-b09956f652a0/manifest.json",
+    "manifest": {
+      "bindingNames": [
+        "ToolCallError",
+        "tool"
+      ],
+      "coverage": "best-effort",
+      "dependencies": {
+        "OmpBad": [
+          "RuntimeError"
+        ],
+        "omp_good": [],
+        "omp_good_alias": [],
+        "os": [],
+        "threading": []
+      },
+      "dillVersion": "0.4.1",
+      "environmentHash": "8a417c9ae4f50103ac6881f7a238df3a4d62ed780214b3eb7aaf53c9ba1fefed",
+      "implementation": "CPython",
+      "interpreter": "/home/u1/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11",
+      "limitations": [
+        "Dynamic globals/eval and arbitrary extension resources cannot be exhaustively inspected."
+      ],
+      "names": [
+        "OmpBad",
+        "omp_good",
+        "omp_good_alias",
+        "os",
+        "threading"
+      ],
+      "omitted": {},
+      "payload": "state-9673d47d9fc84c2d8a47d6047d1c2bf8.dill",
+      "previousPayload": "state-1ef0f2d5ed4248c2a7cebcacd271e7f9.dill",
+      "protocol": 4,
+      "pythonVersion": "3.11.15",
+      "sha256": "7db5f1adbd03e658ac2a2d85b89031d1d18e0aad627b90fdf4cf5b677a1f7ba5",
+      "sizeBytes": 592,
+      "skills": [],
+      "skipped": false,
+      "snapshotFormat": 2,
+      "turn": 2,
+      "venvPath": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub/node_modules/better-dsh/.venv-kernel"
+    },
+    "payloadSha256": "7db5f1adbd03e658ac2a2d85b89031d1d18e0aad627b90fdf4cf5b677a1f7ba5",
+    "directoryMode": "0o700",
+    "manifestMode": "0o600",
+    "payloadMode": "0o600"
+  },
+  {
+    "sessionId": "session-62006113-d9b6-431c-b1ac-dd21d85dd2bf",
+    "path": ".tests/foreign-substrate/better-dsh/python-repl/3d4c7eb4f48fe687e640f2d9cb29e75df7050e160d7d7631c2a89f71bfffc593/session-62006113-d9b6-431c-b1ac-dd21d85dd2bf/manifest.json",
+    "manifest": {
+      "bindingNames": [
+        "ToolCallError",
+        "tool"
+      ],
+      "coverage": "best-effort",
+      "dependencies": {},
+      "dillVersion": "0.4.1",
+      "environmentHash": "8a417c9ae4f50103ac6881f7a238df3a4d62ed780214b3eb7aaf53c9ba1fefed",
+      "implementation": "CPython",
+      "interpreter": "/home/u1/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11",
+      "limitations": [
+        "Dynamic globals/eval and arbitrary extension resources cannot be exhaustively inspected."
+      ],
+      "names": [],
+      "omitted": {},
+      "payload": "state-f0fc63bd62054a1aa810e820085ea744.dill",
+      "previousPayload": null,
+      "protocol": 4,
+      "pythonVersion": "3.11.15",
+      "sha256": "926248e52d1fa532c317e37da24ed652ae64110f8219cb5e061668bd3091f048",
+      "sizeBytes": 5,
+      "skills": [],
+      "skipped": false,
+      "snapshotFormat": 2,
+      "turn": 1,
+      "venvPath": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub/node_modules/better-dsh/.venv-kernel"
+    },
+    "payloadSha256": "926248e52d1fa532c317e37da24ed652ae64110f8219cb5e061668bd3091f048",
+    "directoryMode": "0o700",
+    "manifestMode": "0o600",
+    "payloadMode": "0o600"
+  },
+  {
+    "sessionId": "session-5e6b7ad0-e8c1-4e67-a7ab-13f268382370",
+    "path": ".tests/foreign-substrate/better-dsh/python-repl/3d4c7eb4f48fe687e640f2d9cb29e75df7050e160d7d7631c2a89f71bfffc593/session-5e6b7ad0-e8c1-4e67-a7ab-13f268382370/manifest.json",
+    "manifest": {
+      "bindingNames": [
+        "ToolCallError",
+        "tool"
+      ],
+      "coverage": "best-effort",
+      "dependencies": {
+        "r": []
+      },
+      "dillVersion": "0.4.1",
+      "environmentHash": "8a417c9ae4f50103ac6881f7a238df3a4d62ed780214b3eb7aaf53c9ba1fefed",
+      "implementation": "CPython",
+      "interpreter": "/home/u1/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11",
+      "limitations": [
+        "Dynamic globals/eval and arbitrary extension resources cannot be exhaustively inspected."
+      ],
+      "names": [
+        "r"
+      ],
+      "omitted": {},
+      "payload": "state-e8eee699b1034f17af0a319441ddc093.dill",
+      "previousPayload": null,
+      "protocol": 4,
+      "pythonVersion": "3.11.15",
+      "sha256": "339dcb01a03bb812bbfcbef79c3051c2d330f5d2333a77df08c0744903b5119d",
+      "sizeBytes": 83,
+      "skills": [],
+      "skipped": false,
+      "snapshotFormat": 2,
+      "turn": 1,
+      "venvPath": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub/node_modules/better-dsh/.venv-kernel"
+    },
+    "payloadSha256": "339dcb01a03bb812bbfcbef79c3051c2d330f5d2333a77df08c0744903b5119d",
+    "directoryMode": "0o700",
+    "manifestMode": "0o600",
+    "payloadMode": "0o600"
+  },
+  {
+    "sessionId": "session-4c4b8c7d-326a-459b-b16d-1da92eed5425",
+    "path": ".tests/foreign-substrate/better-dsh/python-repl/3d4c7eb4f48fe687e640f2d9cb29e75df7050e160d7d7631c2a89f71bfffc593/session-4c4b8c7d-326a-459b-b16d-1da92eed5425/manifest.json",
+    "manifest": {
+      "bindingNames": [
+        "ToolCallError",
+        "tool"
+      ],
+      "coverage": "best-effort",
+      "dependencies": {
+        "omp_cancel_marker": [],
+        "time": []
+      },
+      "dillVersion": "0.4.1",
+      "environmentHash": "8a417c9ae4f50103ac6881f7a238df3a4d62ed780214b3eb7aaf53c9ba1fefed",
+      "implementation": "CPython",
+      "interpreter": "/home/u1/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/bin/python3.11",
+      "limitations": [
+        "Dynamic globals/eval and arbitrary extension resources cannot be exhaustively inspected."
+      ],
+      "names": [
+        "omp_cancel_marker",
+        "time"
+      ],
+      "omitted": {},
+      "payload": "state-7304475d6a0a4017945864b8cc51a038.dill",
+      "previousPayload": null,
+      "protocol": 4,
+      "pythonVersion": "3.11.15",
+      "sha256": "5b5dfdc6b2b1393bc968490fa9bdce6fd2c3093f0c6f411d0d9c785ca6782f5b",
+      "sizeBytes": 83,
+      "skills": [],
+      "skipped": false,
+      "snapshotFormat": 2,
+      "turn": 1,
+      "venvPath": "/home/u1/workspaces/superd/.tests/foreign-substrate/profiles/superd-pub/node_modules/better-dsh/.venv-kernel"
+    },
+    "payloadSha256": "5b5dfdc6b2b1393bc968490fa9bdce6fd2c3093f0c6f411d0d9c785ca6782f5b",
+    "directoryMode": "0o700",
+    "manifestMode": "0o600",
+    "payloadMode": "0o600"
+  }
+]

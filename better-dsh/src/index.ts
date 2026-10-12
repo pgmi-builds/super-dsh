@@ -4,7 +4,7 @@
  * standing-mount-layer component — one instance per mount holding the
  * cross-session kernel map, hence the de facto daemon while the
  * profile-level `DashrDaemon` concept stays an empty shell; the session
- * layer is each ipykernel subprocess, a pure interpreter with no harness
+ * layer is each OMP Python subprocess, a pure interpreter with no harness
  * awareness.
  *
  * This package merges what were two sibling plugins into a single
@@ -43,7 +43,7 @@
  * the cell surface (scoping, where wanted, is a PTC preset's own
  * `tools:code-only` rule). One row per composition, not one per session.
  * The seam is transport only: the KERNEL semantics —
- * resident IPython REPL, context as variables, last-expression completion —
+ * resident Python REPL, context as variables, last-expression completion —
  * are ours, not the upstream code mode's.
  *
  * Registration deltas from the upstream code-mode row, recorded per
@@ -420,7 +420,7 @@ type RunCellOutput = { logs: string[]; result?: JsonValue }
  * `dashr/repl-dispatch-log` waterfall — dashr's OWN dispatch-log event,
  * self-registered via the cordis Events merge below. Decoupled from
  * upstream's `tools/ptc-dispatch-log` (PTC `run_code` sub-dispatches): `eval`
- * is a broader session-persistent REPL (IPython kernel) than upstream's
+ * is a broader session-persistent REPL (OMP Python child) than upstream's
  * `run_code` TS-worker tool, so its durable-log reshape extension point is
  * dashr-owned and version-independent — no coupling to upstream's
  * `CodeDispatchLog`/`PtcDispatchLog` rename or the PTC tool's event name.
@@ -522,7 +522,7 @@ export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeO
       },
       reset: {
         type: 'boolean',
-        description: 'Optional: reset the persistent pad namespace to EMPTY before running — variables, imports, and definitions from earlier cells are discarded and the pad restarts fresh. Omit to keep the namespace.',
+        description: 'Optional: reset the persistent pad namespace to EMPTY before running and delete its saved checkpoints — variables, imports, and definitions from earlier cells are discarded and the pad restarts fresh. Omit to keep the namespace.',
       },
     },
     output: {

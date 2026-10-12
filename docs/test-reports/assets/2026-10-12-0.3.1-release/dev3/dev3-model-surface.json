@@ -1,0 +1,35 @@
+{
+  "sessionId": "session-73e7e3f8-41d2-49d9-95a9-8579f65e15e7",
+  "headerSeq": 14,
+  "eval": {
+    "name": "eval",
+    "description": "Run one Python cell on a session-persistent scripting pad. One `eval` call = one cell; the pad's state persists across calls and turns — variables, imports, and definitions from earlier cells stay alive.\n\nWork incrementally: imports → define → test → use, each its own cell. The pad uses an OMP-backed Python interpreter; Python must be available on the host. Better supplies its runner and checkpoint serializer without installing Jupyter or Python packages.\n\nAfter a restart, read the recovery notice before relying on earlier variables. Checkpoints restore Python scratchpad values on a best-effort basis; notices identify the last saved cell and any omitted values. Open files, sockets, subprocesses, locks and other live resources must be recreated. A checkpoint does not restore files, undo tool calls or recover the entire Python process.\n\nAn interrupted or dying cell may already have changed variables, files or external systems. It is never automatically retried. Inspect the reported checkpoint and actual external state before deciding what to run again. A failed checkpoint leaves the previous valid checkpoint available; a failed restore starts with empty state and reports the reason.\n\n## Arguments\n\n- `cell` (required): one Python program body. Top-level `await` works; top-level `return` is a SyntaxError — the cell runs in module scope (REPL semantics, not a function body).\n- `description` (required): a short summary of what the cell does — shown as the call's title in the UI.\n- `timeout` (optional): wall-clock budget in seconds; the cell is interrupted (then force-stopped) when exceeded. Omit for the runtime default.\n- `reset` (optional): restart the pad EMPTY first and delete its checkpoints — earlier state is discarded.\n\n## Direct calls vs cells\n\nPayload-shaped work (one long read, one edit, one command) → direct tool call. Logic-shaped work (loops, conditions, fan-out, composing many tool results into one step) → an `eval` cell. Only what the cell prints or returns comes back — curate it.\n\nDelegation: `agent` is the unified agent-spawn entry; `subagent` is its native alias — both delegate through the same runtime, so call either.\n\n## Calling tools from a cell\n\nEvery session tool is callable from a cell as `await tool.<name>(args)` with ONE positional argument: `args` is the tool's parameter object written as a Python dict literal, same field names (`true`/`false`/`null` become `True`/`False`/`None`). A failed call raises `ToolCallError` with `.toolName` naming the tool. Tool names that are not plain identifiers (e.g. contain hyphens) have no `tool.<name>` member — call those as direct tool calls.\n\n```python\nprint(await tool.read({\"file_path\": \"docs/README.md\", \"limit\": 5}))\n\nr = await tool.bash({\"command\": \"ls -la src/\", \"description\": \"List source directory\"})\nprint(r[\"stdout\"][\"text\"])\n\nimport asyncio\nmatches, files = await asyncio.gather(\n    tool.grep({\"pattern\": \"TODO\", \"path\": \"src\"}),\n    tool.glob({\"pattern\": \"**/*.ts\", \"path\": \"src\"}),\n)\n```\n",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "cell": {
+          "type": "string",
+          "description": "The cell: one Python program body for the session-persistent scripting pad (top-level `await` works; top-level `return` is a SyntaxError — the cell runs in module scope)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Clear, concise description of what this cell does in active voice, 5-10 words (shown in the UI). Examples: \"Load dataframe and summarize columns\"; \"Run test file and capture failures\"; \"Patch config key across cordis.yml files\"."
+        },
+        "timeout": {
+          "type": "number",
+          "description": "Optional wall-clock budget for this cell, in seconds; the cell is interrupted (then force-stopped) if it exceeds the budget. Omit to use the runtime default."
+        },
+        "reset": {
+          "type": "boolean",
+          "description": "Optional: reset the persistent pad namespace to EMPTY before running and delete its saved checkpoints — variables, imports, and definitions from earlier cells are discarded and the pad restarts fresh. Omit to keep the namespace."
+        }
+      },
+      "required": [
+        "cell",
+        "description"
+      ]
+    }
+  },
+  "byteIdenticalDeliveredDescription": true,
+  "descriptionSha256": "7966bacfc69e7e82c2a378812ca3f560ebcef4a66bc25191668dec4e878297dc"
+}
