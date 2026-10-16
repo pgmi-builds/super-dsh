@@ -1,3 +1,4 @@
+import type { HelperAssets } from './helper.ts'
 import { sshArgv } from './ssh-targets.ts'
 import type { TargetPlan } from './target.ts'
 
@@ -57,4 +58,58 @@ export function buildPtyArgv(plan: TargetPlan): string[] {
 /** BYO-PTY（§三 spawn）：工具只提供 PTY 托管 + Nonce 注入 + 收帧。 */
 export function buildSpawnArgv(spawnCommand: string): string[] {
   return ['script', '-qfec', `stty -echo 2>/dev/null ; exec ${spawnCommand}`, '/dev/null']
+}
+
+/** superd-run helper argv (spec: docs/specs/remote-rescope §5). Probe and upload are single
+ *  `sh -c` hops (busybox/alpine/darwin-safe); run/killgroup over ssh go through exactly one
+ *  remote-shell parse, same discipline as buildOneShotArgv. */
+export function buildHelperProbeArgv(plan: TargetPlan, assets: HelperAssets): string[] {
+  const { ver, targets } = assets.manifest
+  const checks = Object.entries(targets)
+    .map(([triple, t]) => `d="$HOME/.cache/superd/run/${triple}-${ver}"; [ -x "$d/${t.file}" ] && { echo "SUPERD-READY $d/${t.file}"; "$d/${t.file}" banner; exit 0; };`)
+    .join(' ')
+  const script = `${checks} echo "SUPERD-PROBE $(uname -s 2>/dev/null || echo unknown) $(uname -m 2>/dev/null || echo unknown)"; exit 90`
+  return helperShellArgv(plan, script)
+}
+
+export function buildHelperUploadArgv(plan: TargetPlan, triple: string, file: string, assets: HelperAssets): string[] {
+  const dir = `$HOME/.cache/superd/run/${triple}-${assets.manifest.ver}`
+  const script = `mkdir -p "${dir}" && cat > "${dir}/${file}.tmp" && chmod 0755 "${dir}/${file}.tmp" && mv -f "${dir}/${file}.tmp" "${dir}/${file}"`
+  return helperShellArgv(plan, script)
+}
+
+export function buildHelperOneShotArgv(plan: TargetPlan, binPath: string, options: { tag: string; cmd: string }): string[] {
+  const { tag, cmd } = options
+  switch (plan.kind) {
+    case 'ssh':
+      // `exec` makes the helper the direct child of sshd's session process — the PDEATHSIG
+      // anchor (spec §5.6). One remote-shell parse, same as buildOneShotArgv.
+      return sshArgv(plan.connection ?? { host: plan.host }, { command: `exec ${shQuote(binPath)} run --tag ${shQuote(tag)} -- bash -lc ${shQuote(cmd)}` })
+    case 'docker':
+      return ['docker', 'exec', '-i', '--', plan.container, binPath, 'run', '--tag', tag, '--', 'bash', '-lc', cmd]
+    case 'incus':
+      return ['incus', 'exec', '--force-noninteractive', plan.container, '--', binPath, 'run', '--tag', tag, '--', 'bash', '-lc', cmd]
+  }
+}
+
+export function buildHelperKillgroupArgv(plan: TargetPlan, binPath: string, tag: string): string[] {
+  switch (plan.kind) {
+    case 'ssh':
+      return sshArgv(plan.connection ?? { host: plan.host }, { command: `${shQuote(binPath)} killgroup --tag ${shQuote(tag)}` })
+    case 'docker':
+      return ['docker', 'exec', '--', plan.container, binPath, 'killgroup', '--tag', tag]
+    case 'incus':
+      return ['incus', 'exec', '--force-noninteractive', plan.container, '--', binPath, 'killgroup', '--tag', tag]
+  }
+}
+
+function helperShellArgv(plan: TargetPlan, script: string): string[] {
+  switch (plan.kind) {
+    case 'ssh':
+      return sshArgv(plan.connection ?? { host: plan.host }, { command: script })
+    case 'docker':
+      return ['docker', 'exec', '-i', '--', plan.container, 'sh', '-c', script]
+    case 'incus':
+      return ['incus', 'exec', '--force-noninteractive', plan.container, '--', 'sh', '-c', script]
+  }
 }

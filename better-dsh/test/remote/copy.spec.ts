@@ -244,6 +244,13 @@ it('copies local↔SSH with native scp and ordered argv; no forced verification 
             expect(up.verified).toBe(false);
             expect(up.argv[0]).toContain('-p');
             expect(await readFile(join(remote, "copy 'quote 雪\nfile"), 'utf8')).toBe('native-scp-payload');
+            const srcDir = join(f.directory, 'auto-r-src');
+            await mkdir(join(srcDir, 'sub'), { recursive: true });
+            await writeFile(join(srcDir, 'sub', 'g.txt'), 'auto-r-payload');
+            const autoR = await d.copy({ src: srcDir, dst: `byossh:remote:${remote}/auto-r` }, new AbortController().signal) as import('../../src/remote/native-copy.ts').NativeCopyReceipt;
+            expect(autoR.exits).toEqual([0]);
+            expect(autoR.argv[0]).toContain('-r'); // D8: auto-appended, disclosed in argv
+            expect(await readFile(join(remote, 'auto-r', 'sub', 'g.txt'), 'utf8')).toBe('auto-r-payload');
             const down = join(f.directory, 'scp-back');
             await mkdir(down);
             const back = await d.copy({ src: `byossh:remote:${remote}/`, dst: down, argv: ['-r'] }, new AbortController().signal) as import('../../src/remote/native-copy.ts').NativeCopyReceipt;

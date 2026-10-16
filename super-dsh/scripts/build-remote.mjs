@@ -1,6 +1,6 @@
 // Independent remote entry: canonical Better source, never its multipurpose lib tree.
 import { createHash } from 'node:crypto'
-import { readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from '../../better-dsh/node_modules/tsdown/dist/index.mjs'
@@ -34,12 +34,23 @@ export async function buildRemote() {
     format: 'esm', platform: 'node', dts: false, clean: false,
     external: [/^[^./]/], sourcemap: false,
   })
+  // superd-run helper binaries are first-class closure assets (spec: remote-rescope §5):
+  // copied under helper-bin/ and hashed into provenance; import checks apply to .js leaves only.
+  const helperSrc = join(repo, 'better-dsh/src/remote/helper/bin')
+  const helperOut = join(out, 'helper-bin')
+  rmSync(helperOut, { recursive: true, force: true })
+  if (existsSync(join(helperSrc, 'MANIFEST.json'))) cpSync(helperSrc, helperOut, { recursive: true })
+  const leaves = []
+  function collectOut(dir) { for (const entry of readdirSync(join(out, dir), { withFileTypes: true })) { const rel = dir ? `${dir}/${entry.name}` : entry.name; if (entry.isDirectory()) collectOut(rel); else leaves.push(rel) } }
+  collectOut('')
   const outputs = {}
-  for (const file of readdirSync(out).sort()) {
+  for (const file of leaves.sort()) {
     const data = readFileSync(join(out, file))
-    if (/(?:from\s*|import\s*\()["'](?:better-dsh|#schemastery)/.test(data.toString())) throw new Error(`Remote closure has a cross-package import: ${file}`)
+    if (file.endsWith('.js')) {
+      if (/(?:from\s*|import\s*\()["'](?:better-dsh|#schemastery)/.test(data.toString())) throw new Error(`Remote closure has a cross-package import: ${file}`)
+      if (file === 'file-worker.js' && /(?:from\s*|import\s*\(|import\s+|require\s*\()\s*["'](?!node:)/.test(data.toString())) throw new Error('Private file worker must import Node builtins only')
+    }
     if (data.includes(Buffer.from(repo))) throw new Error(`Remote closure leaks a development path: ${file}`)
-    if (file === 'file-worker.js' && /(?:from\s*|import\s*\(|import\s+|require\s*\()\s*["'](?!node:)/.test(data.toString())) throw new Error('Private file worker must import Node builtins only')
     outputs[file] = hash(data)
   }
   if (JSON.stringify(sources) !== JSON.stringify(remoteSources())) throw new Error('Remote sources changed during build')

@@ -17,3 +17,7 @@
 ### 2026-10-10 consumer worker delivery correction
 
 The generated Super `remote/` contains exactly `plugin.js`, `plugin.d.ts`, private `file-worker.js`, and `provenance.json`. The worker leaf is built solely from canonical `better-dsh/src/remote/file-worker.ts`, has Node-builtins-only imports, and is hashed/checked with the closure. It has no public package export, host peer imports, duplicated host modules, source loader or Better dependency. The public plugin contract remains unchanged. The existing owned child-process/group cleanup remains the receiver boundary; no worker-thread lifecycle replacement. This narrow extra generated leaf fixes actual installed receiver resolution, not a general guarantee that host plugins import outside their host resolver.
+
+### 2026-10-14 helper-bin amendment (spec: docs/specs/remote-rescope)
+
+The closure enumeration above is extended by exactly one directory: `helper-bin/` (superd-run supervision helper, `bin/MANIFEST.json` + per-target static binaries). Leaves are copied verbatim from canonical `src/remote/helper/bin/`, hashed into provenance `outputs`, and leaf-verified in `verify-package-pair.mjs`; import checks stay text-only (.js). The helper is per-invocation (never a daemon, no listening endpoint), verbs frozen to `banner`/`run`/`killgroup`, and every miss falls back to the POSIX wrapper — receipts record which path ran (`runner` field). Built assets are committed via `src/remote/helper/build.sh`; no postinstall ever runs.

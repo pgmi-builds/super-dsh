@@ -180,6 +180,20 @@ async function forwardRoute(argv: string[], source: RelayEndpoint, destination: 
   }
   try {
     signal.throwIfAborted()
+    // The local -L listener comes up the moment the SSH session establishes, but the
+    // daemon script may still die right after (destination directory missing → exit 64
+    // at ~t+200ms). A single instantaneous liveness check loses that race (0.3.1-e's
+    // attempt, 2026-10-14 user acceptance F4 re-test): instead wait for the script's own
+    // SUPERD-RSYNC-TMP marker — printed AFTER the directory check and immediately before
+    // the daemon exec — or its exit, whichever comes first.
+    const daemonState = await waitForDaemonReady(destinationChild, 5000)
+    if (daemonState === 'exited') {
+      throw new Error(`dual-SSH rsync destination daemon exited before serving${relayDetail(destinationChild, sourceHold)}`)
+    }
+    if (daemonState === 'timeout') {
+      throw new Error(`dual-SSH rsync destination daemon never announced readiness${relayDetail(destinationChild, sourceHold)}`)
+    }
+    signal.throwIfAborted()
     if (!await originPortOpen(originPort, 15000)) {
       throw new Error(`dual-SSH rsync destination daemon never became reachable${relayDetail(destinationChild, sourceHold)}`)
     }
@@ -188,9 +202,11 @@ async function forwardRoute(argv: string[], source: RelayEndpoint, destination: 
     // its own loopback forward; SSH session exit = rsync exit.
     const runArgv = relaySsh(source.connection, [], rsyncClientCommand(argv, source.path, sourcePort))
     const result = await runNative(wrap(runArgv), signal)
-    if (result.exit === 255) {
-      // rsync ran on the source; its own diagnostics are in stdout/stderr. SSH
-      // 255 means the session/forward layer failed — enrich with held stderr.
+    if (result.exit !== 0) {
+      // rsync ran on the source; its own diagnostics are in stdout/stderr. Any
+      // non-zero exit gets the held-session stderr appended: the daemon script's
+      // own messages (missing dir, daemon errors) live there and otherwise never
+      // reach the caller. 255 additionally means the SSH session layer failed.
       result.stderr = (result.stderr + relayDetail(destinationChild, sourceHold)).slice(-OUTPUT_LIMIT)
     }
     // A refused forward surfaces as a failing rsync client with the ssh
@@ -215,6 +231,20 @@ async function forwardRoute(argv: string[], source: RelayEndpoint, destination: 
   }
   finally {
     await Promise.allSettled([destinationChild.stop(), sourceHold.stop()])
+  }
+}
+
+/** Wait until the destination daemon script announces itself (stderr marker,
+ *  printed after its directory check and right before the daemon exec) or exits.
+ *  'ready' only when the daemon is actually about to serve — closes the 0.3.1-e
+ *  race where -L opens at session start but the script dies ~150ms later. */
+async function waitForDaemonReady(held: Held, budgetMs: number): Promise<'ready' | 'exited' | 'timeout'> {
+  const deadline = Date.now() + budgetMs
+  for (;;) {
+    if (/^SUPERD-RSYNC-TMP \S+$/m.test(held.stderrSink.text)) return 'ready'
+    if (held.child.exitCode !== null) return 'exited'
+    if (Date.now() >= deadline) return 'timeout'
+    await new Promise(resolve => setTimeout(resolve, 50))
   }
 }
 

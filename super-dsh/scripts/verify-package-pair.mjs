@@ -34,7 +34,7 @@ export function verifyRemoteClosure(packageDir, sourceRepo) {
  const manifest=JSON.parse(readFileSync(join(remote,'provenance.json'),'utf8'))
  if(manifest.format!==1||manifest.entry!=='better-dsh/src/remote/plugin.ts')throw new Error('Invalid remote provenance')
  const actual=readdirSync(remote).sort()
- if(JSON.stringify(actual)!==JSON.stringify(['file-worker.js','plugin.d.ts','plugin.js','provenance.json']))throw new Error('Remote closure must not copy Better shared chunks or payload')
+ if(JSON.stringify(actual)!==JSON.stringify(['file-worker.js','helper-bin','plugin.d.ts','plugin.js','provenance.json']))throw new Error('Remote closure must not copy Better shared chunks or payload')
  if(manifest.workerEntry!=='better-dsh/src/remote/file-worker.ts')throw new Error('Invalid private file worker provenance')
  for(const name of ['plugin.js','plugin.d.ts','file-worker.js']){
   const data=readFileSync(join(remote,name))
@@ -42,7 +42,18 @@ export function verifyRemoteClosure(packageDir, sourceRepo) {
   if(name==='file-worker.js'&&/(?:from\s*|import\s*\(|import\s+|require\s*\()\s*["'](?!node:)/.test(data.toString()))throw new Error('Private file worker must import Node builtins only')
   if(/(?:from\s*|import\s*\()["'](?:better-dsh|#schemastery)/.test(data.toString()))throw new Error(`Remote closure has a cross-package import: ${name}`)
  }
- if(!manifest.sources||!Object.keys(manifest.sources).length)throw new Error('Remote provenance has no sources')
+ // helper-bin leaves are provenance-checked assets (spec: remote-rescope §5): every shipped
+ // binary/manifest must match the pinned hash, and no stray file may ride along.
+ {
+  const helperEntries=Object.keys(manifest.outputs).filter(name=>name.startsWith('helper-bin/'))
+  if(!helperEntries.length)throw new Error('Remote closure has no helper-bin provenance entries')
+  const leaves=[]
+  const walk=(dir)=>{for(const entry of readdirSync(join(remote,dir),{withFileTypes:true})){const rel=dir?`${dir}/${entry.name}`:entry.name;if(entry.isDirectory())walk(rel);else leaves.push(rel)}}
+  walk('helper-bin')
+  const expected=helperEntries.map(name=>name).sort()
+  if(JSON.stringify(leaves.sort())!==JSON.stringify(expected))throw new Error('helper-bin contents do not match provenance')
+  for(const rel of leaves){if(sha256(readFileSync(join(remote,rel)))!==manifest.outputs[rel])throw new Error(`Remote output hash mismatch: ${rel}`)}
+ }
  if(sourceRepo){
   const canonical=readdirSync(join(sourceRepo,'better-dsh/src/remote')).filter(file=>file.endsWith('.ts')).map(file=>`better-dsh/src/remote/${file}`)
   if(canonical.some(path=>manifest.sources[path]===undefined))throw new Error('Remote provenance omits canonical source')

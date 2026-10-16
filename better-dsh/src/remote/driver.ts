@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto'
 import type { HubRemoteTransport, RemoteInput, PreparedRemoteInput, StreamOutputStats, RemoteProcess } from './hub-contract.ts'
 import { prepareRemoteInput } from './input.ts'
 import { startOneShot, runOneShot } from './oneshot.ts'
+import { startBinaryProcess } from './process.ts'
+import { helperAssets, HelperRegistry, type HelperAssets, type HelperRunnerInfo } from './helper.ts'
 import { startOwnedNativeProcess } from './ssh-process.ts'
 import { PtyPool, displayKey } from './pty-session.ts'
 import { tailWindow } from './nonce-framing.ts'
@@ -18,7 +20,7 @@ import { literalHosts } from './roster.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { buildOneShotArgv, buildPtyArgv, buildSpawnArgv } from './transports.ts'
+import { buildOneShotArgv, buildPtyArgv, buildSpawnArgv, buildHelperOneShotArgv, buildHelperKillgroupArgv, buildHelperProbeArgv, buildHelperUploadArgv } from './transports.ts'
 
 export type RemoteCallParams = RemoteInput
 
@@ -39,6 +41,8 @@ export interface RemoteCallResult {
   session?: string
   /** 引导/教学行（同 label 重复给 spawn 时的「可省略 spawn」提示等）；无则省略。 */
   notice?: string
+  /** oneshot 监督路径的如实标注：`superd-run <ver> (<triple>)` 或 `posix-shim`（spec remote-rescope §5）。 */
+  runner?: string
 }
 
 export interface RemoteAuditRecord {
@@ -63,6 +67,8 @@ export interface RemoteDriverOptions {
   ptyArgvFor?: (plan: TargetPlan) => string[]
   spawnArgvFor?: (spawnCommand: string) => string[]
   probeRunner?: ProbeOptions['runner']
+  /** 测试/验收缝：helper 资产来源（默认 lib 旁挂 helper-bin）；显式 null 强制 shim 路径。 */
+  helperAssetsFor?: () => HelperAssets | null
   /** 测试缝：roster 扫描执行器（bare-name 解析复用）。 */
   rosterRunner?: RosterOptions['runner']
   /** 测试缝：ssh config 读取（bare-name 解析复用）。 */
@@ -88,6 +94,9 @@ export class RemoteDriver {
   private readonly starting = new Set<Promise<unknown>>()
   private readonly fileAbort = new AbortController()
   private disposed = false
+  /** undefined = 未尝试；null = 资产缺失（shim-only）；registry = 每 target sticky 状态机。 */
+  private helpers: HelperRegistry | null | undefined
+  private readonly runnerOf = new WeakMap<RemoteProcess, string>()
   private disposal: Promise<void> | undefined
   constructor(private readonly opts: RemoteDriverOptions = {}) {
     this.pool = new PtyPool({ idleTtlSec: opts.idleTtlSec ?? 600 })
@@ -216,14 +225,32 @@ export class RemoteDriver {
     return process
   }
 
-  private nativeProcess(plan: TargetPlan, params: PreparedRemoteInput, timeoutSec?: number, signal = this.fileAbort.signal): Promise<RemoteProcess> {
+  private async nativeProcess(plan: TargetPlan, params: PreparedRemoteInput, timeoutSec?: number, signal = this.fileAbort.signal): Promise<RemoteProcess> {
+    // Helper fast path first (spec §5): a pinned superd-run on the endpoint gives portable
+    // supervision + kernel-anchored disconnect cleanup; every miss falls back to the POSIX
+    // wrapper below with byte-identical behavior. The receipt's runner field says which ran.
+    const cleanupTag = randomUUID().slice(0, 8)
+    const helper = await this.ensureHelper(plan)
+    if (helper !== null && !this.disposed) {
+      const process = startOneShot(buildHelperOneShotArgv(plan, helper.binPath, { tag: cleanupTag, cmd: params.cmd }), { stdin: params.stdin, timeoutSec })
+      this.runnerOf.set(process, `superd-run ${helper.ver} (${helper.triple})`)
+      void process.done.then(result => {
+        if (!result.cancelled && !result.timedOut) return
+        const killer = startOneShot(buildHelperKillgroupArgv(plan, helper.binPath, cleanupTag), { timeoutSec: 15 })
+        killer.done.catch(() => {})
+      }).catch(() => {})
+      const tracked = Promise.resolve(process)
+      this.starting.add(tracked)
+      void tracked.then(() => this.starting.delete(tracked), () => this.starting.delete(tracked))
+      return tracked
+    }
     // Plain native oneshot: the endpoint wrapper reaps backgrounded children
     // on normal completion (EXIT trap). Cancellation/timeout kills the LOCAL
     // transport at once; sshd delivers no signal to a no-PTY session, so the
     // remote tree is cleaned through its own session reading the pidfile the
     // wrapper left (same explicit-cleanup shape as the rsync daemon route).
-    const cleanupTag = randomUUID().slice(0, 8)
     const process = startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, params.cmd, { cleanupTag }), { stdin: params.stdin, timeoutSec })
+    this.runnerOf.set(process, 'posix-shim')
     void process.done.then(result => {
       if (!result.cancelled && !result.timedOut) return
       const pidfile = `"\${TMPDIR:-/tmp}/superd-oneshot-${cleanupTag}.pgid"`
@@ -235,6 +262,32 @@ export class RemoteDriver {
     this.starting.add(work)
     void work.then(() => this.starting.delete(work), () => this.starting.delete(work))
     return work
+  }
+
+  /** Helper bootstrap is best-effort and sticky: any failure parks null for this driver
+   *  lifetime and the shim stays the path. First call to a target pays probe (+ upload). */
+  private async ensureHelper(plan: TargetPlan): Promise<HelperRunnerInfo | null> {
+    if (this.helpers === undefined) {
+      const assets = this.opts.helperAssetsFor?.() ?? helperAssets()
+      this.helpers = assets === null ? null : new HelperRegistry(assets, (argv, options) => this.helperExec(argv, options), buildHelperProbeArgv, buildHelperUploadArgv)
+    }
+    if (this.helpers === null || this.disposed) return null
+    try { return await this.helpers.ensure(plan) } catch { return null }
+  }
+
+  private async helperExec(argv: string[], options?: { stdin?: Buffer; timeoutSec?: number }): Promise<{ exit: number | null; stdout: string }> {
+    this.assertOpen()
+    const stdin = options?.stdin
+    if (stdin !== undefined) {
+      const proc = startBinaryProcess(argv, { timeoutSec: options?.timeoutSec })
+      proc.stdin.on('error', () => {})
+      proc.stdin.end(stdin)
+      const done = await proc.done
+      return { exit: done.exit, stdout: '' }
+    }
+    const proc = startOneShot(argv, { timeoutSec: options?.timeoutSec })
+    const done = await proc.done
+    return { exit: done.exit, stdout: proc.read('stdout', 0).text }
   }
 
   private own(process: RemoteProcess): RemoteProcess {
@@ -441,6 +494,7 @@ export class RemoteDriver {
         ...(err !== undefined ? { stderr: err.text } : {}),
         ...(out.stats ? { outputStats: { stdout: out.stats, stderr: err?.stats ?? r.outputStats?.stderr } } : {}), durationMs: r.durationMs,
         ...(out.truncated !== undefined ? { truncated: out.truncated } : {}),
+        ...(this.runnerOf.get(process) === undefined ? {} : { runner: this.runnerOf.get(process)! }),
       }
     }
     const argv = (this.opts.ptyArgvFor ?? buildPtyArgv)(routing.plan!)

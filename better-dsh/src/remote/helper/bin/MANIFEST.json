@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "name": "superd-run",
+  "ver": "0.3.1-b",
+  "protocol": 1,
+  "targets": {
+    "aarch64-apple-darwin": {
+      "file": "superd-run",
+      "bytes": 337808,
+      "sha256": "715c2d7bd935f3b4cc4ae0ffb10d3fab946bb62d93f592ccfe2a7446669ff76b"
+    },
+    "aarch64-unknown-linux-musl": {
+      "file": "superd-run",
+      "bytes": 397416,
+      "sha256": "22ac1c7f913092d8ca8d312b93528dd2263200f9670dc183fd215bc89d2bac68"
+    },
+    "x86_64-pc-windows-gnu": {
+      "file": "superd-run.exe",
+      "bytes": 336896,
+      "sha256": "a638479e1ccb1c4e185085100450962e39164158a76097b5087d2a3bb8880ac0"
+    },
+    "x86_64-unknown-linux-musl": {
+      "file": "superd-run",
+      "bytes": 447152,
+      "sha256": "79e42879509bb87d2fe9888d282151fd17113203d3172f59a16fcb5a180ba057"
+    }
+  },
+  "sources": {
+    "Cargo.toml": "129ab8360e9da872f9dfd6e713d81fe1389735a74d781f3d9c15e110f92d2757",
+    "build.rs": "c4fb356956b1ec700e99bdeca07d657a7d3b2a4026582db136411676da3d125e",
+    "src/main.rs": "47f1648ea1abc30583839edab219a9062c83d57be981c0505ab6bf79c6fbff54",
+    "src/unix.rs": "56c5f523b7b1a9efd50ef24ccdabc024bc065dd2f904fdbecdf0ca49fe7f3393",
+    "src/windows.rs": "6c1537424b1adc05ed17c7cf8bf376fb5711602b9da1697d596155bf21d541da"
+  }
+}

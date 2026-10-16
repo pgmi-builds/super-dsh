@@ -1,6 +1,6 @@
 {
   "name": "better-dsh",
-  "version": "0.3.1-a",
+  "version": "0.3.1-b",
   "description": "Make your dsh ready for serious coding tasks. (Tools x Schemas)^REPL. `skill://`, `ctx://`, `agent://`, `dvc://`, `dsh://`, Python REPL, Context as Variables, cross compactions recallable, full context revive. `hash-edit`, `dvc://browser`, subagent as function, workflow as function.",
   "type": "module",
   "main": "lib/index.js",
@@ -75,7 +75,7 @@
   ],
   "scripts": {
     "prebuild": "node scripts/copy-docs.mjs",
-    "build": "tsdown && npm run build-client && node scripts/copy-kernel-bridge.mjs && node scripts/copy-ast-assets.mjs",
+    "build": "tsdown && npm run build-client && node scripts/copy-kernel-bridge.mjs && node scripts/copy-ast-assets.mjs && node scripts/copy-helper-bins.mjs",
     "typecheck": "npm run typecheck:host && npm run typecheck:client",
     "typecheck:host": "tsc --noEmit",
     "typecheck:client": "tsc -p tsconfig.client.json",
