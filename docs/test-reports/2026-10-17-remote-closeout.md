@@ -38,3 +38,8 @@ rebase 真正留下的两处伤：① 版本串失去单调性（`0.3.1-h` 语�
 1. 任一 copy/rsync 走一遍 → 回执与 0.3.1-c 轮一致（收敛与守卫不应改变任何可见输出）；
 2. 首次 oneshot 到任一端点 → 回执 `runner: superd-run 0.3.1-d.b596 (...)`——单调戳首次上岗；
 3. 传一个拼错参数（如 `dryRun:true`）→ 报 `unknown parameter "dryRun"`（旧 shim 消息已删，新守卫仍点名）。
+
+## 5. 发布定版（2026-10-17 傍晚附记）
+
+- **版本字母裁决**：user 指令「比 registry 已发布字母 +1」；执行时 mac ssh 再度抖动（ping 50% 丢包、ssh 超时），而 **0.3.1-d.b596 四 target 对子已在盘、已验证、双线已运行**——故里程碑定版 **0.3.1-d**（字母 c 从未进 registry，跳过无害；c 的内容作为 commit `8b50acc` 随 master 一起推送）。mac 回归后对发布产物做活体验证：`superd-run banner` → `ver=0.3.1-d.b596 target=aarch64-apple-darwin os=macos` ✓（单调戳首次真机确认）。
+- **发布**：commit `506081b` → push master（`39bac19..506081b`）+ tag `v0.3.1-d` → 双包 npm publish（各一次 PUT）；better-dsh `aa50e956…` / super-dsh `3d1feebc…`（即双线在跑的记录对子）。
