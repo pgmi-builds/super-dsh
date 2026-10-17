@@ -3,6 +3,7 @@ import {
   DEFAULT_SWIPE_THRESHOLDS,
   admitsSwipeStart,
   classifySwipeProgress,
+  isTouchFirstDevice,
   resolveMobileConfig,
   type PanelState,
   type SwipeProgress,
@@ -104,5 +105,31 @@ describe('page-config resolution (host → client channel)', () => {
   it('velocity 0 is a configured value (disarm), not a fallback case', () => {
     expect(resolveMobileConfig({ enabled: true, swipeVelocityPxPerMs: 0 }).swipeVelocityPxPerMs).toBe(0)
     expect(resolveMobileConfig({ enabled: true }).swipeVelocityPxPerMs).toBe(DEFAULT_SWIPE_THRESHOLDS.swipeVelocityPxPerMs)
+  })
+})
+
+describe('touch-first device gate (2026-10-18 user ruling)', () => {
+  it('a phone or tablet (coarse pointer, no hover) is touch-first', () => {
+    expect(isTouchFirstDevice({ hoverNone: true, pointerCoarse: true, maxTouchPoints: 5 })).toBe(true)
+  })
+
+  it('a desktop with a mouse (fine pointer, hoverable) never is — right-panel squeeze included', () => {
+    expect(isTouchFirstDevice({ hoverNone: false, pointerCoarse: false, maxTouchPoints: 0 })).toBe(false)
+  })
+
+  it('a touchscreen laptop keeps desktop behavior (fine primary pointer, hoverable)', () => {
+    expect(isTouchFirstDevice({ hoverNone: false, pointerCoarse: false, maxTouchPoints: 10 })).toBe(false)
+  })
+
+  it('an unknown query pair falls back to touch points (legacy webviews)', () => {
+    expect(isTouchFirstDevice({ hoverNone: undefined, pointerCoarse: undefined, maxTouchPoints: 5 })).toBe(true)
+    expect(isTouchFirstDevice({ hoverNone: undefined, pointerCoarse: undefined, maxTouchPoints: 0 })).toBe(false)
+    expect(isTouchFirstDevice({})).toBe(false)
+  })
+
+  it('a HALF-known pair does not take the fallback (queries answered, device is desktop)', () => {
+    // One query answered false while the other is unknown: not touch-first —
+    // only a fully-unavailable query pair may use the touch-points degrade.
+    expect(isTouchFirstDevice({ hoverNone: false, pointerCoarse: undefined, maxTouchPoints: 5 })).toBe(false)
   })
 })

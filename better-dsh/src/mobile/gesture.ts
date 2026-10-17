@@ -27,11 +27,14 @@
  *     right-swipe: close the right panel if open, else open the sidebar
  *                  when collapsed.
  * - **Band admission (2026-09-11 mobile wave)**: no own pixel cut-off. The
- *   feature is live on coarse pointers (phones/tablets) and wherever a
- *   panel is already in its narrow-viewport state — i.e. it follows the
- *   upstream layout STATE, never a threshold we invented. Upstream may
- *   move their auto-collapse boundary (1024 today) freely; we track the
- *   resulting state attributes.
+ * - **Band admission**: no own pixel cut-off — the feature follows the
+ *   upstream layout STATE (`[data-sidebar-collapsed]`), never a threshold
+ *   we invented; upstream may move their auto-collapse boundary (1024
+ *   today) freely. Device gating (2026-10-18 user ruling): the whole
+ *   feature mounts on touch-first devices only (`isTouchFirstDevice`) —
+ *   it supersedes the 2026-09-11 "any pointer while a panel is narrow"
+ *   band, whose mouse-drag swipes left desktop users stranded when the
+ *   zero-width rail hid the native toggle.
  *
  * Both panel reads address OFFICIAL upstream surfaces ONLY (hard rule,
  * 2026-09-11): the left sidebar through the layout service
@@ -46,8 +49,45 @@
  * No DOM here: these are pure predicates over gesture facts plus the
  * panel state the caller reads off live DOM.
  *
+ * Touch-first gate (2026-10-18 user ruling, superseding the 2026-09-11
+ * feature band): the mobile adaptation — the zero-width CSS AND the swipe
+ * gestures — mounts on TOUCH-FIRST devices only. {@link isTouchFirstDevice}
+ * is the pure decision: the primary input can neither hover nor produce a
+ * fine pointer (`(hover: none) and (pointer: coarse)` — phones, tablets,
+ * kiosk touchscreens). A desktop window that upstream narrows below their
+ * own auto-collapse threshold keeps the native 56px rail WITH its visible
+ * toggle; mouse-drag swipes are gone from the desktop (no desktop platform
+ * has a drag-to-reveal vernacular, and the invisible rail + missing toggle
+ * left reload as the only escape). `maxTouchPoints` is the legacy degrade
+ * when the media queries are unavailable entirely.
+ *
  * @module dashr/mobile/gesture
  */
+
+/** The device-capability probe {@link isTouchFirstDevice} decides over. */
+export interface TouchProbeInput {
+  /** `(hover: none)` — the primary input cannot hover. `undefined`: unknown. */
+  hoverNone?: boolean
+  /** `(pointer: coarse)` — the primary pointer is a finger. `undefined`: unknown. */
+  pointerCoarse?: boolean
+  /** `navigator.maxTouchPoints`; the only signal when the queries are unavailable. */
+  maxTouchPoints?: number
+}
+
+/**
+ * Whether the mobile adaptation mounts at all (2026-10-18 user ruling):
+ * touch-first means the device's PRIMARY input is a finger. A query
+ * answering FALSE — a hover-capable or fine primary pointer — decides
+ * desktop on its own (a touchscreen laptop keeps desktop behavior); the
+ * pair answering true is the standard idiom; and only when the queries
+ * are entirely unavailable does `maxTouchPoints` become the honest
+ * degrade (every such legacy device is a phone or tablet anyway).
+ */
+export function isTouchFirstDevice(input: TouchProbeInput): boolean {
+  if (input.hoverNone === false || input.pointerCoarse === false) return false
+  if (input.hoverNone === true && input.pointerCoarse === true) return true
+  return (input.maxTouchPoints ?? 0) > 0
+}
 
 /** Recognition thresholds, resolved from the host-injected page config. */
 export interface SwipeThresholds {

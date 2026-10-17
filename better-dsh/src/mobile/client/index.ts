@@ -7,6 +7,16 @@
  * Two coordinated pieces, both config-gated by the host half's injected
  * boot script (`window.__DASHR_MOBILE__` — the client half of a dual-half
  * plugin carries no loader config, so the page global IS the config
+ * channel) and DEVICE-gated on a touch-first primary input (2026-10-18
+ * user ruling — `isTouchFirstDevice` in `../gesture.ts`): phones and
+ * tablets mount both pieces; a desktop host mounts NEITHER, ever. The
+ * superseded behavior compressed upstream's collapsed rail to zero width
+ * on ANY pointer, so a desktop window below upstream's own auto-collapse
+ * threshold (1024, measured on the frame's own box — which a right-panel
+ * call-out helps squeeze) lost its sidebar AND the toggle inside it, with
+ * mouse-drag swipes as the only — undiscoverable — way back. Desktop
+ * narrow is now upstream's own rail with a visible toggle; swipes stay
+ * where they are native (fingers).
  * channel):
  *
  * - **CSS** (the upstream-paradigm route — static rules, zero JS
@@ -37,10 +47,22 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import {
-  admitsSwipeStart, classifySwipeProgress, resolveMobileConfig,
+  admitsSwipeStart, classifySwipeProgress, isTouchFirstDevice, resolveMobileConfig,
   type MobilePageConfig, type PanelState,
 } from '../gesture.ts'
 
+/**
+ * One media query, or `undefined` when the environment has none (old
+ * webviews throw or omit `matchMedia`) — the probe then rides the
+ * touch-points fallback in {@link isTouchFirstDevice}.
+ */
+function safeMatchMedia(query: string): MediaQueryList | undefined {
+  try {
+    return globalThis.matchMedia?.(query) ?? undefined
+  } catch {
+    return undefined
+  }
+}
 /** Structural layout face (`ctx.layout`): exactly what this feature calls. */
 interface LayoutPanelFace {
   toggleSidebar(): void
@@ -135,18 +157,49 @@ function mobileCss(): string {
 
 /**
  * Mount the mobile feature: style injection plus the swipe listeners.
- * Inert unless the host's boot script opted the page in.
+ * Inert unless the host's boot script opted the page in AND the device is
+ * touch-first (2026-10-18 user ruling). Capability flips (a tablet's
+ * primary pointer hardware changing) re-evaluate and mount/unmount the
+ * surface live; the media queries answer on every browser since ~2015 and
+ * a webview without `matchMedia` degrades to the touch-points probe.
  *
  * @param ctx - client root context.
- * @returns the effect disposer (style tag + listeners removed on unload).
  */
 export function setupMobileLayout(ctx: ClientContext): void {
   const pageConfig = (globalThis as DashrMobileGlobal).__DASHR_MOBILE__
   const config = resolveMobileConfig(pageConfig)
   if (!config.enabled) return
 
-  const styleTagId = 'better-dsh/mobile'
+  const coarseQuery = safeMatchMedia('(pointer: coarse)')
+  const hoverQuery = safeMatchMedia('(hover: none)')
+
   ctx.effect(() => {
+    let disposeSurface: (() => void) | undefined
+    const apply = (): void => {
+      const touchFirst = isTouchFirstDevice({
+        hoverNone: hoverQuery?.matches,
+        pointerCoarse: coarseQuery?.matches,
+        maxTouchPoints: (navigator as { maxTouchPoints?: number }).maxTouchPoints,
+      })
+      if (touchFirst && disposeSurface === undefined) disposeSurface = mountTouchSurface()
+      else if (!touchFirst && disposeSurface !== undefined) {
+        disposeSurface()
+        disposeSurface = undefined
+      }
+    }
+    coarseQuery?.addEventListener('change', apply)
+    hoverQuery?.addEventListener('change', apply)
+    apply()
+    return () => {
+      coarseQuery?.removeEventListener('change', apply)
+      hoverQuery?.removeEventListener('change', apply)
+      disposeSurface?.()
+    }
+  }, 'dashr: mobile layout')
+
+  /** The style tag + gesture listeners, mounted and disposed as one surface. */
+  function mountTouchSurface(): () => void {
+    const styleTagId = 'better-dsh/mobile'
     const tag = document.createElement('style')
     tag.dataset.plugin = 'better-dsh'
     tag.dataset.pluginCss = styleTagId
@@ -163,18 +216,12 @@ export function setupMobileLayout(ctx: ClientContext): void {
       const onPointerDown = (event: PointerEvent): void => {
         start = undefined
         const viewport = window.innerWidth
-        // Feature band (2026-09-11 ruling): no pixel cut-off of our own —
-        // live on coarse pointers (phones/tablets), and on any pointer
-        // wherever a panel already sits in its narrow-viewport state
-        // (upstream auto-collapse or an open panel). Fine pointers with
-        // every panel at rest (desktop) stay inert so text-selection
-        // drags can never fire a panel action.
-        const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches === true
-        const panels = readPanelState()
-        if (!coarsePointer && !panels.leftCollapsed && !panels.rightOpen) return
+        // Everything past the mount gate runs on touch-first devices only —
+        // the 2026-10-18 ruling replaced the per-event pointer-kind check.
         // Start admission (source pointerdown gate: X120 left band / right
         // three quarters while both panels are closed, anywhere once one
         // is open).
+        const panels = readPanelState()
         if (!admitsSwipeStart(event.clientX, viewport, panels, config)) return
         start = { x: event.clientX, y: event.clientY, t: event.timeStamp }
       }
@@ -221,5 +268,5 @@ export function setupMobileLayout(ctx: ClientContext): void {
       tag.remove()
       void Promise.resolve(offLayout.dispose())
     }
-  }, 'dashr: mobile layout')
+  }
 }
