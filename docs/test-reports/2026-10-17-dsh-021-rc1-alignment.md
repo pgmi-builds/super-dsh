@@ -90,3 +90,25 @@ registry 已发布字母 a/b/d → 最小未用字母 **e**。j 内容原样重�
 npm publish（pgmi-builds，token 经 secrets store 显式注入）两包 latest → 0.3.1-e；git tag `v0.3.1-e` 与 master 一并推送。授权来自 user 本轮明确指令，不沿用到下次。
 
 私有证据在 `.scratch/alignment-0.2.1-rc.1/`（PC）与 dev3 `~/workspaces/superd/.scratch/alignment-021rc1/`（构建/安装/对账/会话/浏览器/双机 matrix）。含认证的文件不进 Git。
+
+## dev3 生产部署 — rc.1 + 0.3.1-e（2026-10-17 21:29–21:34，user 明确授权）
+
+user 指令：从 registry 安装 dsh 0.2.1-rc.1 + super-dsh 0.3.1-e 到 dev3 生产，并确认重启。变更前现场实测：bfwu `dsh.service`（3080，dsh.dev3.internal.test）运行 **dsh 0.2.1-alpha.1 + super-dsh/better-dsh 0.3.1-a**（进程 2026-10-12 23:35 起）——与上节“rc.1 + 0.3.1-i”的转述不符，以现场为准。
+
+- 全局安装：`npm install -g @deepseek-ai/dsh@0.2.1-rc.1`（added 75 / removed 22 / changed 536，1m）；`dsh --version` = 0.2.1-rc.1。
+- Profile：`dsh plugin --profile web add super-dsh@0.3.1-e better-dsh@0.3.1-e`（pnpm 12.10.1，4.8s，lockfile supply-chain policy 通过）；node_modules 两包 = 0.3.1-e。备份 `package.json.pre-031e.bak`、`pnpm-lock.yaml.pre-031e.bak`。
+- 重启：stop → 安装 → start（user 本轮授权）；dsh.service active，127.0.0.1:3080 监听，进程 21:31:32 起（rc.1 bin）。
+- 验收：`https://dsh.dev3.internal.test/` = 200；匿名 `/api/*` = 401；`--dump-config` exit 0（1426 行，superd 行齐）；boot 日志无 error（仅各 world 的 harness-dev-context pending webApp 既有 warning）；PC 4999 hub roster 中 bfwu 七 world 全 ready=true；重启后首轮常规 sweep（21:36:46）本地采集 ok（7 agents，无 note）；hub exec 通道恢复（回读 rc.1 / 0.3.1-e）。
+- 过程注记：首次经 hub exec 通道执行 stop 时，该通道随 prod 进程一起断开（502），后续安装/启动改用 SSH `remote` 通道完成；无残留 pnpm 进程，备份保留。
+- 未触碰（本步）：PC 生产 hub（skc8）——同一轮 user 指令随后扩展到 PC 生产，见下节。
+
+## PC 生产部署 — rc.1 + 0.3.1-e（2026-10-17 21:34–21:41，同轮 user 指令 “Do the same to pc prod”）
+
+变更前现场：homepc `dsh.service`（3080，dsh.pc.internal.test，`DSH_HOME=~/.dsh`）运行 **dsh 0.2.1-alpha.4 + super-dsh/better-dsh 0.3.1-a**，同一 A2A 缺陷在场。
+
+- 全局安装：`npm install -g @deepseek-ai/dsh@0.2.1-rc.1`（added 75 / removed 22 / changed 536，1m；npm 12 默认跳过 install-scripts——node-pty/koffi 经 require 验证可加载，linux-x64 无 spawn-helper 需求）；`dsh --version` = 0.2.1-rc.1。
+- Profile：`dsh plugin --profile web add super-dsh@0.3.1-e better-dsh@0.3.1-e`（pnpm 12.10.1，2s）；node_modules 两包 = 0.3.1-e；备份 `package.json.pre-031e.bak`、`pnpm-lock.yaml.pre-031e.bak`。
+- 重启：stop 21:34:37 → 安装 → start 21:35:25（user 本轮明确指令）；active，127.0.0.1:3080 监听，停机 48s。
+- 验收：`https://dsh.pc.internal.test/` = 200；匿名 `/api/`、`/api/superd/machines` = 401；boot 日志无 error（仅六个 world 的 harness-dev-context pending webApp 既有 warning + token 行）；重启后首轮常规 sweep 21:40:36：本地 skc8 采集 ok（7 agents / 74 rows，无 note），remote bfwu ok——与 dev3 21:36:46 的本地采集共同证实 0.3.1-e 本地腿在 rc.1 上工作。
+- 注意：boot tick 按设计跳过 local 腿（`localCollect=false`），本地 agent_status 缓存要到启动后首个 5 分钟常规 tick 才刷新；此前的“失败”条目是上一进程的遗留，不是新 build 的失败。
+- 未触碰：dev3 4998 测试线与 PC 4999 测试线（本次只动两处 prod）。
