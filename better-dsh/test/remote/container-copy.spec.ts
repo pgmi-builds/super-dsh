@@ -37,16 +37,19 @@ it.each(['docker', 'incus'] as const)('%s native CLI roundtrips binary without h
         const up = await driver.copy({ src, dst: remote }, new AbortController().signal) as NativeCopyReceipt;
         expect(up.route).toContain(engine);
         expect(up.exits).toEqual([0]);
-        expect(up.verified).toBe(false);
+        expect(up.verification).toBe('native-exit-only');
+        expect(up.ok).toBe(true);
         const down = await driver.copy({ src: remote, dst }, new AbortController().signal) as NativeCopyReceipt;
         expect(down.exits).toEqual([0]);
-        expect(down.verified).toBe(false);
+        expect(down.verification).toBe('native-exit-only');
+        expect(down.ok).toBe(true);
         expect(await readFile(dst)).toEqual(bytes);
         // Native failure passes through: a missing remote path is the CLI's exit.
         const missing = await driver.copy({ src: `${engine}:${name}:/root/no-such-file`, dst: join(dir, 'never') }, new AbortController().signal) as NativeCopyReceipt;
         expect(missing.exits[0]).not.toBe(0);
         expect(missing.stderr.join('\n')).toMatch(/no such file|No such file|not found|error/i);
-        expect(missing.verified).toBe(false);
+        expect(missing.ok).toBe(false);
+        expect(missing.reason).toBe('non-zero-exit');
         expect(missing.route).toContain(engine);
     }
     finally {
@@ -76,12 +79,13 @@ it('copies SSH↔Docker with two native commands, per-half argv and origin stagi
             await mkdir(remote);
             await writeFile(join(remote, 'seg-file'), 'seg-payload');
             const receipt = await driver.copy({ src: `byossh:src:${remote}/`, dst: `docker:${name}:/root/seg-dst`, pullArgv: ['-r'], pushArgv: ['-a'] }, new AbortController().signal) as NativeCopyReceipt;
-            expect(receipt.route).toContain('two native commands');
+            expect(receipt.route).toBe('staged-pull-push');
             expect(receipt.argv).toHaveLength(2);
             expect(receipt.argv[0]).toContain('-r');
             expect(receipt.argv[1]).toContain('-a');
             expect(receipt.exits).toEqual([0, 0]);
-            expect(receipt.verified).toBe(false);
+            expect(receipt.verification).toBe('native-exit-only');
+            expect(receipt.ok).toBe(true);
             expect(receipt.cleanup).toBe('released');
             // Each segment's native CLI decides layout: scp stages the source
             // tree under the staging dir, docker cp copies that staging dir

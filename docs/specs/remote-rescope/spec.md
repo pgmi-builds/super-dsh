@@ -94,6 +94,15 @@ user 受控实验定谳 scp -3 身份断裂根因（F1）：**三台配置与 ke
 
 **darwin 产物纪律（本轮新增）**：mac 主机离线时 build.sh 不再滞留旧版本戳产物（过不了自身 banner 校验 = 死重）——`BUILT-VER` 边车记录戳造版本，不匹配即剔除该 target 并如实缩编 MANIFEST（本轮实际剔除，三 target 交付）；主机回归后下轮重建。
 
+### 3.0.2 Phase 1 实施记录（2026-10-17，0.3.1-c 轮开工）
+
+D1=A、D3 接受落实施；S3/S4/S6/S7/S8 + F1/F4 fixture 一并收口，计划见 `docs/superpowers/plans/2026-10-17-remote-phase1-receipts.md`。两条实施期裁决：
+
+1. **mkdir 预检 parent-only**：预建尾斜杠 dst 目录会翻转 scp 自身布局语义（目录已存在 → 源目录被复制到里面；scp -3 用例实证），故预检只保**父目录**，永不碰操作数本身，native CLI 语义逐字节不变。
+2. **S6 范围**：清洗只针对回执时点**已释放**的工具临时物（scp -3 `-F` 临时配置、两段式 staging 路径 → `<temp-ssh-config>`/`<staging>` 占位符）；hub 失败回执的 `scratch` 保留（既有失败 payload 诊断留样特性，套件有断言）。
+
+回执统一落法：透传族固定 `{route(稳定短 id), argv(清洗后), exits, ok, reason?, note?, verification('native-exit-only'|'sha256'|'not-applicable'), created?, cleanup}`；hub lane 同步改名 `verification` 并加 `ok/reason/route:'hub-staged'`；rsync 加 `ok/reason/verification`。copy/rsync 的 `text` 从 JSON 直出改格式化单行（S8），完整 JSON 留 `receipt` 字段。
+
 ### 3.1 Schema 变更（原提案，待 D1–D3/D8 裁决后实施）
 不新增引擎、不动透传契约，只撤掉"必须显式"的部分并把决策写进回执。
 

@@ -153,8 +153,8 @@ it('declares native argv Surface and returns native receipts through the real sc
       const fileSection = description.slice(description.indexOf('Files —'))
       expect(fileSection).not.toContain('Python')
       expect(description).toContain('no Python')
-      const receipt = JSON.parse((await h.invoke(a, { action: 'rsync', src: `${src}/`, dst: `byossh:dest:${dst}/`, argv: ['-a'] })).text)
-      expect(receipt).toMatchObject({ action: 'rsync', exit: 0 })
+      const receipt = ((await h.invoke(a, { action: 'rsync', src: `${src}/`, dst: `byossh:dest:${dst}/`, argv: ['-a'] })) as unknown as { text: string; receipt: Record<string, unknown> }).receipt
+      expect(receipt).toMatchObject({ action: 'rsync', exit: 0, verification: 'native-exit-only', ok: true })
       expect(receipt.argv).toEqual(['-a'])
       expect(receipt.verified).toBeUndefined()
       expect(await readFile(join(dst, 'test'), 'utf8')).toBe('content')

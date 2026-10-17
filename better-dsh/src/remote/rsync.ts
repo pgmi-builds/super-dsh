@@ -12,6 +12,10 @@ export interface RsyncReceipt extends RunResult {
   itemizedChanges?: string[]; literalBytes?: number; matchedBytes?: number; sentBytes?: number; receivedBytes?: number; transferredBytes?: number
   /** Two-SSH route actually used, when applicable. */
   route?: 'local-ssh' | 'ssh-ssh-forward' | 'ssh-ssh-stdio'
+  /** S3/S4: exit-code-only tier (D1=A) + unified failure envelope. */
+  verification: 'native-exit-only'
+  ok: boolean
+  reason?: 'non-zero-exit' | 'aborted'
 }
 
 /**
@@ -27,7 +31,7 @@ export async function runRsync(request: RsyncRequest, source: RsyncEndpoint, des
   const argv = checkArgv('argv', request.argv)
   if ('pullArgv' in request || 'pushArgv' in request) throw new Error('remote: rsync takes argv only; pullArgv/pushArgv are copy-only fields')
   for (const legacy of ['dryRun', 'delete', 'excludes', 'preserve', 'verify', 'mkdir'] as const) {
-    if (legacy in (request as unknown as Record<string, unknown>)) throw new Error(`remote: rsync field "${legacy}" was removed — pass native options through argv instead (e.g. "--dry-run", "--delete", "--exclude=<pattern>", "-a"/"-r"; verify/mkdir belong to the copy Hub/local lane)`)
+    if (legacy in (request as unknown as Record<string, unknown>)) throw new Error(`remote: rsync field "${legacy}" was removed — pass native options through argv instead (e.g. "--dry-run", "--delete", "--exclude=<pattern>", "-a"/"-r"; verify is a copy Hub-lane option and mkdir is copy-only — for rsync destination parents pass --mkpath yourself)`)
   }
   if (!source.connection && !destination.connection) throw new Error('rsync requires at least one SSH endpoint; local-only is unsupported')
 
@@ -66,6 +70,9 @@ export async function runRsync(request: RsyncRequest, source: RsyncEndpoint, des
   const itemized = result.stdout.split('\n').filter(line => /^[<>ch.*][fdLDS.]/.test(line) || line.startsWith('*deleting'))
   return {
     ...result, action: 'rsync', src: request.src, dst: request.dst, argv, route,
+    verification: 'native-exit-only',
+    ok: result.exit === 0,
+    ...(result.exit === 0 ? {} : { reason: signal.aborted ? 'aborted' as const : 'non-zero-exit' as const }),
     command: `rsync ${argv.join(' ')}`,
     ...(itemized.length > 0 || argv.includes('--itemize-changes') || argv.includes('-i') ? { itemizedChanges: itemized } : {}),
     ...(literalBytes === undefined ? {} : { literalBytes }),

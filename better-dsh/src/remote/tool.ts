@@ -49,7 +49,7 @@ Bare names resolve ssh config → docker → incus → live pty; unmatched goes 
 
 oneshot: stateless bash -lc, stdout/stderr separate, exit code verbatim. Supervision prefers a pinned superd-run helper cached on the endpoint (~/.cache/superd/run; first call uploads it over the same exec lane) and falls back to a POSIX wrapper everywhere else — the result field "runner" says which ran. Helper or wrapper, backgrounded children are reaped on completion and the whole group is killed on timeout/cancel; the endpoint needs bash only (no Python).
 
-Files — {action:"copy" | "rsync", src:"[target:]abs", dst:"[target:]abs", argv:["-a"]}: argv tokens pass verbatim before src/dst — no whitelist, no forced defaults (dry run = pass "--dry-run" yourself); the CLI's own exit code and stderr come back in the receipt. copy: local↔SSH scp; SSH↔SSH scp -3 through the origin (identities stay local); docker cp; incus file push/pull; any other pair = two commands with origin staging (per-half options via pullArgv/pushArgv, exclusive with argv); scp -R (uppercase — scp's remote-client mode) is refused; copy of a directory from a LOCAL source auto-appends the route's recursive flag (-r, shown in the receipt argv); from a REMOTE source pass -r yourself or use rsync; success is NOT independently verified; verify/mkdir only on the Hub↔local lane. rsync: local↔SSH, or SSH↔SSH with one protocol conversation between the peers (real delta; forwarding denied → honest error, never full copy). rsync src trailing slash copies contents, no slash the directory itself.
+Files — {action:"copy" | "rsync", src:"[target:]abs", dst:"[target:]abs", argv:["-a"]}: argv tokens pass verbatim before src/dst — no whitelist, no forced defaults (dry run = pass "--dry-run" yourself); the CLI's own exit code and stderr come back in the receipt. copy: local↔SSH scp; SSH↔SSH scp -3 through the origin (identities stay local); docker cp; incus file push/pull; any other pair = two commands with origin staging (per-half options via pullArgv/pushArgv, exclusive with argv); scp -R (uppercase — scp's remote-client mode) is refused; copy of a directory from a LOCAL source auto-appends the route's recursive flag (-r, shown in the receipt argv); from a REMOTE source pass -r yourself or use rsync; mkdir defaults to ensuring the destination's PARENT directory first (one exec pre-hop, outcome in the receipt created field; the operand itself is never pre-created); receipts use stable route ids (scp / scp-3 / docker-cp / incus-file-push / incus-file-pull / staged-pull-push / hub-staged) with ok+reason, the verification tier actually performed (native-exit-only by default; sha256 on the Hub lane) and tool-owned temp paths in argv shown as placeholders. rsync: local↔SSH, or SSH↔SSH with one protocol conversation between the peers (real delta; forwarding denied → honest error, never full copy). rsync src trailing slash copies contents, no slash the directory itself.
 
 Output: pty tails at ~30k chars ("[truncated: …]" header) — redirect bulk output to a file. Hard retention 4,000,000 UTF-16 units per stream (Hub 4MiB bytes); outputStats reports the rest; restart cannot recover discarded output. stdin feeds the command; timeout (seconds) interrupts then kills. run_in_background:true (oneshot) → jobId for job_output/job_kill. Native transport errors pass through verbatim — self-correct from them.`
 
@@ -69,8 +69,8 @@ export function createRemoteTool(
       argv: { type: 'array', items: { type: 'string' }, description: 'Ordered native CLI options and values for one-command routes (e.g. rsync ["-a","--partial","--dry-run"], scp ["-p","-r"], docker cp ["-a"], incus file push/pull). One element = one argv token, appended verbatim before src/dst; no shell parsing, no whitelist, no forced defaults — unknown options fail in the native CLI itself. rsync only (SSH endpoints): explicit -e/--rsh overrides the tool\'s SSH wiring. docker cp: pass -L to follow symlinks (a symlink source like /etc/os-release fails without it). Two-segment cross-endpoint copy uses pullArgv/pushArgv instead.' },
       pullArgv: { type: 'array', items: { type: 'string' }, description: 'Options for the PULL half (source endpoint → origin staging) of a two-command cross-endpoint copy (e.g. SSH↔Docker, SSH↔Incus, Docker↔Incus). Mutually exclusive with argv; must be paired with pushArgv. Only options valid for the pull half\'s CLI.' },
       pushArgv: { type: 'array', items: { type: 'string' }, description: 'Options for the PUSH half (origin staging → destination endpoint) of a two-command cross-endpoint copy. Mutually exclusive with argv; must be paired with pullArgv. Only options valid for the push half\'s CLI.' },
-      verify: { type: 'boolean', description: 'copy only, Hub↔local↔local staged lane only: independent SHA-256 verification (default true). Native CLI routes do not verify and report that fact.' },
-      mkdir: { type: 'boolean', description: 'copy only, Hub↔local↔local staged lane only: create missing destination parents (default true). Native CLI routes let the CLI decide.' },
+      verify: { type: 'boolean', description: 'copy only. Receipts name the verification tier actually performed (D1=A): native CLI routes are "native-exit-only" (no independent check — self-verify via oneshot digest commands when needed); the Hub↔local staged lane computes independent SHA-256 digests by default and verify:false skips them ("not-applicable"). No hash tier exists on native routes.' },
+      mkdir: { type: 'boolean', description: 'copy only, all routes. Default true: before transfer, one best-effort exec pre-hop ensures the destination\'s PARENT directory exists (the operand itself is never pre-created — each CLI\'s own layout semantics stay byte-identical). Receipt created field: true (parent created this call) / false (already existed) / "n-a" (skipped or pre-hop unavailable, e.g. docker exec on a stopped container — the native CLI then reports the real error itself). false skips the pre-hop.' },
       run_in_background: { type: 'boolean', description: 'Oneshot only: return a native jobId immediately, read with job_output, cancel with job_kill; output is available while running. Requires official jobs service/controller.' },
       target: { type: 'string', description: 'Single entry point. byossh:<label> reuses this Agent-scoped registered SSH identity (pass ssh on first call; no cmd registers only). Bare name / IP / domain matches in order: ssh config, then docker, then incus, then a live pty label (a collision goes to the earlier source). "byop:<label>" / "docker:<name>" / "incus:<name>" / "ssh:<name>" force a channel. For "byop:<label>", pass spawn the first time to create it and omit spawn afterwards to reuse it. Omit cmd → status probe.' },
       ssh: { type: 'object', description: 'Only for byossh:<label>: register origin-side connection; omit on reuse. No inline keys or arbitrary SSH options.', additionalProperties: false, properties: {
@@ -127,17 +127,21 @@ export function createRemoteTool(
           if ([args.verify,args.mkdir].some(value => value !== undefined)) throw new Error('rsync cannot be combined with copy verify/mkdir options; the Hub/local staged lane is copy-only')
           const start = Date.now()
           const receipt = await driver.rsync({src:args.src,dst:args.dst,...(args.argv === undefined ? {} : {argv:args.argv})},exec.signal,{sessionKey:getSessionKey(exec)})
-          if (receipt.exit !== 0) throw new Error(JSON.stringify(receipt))
-          return {kind:'rsync',text:JSON.stringify(receipt),receipt:receipt as unknown as import('@deepseek-ai/dsh-util-values').JsonValue,exit:receipt.exit,durationMs:Date.now()-start}
+          const rsyncReceipt = receipt as { ok?: boolean; exit?: number | null }
+          if (rsyncReceipt.ok === false || receipt.exit !== 0) throw new Error(JSON.stringify(receipt))
+          const rsyncDuration = Date.now() - start
+          return {kind:'rsync',text:formatTransferLine('rsync', receipt, rsyncDuration),receipt:receipt as unknown as import('@deepseek-ai/dsh-util-values').JsonValue,exit:receipt.exit,durationMs:rsyncDuration}
         }
         const copyStart = Date.now()
         const receipt = await driver.copy({ src:args.src,dst:args.dst,...(args.verify === undefined ? {} : {verify:args.verify}),...(args.mkdir === undefined ? {} : {mkdir:args.mkdir}),...(args.argv === undefined ? {} : {argv:args.argv}),...(args.pullArgv === undefined ? {} : {pullArgv:args.pullArgv}),...(args.pushArgv === undefined ? {} : {pushArgv:args.pushArgv}) },exec.signal,{sessionKey:getSessionKey(exec)})
         // F2 (2026-10-14 user acceptance): copy failures must be fail-loud, same
         // contract as rsync — a native non-zero exit previously came back as a
         // normal-looking result with the error buried in receipt stderr.
-        const exits = (receipt as { exits?: number[] }).exits ?? []
-        if (exits.some(code => code !== 0)) throw new Error(JSON.stringify(receipt))
-        return { kind:'copy',text:JSON.stringify(receipt),receipt:receipt as unknown as import('@deepseek-ai/dsh-util-values').JsonValue,exit:exits.length > 0 ? 0 : null,durationMs:Date.now()-copyStart }
+        const asReceipt = receipt as { ok?: boolean; exits?: (number | null)[] }
+        const exits = asReceipt.exits ?? []
+        if (asReceipt.ok === false || exits.some(code => code !== 0)) throw new Error(JSON.stringify(receipt))
+        const copyDuration = Date.now() - copyStart
+        return { kind:'copy', text: formatTransferLine('copy', receipt, copyDuration), receipt:receipt as unknown as import('@deepseek-ai/dsh-util-values').JsonValue, exit:exits.length > 0 ? 0 : null, durationMs:copyDuration }
       }
       if ([args.src,args.dst,args.argv,args.pullArgv,args.pushArgv,args.verify,args.mkdir].some(value => value !== undefined)) throw new Error('file fields require action copy or rsync')
       const hasCmd = typeof args.cmd === 'string' && args.cmd.length > 0
@@ -197,6 +201,27 @@ export function createRemoteTool(
   const description = tool.description
   Object.defineProperty(tool, 'description', { enumerable: true, get: () => description + (driver.hasHub() ? '\nHub transport available: hub:<m4> selects a paired remote machine (never self). {} includes the Hub directory even when empty. Uses authenticated Hub HTTP oneshot / persistent WS PTY; no SSH alias needed. Hub failures never fall back to SSH.' : '') })
   return tool
+}
+
+/** S8 (2026-10-17): copy/rsync render as one formatted line; the full receipt
+ * stays in the receipt field — raw-JSON dumps are gone from text. */
+function formatTransferLine(action: 'copy' | 'rsync', receipt: unknown, durationMs: number): string {
+  const r = receipt as { ok?: boolean; reason?: string; src?: string; dst?: string; route?: string; exits?: (number | null)[]; exit?: number | null; verification?: string; created?: boolean | 'n-a'; cleanup?: string; bytes?: number; entries?: number; note?: string }
+  const parts: string[] = []
+  if (r.ok === false) parts.push(`✗ ${r.reason ?? 'failed'}`)
+  parts.push(`${action} ${r.src} → ${r.dst}`)
+  if (r.route !== undefined && r.route !== '') parts.push(`route ${r.route}`)
+  if (r.exits !== undefined) parts.push(`exits [${r.exits.join(',')}]`)
+  else if (r.exit !== undefined) parts.push(`exit ${r.exit}`)
+  if (r.verification !== undefined) parts.push(`verification ${r.verification}`)
+  if (r.created === true) parts.push('created yes')
+  else if (r.created === false) parts.push('created pre-existing')
+  else if (r.created === 'n-a') parts.push('created n-a')
+  if (r.cleanup !== undefined && r.cleanup !== 'none-required') parts.push(`cleanup ${r.cleanup}`)
+  if (typeof r.bytes === 'number') parts.push(`${r.bytes} bytes / ${r.entries} entries`)
+  parts.push(`${(durationMs / 1_000).toFixed(1)}s`)
+  if (r.note !== undefined && r.note.length > 0) parts.push(`(${r.note})`)
+  return parts.join(' · ')
 }
 
 function renderValue(v: RemoteToolValue): string {

@@ -20,7 +20,7 @@ import { literalHosts } from './roster.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { buildOneShotArgv, buildPtyArgv, buildSpawnArgv, buildHelperOneShotArgv, buildHelperKillgroupArgv, buildHelperProbeArgv, buildHelperUploadArgv } from './transports.ts'
+import { buildOneShotArgv, buildPtyArgv, buildSpawnArgv, buildHelperOneShotArgv, buildHelperKillgroupArgv, buildHelperProbeArgv, buildHelperUploadArgv, helperShellArgv } from './transports.ts'
 
 export type RemoteCallParams = RemoteInput
 
@@ -160,14 +160,18 @@ export class RemoteDriver {
       if (src.kind === 'local' && dst.kind === 'local')
         return copyTree(request, { path: src.path, endpoint: localFileEndpoint() }, { path: dst.path, endpoint: localFileEndpoint() }, combined)
       // At least one CLI peer: native route (local↔peer is still one command).
-      // verify/mkdir belong to the staged Hub/local lane only; refusing them
-      // here (instead of silently dropping) keeps the contract symmetric with
-      // copyTree refusing CLI options.
-      if (request.verify !== undefined || request.mkdir !== undefined) throw new Error('copy: verify/mkdir apply to the Hub/local staged lane only; native CLI routes do not verify or create parents (mirror the CLI\'s own behavior with argv like -r)')
+      // verify stays a Hub-staged-lane option (tier C is not implemented on
+      // native routes — D1=A, 2026-10-17); mkdir is now a native default (D3)
+      // and passes through to nativeCopy's best-effort pre-hop.
+      if (request.verify !== undefined) throw new Error('copy: verify is a Hub/local staged lane option (independent SHA-256); native routes report exit-code-only verification — self-verify via oneshot digest commands when needed' )
       const planOf = (end: typeof src | typeof dst) => end.kind === 'cli' ? end.plan : end.kind === 'local' ? ({ kind: 'local' } as const) : undefined
       const srcPlan = planOf(src), dstPlan = planOf(dst)
       if (srcPlan === undefined || dstPlan === undefined) throw new Error('copy: unreachable route resolution')
-      return nativeCopy({ src: request.src, dst: request.dst, ...(request.argv === undefined ? {} : { argv: request.argv as string[] }), ...(request.pullArgv === undefined ? {} : { pullArgv: request.pullArgv as string[] }), ...(request.pushArgv === undefined ? {} : { pushArgv: request.pushArgv as string[] }) }, { src: { plan: srcPlan, path: src.path }, dst: { plan: dstPlan, path: dst.path } }, combined, { wrapArgv: this.opts.nativeArgvFor })
+      const execArgvFor = (plan: import('./target.ts').TargetPlan, script: string): string[] => {
+        const argv = helperShellArgv(plan, script)
+        return this.opts.nativeArgvFor ? this.opts.nativeArgvFor(argv) : argv
+      }
+      return nativeCopy({ src: request.src, dst: request.dst, ...(request.mkdir === undefined ? {} : { mkdir: request.mkdir }), ...(request.argv === undefined ? {} : { argv: request.argv as string[] }), ...(request.pullArgv === undefined ? {} : { pullArgv: request.pullArgv as string[] }), ...(request.pushArgv === undefined ? {} : { pushArgv: request.pushArgv as string[] }) }, { src: { plan: srcPlan, path: src.path }, dst: { plan: dstPlan, path: dst.path } }, combined, { wrapArgv: this.opts.nativeArgvFor, execArgvFor })
     })()
     this.starting.add(work)
     void work.then(() => this.starting.delete(work), () => this.starting.delete(work))

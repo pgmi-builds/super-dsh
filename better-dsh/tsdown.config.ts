@@ -52,12 +52,29 @@ export default defineConfig({
   // create duplicate type identities in a consumer's program (schemastery's
   // generics appear twice and stop unifying). External imports resolve from
   // each consumer's own tree — one identity per package there.
-  dts: { resolve: false },
+  // Reproducibility mitigations (2026-10-17, discovered during 0.3.1-c):
+  // clean output + hashless chunk names (below) fixed stale-chunk accumulation
+  // and filename churn — the JS side is now byte-stable across builds.
+  // RESIDUAL: rolldown-plugin-dts 0.17.8 assigns d.ts module ids
+  // nondeterministically (6 clean builds → 5 distinct d.ts hashes; the
+  // externals-vs-inline form of host-peer types flips at random; isolated +
+  // parallel:false narrow but do not remove it). Each pack is one valid,
+  // self-consistent sample — identity is pinned by the round's recorded
+  // SHA-256; full determinism needs an upstream fix/upgrade (toolchain debt,
+  // remote-rescope backlog). super-dsh's remote closure is single-entry and
+  // unaffected.
+  dts: { resolve: false, isolated: true, parallel: false },
   // Zero-npm-runtime-deps (docs/specs/zero-npm-runtime-deps/spec.md): the
   // pure-JS runtime deps above are inlined instead of resolving from the
   // consumer's tree; the prefix match also covers subpath imports.
   noExternal: (id: string) => BUNDLED_RUNTIME.some(name => id === name || id.startsWith(`${name}/`)),
   platform: 'node',
   format: 'esm',
-  outputOptions: { exports: 'named' },
+  // Reproducible builds (2026-10-17): the default chunk name "[name]-[hash]"
+  // is NOT content-stable on the dts side (rolldown-plugin-dts inherits it),
+  // so every clean rebuild emitted differently-named web-trust-<hash>.d.ts
+  // chunks and no two tarballs matched. Plain [name] chunk names for both JS
+  // and d.ts + clean output make pack byte-reproducible.
+  clean: true,
+  outputOptions: { exports: 'named', chunkFileNames: '[name].js' },
 })

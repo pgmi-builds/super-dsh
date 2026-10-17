@@ -14,7 +14,12 @@ export interface TransferReceipt {
     action: 'copy';
     src: string;
     dst: string;
-    verified: boolean;
+    route: 'hub-staged';
+    /** S4: tier actually performed — sha256 digests ran and matched, or explicitly skipped. */
+    verification: 'sha256' | 'not-applicable';
+    /** S3 unified failure envelope. */
+    ok: boolean;
+    reason?: 'digest-mismatch' | 'staging-error' | 'aborted';
     sourceDigest?: string;
     destinationDigest?: string;
     bytes: number;
@@ -39,9 +44,8 @@ export async function copyTree(request: CopyRequest & { argv?: unknown; pullArgv
     if (request.argv !== undefined || request.pullArgv !== undefined || request.pushArgv !== undefined)
         throw new Error('copy: argv/pullArgv/pushArgv are native CLI options; the Hub/local staged lane does not accept CLI options');
     await mkdir(scratchRoot, { recursive: true });
-    signal.throwIfAborted();
+    const receipt: TransferReceipt = { action: 'copy', route: 'hub-staged', src: request.src, dst: request.dst, ok: false, verification: 'not-applicable', bytes: 0, entries: 0, scope: 'transferred entries' };
     const scratch = await mkdtemp(join(scratchRoot, 'remote-copy-')), payload = join(scratch, 'payload.bin');
-    const receipt: TransferReceipt = { action: 'copy', src: request.src, dst: request.dst, verified: false, bytes: 0, entries: 0, scope: 'transferred entries' };
     try {
         const stream = await source.endpoint.exportTree(source.path, signal);
         await pipeline(stream, createWriteStream(payload, { flags: 'wx', mode: 0o600 }), { signal });
@@ -62,13 +66,16 @@ export async function copyTree(request: CopyRequest & { argv?: unknown; pullArgv
             receipt.destinationDigest = dest.sha256;
             if (dest.sha256 !== receipt.sourceDigest)
                 throw new Error('destination digest mismatch');
-            receipt.verified = true;
+            receipt.verification = 'sha256';
         }
         signal.throwIfAborted();
         await rm(scratch, { recursive: true, force: true });
+        receipt.ok = true;
         return receipt;
     }
     catch (error) {
-        throw new CopyError({ ...receipt, verified: false, scratch, error: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        const reason: TransferReceipt['reason'] = signal.aborted ? 'aborted' : /mismatch/i.test(message) ? 'digest-mismatch' : 'staging-error';
+        throw new CopyError({ ...receipt, ok: false, reason, scratch, error: message });
     }
 }

@@ -103,7 +103,7 @@ export function buildHelperKillgroupArgv(plan: TargetPlan, binPath: string, tag:
   }
 }
 
-function helperShellArgv(plan: TargetPlan, script: string): string[] {
+export function helperShellArgv(plan: TargetPlan, script: string): string[] {
   switch (plan.kind) {
     case 'ssh':
       return sshArgv(plan.connection ?? { host: plan.host }, { command: script })

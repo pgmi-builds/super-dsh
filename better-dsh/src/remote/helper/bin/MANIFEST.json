@@ -1,28 +1,28 @@
 {
   "format": 1,
   "name": "superd-run",
-  "ver": "0.3.1-b",
+  "ver": "0.3.1-c",
   "protocol": 1,
   "targets": {
     "aarch64-apple-darwin": {
       "file": "superd-run",
       "bytes": 337808,
-      "sha256": "715c2d7bd935f3b4cc4ae0ffb10d3fab946bb62d93f592ccfe2a7446669ff76b"
+      "sha256": "641868a75a1c3785129da3f3346f0a849488fd3def358c04a97f88f9847c260e"
     },
     "aarch64-unknown-linux-musl": {
       "file": "superd-run",
-      "bytes": 397416,
-      "sha256": "22ac1c7f913092d8ca8d312b93528dd2263200f9670dc183fd215bc89d2bac68"
+      "bytes": 397592,
+      "sha256": "1528cdcc8a53bc508c68a3465a5682781ab86af99cc6bfdbaecd089fcd8f67ba"
     },
     "x86_64-pc-windows-gnu": {
       "file": "superd-run.exe",
-      "bytes": 336896,
-      "sha256": "a638479e1ccb1c4e185085100450962e39164158a76097b5087d2a3bb8880ac0"
+      "bytes": 337408,
+      "sha256": "6b0dc7336b3cd04d58ccb64dbba296541ccedd88b9c8a81ae5a7b0a3785ccde4"
     },
     "x86_64-unknown-linux-musl": {
       "file": "superd-run",
       "bytes": 447152,
-      "sha256": "79e42879509bb87d2fe9888d282151fd17113203d3172f59a16fcb5a180ba057"
+      "sha256": "ed17a8e3a2da6214339daaa362dfb5a1ceee1b5aff794b949bc1f77e23ef3ded"
     }
   },
   "sources": {

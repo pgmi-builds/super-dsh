@@ -5,7 +5,8 @@
  * independent verification.
  */
 import { mkdtemp, rm, stat, writeFile, chmod } from 'node:fs/promises'
-import { join } from 'node:path'
+import { existsSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { startBinaryProcess } from './process.ts'
 import type { SshConnection } from './ssh-targets.ts'
@@ -23,8 +24,16 @@ export interface NativeCopyReceipt {
   stdout: string[]
   stderr: string[]
   outputTruncated: boolean
-  /** Native CLI success only — no independent digest was computed for this path. */
-  verified: false
+  /** S3/S4 (spec §3.3): verification names the tier actually performed — native routes are exit-code-only (D1=A). */
+  verification: 'native-exit-only'
+  /** S3 unified failure envelope: all native exits zero. */
+  ok: boolean
+  /** Failure class when ok is false. */
+  reason?: 'non-zero-exit' | 'aborted'
+  /** Human context, e.g. two-segment 'push not started: pull failed' (prose moved out of route, S8). */
+  note?: string
+  /** D3 mkdir pre-hop outcome: true = created this call, false = already existed, 'n-a' = skipped or unavailable (detail in note). */
+  created?: true | false | 'n-a'
   /** Tool-owned staging/config release: released on normal/observed exit, unknown when a channel was lost. */
   cleanup: 'released' | 'unknown' | 'none-required'
 }
@@ -95,6 +104,8 @@ export interface NativeCopyOptions {
   wrapArgv?: (argv: string[]) => string[]
   /** Test seam: overrides the scratch root for two-segment staging. */
   scratchRoot?: string
+  /** Builds the exec-lane argv for the mkdir pre-hop (ssh/docker/incus sh -c). Driver wires transports' helperShellArgv. */
+  execArgvFor?: (plan: TargetPlan, script: string) => string[]
 }
 
 /** scp spec keeps identity in argv/config; caller -F/-i/-P override by scp's own precedence. */
@@ -143,6 +154,7 @@ export async function nativeCopy(request: {
   argv?: string[]
   pullArgv?: string[]
   pushArgv?: string[]
+  mkdir?: boolean
 }, endpoints: { src: NativeEndpoint; dst: NativeEndpoint }, signal: AbortSignal, options: NativeCopyOptions = {}): Promise<NativeCopyReceipt> {
   signal.throwIfAborted()
   const oneShot = checkArgv('argv', request.argv)
@@ -153,16 +165,27 @@ export async function nativeCopy(request: {
   if (request.pushArgv !== undefined && request.pullArgv === undefined) throw new Error('remote: pushArgv requires pullArgv (a two-segment copy has both halves)')
   const wrap = options.wrapArgv ?? (argv => argv)
   const s = endpoints.src.plan.kind, t = endpoints.dst.plan.kind
-  const receipt: NativeCopyReceipt = { action: 'copy', src: request.src, dst: request.dst, route: '', argv: [], exits: [], stdout: [], stderr: [], outputTruncated: false, verified: false, cleanup: 'none-required' }
-  const finish = (route: string, argvs: string[][], results: RunResult[]): NativeCopyReceipt => {
+  const receipt: NativeCopyReceipt = { action: 'copy', src: request.src, dst: request.dst, route: '', argv: [], exits: [], stdout: [], stderr: [], outputTruncated: false, verification: 'native-exit-only', ok: true, cleanup: 'none-required' }
+  const finish = (route: string, argvs: string[][], results: RunResult[], internal: ReadonlyArray<readonly [string, string]> = []): NativeCopyReceipt => {
     receipt.route = route
-    receipt.argv = argvs
+    // S6/S7: tool-owned ephemera (already released by receipt time) never leaks
+    // real temp paths into the model-visible argv — placeholders keep token shape.
+    receipt.argv = argvs.map(argv => argv.map(token => internal.find(([secret]) => secret === token)?.[1] ?? token))
     receipt.exits = results.map(result => result.exit)
     receipt.stdout = results.map(result => result.stdout)
     receipt.stderr = results.map(result => result.stderr)
     receipt.outputTruncated = results.some(result => result.outputTruncated)
+    receipt.ok = !signal.aborted && receipt.exits.every(exit => exit === 0)
+    if (!receipt.ok) receipt.reason = signal.aborted ? 'aborted' : 'non-zero-exit'
     return receipt
   }
+
+  // D3 (2026-10-17): best-effort destination-directory pre-hop before any
+  // transfer — one exec on the dst endpoint. Never gates the transfer: docker cp
+  // reaches stopped containers where exec cannot, so pre-hop failure degrades to
+  // created:'n-a' + note and the native CLI reports the real problem itself.
+  if (request.mkdir !== false) await ensureDestinationDir(endpoints.dst, signal, options.execArgvFor, wrap, receipt)
+  else receipt.created = 'n-a'
 
   // Single native command routes.
   if (s === 'local' && t === 'ssh') {
@@ -198,7 +221,7 @@ export async function nativeCopy(request: {
         dstSpec = `superd-scp3-destination:${endpoints.dst.path}`
       }
       const argv = ['scp', '-3', ...extra, ...oneShot, srcSpec, dstSpec]
-      return finish('scp -3 (data through origin)', [argv], [await runNative(wrap(argv), signal)])
+      return finish('scp-3', [argv], [await runNative(wrap(argv), signal)], config !== undefined ? [[config.path, '<temp-ssh-config>']] : [])
     }
     catch (error) {
       if (signal.aborted) unknown = true
@@ -215,21 +238,21 @@ export async function nativeCopy(request: {
     const argv = ['docker', 'cp', ...oneShot, endpoints.src.path, `${containerOf(endpoints.dst.plan)}:${endpoints.dst.path}`]
     const result = await runNative(wrap(argv), signal)
     withSymlinkHint(result)
-    return finish('docker cp', [argv], [result])
+    return finish('docker-cp', [argv], [result])
   }
   if (s === 'docker' && t === 'local') {
     const argv = ['docker', 'cp', ...oneShot, `${containerOf(endpoints.src.plan)}:${endpoints.src.path}`, endpoints.dst.path]
     const result = await runNative(wrap(argv), signal)
     withSymlinkHint(result)
-    return finish('docker cp', [argv], [result])
+    return finish('docker-cp', [argv], [result])
   }
   if (s === 'local' && t === 'incus') {
     const argv = ['incus', 'file', 'push', ...(await recursiveFlag(endpoints.src.path, oneShot, '-r')), ...oneShot, endpoints.src.path, `${containerOf(endpoints.dst.plan)}${endpoints.dst.path}`]
-    return finish('incus file push', [argv], [await runNative(wrap(argv), signal)])
+    return finish('incus-file-push', [argv], [await runNative(wrap(argv), signal)])
   }
   if (s === 'incus' && t === 'local') {
     const argv = ['incus', 'file', 'pull', ...oneShot, `${containerOf(endpoints.src.plan)}${endpoints.src.path}`, endpoints.dst.path]
-    return finish('incus file pull', [argv], [await runNative(wrap(argv), signal)])
+    return finish('incus-file-pull', [argv], [await runNative(wrap(argv), signal)])
   }
   if (s === 'local' || t === 'local') throw new Error('remote: this endpoint pair is a single native command route; pullArgv/pushArgv apply to cross-endpoint pairs only')
 
@@ -243,9 +266,12 @@ export async function nativeCopy(request: {
     const pullArgv = segmentArgv(endpoints.src.plan, endpoints.src.path, staged, pullOptions, 'pull')
     const pushArgv = segmentArgv(endpoints.dst.plan, endpoints.dst.path, staged, pushOptions, 'push')
     const first = await runNative(wrap(pullArgv), signal)
-    if (first.exit !== 0) return finish('two native commands with origin staging (push not started: pull failed)', [pullArgv], [first])
+    if (first.exit !== 0) {
+      receipt.note = 'push not started: pull failed'
+      return finish('staged-pull-push', [pullArgv], [first], [[staged, '<staging>']])
+    }
     const second = await runNative(wrap(pushArgv), signal)
-    return finish('two native commands with origin staging', [pullArgv, pushArgv], [first, second])
+    return finish('staged-pull-push', [pullArgv, pushArgv], [first, second], [[staged, '<staging>']])
   }
   finally {
     const removed = await rm(scratch, { recursive: true, force: true }).then(() => true, () => false)
@@ -267,6 +293,46 @@ function segmentArgv(plan: CopyPlan, remote: string, staged: string, opts: strin
   }
   const spec = `${plan.container}${remote}`
   return leg === 'pull' ? ['incus', 'file', 'pull', ...opts, spec, staged] : ['incus', 'file', 'push', ...opts, staged, spec]
+}
+
+/** D3 mkdir pre-hop: ensure the destination's PARENT directory exists before
+ * the transfer (never the operand itself — see parent-only note below).
+ * transfer. Local dst is node-side; remote dst runs ONE exec `mkdir -p` probe
+ * whose stdout discloses created-vs-existed. Best-effort by contract: any
+ * failure records created:'n-a' + note and lets the copy proceed so the native
+ * CLI surfaces the real error (and stopped-container docker cp keeps working). */
+export async function ensureDestinationDir(dst: NativeEndpoint, signal: AbortSignal, execArgvFor: ((plan: TargetPlan, script: string) => string[]) | undefined, wrap: (argv: string[]) => string[], receipt: NativeCopyReceipt): Promise<void> {
+  // Parent-only (2026-10-17, after the scp -3 layout shift): pre-creating a
+  // trailing-slash dst DIRECTORY changes scp's own layout semantics (existing
+  // dir → source dir copied INSIDE it). The pre-hop never touches the operand
+  // itself, only its parent — native CLI behavior stays byte-identical.
+  const dir = dirname(dst.path)
+  if (dir === '/' || dir === '.') { receipt.created = false; return }
+  if (dst.plan.kind === 'local') {
+    try {
+      if (existsSync(dir)) { receipt.created = false; return }
+      mkdirSync(dir, { recursive: true })
+      receipt.created = true
+    }
+    catch (error) { receipt.created = 'n-a'; receipt.note = `mkdir pre-hop failed: ${error instanceof Error ? error.message : String(error)}` }
+    return
+  }
+  if (execArgvFor === undefined) { receipt.created = 'n-a'; return }
+  if (/[\r\n]/.test(dir)) { receipt.created = 'n-a'; receipt.note = 'mkdir pre-hop skipped: newline-bearing destination path'; return }
+  const quoted = `'${dir.replaceAll("'", "'\\\\''")}'`
+  const script = `if [ -d ${quoted} ]; then echo existed; else mkdir -p ${quoted} && echo created; fi`
+  try {
+    const result = await runNative(wrap(execArgvFor(dst.plan, script)), signal)
+    const word = result.stdout.trim().split('\n').pop()
+    if (result.exit === 0 && word === 'created') receipt.created = true
+    else if (result.exit === 0 && word === 'existed') receipt.created = false
+    else {
+      receipt.created = 'n-a'
+      const tail = result.stderr.trim().split('\n').filter(line => line.length > 0).pop()
+      receipt.note = `mkdir pre-hop unavailable (exit ${result.exit})${tail !== undefined ? `: ${tail}` : ''}`
+    }
+  }
+  catch (error) { receipt.created = 'n-a'; receipt.note = `mkdir pre-hop failed: ${error instanceof Error ? error.message : String(error)}` }
 }
 
 /** Distinguishing identities for scp -3: an origin-only temp config maps two
@@ -292,7 +358,7 @@ function withSymlinkHint(result: { exit: number | null; stderr: string }): void 
   }
 }
 
-async function tempSshConfig(source: SshConnection, destination: SshConnection, runNative: (argv: string[], signal: AbortSignal) => Promise<{ exit: number | null; stdout: string }>): Promise<{ path: string; dir: string }> {
+export async function tempSshConfig(source: SshConnection, destination: SshConnection, runNative: (argv: string[], signal: AbortSignal) => Promise<{ exit: number | null; stdout: string }>): Promise<{ path: string; dir: string }> {
   // `ssh:<alias>` targets carry the alias verbatim; with `-F <tempconfig>` ssh
   // cannot see ~/.ssh/config, so an alias HostName is unresolvable (2026-10-14
   // user acceptance: scp -3 dev3→dev4 died with "Could not resolve hostname").
@@ -332,7 +398,7 @@ async function tempSshConfig(source: SshConnection, destination: SshConnection, 
  *  for inlining into the temp config — a path is not key material and stays on the
  *  origin (F1, 2026-10-14: dev4's only authorized key lived in config, not the agent;
  *  dropping it made scp -3 fail with a bare Permission denied). */
-async function resolveThroughOriginConfig(c: SshConnection, runNative: (argv: string[], signal: AbortSignal) => Promise<{ exit: number | null; stdout: string }>): Promise<{ connection: SshConnection; identityFiles: string[] }> {
+export async function resolveThroughOriginConfig(c: SshConnection, runNative: (argv: string[], signal: AbortSignal) => Promise<{ exit: number | null; stdout: string }>): Promise<{ connection: SshConnection; identityFiles: string[] }> {
   let probe: { exit: number | null; stdout: string } | undefined
   try { probe = await runNative(['ssh', '-G', c.host], new AbortController().signal) } catch { probe = undefined }
   if (probe === undefined || probe.exit !== 0) return { connection: c, identityFiles: [] }

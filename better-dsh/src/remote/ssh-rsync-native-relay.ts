@@ -238,7 +238,7 @@ async function forwardRoute(argv: string[], source: RelayEndpoint, destination: 
  *  printed after its directory check and right before the daemon exec) or exits.
  *  'ready' only when the daemon is actually about to serve — closes the 0.3.1-e
  *  race where -L opens at session start but the script dies ~150ms later. */
-async function waitForDaemonReady(held: Held, budgetMs: number): Promise<'ready' | 'exited' | 'timeout'> {
+export async function waitForDaemonReady(held: { stderrSink: { text: string }; child: { exitCode: number | null } }, budgetMs: number): Promise<'ready' | 'exited' | 'timeout'> {
   const deadline = Date.now() + budgetMs
   for (;;) {
     if (/^SUPERD-RSYNC-TMP \S+$/m.test(held.stderrSink.text)) return 'ready'
