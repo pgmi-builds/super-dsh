@@ -1,6 +1,6 @@
-# DSH 0.2.1-rc.1 对齐 — 0.3.1-i / 0.3.1-j
+# DSH 0.2.1-rc.1 对齐 — 0.3.1-i / 0.3.1-j / 发布 0.3.1-e
 
-2026-10-17（Asia/Hong_Kong）上游对齐轮。user 指令：upstream DSH 更新到 0.2.1-rc.1，启动本轮对齐；授权放下 4999 测试线供本轮使用。生产 3080 未触碰；未 publish、未 push（未获发版放行）。同日晚 user 手工验收发现 A2A 会话面回归（单一根因，见文末 0.3.1-j 增补），当轮修复并在两条测试线复验。
+2026-10-17（Asia/Hong_Kong）上游对齐轮。user 指令：upstream DSH 更新到 0.2.1-rc.1，启动本轮对齐；授权放下 4999 测试线供本轮使用。同日晚 user 手工验收发现 A2A 会话面回归（单一根因，见文末 0.3.1-j 增补），当轮修复并在两条测试线复验；随后 user 明确放行 push + publish，取 registry 最小未用字母发布 **0.3.1-e**（j 内容原样、仅版本号改动；发布记录见文末）。生产 3080 全程未触碰。
 
 ## 基线与上游源码轨
 
@@ -78,4 +78,15 @@ user 手工验收发现：`agent_status` 本地收集与 `send` 到本地 agent 
 
 （better-dsh@0.3.1-j 内容与 i 相同字节，仅版本号同步；super-dsh 携带 A2A 修复。）
 
-私有证据在 `.scratch/alignment-0.2.1-rc.1/`（PC）与 dev3 `~/workspaces/superd/.scratch/alignment-021rc1/`（构建/安装/对账/会话/浏览器/双机 matrix）。含认证的文件不进 Git。未 publish、未 tag、未 push——等待 user 放行。
+## 发布 0.3.1-e（2026-10-17 晚，user 放行：push + publish，最小字母版本）
+
+registry 已发布字母 a/b/d → 最小未用字母 **e**。j 内容原样重版本（仅版本号差异），root 42/0，4999 整线装 e 双包重启后 A2A send smoke `delivered`（conversation 0ldh8y）——发布字节与验收字节一致。
+
+| 包 | SHA256 |
+| --- | --- |
+| better-dsh@0.3.1-e | `38eb5478b2e2a771746338906600734ca58b87527fed775519ef8901d225ad93` |
+| super-dsh@0.3.1-e | `803c1417bf221fe5061a0b3f6390c372df145e70a4e966c9423cb8d1aac841ca` |
+
+npm publish（pgmi-builds，token 经 secrets store 显式注入）两包 latest → 0.3.1-e；git tag `v0.3.1-e` 与 master 一并推送。授权来自 user 本轮明确指令，不沿用到下次。
+
+私有证据在 `.scratch/alignment-0.2.1-rc.1/`（PC）与 dev3 `~/workspaces/superd/.scratch/alignment-021rc1/`（构建/安装/对账/会话/浏览器/双机 matrix）。含认证的文件不进 Git。
