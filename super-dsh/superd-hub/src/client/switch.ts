@@ -44,6 +44,8 @@ import {
   observeCachesRefreshed,
   runMachineDownFeedback,
   SESSIONS_CURRENT_KEY,
+  FUSION_RELOAD_MARKER,
+  fusionReloadDecision,
   type NavigationCacheFace,
   type RestoreCaches,
   type RestoreWorkspaceView,
@@ -126,6 +128,54 @@ export interface SwitchSessions {
 /** Whether this page is a fusion page: the baked flag global is present. */
 export function fusionPage(): boolean {
   return (globalThis as { __SUPERD_UI_FUSION__?: unknown }).__SUPERD_UI_FUSION__ === true
+}
+
+/**
+ * The sessionStorage marker read (undefined-safe: a storage failure is
+ * `false` — the probe then reloads without the loop guard, which only
+ * matters for a host that reports fusion but never bakes the flag).
+ */
+function staleReloadMarker(): boolean {
+  try {
+    const storage = (globalThis as { sessionStorage?: Storage }).sessionStorage
+    return storage?.getItem(FUSION_RELOAD_MARKER) !== null
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Live-install staleness probe (2026-10-18): the ONE call the client entry
+ * makes when the page does not carry the fusion flag. A flag-absent page is
+ * either a pre-install page (the client half hot-loaded into HTML served
+ * before the row mounted — the fresh-install case where the Hub row renders
+ * but every switch affordance stays hidden until a manual restart) or a
+ * deliberate flag-off deployment (T-E). The roster's additive `hub.fusion`
+ * answers which; on an armed host the page re-boots ONCE — the marker keeps
+ * a misbehaving host from ever looping the tab. Every failure mode (fetch
+ * error, non-OK, old host without the field) degrades to no action: the
+ * flag-off shapes below are the honest rendering of an unanswered probe.
+ *
+ * Fire-and-forget by contract — never throws, never blocks the apply.
+ */
+export function probeStaleFusionPage(): void {
+  void (async () => {
+    let hubFusion: unknown
+    try {
+      const response = await fetch('/api/agent-runtime', { credentials: 'same-origin' })
+      if (!response.ok) return
+      hubFusion = ((await response.json()) as { hub?: { fusion?: unknown } }).hub?.fusion
+    } catch {
+      return
+    }
+    if (fusionReloadDecision({ flagPresent: fusionPage(), markerPresent: staleReloadMarker(), hubFusion }) !== 'reload') return
+    try {
+      ;(globalThis as { sessionStorage?: Storage }).sessionStorage?.setItem(FUSION_RELOAD_MARKER, '1')
+    } catch {
+      /* private-mode storage: reload without the marker (a truthful host re-arms the page, ending the flow) */
+    }
+    ;(globalThis as { location?: { reload(): void } }).location?.reload()
+  })()
 }
 
 /** The page atom, when the page carries one (it always does on a fusion page). */

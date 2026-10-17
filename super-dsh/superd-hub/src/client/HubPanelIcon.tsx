@@ -3,6 +3,7 @@ import { IconChevronDownOutlineRegular, Menu, type MenuEntry } from '@deepseek-a
 import { SuperdToastHost } from './toast.js'
 import { HubGlyph } from './glyph.js'
 import { currentMountPath, fetchRoster, NATIVE_LINK, rosterFromGlobal, type AgentLink } from './roster.js'
+import { measurePillBox, pillStyle, type PillBox } from './pill-geometry.js'
 import { fetchMachines } from './mesh-api.js'
 import { groupByMachine, machineLabelsFrom } from './mesh-groups.js'
 import { RuntimeMark } from './runtime-icons.js'
@@ -46,9 +47,17 @@ import { activeAgentName, hubRowActive, seatClickDecision, switchAffordance } fr
  * Pure restyle — the click contract below is untouched.
  *
  * Geometry: the native panel row renders this component inside its 16px glyph
- * span, so the selector is `position: fixed` against the row button's measured
- * box (re-measured on mount, on wide/rail flips, on window resize and on the
- * row's own box changes). Nothing outside this subtree is read or written.
+ * span, and the `Menu` wrapper span (upstream `.root`) is `position: relative`
+ * in-flow inside the row — so the selector anchors to that wrapper with
+ * `position: absolute`, at wrapper-relative offsets derived from the row
+ * button's measured box (pill-geometry.ts; re-measured on mount, on wide/rail
+ * flips, on window resize and on the row's own box changes). The offsets are
+ * scroll-INVARIANT by construction — both boxes ride the same flow — so the
+ * pill tracks the row through any sidebar scroll natively, zero JS per
+ * scrolled frame. The `position: fixed` predecessor needed exactly that JS
+ * and had none: on iOS Safari it stayed at its mount-time viewport spot
+ * while the row scrolled away (2026-10-18 report). Nothing outside this
+ * subtree is read or written.
  *
  * @module superd-hub/client/HubPanelIcon
  */
@@ -61,12 +70,6 @@ interface HubPanelIconProps {
   readonly active: boolean
 }
 
-/** The measured row box the fixed-position selector anchors to. */
-interface RowBox {
-  readonly top: number
-  readonly bottom: number
-  readonly right: number
-}
 
 /** Runtime-mark edge inside the selector, and the chevron's own default edge. */
 const MARK_SIZE = 16
@@ -79,8 +82,6 @@ const CHEVRON_SIZE = 14
 const SELECTOR_HEIGHT = 28
 const SELECTOR_PAD = 8
 const SELECTOR_GAP = 4
-/** The row's own horizontal padding (native `.panelRow`): the selector's inset. */
-const ROW_INSET = 8
 
 export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
   // The sidebar hands the glyph 16px wide / 18px rail; the rail row has no
@@ -90,7 +91,7 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
   const selectorRef = React.useRef<HTMLSpanElement | null>(null)
   const [open, setOpen] = React.useState(false)
   const [hover, setHover] = React.useState(false)
-  const [box, setBox] = React.useState<RowBox | null>(null)
+  const [box, setBox] = React.useState<PillBox | null>(null)
   const [agents, setAgents] = React.useState<AgentLink[]>(() => rosterFromGlobal() ?? [NATIVE_LINK])
   // Machine key → display label for the menu's sections; undefined until the
   // machines face has answered once — the flat-menu degrade state.
@@ -117,16 +118,23 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
 
   const measure = React.useCallback((): void => {
     const row = rootRef.current?.closest('button') ?? null
-    if (row === null) {
+    // The pill's positioned ancestor: the Menu wrapper span (upstream `.root`
+    // is `position: relative`, in-flow inside the row). Present whenever this
+    // effect can run — the Menu mounts with the glyph, before measurement.
+    const wrap = selectorRef.current?.parentElement ?? null
+    if (row === null || wrap === null) {
       setBox(null)
       return
     }
-    const rect = row.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    const wrapRect = wrap.getBoundingClientRect()
     // Identity-preserving: the observers below fire far more often than the
     // row actually moves, and a fresh object would re-render on each one.
-    setBox((prev) => prev !== null && prev.top === rect.top && prev.bottom === rect.bottom && prev.right === rect.right
-      ? prev
-      : { top: rect.top, bottom: rect.bottom, right: rect.right })
+    const next = measurePillBox({
+      row: { top: rowRect.top, bottom: rowRect.bottom, right: rowRect.right },
+      wrap: { left: wrapRect.left, top: wrapRect.top },
+    })
+    setBox((prev) => prev !== null && prev.dx === next.dx && prev.cy === next.cy ? prev : next)
   }, [])
 
   // Measurement only anchors the selector and the portaled menu — both
@@ -237,7 +245,7 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
       {/* C1: the always-mounted owner of the official Toast primitive —
           the banner portals to body top-center from here. */}
       <SuperdToastHost />
-      {wide && box !== null && switchUi.available && (
+      {wide && switchUi.available && (
         <Menu
           open={open}
           onClose={() => { setOpen(false) }}
@@ -247,8 +255,9 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
           dense
           portal
           align="end"
-          // The selector is fixed-positioned, so the Menu's own wrapper span
-          // measures 0x0: the anchor rect has to come from the pill itself.
+          // The pill is anchored to the wrapper and out of its flow, so the
+          // Menu's own wrapper span measures 0x0: the anchor rect has to come
+          // from the pill itself.
           getAnchorRect={anchorRect}
           anchor={(
             <span
@@ -261,10 +270,11 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
               // The native seat's own hint channel: `title`, not a Tooltip.
               title={activeLabel === undefined ? 'Agent selector' : `Agent selector: ${activeLabel}`}
               style={{
-                position: 'fixed',
-                left: box.right - ROW_INSET - selectorWidth,
-                top: box.top + (box.bottom - box.top) / 2,
-                transform: 'translateY(-50%)',
+                // Wrapper-relative absolute placement (pill-geometry.ts):
+                // scroll-invariant by construction. `box` is null only between
+                // mount and the pre-paint first measure — hidden, never flashed.
+                ...pillStyle(box ?? { dx: 0, cy: 0 }, selectorWidth),
+                visibility: box === null ? 'hidden' : 'visible',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',

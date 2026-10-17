@@ -898,6 +898,16 @@ function machineLabelsFrom(list) {
 * roster-probe failure → revert to native + a visible toast, never a page
 * lock).
 *
+* Live-install staleness (2026-10-18): the fusion flag global and the
+* transport script are baked into the SERVED index, so a page that booted
+* before super-dsh was installed runs the freshly hot-loaded client half
+* against a stale page — `fusionPage()` reads false and every switch
+* affordance stays hidden until a manual restart. {@link fusionReloadDecision}
+* is the pure decision behind the client half's heal: one roster answer later,
+* reload the page once. The transport must precede app boot (its upload hook
+* `__DSH_FILE_UPLOAD__` is read at construction), so a client-side flag flip
+* can never arm a stale page honestly — the page must be re-served.
+*
 * Host-half on purpose: plain TS with every effect injected through
 * {@link SwitchHost} — no DOM, no client imports — so `test/client-switch.test.mjs`
 * imports it from `dist/` like every other host module. The client half
@@ -1343,6 +1353,22 @@ function switchAffordance(fusion) {
 		hint: FUSION_OFF_HINT
 	};
 }
+/** The sessionStorage marker guarding the stale-page reload: one per tab session. */
+const FUSION_RELOAD_MARKER = "superd.fusion-armed.reload";
+/**
+* The live-install staleness decision (host-half pure so the node tests pin
+* the table from `dist/`). The host's `hub.fusion` field is the ONLY thing
+* that distinguishes a page-booted-before-install from a deliberately
+* flag-off deployment — without it the reload would loop forever on every
+* `enabled: false` composition (the client half loads there too).
+*/
+function fusionReloadDecision(input) {
+	if (input.flagPresent) return "armed";
+	if (input.markerPresent) return "already-reloaded";
+	if (input.hubFusion === true) return "reload";
+	if (input.hubFusion === false) return "row-off";
+	return "host-silent";
+}
 /**
 * The active agent's display name for the Hub row's right-edge selector: the
 * roster label of the atom's `activeAgent` key — the name the selector's
@@ -1620,6 +1646,53 @@ function createReadinessWaiter(faces, options = {}) {
 /** Whether this page is a fusion page: the baked flag global is present. */
 function fusionPage() {
 	return globalThis.__SUPERD_UI_FUSION__ === true;
+}
+/**
+* The sessionStorage marker read (undefined-safe: a storage failure is
+* `false` — the probe then reloads without the loop guard, which only
+* matters for a host that reports fusion but never bakes the flag).
+*/
+function staleReloadMarker() {
+	try {
+		return globalThis.sessionStorage?.getItem(FUSION_RELOAD_MARKER) !== null;
+	} catch {
+		return false;
+	}
+}
+/**
+* Live-install staleness probe (2026-10-18): the ONE call the client entry
+* makes when the page does not carry the fusion flag. A flag-absent page is
+* either a pre-install page (the client half hot-loaded into HTML served
+* before the row mounted — the fresh-install case where the Hub row renders
+* but every switch affordance stays hidden until a manual restart) or a
+* deliberate flag-off deployment (T-E). The roster's additive `hub.fusion`
+* answers which; on an armed host the page re-boots ONCE — the marker keeps
+* a misbehaving host from ever looping the tab. Every failure mode (fetch
+* error, non-OK, old host without the field) degrades to no action: the
+* flag-off shapes below are the honest rendering of an unanswered probe.
+*
+* Fire-and-forget by contract — never throws, never blocks the apply.
+*/
+function probeStaleFusionPage() {
+	(async () => {
+		let hubFusion;
+		try {
+			const response = await fetch("/api/agent-runtime", { credentials: "same-origin" });
+			if (!response.ok) return;
+			hubFusion = (await response.json()).hub?.fusion;
+		} catch {
+			return;
+		}
+		if (fusionReloadDecision({
+			flagPresent: fusionPage(),
+			markerPresent: staleReloadMarker(),
+			hubFusion
+		}) !== "reload") return;
+		try {
+			globalThis.sessionStorage?.setItem(FUSION_RELOAD_MARKER, "1");
+		} catch {}
+		globalThis.location?.reload();
+	})();
 }
 /** The page atom, when the page carries one (it always does on a fusion page). */
 function uiState() {
@@ -3881,6 +3954,38 @@ function HubPage() {
 }
 
 //#endregion
+//#region src/client/pill-geometry.ts
+/**
+* Derive the scroll-invariant offsets from one same-frame measurement.
+* Measuring the DELTAS (not absolute coordinates) is the whole point: they
+* survive any scroll of any ancestor, so nothing needs to re-run while the
+* sidebar scrolls.
+*/
+function measurePillBox(input) {
+	return {
+		dx: input.row.right - input.wrap.left,
+		cy: (input.row.top + input.row.bottom) / 2 - input.wrap.top
+	};
+}
+/** The row's own horizontal padding (native `.panelRow`): the selector's inset. */
+const PILL_ROW_INSET = 8;
+/**
+* The pill's placement, wrapper-relative: its right edge sits `inset` px
+* inside the row's right edge, vertically centered on the row
+* (`translateY(-50%)`). `selectorWidth` is the render-time pill width (the
+* mark is present only while an agent is active), so it stays a render
+* concern; the measured box is not.
+*/
+function pillStyle(box, selectorWidth, inset = PILL_ROW_INSET) {
+	return {
+		position: "absolute",
+		left: box.dx - inset - selectorWidth,
+		top: box.cy,
+		transform: "translateY(-50%)"
+	};
+}
+
+//#endregion
 //#region src/client/HubPanelIcon.tsx
 /** Runtime-mark edge inside the selector, and the chevron's own default edge. */
 const MARK_SIZE = 16;
@@ -3893,8 +3998,6 @@ const CHEVRON_SIZE = 14;
 const SELECTOR_HEIGHT = 28;
 const SELECTOR_PAD = 8;
 const SELECTOR_GAP = 4;
-/** The row's own horizontal padding (native `.panelRow`): the selector's inset. */
-const ROW_INSET = 8;
 function HubPanelIcon({ size }) {
 	const wide = size <= 16;
 	const rootRef = react.useRef(null);
@@ -3917,16 +4020,25 @@ function HubPanelIcon({ size }) {
 	}, [fusion]);
 	const measure = react.useCallback(() => {
 		const row = rootRef.current?.closest("button") ?? null;
-		if (row === null) {
+		const wrap = selectorRef.current?.parentElement ?? null;
+		if (row === null || wrap === null) {
 			setBox(null);
 			return;
 		}
-		const rect = row.getBoundingClientRect();
-		setBox((prev) => prev !== null && prev.top === rect.top && prev.bottom === rect.bottom && prev.right === rect.right ? prev : {
-			top: rect.top,
-			bottom: rect.bottom,
-			right: rect.right
+		const rowRect = row.getBoundingClientRect();
+		const wrapRect = wrap.getBoundingClientRect();
+		const next = measurePillBox({
+			row: {
+				top: rowRect.top,
+				bottom: rowRect.bottom,
+				right: rowRect.right
+			},
+			wrap: {
+				left: wrapRect.left,
+				top: wrapRect.top
+			}
 		});
+		setBox((prev) => prev !== null && prev.dx === next.dx && prev.cy === next.cy ? prev : next);
 	}, []);
 	react.useLayoutEffect(() => {
 		if (!wide || !switchUi.available) return;
@@ -4036,7 +4148,7 @@ function HubPanelIcon({ size }) {
 		children: [
 			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(HubGlyph, { size }),
 			/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SuperdToastHost, {}),
-			wide && box !== null && switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Menu, {
+			wide && switchUi.available && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.Menu, {
 				open,
 				onClose: () => {
 					setOpen(false);
@@ -4057,10 +4169,11 @@ function HubPanelIcon({ size }) {
 					"aria-expanded": open,
 					title: activeLabel === void 0 ? "Agent selector" : `Agent selector: ${activeLabel}`,
 					style: {
-						position: "fixed",
-						left: box.right - ROW_INSET - selectorWidth,
-						top: box.top + (box.bottom - box.top) / 2,
-						transform: "translateY(-50%)",
+						...pillStyle(box ?? {
+							dx: 0,
+							cy: 0
+						}, selectorWidth),
+						visibility: box === null ? "hidden" : "visible",
 						display: "inline-flex",
 						alignItems: "center",
 						justifyContent: "center",
@@ -4105,9 +4218,17 @@ const inject = ["slots"];
 * absent (a composition without the sidebar renders nothing — every seat
 * here is an optional occupant by contract).
 *
-* @param ctx - client root context.
+* Live-install staleness: the fusion flag is baked into the SERVED index, so
+* a page that booted before super-dsh was installed carries no flag even
+* though this very apply is the hot-loaded client half — the Hub row would
+* render with every switch affordance hidden until a manual restart. When
+* the flag is absent the entry probes the roster's `hub.fusion` once and
+* re-boots the page on an armed host (switch.ts `probeStaleFusionPage`; the
+* sessionStorage marker bounds it to one reload per tab session). A flag-off
+* deployment answers `false` and keeps the T-E inert shape with no reload.
 */
 function apply(ctx) {
+	if (!fusionPage()) probeStaleFusionPage();
 	ctx.inject(["slots"], (raw) => {
 		const scope = raw;
 		scope.effect(() => scope.slots.inject("main", () => scope.slots.register({

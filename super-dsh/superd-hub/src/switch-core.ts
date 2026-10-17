@@ -9,6 +9,16 @@
  * roster-probe failure → revert to native + a visible toast, never a page
  * lock).
  *
+ * Live-install staleness (2026-10-18): the fusion flag global and the
+ * transport script are baked into the SERVED index, so a page that booted
+ * before super-dsh was installed runs the freshly hot-loaded client half
+ * against a stale page — `fusionPage()` reads false and every switch
+ * affordance stays hidden until a manual restart. {@link fusionReloadDecision}
+ * is the pure decision behind the client half's heal: one roster answer later,
+ * reload the page once. The transport must precede app boot (its upload hook
+ * `__DSH_FILE_UPLOAD__` is read at construction), so a client-side flag flip
+ * can never arm a stale page honestly — the page must be re-served.
+ *
  * Host-half on purpose: plain TS with every effect injected through
  * {@link SwitchHost} — no DOM, no client imports — so `test/client-switch.test.mjs`
  * imports it from `dist/` like every other host module. The client half
@@ -653,6 +663,57 @@ export function switchAffordance(fusion: boolean): SwitchAffordance {
   return fusion ? { available: true, hint: '' } : { available: false, hint: FUSION_OFF_HINT }
 }
 
+// ---- Live-install staleness: the once-per-session reload heal -------------
+//
+// The flag global is `webserver/index-inject` state: a page served BEFORE
+// the fusion row mounted never carries it, while the client graph hot-update
+// (dsh-client-hmr) still applies the client half to that page — the Hub row
+// appears, the selector does not, and only a manual restart healed it. The
+// heal re-boots the page ONCE (a sessionStorage marker keeps a host that
+// reports fusion but never bakes the flag from looping the tab), because the
+// transport script is boot-time by design: a stale page cannot be armed in
+// place, only re-served.
+
+/** The sessionStorage marker guarding the stale-page reload: one per tab session. */
+export const FUSION_RELOAD_MARKER = 'superd.fusion-armed.reload'
+
+/** What the stale-page probe decides (the client binding executes it). */
+export type FusionReloadDecision =
+  /** Flag present — the page is armed; nothing to heal. */
+  | 'armed'
+  /** The marker is set — this tab already reloaded once; never loop. */
+  | 'already-reloaded'
+  /** The host answered `hub.fusion: false` — the T-E flag-off shape; stay degraded. */
+  | 'row-off'
+  /** No usable answer (old host without the additive field, or the fetch failed) — stay degraded. */
+  | 'host-silent'
+  /** Stale page + an armed host — set the marker and reload once. */
+  | 'reload'
+
+/** The inputs of one stale-page probe decision. */
+export interface FusionReloadInput {
+  /** Whether the page carries the baked `__SUPERD_UI_FUSION__` flag global. */
+  flagPresent: boolean
+  /** Whether {@link FUSION_RELOAD_MARKER} is already in sessionStorage. */
+  markerPresent: boolean
+  /** The roster answer's additive `hub.fusion` field (undefined: absent). */
+  hubFusion?: unknown
+}
+
+/**
+ * The live-install staleness decision (host-half pure so the node tests pin
+ * the table from `dist/`). The host's `hub.fusion` field is the ONLY thing
+ * that distinguishes a page-booted-before-install from a deliberately
+ * flag-off deployment — without it the reload would loop forever on every
+ * `enabled: false` composition (the client half loads there too).
+ */
+export function fusionReloadDecision(input: FusionReloadInput): FusionReloadDecision {
+  if (input.flagPresent) return 'armed'
+  if (input.markerPresent) return 'already-reloaded'
+  if (input.hubFusion === true) return 'reload'
+  if (input.hubFusion === false) return 'row-off'
+  return 'host-silent'
+}
 /**
  * Structural slice of one roster row the Hub UI helpers read (the client
  * roster's `AgentLink` shape mirrored structurally — this module never imports

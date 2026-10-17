@@ -873,10 +873,14 @@ test('gate T-G: a non-member pointer holds the gate; a byId-only gain (same ids 
 function harness() {
   const injectCbs = []
   const listeners = []
+  const effects = []
   return {
     inject(_deps, cb) { injectCbs.push(cb) },
-    on(_event, fn) { listeners.push(fn) },
-    materialize() { for (const cb of [...injectCbs]) cb() },
+    // The armed-state effect (2026-10-18): factories run at materialize,
+    // matching cordis's mount-time execution.
+    effect(fn, _label) { effects.push(fn) },
+    on(_event, fn) { listeners.push(fn); return () => {} },
+    materialize() { for (const cb of [...injectCbs]) cb(); for (const run of [...effects]) run() },
     emit(table) { for (const fn of [...listeners]) fn(table) },
   }
 }

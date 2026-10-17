@@ -19,6 +19,7 @@ import { PACK_VERSION } from './pack-version.js'
 import { listRuntimeKeys } from './targets.js'
 import { agentLinks } from './agent-roster.js'
 import { ensureSelf } from './machines.js'
+import { fusionTransportArmed } from './fusion-transport.js'
 
 /** The shared-channel Fetch route path this RPC face owns. */
 export const AGENT_RUNTIME_RPC_PATH = '/api/agent-runtime'
@@ -73,6 +74,11 @@ function json(status: number, body: unknown): Response {
  * ADDITIVE contract (mesh P1): the GET body gained `hub: {machineId, label,
  * version}` and every `agents` row gained `id` (a6); `available` and all
  * pre-existing agents fields are unchanged — old clients ignore the new
+ * fields, new clients read them. Live-install staleness (2026-10-18): the
+ * hub block also carries `fusion` — the fusion row's armed state — so a
+ * page that booted before super-dsh was installed can tell its own
+ * staleness apart from a flag-off deployment and reload once (switch-core
+ * `fusionReloadDecision`).
  * fields, new clients read them.
  * @param request - the incoming `/api/agent-runtime` request.
  * @param source - live runtime registry view.
@@ -101,7 +107,20 @@ export async function handleAgentRuntime(
     const links = new URL(request.url).searchParams.get('mesh') === '1'
       ? agentLinks(home).filter((l) => l.machine === 'local')
       : agentLinks(home)
-    return json(200, { available, agents: links, hub: { machineId: self.id, label: self.label, version: HUB_VERSION } })
+    return json(200, {
+      available,
+      agents: links,
+      hub: {
+        machineId: self.id,
+        label: self.label,
+        version: HUB_VERSION,
+        // Additive (live-install staleness): `true` exactly while the fusion
+        // row is armed — the fact a pre-install page cannot read off its own
+        // HTML. Peers' `?mesh=1` probes ignore it (same additivity rule as
+        // every hub-block field before it).
+        fusion: fusionTransportArmed(),
+      },
+    })
   }
   // A POST that used to switch a global selector has no meaning any more:
   // the addressed world is the mount path of the request, not a shared value.

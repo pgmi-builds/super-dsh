@@ -521,10 +521,14 @@ test('the generated script carries no double quotes (single-quote discipline)', 
 function harness() {
   const injectCbs = []
   const listeners = []
+  const effects = []
   return {
     inject(_deps, cb) { injectCbs.push(cb) },
-    on(_event, fn) { listeners.push(fn) },
-    materialize() { for (const cb of [...injectCbs]) cb() },
+    // The armed-state effect (2026-10-18): runs its factory immediately like
+    // cordis does; the returned disposer is collected for explicit teardown.
+    effect(fn, _label) { effects.push(fn) },
+    on(_event, fn) { listeners.push(fn); return () => {} },
+    materialize() { for (const cb of [...injectCbs]) cb(); for (const run of [...effects]) run() },
     emit(table) { for (const fn of [...listeners]) fn(table) },
   }
 }

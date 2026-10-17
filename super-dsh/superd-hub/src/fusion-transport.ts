@@ -401,6 +401,26 @@ export const Config = z.object({
   enabled: z.boolean().default(true),
 })
 
+/**
+ * How many live index-inject listeners this row has registered (one per
+ * mounted component fiber). Module-level because the consumer (the roster
+ * RPC) is a DIFFERENT row in the same bundle: a cross-row import of live
+ * composition state, the same single-instance guarantee that lets the
+ * client half share the shell's module table. Reset by the listener
+ * effect's disposal, so a runtime row disable stops the advertisement
+ * immediately.
+ */
+let armedRows = 0
+
+/**
+ * Whether the fusion row currently injects the transport script + flag
+ * global into served indexes. `false` before the first mount and after
+ * disposal — the roster GET answers with exactly this, and a stale page's
+ * client half reloads on `true` only (switch-core's `fusionReloadDecision`).
+ */
+export function fusionTransportArmed(): boolean {
+  return armedRows > 0
+}
 /** Cordis plugin name. */
 export const name = 'superd-fusion-transport'
 
@@ -418,8 +438,18 @@ export const inject: string[] = []
  * the {@link FUSION_FLAG_GLOBAL} baked global row (Task 4): one gate, both
  * halves.
  *
+ * Armed state: while the listener is registered the row publishes
+ * {@link fusionTransportArmed} = true (counter-owned, reset on effect
+ * disposal) — the one fact an already-open page needs to know that its
+ * stale, pre-install HTML cannot tell it. Consumed additively as
+ * `hub.fusion` on the roster GET (rpc.ts).
  * Off → the component registers nothing: no listener, no row, no script,
- * no flag global.
+ * no flag global. When ON, the row also publishes its armed state through
+ * {@link fusionTransportArmed}, which the roster RPC's additive `hub.fusion`
+ * field carries to already-open pages: their client half probes it and
+ * re-boots the page once (see switch-core's live-install staleness block —
+ * the served index predates the install, so only a re-serve can bake the
+ * flag + transport script).
  * @param ctx - host plugin context.
  * @param config - the row config (`enabled`, default on).
  */
@@ -428,10 +458,20 @@ export function apply(ctx: Context, config: FusionConfig | undefined): void {
   // composition that omits the config key cannot silently disable the surface.
   if (config?.enabled === false) return
   ctx.inject(['webServer'], () => {
-    ctx.on('webserver/index-inject', (table) => {
-      table.push({ kind: 'script', placement: 'head', text: renderFusionTransport() })
-      table.push({ kind: 'global', name: FUSION_FLAG_GLOBAL, value: true })
-    })
+    // The armed state rides the LISTENER's lifetime (an effect, not a bare
+    // mount): a live row disable/unload resets it, so the roster answer can
+    // never advertise fusion for a row that no longer injects anything.
+    ctx.effect(() => {
+      armedRows += 1
+      const offInject = ctx.on('webserver/index-inject', (table) => {
+        table.push({ kind: 'script', placement: 'head', text: renderFusionTransport() })
+        table.push({ kind: 'global', name: FUSION_FLAG_GLOBAL, value: true })
+      })
+      return () => {
+        armedRows -= 1
+        offInject()
+      }
+    }, 'superd-fusion-transport: index injection (armed state)')
   })
 }
 
