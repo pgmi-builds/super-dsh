@@ -8,9 +8,10 @@ import type { PluginManager, ChangeResult } from '@deepseek-ai/dsh-plugin-manage
 import type { BetterDashStatus } from './companion-contract.js'
 
 type Manager = Pick<PluginManager, 'listBundles' | 'installBundle'>
-interface Intent { attempted: boolean; done?: boolean; error?: string; missingAfterFailure?: boolean }
-// done marks a CONFIRMED first use (Better observed installed). A receipt with attempted
-// but neither done nor error is an interrupted first use — e.g. killed by the restart
+interface Intent { attempted: boolean; done?: boolean; error?: string; missingAfterFailure?: boolean; removed?: boolean }
+// done marks a CONFIRMED first use (Better observed installed); removed marks a
+// migrated legacy removal record. A receipt with attempted but neither done,
+// error, nor removed is an interrupted first use — e.g. killed by the restart
 // that installing Super itself triggers — and must re-arm, not suppress, the retry.
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
 async function optionalJson<T>(path: string): Promise<T | undefined> {
@@ -47,9 +48,10 @@ export class BetterDashCompanion {
     return this.initialized ??= (async () => {
       const saved = await optionalJson<Intent>(this.receipt)
       if (saved !== undefined) {
-        // Never-resurrect applies only to a CONFIRMED first use or a recorded
-        // failure; an interrupted first use (no done, no error) re-arms.
-        this.intent = saved.attempted && saved.done !== true && saved.error === undefined
+        // Never-resurrect applies to a CONFIRMED first use, a recorded failure,
+        // or a migrated removal record; an interrupted first use (no done, no
+        // error, no removal marker) re-arms.
+        this.intent = saved.attempted && saved.done !== true && saved.error === undefined && saved.removed !== true
           ? { attempted: false } : saved
         await this.cleanLegacy(); return
       }
@@ -57,7 +59,7 @@ export class BetterDashCompanion {
       // Any old registration was first use. An absent Better now means removal,
       // including when Super has since changed version; never resurrect it.
       if (old?.['super-dsh:better-dsh'] !== undefined) {
-        this.intent = { attempted: true }
+        this.intent = { attempted: true, removed: true }
         await this.save()
         await this.cleanLegacy()
       }

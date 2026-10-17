@@ -34,21 +34,21 @@ import { stripLabelFromUrl, type RealWebServerFace, type WorldRequest, type Worl
 import { worldFetchHandlerOf } from './world-host.js'
 import { WorldMuxServer, type MuxFailure } from './world-mux.js'
 
-/** The three-method face of a world's typertGateway service instance. */
+/** The face of a world's typertGateway service instance the hub forwards through. */
 export interface CarrierGatewayFace {
-  dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
+  dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal, peer: unknown): Promise<unknown>
   /**
    * Streams return an async iterable (upstream face is synchronous-returning).
    * Canonical order: (endpoint, payload, uplink, peer, signal, control) — the
-   * carrier passes no peer (ctx0's fence already authenticated the client),
-   * the mux controller's signal, and the controller itself, exactly as the
-   * native gateway's mux wires its own streams.
+   * carrier passes the world's owner browser Peer (0.2.1 gateways read it on
+   * every invocation), the mux controller's signal, and the controller
+   * itself, exactly as the native gateway's mux wires its own streams.
    */
   openWireStream(
     endpoint: string,
     payload: unknown,
     uplink: AsyncIterable<unknown>,
-    peer: undefined,
+    peer: unknown,
     signal: AbortSignal,
     control: AbortController,
   ): Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
@@ -109,6 +109,8 @@ function writeText(res: WorldResponse, status: number, body: string): void {
 export interface ForwardOptions {
   /** The addressed world's gateway instance. */
   gateway: CarrierGatewayFace
+  /** The addressed world's owner browser Peer (0.2.1 invocation identity). */
+  peer?: unknown
   /** World key addressing the world's published `/api` fetch handler. */
   label: string
   /** URL prefix this carrier strips before the world sees the request (`/omp`, `/hub`). */
@@ -235,7 +237,7 @@ export async function forwardApiCall(options: ForwardOptions, req: WorldRequest,
     }
     rpcId = envelope.rpcId
     const controller = new AbortController()
-    const result = await options.gateway.dispatchRpc(envelope.method, envelope.payload, controller.signal)
+    const result = await options.gateway.dispatchRpc(envelope.method, envelope.payload, controller.signal, options.peer)
     // The gateway already returns a Result (`{ok:true,value}` | `{ok:false,error}`),
     // which is exactly the server-response's `result` field.
     writeJson(res, 200, serverResult(rpcId, result))
@@ -254,11 +256,12 @@ export async function forwardApiCall(options: ForwardOptions, req: WorldRequest,
 /** One WorldMuxServer bound to `gateway` — the canonical openWireStream wiring in one place. */
 export function worldMuxOf(
   gateway: CarrierGatewayFace,
+  peer?: unknown,
   options?: { heartbeatIntervalMs?: number; failure?: (error: unknown) => MuxFailure },
 ): WorldMuxServer {
   return new WorldMuxServer(
     (endpoint, payload, uplink, control) => Promise.resolve(
-      gateway.openWireStream(endpoint, payload, uplink, undefined, control.signal, control),
+      gateway.openWireStream(endpoint, payload, uplink, peer, control.signal, control),
     ),
     {
       ...(options?.heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs: options.heartbeatIntervalMs }),

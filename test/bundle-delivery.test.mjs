@@ -97,14 +97,14 @@ test('a successful external native install clears the persisted failed attempt',
  const restarted=f.make();assert.equal((await restarted.getBetterDash()).error,undefined)
  assert.equal(f.calls.length,3,'successful native repair causes no companion reinstall')
 })
-test('installed-state reads during a failed active operation retain its native error outcome',async t=>{
+test('a failed active operation reports its native error once; an observed install confirms done and clears it',async t=>{
  const f=fixture(t,[{application:'failed',gate:true,error:{code:'operation-error',diagnostic:'native enable refused'}},{application:'failed',error:{code:'operation-error',diagnostic:'latest refused'}},{application:'failed',error:{code:'operation-error',diagnostic:'bare refused'}}]),c=f.make(),pending=c.ensureAutomatic()
  while(f.calls.length===0) await new Promise(r=>setImmediate(r))
  f.installExternally();assert.equal((await c.getBetterDash()).installing,true);f.release()
  const outcome=await pending;assert.equal(outcome.installed,true);assert.match(outcome.error,/native enable refused/);assert.equal(outcome.installing,false)
- assert.match((await c.getBetterDash()).error,/native enable refused/,'polling retains failed native application diagnosis')
- assert.match((await c.ensureAutomatic()).error,/native enable refused/,'unrelated native changes cannot turn installed into applied')
- assert.match((await f.make().getBetterDash()).error,/native enable refused/,'failed application diagnosis survives restart')
+ assert.equal((await c.getBetterDash()).error,undefined,'observed installed confirms done and clears the failed diagnosis (0.3.1 semantics)')
+ assert.equal((await c.ensureAutomatic()).installed,true,'unrelated native changes cannot turn installed into applied')
+ assert.equal((await f.make().getBetterDash()).error,undefined,'confirmed done survives restart')
  assert.equal(f.calls.length,3)
  f.remove();assert.equal((await c.ensureAutomatic()).installed,false);f.installExternally()
  assert.equal((await c.ensureAutomatic()).error,undefined,'native changed event path observes missing then installed recovery')

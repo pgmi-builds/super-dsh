@@ -62,7 +62,7 @@ function mountHub(real, overrides = {}) {
   const dispose = registerHubRoute({
     real,
     authorize: () => true,
-    gatewayOf: (label) => (label === 'codex' ? gateway : undefined),
+    gatewayOf: (label) => (label === 'codex' ? { gateway } : undefined),
     ...overrides,
   })
   return { gateway, dispose }
@@ -126,7 +126,7 @@ test('authorize false answers by the authorizer and never touches the gateway', 
   const dispose = registerHubRoute({
     real,
     authorize: (req, res) => { res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' }); res.end('dsh web authentication required'); return false },
-    gatewayOf: () => gateway,
+    gatewayOf: () => ({ gateway }),
   })
   const res = fakeRes()
   await real.routes.get('prefix:/hub').handler(
@@ -183,7 +183,7 @@ test('the mux upgrade demuxes ?agent= to that world gateway with the canonical o
       return (async function* () { yield { echo: payload } })()
     },
   }
-  const dispose = registerHubRoute({ real, authorize: () => true, gatewayOf: (label) => (label === 'codex' ? gateway : undefined) })
+  const dispose = registerHubRoute({ real, authorize: () => true, gatewayOf: (label) => (label === 'codex' ? { gateway } : undefined) })
   const server = createServer()
   server.on('upgrade', (req, socket, head) => { void real.upgrades.get('/hub/api/remote.mux').handler(req, socket, head) })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -250,7 +250,7 @@ test('upgrade with authorize false replays the authorizer answer on the raw sock
   const dispose = registerHubRoute({
     real,
     authorize: (req, res) => { res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' }); res.end('dsh web authentication required'); return false },
-    gatewayOf: () => gateway,
+    gatewayOf: () => ({ gateway }),
   })
   const socket = fakeSocket()
   await upgrade(real, '/hub/api/remote.mux?agent=codex', socket)
@@ -345,7 +345,7 @@ test('authorizeIndex still answers before the fence (auth first, then Host/Origi
     real,
     authorize: (req, res) => { res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' }); res.end('dsh web authentication required'); return false },
     requestRejection: () => { fenceCalls += 1; return 403 },
-    gatewayOf: () => gateway,
+    gatewayOf: () => ({ gateway }),
   })
   const res = fakeRes()
   await real.routes.get('prefix:/hub').handler(
@@ -371,7 +371,7 @@ test('the /hub mux upgrade is fenced before any socket handover; a trusted upgra
     real,
     authorize: () => true,
     requestRejection: trustFence(authorities),
-    gatewayOf: (label) => (label === 'codex' ? gateway : undefined),
+    gatewayOf: (label) => (label === 'codex' ? { gateway } : undefined),
   })
   // untrusted Origin → the same raw rejection the sibling carrier mux writes
   const rejected = fakeSocket()
@@ -428,7 +428,7 @@ test('a client disconnect closes the per-connection mux (heartbeat cleared, no p
       })()
     },
   }
-  const dispose = registerHubRoute({ real, authorize: () => true, gatewayOf: (label) => (label === 'codex' ? gateway : undefined) })
+  const dispose = registerHubRoute({ real, authorize: () => true, gatewayOf: (label) => (label === 'codex' ? { gateway } : undefined) })
   const server = createServer()
   server.on('upgrade', (req, socket, head) => { void real.upgrades.get('/hub/api/remote.mux').handler(req, socket, head) })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))

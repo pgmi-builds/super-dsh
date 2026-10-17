@@ -62,7 +62,7 @@ export function ownWorld<T extends OwnedWorld>(
         if (target && getTarget(key) === target) unregisterForeignTarget(key)
         setReady(key, false)
       }, `superd.world.${key}: availability`)
-      target = { key, gateway: world.get('typertGateway') as GatewayFace }
+      target = { key, gateway: world.get('typertGateway') as GatewayFace, peer: (world.get('connection') as { browserPeer?: unknown } | undefined)?.browserPeer }
       registerForeignTarget(target)
       setReady(key, true)
       return world

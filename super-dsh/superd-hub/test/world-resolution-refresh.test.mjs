@@ -1,7 +1,7 @@
 // The host's native Plugin Manager must still refresh after worlds widen its table.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -65,9 +65,25 @@ test('world publication preserves native refresh, world imports, and disk packag
   assert.equal(worldRequire.resolve('native-lib'), join(nativePackage, 'index.cjs'), 'world linked root survives refresh')
   assert.equal(ctx.pluginPackages.packageOf(worldEntry.name, parentURL)?.dir, worldPackage)
 
-  // Refresh must retain upstream rejection of changed loaded package versions.
+  // 0.2.1 resolver: a same-directory version change of a loaded profile package
+  // is adopted in place (realDir unchanged) — refresh succeeds and keeps the
+  // mapping. A link retarget to another directory still requires a restart.
   json(nativeManifest, { name: 'native-lib', version: '2.0.0', main: './index.cjs' })
+  await ctx.pluginPackages.refresh()
+  assert.equal(ctx.pluginPackages.packageOf('native-lib', parentURL)?.dir, nativePackage, 'in-place version bump keeps the mapping')
+  json(nativeManifest, { name: 'native-lib', version: '1.0.0', main: './index.cjs' })
+  await ctx.pluginPackages.refresh()
+  const retargetDir = join(bundle, 'node_modules', 'native-lib-real')
+  mkdirSync(retargetDir, { recursive: true })
+  writeFileSync(join(retargetDir, 'index.cjs'), 'module.exports = "native"')
+  json(join(retargetDir, 'package.json'), { name: 'native-lib', version: '1.0.0', main: './index.cjs' })
+  rmSync(nativePackage, { recursive: true, force: true })
+  symlinkSync(retargetDir, nativePackage)
+  // Refresh must retain upstream rejection of a retargeted loaded package.
   await assert.rejects(ctx.pluginPackages.refresh(), /requires a process restart/)
+  // Restore the real directory so later refreshes can adopt it again.
+  rmSync(nativePackage, { force: true })
+  cpSync(retargetDir, nativePackage, { recursive: true })
   json(nativeManifest, { name: 'native-lib', version: '1.0.0', main: './index.cjs' })
   select(false)
   await ctx.pluginPackages.refresh()

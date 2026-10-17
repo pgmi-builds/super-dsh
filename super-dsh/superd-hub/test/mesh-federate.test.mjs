@@ -359,7 +359,7 @@ test('双 demux：本地 label 与 a6 各命中正确 gateway；a6 经 wire 打�
   const local = fakeGateway('local')
   registerForeignTarget({ key: 'codex', gateway: local })
   const real = fakeReal()
-  const disposeRoute = registerHubRoute({ real, authorize: () => true, gatewayOf: demux })
+  const disposeRoute = registerHubRoute({ real, authorize: () => true, gatewayOf: (label) => { const g = demux(label); return g === undefined ? undefined : { gateway: g } } })
   try {
     await pairMachine(h, { name: 'dev3', tokenUrl: `${hub.origin}/?token=boot-tok` })
     // 本地 label 别名 → 本地 world gateway；未注册 → undefined（不碰 wire）

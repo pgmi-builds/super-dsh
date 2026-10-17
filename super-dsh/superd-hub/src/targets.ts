@@ -24,6 +24,13 @@ export interface ForeignTarget {
   key: string
   /** The context's typertGateway service instance (or a wire adapter with the same face). */
   gateway: GatewayFace
+  /**
+   * The world's owner browser Peer (connection.browserPeer) for in-process
+   * faces — DSH 0.2.1 gateways read peer.signal/principal on every forwarded
+   * invocation, so the hub must present the world's shared owner identity.
+   * Wire adapters (mesh federation) omit it: the far end supplies its own.
+   */
+  peer?: unknown
 }
 
 const targets = new Map<string, ForeignTarget>()

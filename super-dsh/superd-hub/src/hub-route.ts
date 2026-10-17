@@ -66,8 +66,8 @@ export interface HubRouteOptions {
    * answer, so even the demux 404s never speak to untrusted traffic.
    */
   requestRejection?(req: unknown): number | undefined
-  /** The live gateway of a registered label, or undefined (unknown / not yet spawned). */
-  gatewayOf(label: string): CarrierGatewayFace | undefined
+  /** The live target (gateway + owner peer) of a registered label, or undefined (unknown / not yet spawned). */
+  gatewayOf(label: string): { gateway: CarrierGatewayFace, peer?: unknown } | undefined
 }
 
 /** The demux key of one family request; absent or empty means "not foreign-addressed". */
@@ -158,15 +158,15 @@ export function registerHubRoute(options: HubRouteOptions): () => void {
       })
       return
     }
-    const gateway = options.gatewayOf(agent)
-    if (gateway === undefined) {
+    const target = options.gatewayOf(agent)
+    if (target === undefined) {
       answer404(res, { error: 'unknown-agent', label: agent })
       return
     }
     // Consume the family plumbing: the kernel forwards a native-shaped URL
     // (the kernel carries the same fence face as the carrier's own kernel).
     req.url = worldUrlOf(req.url)
-    await forwardApiCall({ gateway, label: agent, mountPath: HUB_MOUNT_PATH, requestRejection: options.requestRejection }, req, res)
+    await forwardApiCall({ gateway: target.gateway, peer: target.peer, label: agent, mountPath: HUB_MOUNT_PATH, requestRejection: options.requestRejection }, req, res)
   }
 
   const handleUpgrade = (req: WorldRequest, socket: unknown, head: Buffer): void => {
@@ -183,8 +183,8 @@ export function registerHubRoute(options: HubRouteOptions): () => void {
       rejectUpgrade(socket, 404, JSON.stringify({ error: 'foreign-only' }), 'application/json')
       return
     }
-    const gateway = options.gatewayOf(agent)
-    if (gateway === undefined) {
+    const target = options.gatewayOf(agent)
+    if (target === undefined) {
       rejectUpgrade(socket, 404, JSON.stringify({ error: 'unknown-agent', label: agent }), 'application/json')
       return
     }
@@ -193,7 +193,7 @@ export function registerHubRoute(options: HubRouteOptions): () => void {
     // a heartbeat interval and a per-connection WebSocketServer; on socket
     // close it must be CLOSED (world-mux clears the heartbeat only in close),
     // or every reconnect leaks the timer plus the mux graph forever.
-    const mux = worldMuxOf(gateway)
+    const mux = worldMuxOf(target.gateway, target.peer)
     ;(socket as { once?: (event: string, listener: () => void) => void }).once?.('close', () => {
       void mux.close().catch(() => undefined)
     })

@@ -58,16 +58,17 @@ async function fakeDelegationServices(
   const calls: DelegationCalls = { starts: [], continuableStarts: [], followups: [], interrupts: [], reports: [], workflowStarts: [] }
   const fiber = await ctx.plugin({ name: 'fake-delegation-services', apply(c) {
     c.provide('subagents', {
-      start: (provider: string, request: { label: string, prompt: { text: string }[], parent: Agent, maxDepth: number, signal: AbortSignal }) => {
-        calls.starts.push({ provider, label: request.label, promptText: request.prompt[0]!.text, parent: request.parent, maxDepth: request.maxDepth })
-        return Promise.resolve({
-          id: 'run-1',
-          result: Promise.resolve({ output: [{ type: 'text', text: 'child finished' }], stopReason: overrides.startStopReason ?? 'completed' }),
-          dispose: () => Promise.resolve(),
-        })
-      },
-      startContinuable: (spec: { provider: string, label: string, request: { label: string, prompt: { text: string }[], maxDepth: number }, signal: AbortSignal }) => {
-        calls.continuableStarts.push({ provider: spec.provider, label: spec.label, promptText: spec.request.prompt[0]!.text, maxDepth: spec.request.maxDepth })
+      startActivation: (spec: { provider: string, label: string, request: { prompt: { text: string }[], parent: Agent, maxDepth: number }, signal: AbortSignal, delivery: 'parent' | 'caller' }) => {
+        const call = { provider: spec.provider, label: spec.label, promptText: spec.request.prompt[0]!.text, parent: spec.request.parent, maxDepth: spec.request.maxDepth }
+        if (spec.delivery === 'caller') {
+          calls.starts.push(call)
+          return Promise.resolve({
+            childId: 'child-1',
+            result: Promise.resolve({ output: [{ type: 'text', text: 'child finished' }], stopReason: overrides.startStopReason ?? 'completed' }),
+            dispose: () => Promise.resolve(),
+          })
+        }
+        calls.continuableStarts.push(call)
         return Promise.resolve({ childId: 'child-1' })
       },
       sendMessage: (sender: Agent, targetId: string, content: { text: string }[], _options: { signal: AbortSignal }) => {
@@ -111,7 +112,7 @@ describe('agent bridge — spawn/fork unified', () => {
       return { logs: [], value: result }
     }
     const result = await cell(ctx, agent.agent, 'program')
-    expect(result.value.result).toEqual({ kind: 'foreground', runId: 'run-1', output: [{ type: 'text', text: 'child finished' }] })
+    expect(result.value.result).toEqual({ kind: 'foreground', subagentId: 'child-1', output: [{ type: 'text', text: 'child finished' }] })
     expect(calls.starts).toHaveLength(1)
     expect(calls.starts[0]!.provider).toBe('spawn')
     expect(calls.starts[0]!.label).toBe('worker')
@@ -163,6 +164,40 @@ describe('agent bridge — spawn/fork unified', () => {
     expect(calls.continuableStarts[0]!.label).toBe('worker')
     expect(calls.continuableStarts[0]!.promptText).toBe('background me')
     expect(calls.starts).toHaveLength(0)
+  })
+
+  it('a pre-0.2.1 host (no startActivation) rides the legacy seams: continuable via startContinuable, one-shot via start', async () => {
+    const { ctx, agent } = await setupPresentation(fakeRuntime)
+    const legacyCalls = { continuable: [] as { provider: string, label: string }[], oneShot: [] as { provider: string, label: string }[] }
+    const fiber = await ctx.plugin({ name: 'fake-legacy-subagents', apply(c) {
+      c.provide('subagents', {
+        start: (provider: string, request: { label: string, prompt: { text: string }[], signal: AbortSignal }) => {
+          legacyCalls.oneShot.push({ provider, label: request.label })
+          return Promise.resolve({
+            id: 'run-legacy',
+            result: Promise.resolve({ output: [{ type: 'text', text: 'legacy child finished' }], stopReason: 'completed' }),
+            dispose: () => Promise.resolve(),
+          })
+        },
+        startContinuable: (spec: { provider: string, request: { label: string } }) => {
+          legacyCalls.continuable.push({ provider: spec.provider, label: spec.request.label })
+          return Promise.resolve({ childId: 'child-legacy' })
+        },
+      })
+    } })
+    onTestFinished(() => fiber.dispose())
+    const runtime = ctx.get('replRuntime') as FakeCellRuntime
+    runtime.behavior = async (request) => {
+      const continuable = await callableOf(request, 'agent')({ description: 'legacy bg', prompt: 'stay open' })
+      const oneShot = await callableOf(request, 'agent')({ description: 'legacy fg', prompt: 'run once', run_in_background: false })
+      return { logs: [], value: { continuable, oneShot } }
+    }
+    const result = await cell(ctx, agent.agent, 'program')
+    const value = result.value.result as { continuable: unknown, oneShot: unknown }
+    expect(value.continuable).toEqual({ kind: 'continuable', subagentId: 'child-legacy' })
+    expect(value.oneShot).toEqual({ kind: 'foreground', subagentId: 'run-legacy', output: [{ type: 'text', text: 'legacy child finished' }] })
+    expect(legacyCalls.continuable).toEqual([{ provider: 'spawn', label: 'legacy bg' }])
+    expect(legacyCalls.oneShot).toEqual([{ provider: 'spawn', label: 'legacy fg' }])
   })
 
   it('a non-completed child maps to a structured error', async () => {

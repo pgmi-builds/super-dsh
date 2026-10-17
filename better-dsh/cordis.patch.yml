@@ -90,17 +90,22 @@
 # dsh-web-app bundle declares (same id), restating its full shape per the
 # patch-layer contract, with `trustedHosts` merging the DSH_TRUSTED_HOSTS
 # environment (whitespace-separated, operator-declared serving authorities)
-# ahead of the upstream webRuntime-derived ones (LAN literals from an
-# all-interface bind plus --trusted-host extras). Unset/empty env ⇒ identical
-# behavior to the unpatched row. Malformed entries fail plugin load loudly
-# (upstream assertTrustedAuthority). The browser-side twin (page-authority
-# loopback verdict) is the plugin's webserver/index-inject boot script —
-# see src/web-trust.ts.
+# ahead of the upstream invocation authorities. Since DSH 0.1.7 the parsed
+# Web flags live on the `webStartup` service and every host in the declared
+# peer range provides it, so the row injects webStartup and reads
+# `ctx.webStartup.trustedHosts` (the --trusted-host values) — the 0.2.1+
+# upstream row's own source; on pre-0.2.1 hosts this drops only the LAN
+# literals an all-interface bind used to derive (wildcard binds are rejected
+# there too, and this repo's lines always declare authorities explicitly).
+# Unset/empty env ⇒ identical behavior to the unpatched row. Malformed entries
+# fail plugin load loudly (upstream assertTrustedAuthority). The browser-side
+# twin (page-authority loopback verdict) is the plugin's
+# webserver/index-inject boot script — see src/web-trust.ts.
 - id: connection
   name: '@deepseek-ai/dsh-client-connection'
-  inject: [webRuntime]
+  inject: [webStartup]
   config:
-    trustedHosts: !!js (process.env.DSH_TRUSTED_HOSTS ?? '').split(/\s+/).filter(Boolean).concat(ctx.webRuntime.trustedHosts)
+    trustedHosts: !!js (process.env.DSH_TRUSTED_HOSTS ?? '').split(/\s+/).filter(Boolean).concat(ctx.webStartup.trustedHosts)
 
 - id: ui-settings-models
   name: '@deepseek-ai/dsh-client-ui-settings-models'

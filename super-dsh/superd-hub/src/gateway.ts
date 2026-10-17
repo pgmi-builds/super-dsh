@@ -128,7 +128,13 @@ export function apply(ctx: Context, config?: HubConfig): void {
       real: real as RealWebServerFace,
       authorize: (req, res) => connection.authorizeIndex(req, res),
       requestRejection: (req) => connection.requestRejection(req),
-      gatewayOf: (label) => (federatedGatewayOf(label) ?? getTarget(label)?.gateway) as CarrierGatewayFace | undefined,
+      gatewayOf: (label) => {
+        const federated = federatedGatewayOf(label)
+        if (federated !== undefined) return { key: label, gateway: federated } as unknown as { gateway: CarrierGatewayFace, peer?: unknown }
+        // The stored face IS the service instance (canonical methods); targets.ts
+        // keeps a looser structural view for the mesh wire adapters.
+        return getTarget(label) as unknown as { gateway: CarrierGatewayFace, peer?: unknown } | undefined
+      },
     }), 'superd-hub: /hub route family')
     // P4 §8.2: the PTY executor's upgrade route — same gate as the /hub family
     // (authorizeIndex cookie auth first, then the browser-trust fence). The

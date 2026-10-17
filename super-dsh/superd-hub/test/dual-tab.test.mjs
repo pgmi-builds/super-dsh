@@ -74,7 +74,7 @@ function hub(real, worlds) {
     authorize: () => true,
     // The LIVE registry, exactly like gateway.ts — target retirement is
     // observable through the family.
-    gatewayOf: (label) => getTarget(label)?.gateway,
+    gatewayOf: (label) => { const t = getTarget(label); return t === undefined ? undefined : { gateway: t.gateway, peer: t.peer } },
   })
 }
 

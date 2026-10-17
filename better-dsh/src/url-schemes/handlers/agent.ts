@@ -51,7 +51,7 @@ export interface AgentChildEntry {
   readonly kind: 'child' | 'diagnostic'
   readonly id: SessionId
   readonly activity?: 'running' | 'inactive'
-  readonly mode?: 'one-shot' | 'continuable'
+  readonly mode?: 'one-shot' | 'continuable' | 'external'
   readonly label?: string
   readonly hasChildren?: boolean
   readonly reason?: 'corrupt' | 'unsupported' | 'unavailable'

@@ -29,7 +29,7 @@ import type { ObjectValueSchemaSpec, ToolDefinition, ToolRunContext } from '@dee
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type {
   DASHRSubagentsSurface,
-  DASHRSubagentDelegation,
+  DASHRActivationRequest,
   DASHRWorkflowEngine,
   DASHRWorkflowMeta,
   DASHRWorkflowRun,
@@ -240,37 +240,68 @@ const agentExecutor: AgentBridgeExecutor = async (rawArgs, exec, deps): Promise<
     if (!subagents) {
       return { error: 'agent() is unavailable: no ctx.subagents service is mounted in this composition' }
     }
-    const delegation: DASHRSubagentDelegation = {
-      label: description,
+    const request: DASHRActivationRequest = {
       prompt: [{ type: 'text', text: prompt }],
       parent: exec.agent,
       maxDepth: NATIVE_MAX_DEPTH,
     }
-    // Native semantics (the deployed subagent tool is backgroundMode:
-    // continuable): run_in_background defaults TRUE — the call returns a
-    // durable subagent id immediately and the child conversation stays open
-    // for agent_message follow-ups. An explicit false runs a ONE-SHOT child:
-    // subagents.start, wait for the result, the child ends with the run.
+    // Native semantics (0.2.1 managed activations): every delegation is an
+    // activation. This bridge keeps its own `run_in_background` surface —
+    // default TRUE takes parent delivery: the call returns a durable child id
+    // immediately, the child conversation stays open for agent_message
+    // follow-ups, and the child's final answer arrives as a parent completion
+    // notice. An explicit FALSE takes caller delivery — a ONE-SHOT child: the
+    // bridge awaits the activation result, and the child ends with the run.
+    // Pre-0.2.1 hosts have no `startActivation`; the same two behaviors ride
+    // the legacy `startContinuable`/`start` seams there (feature-detected, so
+    // the declared peer range keeps working on old hosts).
     const runInBackground = a['run_in_background'] ?? true
-    try {
-      if (runInBackground) {
-        const start = await subagents.startContinuable({
-          provider,
-          label: description,
-          request: delegation,
-          signal: exec.signal,
-        })
-        return { kind: 'continuable', subagentId: start.childId }
-      }
-      const run = await subagents.start(provider, { ...delegation, signal: exec.signal })
+    const legacyRequest = { label: description, ...request, signal: exec.signal }
+    if (subagents.startActivation === undefined) {
       try {
-        const result = await run.result
+        if (runInBackground) {
+          if (subagents.startContinuable === undefined) {
+            return { error: 'agent() is unavailable: this DSH host exposes neither managed activations nor the legacy continuable seam' }
+          }
+          const start = await subagents.startContinuable({ provider, request: legacyRequest })
+          return { kind: 'continuable', subagentId: start.childId }
+        }
+        if (subagents.start === undefined) {
+          return { error: 'agent() is unavailable: this DSH host exposes neither managed activations nor the legacy one-shot seam' }
+        }
+        const run = await subagents.start(provider, legacyRequest)
+        try {
+          const result = await run.result
+          if (result.stopReason !== 'completed') {
+            return { error: `agent() ${stopReasonError(result.stopReason)}` }
+          }
+          return { kind: 'foreground', subagentId: run.id, output: result.output as unknown as ReplJsonValue }
+        } finally {
+          await run.dispose()
+        }
+      } catch (error: unknown) {
+        return { error: `agent() failed: ${error instanceof Error ? error.message : String(error)}` }
+      }
+    }
+    try {
+      const activation = await subagents.startActivation({
+        provider,
+        label: description,
+        request,
+        signal: exec.signal,
+        delivery: runInBackground ? 'parent' : 'caller',
+      })
+      if (runInBackground) {
+        return { kind: 'continuable', subagentId: activation.childId }
+      }
+      try {
+        const result = await activation.result
         if (result.stopReason !== 'completed') {
           return { error: `agent() ${stopReasonError(result.stopReason)}` }
         }
-        return { kind: 'foreground', runId: run.id, output: result.output as unknown as ReplJsonValue }
+        return { kind: 'foreground', subagentId: activation.childId, output: result.output as unknown as ReplJsonValue }
       } finally {
-        await run.dispose()
+        await activation.dispose()
       }
     } catch (error: unknown) {
       return { error: `agent() failed: ${error instanceof Error ? error.message : String(error)}` }
@@ -484,7 +515,7 @@ export function createAgentBridgeTools(deps: AgentBridgeDeps): ToolDefinition[] 
         schema: {
           oneOf: [
             { type: 'object', properties: { kind: { type: 'string', enum: ['continuable'] }, subagentId: { type: 'string' } }, additionalProperties: false },
-            { type: 'object', properties: { kind: { type: 'string', enum: ['foreground'] }, runId: { type: 'string' }, output: { type: 'json' } }, additionalProperties: false },
+            { type: 'object', properties: { kind: { type: 'string', enum: ['foreground'] }, subagentId: { type: 'string' }, output: { type: 'json' } }, additionalProperties: false },
             errorVariant,
           ],
         },

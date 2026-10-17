@@ -56,16 +56,15 @@ export interface DASHRSubagentInterruptAuthority {
 }
 
 /**
- * The delegation fields the `agent` bridge builds, verbatim in field shape
- * from the native `dsh-tool-subagent` execute: model inputs (`label` from
- * `description`, `prompt`), the spawning `parent`, and `maxDepth` fixed at
- * the native default (`3`). Deployment-only fields (`agentOptions`,
- * `persona`, `toolFilter`) stay omitted — the bridge exposes none of them to
- * the model, and the native default for each is "absent".
+ * The activation request body the `agent` bridge builds, verbatim in field
+ * shape from the native managed-activation spec (0.2.1): model input
+ * (`prompt`), the spawning `parent`, and `maxDepth` fixed at the native
+ * default (`3`). The label travels top-level on the spec, not in the request.
+ * Deployment-only fields (`cwd`, `agentPreset`, `agentOptions`, `persona`,
+ * `toolFilter`) stay omitted — the bridge exposes none of them to the model,
+ * and the native default for each is "absent".
  */
-export interface DASHRSubagentDelegation {
-  /** Short display label (the child's persisted creation label). */
-  readonly label: string
+export interface DASHRActivationRequest {
   /** Content delivered as the child's user message. */
   readonly prompt: ContentBlock[]
   /** The spawning agent (workspace/lineage/depth source). */
@@ -74,13 +73,7 @@ export interface DASHRSubagentDelegation {
   readonly maxDepth: number
 }
 
-/** A one-shot start request: the delegation plus caller cancellation. */
-export interface DASHRSubagentStartRequest extends DASHRSubagentDelegation {
-  /** Cancellation signal from the spawning context. */
-  readonly signal: AbortSignal
-}
-
-/** The terminal outcome of a one-shot subagent run, as the bridge reads it. */
+/** The terminal outcome of a managed child execution, as the bridge reads it. */
 export interface DASHRSubagentResult {
   /** The child's final assistant output content blocks. */
   readonly output: readonly ContentBlock[]
@@ -88,7 +81,25 @@ export interface DASHRSubagentResult {
   readonly stopReason: string
 }
 
-/** ONE-SHOT child handle the bridge consumes: await result, then dispose. */
+/**
+ * Legacy request (pre-0.2.1 hosts): the activation request plus its label and
+ * caller cancellation — the shape the removed `start`/`startContinuable`
+ * seams accepted. Kept only so the fallback path types against old hosts.
+ */
+export interface DASHRSubagentStartRequest {
+  /** Short display label (the child's persisted creation label). */
+  readonly label: string
+  /** Content delivered as the child's user message. */
+  readonly prompt: ContentBlock[]
+  /** The spawning agent (workspace/lineage/depth source). */
+  readonly parent: Agent
+  /** Absolute delegation-depth cap (native default `3`). */
+  readonly maxDepth: number
+  /** Cancellation signal from the spawning context. */
+  readonly signal: AbortSignal
+}
+
+/** Legacy ONE-SHOT child handle (pre-0.2.1 hosts): await result, then dispose. */
 export interface DASHRSubagentRun {
   /** Parent-scoped run id. */
   readonly id: SessionId
@@ -98,43 +109,71 @@ export interface DASHRSubagentRun {
   dispose(): Promise<void>
 }
 
-/** What the `agent` bridge asks for when starting a continuable child. */
+/** What the legacy `startContinuable` seam asked for (pre-0.2.1 hosts). */
 export interface DASHRContinuableStartSpec {
   /** The `ctx.subagents` provider name (`spawn` for delegate, `fork` for fork). */
   readonly provider: string
-  /** The initial delegation's short label, persisted as the child's creation label. */
-  readonly label: string
-  /** The delegation request (label/prompt/parent/maxDepth). */
-  readonly request: DASHRSubagentDelegation
-  /** Caller cancellation, owning the operation until inbox acceptance. */
-  readonly signal: AbortSignal
+  /** The delegation (label travels inside the request on this seam). */
+  readonly request: DASHRSubagentStartRequest
 }
 
-/** Identities returned once a continuable child accepted its initial prompt. */
+/** Legacy identities returned once a continuable child accepted its initial prompt. */
 export interface DASHRContinuableStart {
   /** The durable child session id, stable across activations. */
   readonly childId: SessionId
 }
 
+/** One managed child execution the `agent` bridge starts (0.2.1 seam). */
+export interface DASHRActivationSpec {
+  /** The `ctx.subagents` provider name (`spawn` for delegate, `fork` for fork). */
+  readonly provider: string
+  /** Short task label retained in the child's cataloged membership. */
+  readonly label: string
+  /** Task, parent, and execution options (the delegation body, label-less). */
+  readonly request: DASHRActivationRequest
+  /** Cancellation before publication; callers own later cancellation through dispose. */
+  readonly signal: AbortSignal
+  /** Parent delivery notifies the model; caller delivery only returns the result. */
+  readonly delivery: 'parent' | 'caller'
+}
+
+/** A managed execution; disposal addresses this exact activation, never a later resume. */
+export interface DASHRActivation {
+  /** The durable child session id, stable across activations. */
+  readonly childId: SessionId
+  /** Accepted inbox message, when the backend has a local inbox. */
+  readonly messageId?: MessageId
+  /** Resolves with the child's terminal result (never rejects on child failure). */
+  readonly result: Promise<DASHRSubagentResult>
+  /** Stop and release this activation and its owned descendants. */
+  dispose(): Promise<void>
+}
+
 /**
- * The `ctx.subagents` service surface the delegation bridges call: one-shot
- * `start`, continuable `startContinuable`, the `sendMessage` adjacency
- * downlink (child) and uplink (parent), and the `interrupt` stop request.
- * Each is the same call the native delegation/control tools make, so the
- * service's own authorization is preserved verbatim.
+ * The `ctx.subagents` service surface the delegation bridges call. Hosts
+ * from 0.2.1 provide `startActivation` (managed activations: continuable
+ * children via parent delivery, awaited one-shots via caller delivery) and
+ * removed the older `start`/`startContinuable` pair, which every pre-0.2.1
+ * host still exposes — both seams are optional here, and the bridge picks
+ * whichever the running host provides, so the declared peer range stays
+ * honest on old and new hosts alike. The `sendMessage` adjacency downlink
+ * (child) and uplink (parent), and the `interrupt` stop request, are common
+ * to both eras. Each is the same call the native delegation/control tools
+ * make, so the service's own authorization is preserved verbatim.
  */
 export interface DASHRSubagentsSurface {
-  /** Establish a published one-shot child on the named provider. */
-  start(provider: string, request: DASHRSubagentStartRequest): Promise<DASHRSubagentRun>
-  /** Establish a durable continuable child and deliver its initial prompt. */
-  startContinuable(spec: DASHRContinuableStartSpec): Promise<DASHRContinuableStart>
+  /** Establish a managed child execution under a delivery policy (0.2.1+). */
+  startActivation?(spec: DASHRActivationSpec): Promise<DASHRActivation>
+  /** Legacy one-shot start (pre-0.2.1 hosts): delegation plus cancellation. */
+  start?(provider: string, request: DASHRSubagentStartRequest): Promise<DASHRSubagentRun>
+  /** Legacy continuable start (pre-0.2.1 hosts): durable child, initial prompt. */
+  startContinuable?(spec: DASHRContinuableStartSpec): Promise<DASHRContinuableStart>
   /** Deliver one message to an adjacent agent: next FIFO turn for a continuable
- *  child target, or the report-up path when the target is the sender's parent. */
+   *  child target, or the report-up path when the target is the sender's parent. */
   sendMessage(sender: Agent, targetId: SessionId, content: ContentBlock[], options: DASHRSubagentSendMessageOptions): Promise<MessageId>
   /** Interrupt one live continuable child's current turn under the live ancestor. */
   interrupt(targetSessionId: SessionId, authority: DASHRSubagentInterruptAuthority): void
 }
-
 
 /** The workflow identity block (`meta`) the `agent_workflow` bridge passes through. */
 export interface DASHRWorkflowMeta {
