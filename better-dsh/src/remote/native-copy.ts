@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { startBinaryProcess } from './process.ts'
 import type { SshConnection } from './ssh-targets.ts'
+import { sshIdentityArgv } from './ssh-argv.ts'
 import type { TargetPlan } from './target.ts'
 
 export interface NativeCopyReceipt {
@@ -115,15 +116,13 @@ function scpSpec(connection: SshConnection, path: string): string {
   return `${at}:${path}`
 }
 
-/** Connection identity as scp options (port, key), placed BEFORE caller argv so
- * an explicit caller -F/-i/-P/-J overrides the registered identity by scp's own
- * precedence (last option wins). */
+/** Connection identity as scp options, placed BEFORE caller argv so an
+ * explicit caller -F/-i/-P/-J overrides the registered identity by scp's own
+ * precedence (last option wins). Assembly itself lives in ssh-argv.ts
+ * (the ONE identity policy — 2026-10-17 ruling); only the scp dialect
+ * placement rule is local. */
 function identityArgv(connection: SshConnection): string[] {
-  const options = ['-o', 'BatchMode=yes']
-  if (connection.port !== undefined) options.push('-P', String(connection.port))
-  if (connection.key !== undefined) options.push('-i', connection.key)
-  if (connection.proxyJump !== undefined) options.push('-J', connection.proxyJump)
-  return options
+  return ['-o', 'BatchMode=yes', ...sshIdentityArgv(connection, 'scp')]
 }
 
 /** SSH endpoint as a connection (BYO identity when registered, bare host otherwise). */

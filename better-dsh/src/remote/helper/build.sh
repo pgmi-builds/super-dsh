@@ -6,9 +6,18 @@
 # — never silently dropped from MANIFEST: only targets with fresh or kept artifacts are listed.
 set -eu
 cd "$(dirname "$0")"
-VER="${SUPERD_RUN_VER:-$(node -p 'require("../../../package.json").version' 2>/dev/null || echo 0.1.0)}"
+PKG_VER="$(node -p 'require("../../../package.json").version' 2>/dev/null || echo 0.1.0)"
+# Monotonic stamp (2026-10-17 close-out ruling): the package version gets
+# rebased across letter rounds (0.3.1-h once became 0.3.1-c), which made a
+# lexically-"newer" stale helper indistinguishable from the current one in
+# receipts. The git commit count never decreases, so <pkg>.b<count> orders
+# every build that ever existed. Within-round rebuilds share the stamp by
+# design (per-round identity); darwin builds receive VER via env (no git on
+# the remote build host).
+COUNT="$(git rev-list --count HEAD 2>/dev/null || echo 0)"
+VER="${SUPERD_RUN_VER:-${PKG_VER}.b${COUNT}}"
 export PATH="$HOME/.cargo/bin:$PATH"
-echo "superd-run build: ver=$VER"
+echo "superd-run build: ver=$VER (pkg ${PKG_VER}, commits ${COUNT})"
 
 build_local() {
   triple=$1; extra=$2

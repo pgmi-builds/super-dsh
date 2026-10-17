@@ -17,6 +17,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createConnection, createServer, type AddressInfo } from 'node:net'
 import type { Readable } from 'node:stream'
 import type { SshConnection } from './ssh-targets.ts'
+import { sshCommandArgv } from './ssh-argv.ts'
 import { runNative, type RunResult } from './native-copy.ts'
 
 export interface RelayRsyncOptions {
@@ -39,16 +40,11 @@ export interface RelayRsyncResult extends RunResult {
 interface RelayEndpoint { connection: SshConnection; path: string }
 
 /** ssh argv for the relay: batch, no agent, no multiplexing. `command` is the
- * remote command; forwarding options go before `--`, the host after it. */
+ * remote command; forwarding options go before `--`, the host after it.
+ * Identity core comes from ssh-argv.ts (the ONE policy — 2026-10-17 ruling). */
 function relaySsh(connection: SshConnection, extra: readonly string[], command?: string): string[] {
-  const args = ['ssh', '-o', 'BatchMode=yes', '-T', '-a', '-o', 'ForwardAgent=no', '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2']
-  if (connection.user !== undefined) args.push('-l', connection.user)
-  if (connection.port !== undefined) args.push('-p', String(connection.port))
-  if (connection.key !== undefined) args.push('-i', connection.key)
-  if (connection.proxyJump !== undefined) args.push('-J', connection.proxyJump)
-  args.push(...extra, '--', connection.host)
-  if (command !== undefined) args.push(command)
-  return args
+  const base = ['-o', 'BatchMode=yes', '-T', '-a', '-o', 'ForwardAgent=no', '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2']
+  return sshCommandArgv(connection, base, extra, command)
 }
 
 async function freePorts(count: number): Promise<number[]> {

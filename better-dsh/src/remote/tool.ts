@@ -116,11 +116,13 @@ export function createRemoteTool(
       if (args.action === 'copy' || args.action === 'rsync') {
         if (!args.src || !args.dst) throw new Error(`${args.action} requires src and dst absolute endpoints`)
         if ([args.cmd,args.script,args.stdin,args.spawn,args.ssh,args.target,args.mode,args.timeout,args.run_in_background].some(value => value !== undefined)) throw new Error(`${args.action} cannot be combined with execution/PTY/job arguments; register byossh separately first`)
-        // Removed high-level file switches: parameter roots are open, so these
-        // must be rejected here, before any dialing (spec: no silent retention).
-        for (const legacy of ['dryRun', 'delete', 'excludes', 'preserve'] as const) {
-          const value = (args as Record<string, unknown>)[legacy]
-          if (value !== undefined) throw new Error(`${legacy} was removed: pass native options through argv instead (e.g. ${legacy === 'dryRun' ? '"--dry-run"' : legacy === 'delete' ? '"--delete"' : legacy === 'excludes' ? '"--exclude=<pattern>"' : '"-a" / "-r"'})`)
+        // No legacy aliases and no silent no-ops: dsh-tools passes unknown root
+        // parameters through, so this surface rejects every key it does not
+        // declare (2026-10-17 close-out ruling: the per-name "was removed"
+        // compat layer is deleted; native options go through argv).
+        const KNOWN_PARAMS = new Set(['action','src','dst','argv','pullArgv','pushArgv','verify','mkdir','run_in_background','target','ssh','spawn','cmd','script','mode','stdin','timeout'])
+        for (const key of Object.keys(args)) {
+          if (!KNOWN_PARAMS.has(key)) throw new Error(`remote: unknown parameter "${key}" — this surface has no legacy aliases (dryRun/delete/excludes/preserve are gone); pass native CLI options through argv instead`)
         }
         if (args.action === 'rsync') {
           if (args.pullArgv !== undefined || args.pushArgv !== undefined) throw new Error('rsync takes argv only; pullArgv/pushArgv are copy-only fields')

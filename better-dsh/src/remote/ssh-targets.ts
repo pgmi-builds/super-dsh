@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve, join } from 'node:path'
+import { sshCommandArgv } from './ssh-argv.ts'
 
 /** Origin-owned identity reference, never key contents or a persistent credential store. */
 /** argv seam for transports/tests: builds the native SSH argv for one connection. */
@@ -69,14 +70,10 @@ export class SshTargets {
 }
 
 /** Shared by execution, probes and file/relay consumers. extraArgs is trusted
- * internal SSH argv (e.g. forwarding), never a model-provided shell string. */
+ * internal SSH argv (e.g. forwarding), never a model-provided shell string.
+ * Identity assembly lives in ssh-argv.ts (the ONE policy — 2026-10-17 ruling);
+ * this wrapper only picks the tty/batch dialect base. */
 export function sshArgv(connection: SshConnection, options: { tty?: boolean; extraArgs?: readonly string[]; command?: string } = {}): string[] {
-  const args = options.tty ? ['ssh', '-tt', '-o', 'BatchMode=yes'] : ['ssh', '-o', 'BatchMode=yes', '-T']
-  if (connection.user !== undefined) args.push('-l', connection.user)
-  if (connection.port !== undefined) args.push('-p', String(connection.port))
-  if (connection.key !== undefined) args.push('-i', connection.key)
-  if (connection.proxyJump !== undefined) args.push('-J', connection.proxyJump)
-  args.push(...options.extraArgs ?? [], '--', connection.host)
-  if (options.command !== undefined) args.push(options.command)
-  return args
+  const base = options.tty ? ['-tt', '-o', 'BatchMode=yes'] : ['-o', 'BatchMode=yes', '-T']
+  return sshCommandArgv(connection, base, options.extraArgs ?? [], options.command)
 }

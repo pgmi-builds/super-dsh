@@ -1,3 +1,4 @@
+import { sshCommandArgv } from './ssh-argv.ts'
 import type { SshConnection } from './ssh-targets.ts'
 import { checkAbsolute } from './archive.ts'
 import { checkArgv, runNative, type RunResult } from './native-copy.ts'
@@ -30,8 +31,11 @@ export async function runRsync(request: RsyncRequest, source: RsyncEndpoint, des
   checkAbsolute(source.path); checkAbsolute(destination.path)
   const argv = checkArgv('argv', request.argv)
   if ('pullArgv' in request || 'pushArgv' in request) throw new Error('remote: rsync takes argv only; pullArgv/pushArgv are copy-only fields')
-  for (const legacy of ['dryRun', 'delete', 'excludes', 'preserve', 'verify', 'mkdir'] as const) {
-    if (legacy in (request as unknown as Record<string, unknown>)) throw new Error(`remote: rsync field "${legacy}" was removed — pass native options through argv instead (e.g. "--dry-run", "--delete", "--exclude=<pattern>", "-a"/"-r"; verify is a copy Hub-lane option and mkdir is copy-only — for rsync destination parents pass --mkpath yourself)`)
+  // No legacy aliases, no silent no-ops (2026-10-17 close-out ruling): the
+  // request shape is exactly {src, dst, argv} — anything else is rejected so a
+  // mistyped or removed field can never be silently dropped.
+  for (const key of Object.keys(request)) {
+    if (key !== 'src' && key !== 'dst' && key !== 'argv') throw new Error(`remote: rsync rejects unknown field "${key}" — native options go through argv (verify is a copy Hub-lane option; mkdir is copy-only; for destination parents pass --mkpath yourself)`)
   }
   if (!source.connection && !destination.connection) throw new Error('rsync requires at least one SSH endpoint; local-only is unsupported')
 
@@ -88,13 +92,9 @@ export async function runRsync(request: RsyncRequest, source: RsyncEndpoint, des
  * placeholder host rsync appends and execs the canonical SSH argv. All tokens
  * are tool-built argv (identity options/aliases), never model text. */
 function rsyncRsh(connection: SshConnection, wrap: (argv: string[]) => string[]): string {
-  const args = ['ssh', '-o', 'BatchMode=yes', '-T']
-  if (connection.user !== undefined) args.push('-l', connection.user)
-  if (connection.port !== undefined) args.push('-p', String(connection.port))
-  if (connection.key !== undefined) args.push('-i', connection.key)
-  if (connection.proxyJump !== undefined) args.push('-J', connection.proxyJump)
-  args.push('--', connection.host)
-  const sshArgv = wrap(args)
+  // Identity core from ssh-argv.ts (the ONE policy — 2026-10-17 ruling);
+  // only the rsh-quoting adapter is local to rsync's grammar.
+  const sshArgv = wrap(sshCommandArgv(connection, ['-o', 'BatchMode=yes', '-T'], []))
   const adapter = ['bash', '-c', `shift; exec ${sshArgv.map(rshQuote).join(' ')} "$@"`, 'rsync-rsh']
   return adapter.map(rshQuote).join(' ')
 }

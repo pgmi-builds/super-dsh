@@ -57,13 +57,13 @@ export default defineConfig({
   // and filename churn — the JS side is now byte-stable across builds.
   // RESIDUAL: rolldown-plugin-dts 0.17.8 assigns d.ts module ids
   // nondeterministically (6 clean builds → 5 distinct d.ts hashes; the
-  // externals-vs-inline form of host-peer types flips at random; isolated +
-  // parallel:false narrow but do not remove it). Each pack is one valid,
-  // self-consistent sample — identity is pinned by the round's recorded
-  // SHA-256; full determinism needs an upstream fix/upgrade (toolchain debt,
-  // remote-rescope backlog). super-dsh's remote closure is single-entry and
-  // unaffected.
-  dts: { resolve: false, isolated: true, parallel: false },
+  // externals-vs-inline form of host-peer types flips at random; the dts
+  // cache/worker variance sources below are removed but the residual stays).
+  // Each pack is one valid, self-consistent sample — identity is pinned by the
+  // round's recorded SHA-256; full determinism needs an upstream fix/upgrade
+  // (toolchain debt, remote-rescope backlog). super-dsh's remote closure is
+  // single-entry and unaffected.
+  dts: { resolve: false, newContext: true, parallel: false },
   // Zero-npm-runtime-deps (docs/specs/zero-npm-runtime-deps/spec.md): the
   // pure-JS runtime deps above are inlined instead of resolving from the
   // consumer's tree; the prefix match also covers subpath imports.
