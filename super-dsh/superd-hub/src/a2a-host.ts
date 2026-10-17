@@ -45,6 +45,14 @@ export interface A2aHostOptions {
    * ({@link bridgeTypertGateway}).
    */
   nativeGateway?: RawTypertGatewayFace
+  /**
+   * LAZY provider of ctx0's owner browser Peer (connection.browserPeer) —
+   * 0.2.1 gateways read peer.signal/principal on every invocation. A
+   * provider, not a value: typertGateway mounts before connection, so a
+   * wiring-time read would capture undefined forever; resolution happens
+   * per call, when connection is long live.
+   */
+  nativePeer?: () => unknown
 }
 
 /**
@@ -67,12 +75,12 @@ function localKeyOfA6(home: string, a6: string): string | undefined {
  * mesh-gateway wire adapters (dual-face, 3rd-argument dispatch).
  */
 export interface RawTypertGatewayFace {
-  dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
+  dispatchRpc(endpoint: string, payload: unknown, signal: AbortSignal, peer: unknown): Promise<unknown>
   openWireStream(
     endpoint: string,
     payload: unknown,
     uplink: undefined,
-    peer: undefined,
+    peer: unknown,
     signal: AbortSignal,
     control: AbortController,
   ): Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>
@@ -93,11 +101,11 @@ export interface RawTypertGatewayFace {
  * @param real - a raw in-process typertGateway instance (ctx0's own or a local world's).
  * @returns the gateway Task 2's service consumes.
  */
-export function bridgeTypertGateway(real: RawTypertGatewayFace): A2aGateway {
+export function bridgeTypertGateway(real: RawTypertGatewayFace, peer?: unknown): A2aGateway {
   return {
-    dispatchRpc: (endpoint, payload, signal) => real.dispatchRpc(endpoint, payload, signal),
+    dispatchRpc: (endpoint, payload, signal) => real.dispatchRpc(endpoint, payload, signal, peer),
     openWireStream: (endpoint, payload, signal) =>
-      real.openWireStream(endpoint, payload, undefined, undefined, signal, new AbortController()),
+      real.openWireStream(endpoint, payload, undefined, peer, signal, new AbortController()),
   }
 }
 
@@ -128,16 +136,16 @@ export function resolveA2aGatewayFor(options: A2aHostOptions): (addr: A2aAddress
     if (key !== undefined) {
       if (key === 'native') {
         if (options.nativeGateway === undefined) throw new A2aAddressError('unreachable', addr)
-        return bridgeTypertGateway(options.nativeGateway)
+        return bridgeTypertGateway(options.nativeGateway, options.nativePeer?.())
       }
       // The registry's declared GatewayFace (targets.ts) types the stream
       // face as the 3-arg subset, but a LOCAL row's runtime object is the RAW
       // typertGateway instance (world-join.ts registers it verbatim) — re-cast
       // to RawTypertGatewayFace so the bridge above binds the canonical 6-arg
       // positional order instead of the declared subset.
-      const local = getTarget(key)?.gateway
-      if (local === undefined) throw new A2aAddressError('unreachable', addr)
-      return bridgeTypertGateway(local as unknown as RawTypertGatewayFace)
+      const target = getTarget(key)
+      if (target?.gateway === undefined) throw new A2aAddressError('unreachable', addr)
+      return bridgeTypertGateway(target.gateway as unknown as RawTypertGatewayFace, target.peer)
     }
     // The a6 resolves nowhere — classify the miss (D7): a roster row exists →
     // its plane is down; else the machine decides agent-vs-machine blame.

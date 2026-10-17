@@ -1,6 +1,6 @@
-# DSH 0.2.1-rc.1 对齐 — 0.3.1-i
+# DSH 0.2.1-rc.1 对齐 — 0.3.1-i / 0.3.1-j
 
-2026-10-17（Asia/Hong_Kong）上游对齐轮。user 指令：upstream DSH 更新到 0.2.1-rc.1，启动本轮对齐；授权放下 4999 测试线供本轮使用。生产 3080 未触碰；未 publish、未 push（未获发版放行）。
+2026-10-17（Asia/Hong_Kong）上游对齐轮。user 指令：upstream DSH 更新到 0.2.1-rc.1，启动本轮对齐；授权放下 4999 测试线供本轮使用。生产 3080 未触碰；未 publish、未 push（未获发版放行）。同日晚 user 手工验收发现 A2A 会话面回归（单一根因，见文末 0.3.1-j 增补），当轮修复并在两条测试线复验。
 
 ## 基线与上游源码轨
 
@@ -58,5 +58,24 @@ root 42 passed / 0 failed；better-dsh 871 passed / 6 failed / 9 skipped —— 
 - 本机 `/usr/bin/google-chrome-stable` 已不存在；测试用 `DASHR_BROWSER_BIN=/home/u1/.omp/puppeteer/chrome/linux-150.0.7871.24/chrome-linux64/chrome`（或 browser.mjs 内置 monorepo-migration chrome）。
 - upstream 新增独立 SSH helper 运行时（远端文件/进程/终端/沙箱/Node PTC）——与 superd remote 线（superd-run）生态重叠，remote 线后续方向需 user 裁决，本轮不动。
 - 4999 与 dev3 4998 线保持运行供 user 亲手验收：https://test.pc.internal.test/（密码门 admin）；dev3 `http://187.127.111.29:4998/`。
+
+## 0.3.1-j 增补 — A2A 会话面 peer 修复（同日晚，user 验收驱动）
+
+user 手工验收发现：`agent_status` 本地收集与 `send` 到本地 agent 全灭（`gateway/internal: reading 'signal'`）——根因与本轮 /hub 修复同源但漏了一处：进程内 A2A 桥 `bridgeTypertGateway` 仍以 3 参形态调 RAW typertGateway（a2a-host.ts），rc.1 每次 invocation 读 `peer.signal` 即崩。修复：
+
+- `bridgeTypertGateway(real, peer)` 双调用透传 peer；resolver 本地 world 行取 `ForeignTarget.peer`（world 注册时捕获的 `connection.browserPeer`），native 缝取 ctx0 `connection.browserPeer`。
+- **native peer 必须懒取**：typertGateway 在自身构造器即注册（gateway/src/index.ts:237），早于 connection 挂载——布线期取值会永远捕获 undefined（0.3.1-j 第一版实证仍崩）；改为 `() => ctx.get('connection')?.browserPeer` 逐次解析。
+- 测试：raw gateway fake 的 `dispatchRpc` 改为**元数严格**（<4 参即抛，防再犯）；bridge 断言 peer 逐位透传（stream 第 4 位、dispatch 第 4 位）。
+
+验收：hub 638/0/1；root 42/0。**双线 live 复验**——PC 4999（egv8）：in-line 会话 send `egv8-ifgo5p` → `delivered` + 对端回 `OK` 中继回传；`agent_status` fresh 采集（conversation 0ldh8y，lastOutput "OK"）。dev3 4998（9nzd，全新未配对 home）：send `9nzd-zl4qk6` → `delivered` + `OK`。诊断期对 rig 安装 dist 的临时插桩已还原为 tarball 原像（复验 `delivered`）。
+
+**生产发现（未触碰，留待 user 裁决）**：本 agent 会话的 hub 工具绑定的是 PC 生产 hub（self `skc8`，`~/.dsh`）——实测其运行 **dsh 0.2.1-alpha.4 + superd 0.3.1-a**，同一 A2A 缺陷在场（本次两笔 `send` 失败均发于此，非 4999）；dev3 生产（bfwu，dsh.dev3.internal.test）按 user 报告为 rc.1 + 0.3.1-i，其本地 A2A 同样带 i 系缺陷。两条生产线的修复（升级到 rc.1/0.3.1-j）属生产操作，需 user 单独授权。另：dev3 4998 测试 home 为全新身份 9nzd（remotes 空），与 egv8 的测试线配对未建立——跨机 A2A 的测试线验收走 dev3 生产 bfwu（user 已验 exec）或另行配对。
+
+| 包（0.3.1-j） | SHA256 |
+| --- | --- |
+| better-dsh@0.3.1-j | `3efde640f0a1913ccb79953d83cb78ba67753e5fec32b65c773dd149d31fe429` |
+| super-dsh@0.3.1-j | `8020ed404ce00dca1543df618ac105fbddf1285e97e1675d28e8c0b14e2d6d87` |
+
+（better-dsh@0.3.1-j 内容与 i 相同字节，仅版本号同步；super-dsh 携带 A2A 修复。）
 
 私有证据在 `.scratch/alignment-0.2.1-rc.1/`（PC）与 dev3 `~/workspaces/superd/.scratch/alignment-021rc1/`（构建/安装/对账/会话/浏览器/双机 matrix）。含认证的文件不进 Git。未 publish、未 tag、未 push——等待 user 放行。

@@ -311,8 +311,12 @@ test('wireCompletionToDelivery: real Task-2 service + real buffer leg on a missi
 function rawGatewayRecorder(frames = []) {
   const g = {
     calls: { dispatchRpc: [], openWireStream: [] },
-    async dispatchRpc(endpoint, payload, signal) {
-      g.calls.dispatchRpc.push({ endpoint, payload, signal })
+    async dispatchRpc(endpoint, payload, signal, peer) {
+      // 0.2.1 regression guard: the raw face is 4-arg (peer last) — a 3-arg
+      // call means a bridge dropped the caller identity and rc.1 gateways
+      // would crash reading peer.signal.
+      if (arguments.length < 4) throw new Error(`dispatchRpc called with ${arguments.length} args — peer dropped`)
+      g.calls.dispatchRpc.push({ endpoint, payload, signal, peer })
       return { ok: true, value: {} }
     },
     openWireStream(endpoint, payload, uplink, peer, signal, control) {
@@ -339,7 +343,9 @@ test('resolveA2aGatewayFor: federated wire adapters pass through UNWRAPPED; loca
     const ompA6 = ensureAgentId(home, 'omp')
     const nativeA6 = ensureAgentId(home, 'native')
     const ompRaw = rawGatewayRecorder()
-    registerForeignTarget({ key: 'omp', gateway: ompRaw })
+    const ompPeer = { id: 'peer-omp' }
+    const nativePeer = { id: 'peer-native' }
+    registerForeignTarget({ key: 'omp', gateway: ompRaw, peer: ompPeer })
     // federate one remote agent (memo table + target registry, roster row) —
     // a wire adapter with mesh-gateway's dual-face stream dispatch
     const remoteGateway = { dispatchRpc: () => {}, openWireStream: () => {} }
@@ -349,7 +355,7 @@ test('resolveA2aGatewayFor: federated wire adapters pass through UNWRAPPED; loca
       () => remoteGateway,
     )
     const nativeRaw = rawGatewayRecorder()
-    const gatewayFor = resolveA2aGatewayFor({ home, nativeGateway: nativeRaw })
+    const gatewayFor = resolveA2aGatewayFor({ home, nativeGateway: nativeRaw, nativePeer: () => nativePeer })
     const selfM4 = ensureSelf(home, 'local').id
 
     // FEDERATED: identity passthrough — wrapping a wire adapter would flip its
@@ -368,12 +374,12 @@ test('resolveA2aGatewayFor: federated wire adapters pass through UNWRAPPED; loca
     assert.equal(streamCall.endpoint, 'session/follow')
     assert.deepEqual(streamCall.payload, { args: {} })
     assert.equal(streamCall.uplink, undefined) // no-lane spelling (upstream substitutes EMPTY_ASYNC_ITERABLE)
-    assert.equal(streamCall.peer, undefined)
+    assert.equal(streamCall.peer, ompPeer) // caller identity rides slot 4 (0.2.1)
     assert.equal(streamCall.signal, signal) // position 5 — NOT shifted into uplink
     assert.ok(streamCall.control instanceof AbortController)
     // dispatchRpc passes through as-is
     ompBridge.dispatchRpc('session/create', { args: {} }, signal)
-    assert.deepEqual(ompRaw.calls.dispatchRpc, [{ endpoint: 'session/create', payload: { args: {} }, signal }])
+    assert.deepEqual(ompRaw.calls.dispatchRpc, [{ endpoint: 'session/create', payload: { args: {} }, signal, peer: ompPeer }])
 
     // NATIVE seam: the same bridge, the same canonical pin
     const nativeBridge = gatewayFor({ machine: selfM4, id: nativeA6 })
@@ -382,6 +388,8 @@ test('resolveA2aGatewayFor: federated wire adapters pass through UNWRAPPED; loca
     assert.equal(nativeRaw.calls.openWireStream[0].uplink, undefined)
     assert.equal(nativeRaw.calls.openWireStream[0].signal, signal)
     assert.ok(nativeRaw.calls.openWireStream[0].control instanceof AbortController)
+    nativeBridge.dispatchRpc('session/prompt', { args: {} }, signal)
+    assert.deepEqual(nativeRaw.calls.dispatchRpc, [{ endpoint: 'session/prompt', payload: { args: {} }, signal, peer: nativePeer }])
 
     // unknown a6 on a KNOWN machine → the typed throw (D7 amendment)
     assert.throws(() => gatewayFor({ machine: selfM4, id: 'unknown' }), (e) => e instanceof A2aAddressError && e.kind === 'unknown-agent')
