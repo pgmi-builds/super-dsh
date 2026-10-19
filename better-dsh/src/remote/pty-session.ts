@@ -1,5 +1,5 @@
 import { Utf16TailRing } from './output-ring.ts'
-import type { StreamOutputStats } from './hub-contract.ts'
+import type { OutputStats, StreamOutputStats } from './hub-contract.ts'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { buildInitCommand, createNonceFrameParser, genNonce, wrapPtyCommand } from './nonce-framing.ts'
 
@@ -26,7 +26,19 @@ export interface PtySessionOptions {
   onDead?: () => void
 }
 
-export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number }
+export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number; /** P5：立即回执 running job，不等帧（run_in_background 与超时 handoff 共用同一条 job 通道）。 */ background?: boolean }
+/** detached job 的完成结果（frame 或会话死亡时结算；与 dispatch 回执同构）。 */
+export interface PtyJobResult { output: string; outputStats?: StreamOutputStats; exit: number | null; cwd: string | null; timedOut: boolean }
+/** P4/P5（2026-10-19）running job 句柄：byte-cursor 增量读 + P8 显式中断 + 完成时帧结算。 */
+export interface PtyRunningJob {
+  /** Byte-cursor incremental read over the command's merged output (tail-ring retention; lossy reports eviction). */
+  read: (fromByte: number) => { text: string; nextOffset: number; lossy: boolean }
+  stats: () => OutputStats
+  /** P8 两段式 ^C 中断（会话存活；trap-INT 走宽限 group-kill 兜底）。 */
+  interrupt: () => void
+  /** Settles on the exit frame, or with exit null when the session dies. */
+  done: Promise<PtyJobResult>
+}
 export interface PtyDispatchResult {
   output: string
   outputStats?: StreamOutputStats
@@ -35,6 +47,9 @@ export interface PtyDispatchResult {
   timedOut: boolean
   reconnected: boolean
   durationMs: number
+  /** P4/P5：true = 命令仍在前台运行，本回执是 handoff（job 句柄随行）。 */
+  running?: boolean
+  job?: PtyRunningJob
 }
 
 export type PtyState = 'cold' | 'starting' | 'ready' | 'dead' | 'disposed'
@@ -57,6 +72,8 @@ export class PtySession {
   private deathWaiters: Array<() => void> = []
   private diag = ''
   private inFlight = 0
+  /** P4/P5：当前占用前台的 detached job（background/超时 handoff）。非 null 时新命令拒绝（Q6）。 */
+  private detachedJob: PtyRunningJob | null = null
   private lastSettleAt = 0
   /** 是否曾成功初始化（ready 过）。决定死亡语义：ready 过 → reconnect（留池）；从未 ready → 出池（见 start()）。 */
   private everReady = false
@@ -76,49 +93,71 @@ export class PtySession {
     return { state: this.state, busy: this.inFlight > 0, idleMs: this.lastSettleAt > 0 ? Date.now() - this.lastSettleAt : null, pid: this.proc?.pid ?? null }
   }
 
-  /** 同一会话命令严格串行（FIFO）；死亡/冷态先重启。 */
+  /** 同一会话命令严格串行（FIFO）；死亡/冷态先重启。P4/P5（2026-10-19）：超时不再自动
+   * 打断——handoff 成 running job（byte-cursor 轮询 + 显式 interrupt，P8 机制原样保留在
+   * job.interrupt）；background 选项让 dispatch 立即回执。占用者是 detached job 时新命令
+   * 拒绝（Q6：诚实回状态优先于排队），纯同步并发 FIFO 语义不变。 */
   dispatch(cmd: string, dOpts: PtyDispatchOptions = {}): Promise<PtyDispatchResult> {
     const attempt = async (): Promise<PtyDispatchResult> => {
       const started = Date.now()
       const reconnected = this.state === 'dead'
       if (this.state !== 'ready') await this.start()
       if (this.state === 'disposed') throw new Error(`[E_SESSION_DISPOSED] remote pty session '${displayKey(this.opts.key)}' was disposed before dispatch`)
+      if (this.detachedJob !== null)
+        throw new Error(
+          `[E_SESSION_BUSY] remote pty session '${displayKey(this.opts.key)}' still has a command running in the foreground — poll it with job_output and, if needed, cancel with job_kill; the shell must be idle before a new command`,
+        )
       this.inFlight++
       return await new Promise<PtyDispatchResult>((resolve) => {
         const nonce = genNonce()
         const ring = new Utf16TailRing(OUTPUT_HARD_CAP)
         let interrupted = false
-        let settled = false
+        let settled = false // 外层 dispatch 回执已提前结算（background / 超时 handoff）
+        let jobSettled = false
         let interruptTimer: NodeJS.Timeout | undefined
         let killTimer: NodeJS.Timeout | undefined
-        const deathWaiter = (): void => finish({ output: ring.text, exit: null, cwd: null, timedOut: interrupted })
+        let jobDone: ((r: PtyJobResult) => void) | null = null
+        const detach = (): PtyRunningJob => {
+          // handoff：外层立即回执 running；parser/ring/死亡等待继续活着直到 frame/death/interrupt。
+          const job: PtyRunningJob = {
+            read: (fromByte) => ring.read(fromByte),
+            stats: () => ring.stats(),
+            interrupt: () => { if (!jobSettled) twoStage() },
+            done: new Promise<PtyJobResult>((res) => { jobDone = res }),
+          }
+          this.detachedJob = job
+          settled = true
+          resolve({ output: ring.text, outputStats: { stdout: ring.stats() }, exit: null, cwd: null, timedOut: false, running: true, job, reconnected, durationMs: Date.now() - started })
+          return job
+        }
         const cleanup = (): void => {
           this.onChunk = null
+          this.detachedJob = null
           // I1（终审）：已结算 dispatch 的死亡等待必须摘除——否则闭包钉住整段 output，
           // 长命会话每调用累积一个 waiter（init 路径的 filter 同款形态）
           this.deathWaiters = this.deathWaiters.filter((w) => w !== deathWaiter)
           if (interruptTimer !== undefined) clearTimeout(interruptTimer)
           if (killTimer !== undefined) clearTimeout(killTimer)
         }
-        const finish = (r: Omit<PtyDispatchResult, 'durationMs' | 'reconnected'>): void => {
-          if (settled) return
-          settled = true
+        const settle = (r: Omit<PtyJobResult, 'outputStats'>): void => {
+          if (jobSettled) return
+          jobSettled = true
           cleanup()
           this.inFlight--
           this.lastSettleAt = Date.now()
           this.resetIdleTimer()
-          resolve({ ...r, outputStats: { stdout: ring.stats() }, reconnected, durationMs: Date.now() - started })
+          const full: PtyJobResult = { ...r, outputStats: { stdout: ring.stats() } }
+          jobDone?.(full)
+          if (!settled) { settled = true; resolve({ ...full, reconnected, durationMs: Date.now() - started }) }
         }
+        const deathWaiter = (): void => settle({ output: ring.text, exit: null, cwd: null, timedOut: interrupted })
         const parser = createNonceFrameParser(nonce, {
           onOutput: (t) => {
             ring.push(t)
           },
-          onFrame: ({ exit, cwd }) => finish({ output: ring.text, exit, cwd, timedOut: interrupted }),
+          onFrame: ({ exit, cwd }) => settle({ output: ring.text, exit, cwd, timedOut: interrupted }),
         })
-        this.onChunk = (c) => parser.feed(c)
-        this.write(wrapPtyCommand(cmd, nonce))
-        if (dOpts.stdin !== undefined) this.write(dOpts.stdin) // Ruling 11: REPL 式紧随
-        interruptTimer = setTimeout(() => {
+        const twoStage = (): void => {
           interrupted = true
           // P8 两段打断：\x03 中断前台作业后，交互 bash 会放弃当前命令行的剩余部分
           // （尾部 marker 不再执行）；紧随注入的同 nonce 130-marker 行在 bash 回到
@@ -131,10 +170,16 @@ export class PtySession {
             // （否则 trap-INT 的卡死进程永生，重连后旧组再不可达）
             this.killTree()
             this.markDead()
-            finish({ output: ring.text, exit: null, cwd: null, timedOut: true })
+            settle({ output: ring.text, exit: null, cwd: null, timedOut: true })
           }, INTERRUPT_GRACE_MS)
-        }, dOpts.timeoutSec === undefined ? 120_000 : dOpts.timeoutSec * 1_000)
+        }
+        this.onChunk = (c) => parser.feed(c)
+        this.write(wrapPtyCommand(cmd, nonce))
+        if (dOpts.stdin !== undefined) this.write(dOpts.stdin) // Ruling 11: REPL 式紧随
         this.deathWaiters.push(deathWaiter)
+        if (dOpts.background === true) { detach(); return }
+        // P4：同步等待到期 = handoff（不再自动 ^C）；命令由 job 通道继续（job_output 增量 / job_kill 显式中断）。
+        interruptTimer = setTimeout(() => detach(), dOpts.timeoutSec === undefined ? 120_000 : dOpts.timeoutSec * 1_000)
       })
     }
     const run = this.queue.then(attempt, attempt)
@@ -254,7 +299,12 @@ export class PtySession {
   private resetIdleTimer(): void {
     this.clearIdleTimer()
     if (this.state === 'disposed') return
-    this.idleTimer = setTimeout(() => void this.dispose(), this.opts.idleTtlSec * 1_000)
+    // R1 双条件（2026-10-19）：有命令在跑（含 detached job）不算 idle——重挂整段 TTL；
+    // 回收只发生在「无运行命令且 idle 超时」，静默长任务不被掐。
+    this.idleTimer = setTimeout(() => {
+      if (this.inFlight > 0) { this.resetIdleTimer(); return }
+      void this.dispose()
+    }, this.opts.idleTtlSec * 1_000)
     this.idleTimer.unref()
   }
 

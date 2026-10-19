@@ -45,9 +45,9 @@ describe('buildOneShotArgv (pure-CLI one-shot with group-kill wrapper)', () => {
 })
 
 describe('buildPtyArgv', () => {
-  it('ssh: force-tty over host pipes, BatchMode', () => {
+  it('ssh: force-tty over host pipes, BatchMode, fixed client-owned keepalive (P-keepalive 2026-10-19)', () => {
     expect(buildPtyArgv({ kind: 'ssh', host: 'dev4' }))
-      .toEqual(['ssh', '-tt', '-o', 'BatchMode=yes', '--', 'dev4', 'bash'])
+      .toEqual(['ssh', '-tt', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=180', '-o', 'ServerAliveCountMax=2', '--', 'dev4', 'bash'])
   })
   it('docker: script(1) hosts the PTY, local echo pre-silenced, exec replaces the shell', () => {
     expect(buildPtyArgv({ kind: 'docker', container: 'my c' }))

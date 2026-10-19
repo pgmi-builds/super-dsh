@@ -86,21 +86,38 @@ describe('PtySession over plain local bash', () => {
 })
 
 describe('PtySession over script(1)-hosted PTY (BYO-PTY shape)', () => {
-  it('timeout sends ^C through the pty line discipline: framed exit 130, flagged interrupted', async () => {
+  it('sync timeout hands off instead of auto-interrupting: running receipt, job completes, session survives (P4)', async () => {
     const s = new PtySession({ key: 'k', argv: ['script', '-qfec', 'bash', '/dev/null'], ...OPTS })
-    const r = await s.dispatch('sleep 30', { timeoutSec: 1 })
-    expect(r.timedOut).toBe(true)
-    expect(r.durationMs).toBeLessThan(8_000)
-    expect(r.exit).toBe(130)
-    const r2 = await s.dispatch('echo alive') // session survived the interrupt
+    const r = await s.dispatch('sleep 1 ; echo late', { timeoutSec: 1 })
+    expect(r.running).toBe(true)
+    expect(r.timedOut).toBe(false)
+    expect(r.exit).toBe(null)
+    expect(r.job).toBeDefined()
+    const res = await r.job!.done
+    expect(res.exit).toBe(0)
+    expect(res.output).toContain('late')
+    const r2 = await s.dispatch('echo alive') // handoff never interrupted the shell
     expect(r2.exit).toBe(0)
     await s.dispose()
   }, 20_000)
-  it('timeout kill fallback on a transport without interrupt (plain bash over pipes)', async () => {
+  it('job.interrupt(): ^C through the pty line discipline — framed exit 130, session survives (P8 unchanged)', async () => {
+    const s = new PtySession({ key: 'k', argv: ['script', '-qfec', 'bash', '/dev/null'], ...OPTS })
+    const r = await s.dispatch('echo begin; sleep 30', { background: true })
+    for (let i = 0; i < 100 && !r.job!.read(0).text.includes('begin'); i++) await new Promise(res => setTimeout(res, 20)) // wait until the shell consumed the command — ^C before consumption flushes the unread tty line (input-queue race, not a supervision gap)
+    r.job!.interrupt()
+    const res = await r.job!.done
+    expect(res.exit).toBe(130)
+    const r2 = await s.dispatch('echo alive')
+    expect(r2.exit).toBe(0)
+    await s.dispose()
+  }, 20_000)
+  it('interrupt kill fallback on a transport without interrupt (plain bash over pipes)', async () => {
     const s = new PtySession({ key: 'k', argv: ['bash'], ...OPTS })
-    const r = await s.dispatch('trap "" INT; sleep 30', { timeoutSec: 1 })
-    expect(r.timedOut).toBe(true)
-    expect(r.exit).toBe(null)
+    const r = await s.dispatch('trap "" INT; sleep 30', { background: true })
+    r.job!.interrupt()
+    const res = await r.job!.done
+    expect(res.exit).toBe(null)
+    expect(res.timedOut).toBe(true)
     expect(r.durationMs).toBeLessThan(10_000)
     await s.dispose()
   }, 20_000)
@@ -123,13 +140,14 @@ describe('PtySession over script(1)-hosted PTY (BYO-PTY shape)', () => {
     await s.dispatch('echo warm')
     const pid = s.snapshot.pid
     expect(pid).toBeTypeOf('number')
-    const r = await s.dispatch('trap "" INT; sleep 30', { timeoutSec: 1 })
-    expect(r.exit).toBe(null)
-    expect(r.timedOut).toBe(true)
+    const r = await s.dispatch('trap "" INT; sleep 30', { background: true })
+    r.job!.interrupt()
+    const res = await r.job!.done
+    expect(res.exit).toBe(null)
+    expect(res.timedOut).toBe(true)
     expect(s.snapshot.pid).toBe(null)
-    // fix-round-2 偏离（唯一一处，plan 逐字之外的稳定化）：killTimer 在发送 SIGTERM 的
-    // 同一 tick 内结算 dispatch，僵尸组要等事件循环轮转 + node/init 收尸后才消失——
-    // 与下一测试「等 dispose 的 killTree 兑现」同一机制，同一 1.2s settle 手法。
+    // killTimer 在发送 SIGTERM 的同一 tick 内结算 dispatch，僵尸组要等事件循环轮转 +
+    // node/init 收尸后才消失——与下一测试「等 dispose 的 killTree 兑现」同一机制。
     await new Promise((r2) => setTimeout(r2, 1_200))
     expect(() => process.kill(-pid!, 0)).toThrow()
     await s.dispose()
@@ -178,5 +196,45 @@ describe('PtySession over script(1)-hosted PTY (BYO-PTY shape)', () => {
     expect(r.timedOut).toBe(false)
     expect(r.durationMs).toBeLessThan(5_000)
     await new Promise((r2) => setTimeout(r2, 1_200)) // 等 dispose 的 killTree 兑现，防组泄漏到下一测试
+  }, 20_000)
+})
+
+describe('PTY background & handoff (P4/P5, 2026-10-19)', () => {
+  it('background dispatch returns immediately with a running receipt; job.done frames exit/cwd; read() is byte-cursor increments', async () => {
+    const s = new PtySession({ key: 'k', argv: ['bash'], ...OPTS })
+    const started = Date.now()
+    const r = await s.dispatch('sleep 0.5 ; echo done ; cd /tmp', { background: true })
+    expect(r.running).toBe(true)
+    expect(r.exit).toBe(null)
+    expect(r.cwd).toBe(null)
+    expect(r.job).toBeDefined()
+    expect(Date.now() - started).toBeLessThan(400)
+    const cursor0 = r.job!.read(0)
+    const res = await r.job!.done
+    expect(res.exit).toBe(0)
+    expect(res.cwd).toBe('/tmp')
+    expect(res.output).toContain('done')
+    expect(r.job!.read(cursor0.nextOffset).text).toContain('done')
+    await s.dispose()
+  }, 20_000)
+  it('busy shell rejects new commands while a background job runs, accepts after settle (Q6)', async () => {
+    const s = new PtySession({ key: 'k', argv: ['bash'], ...OPTS })
+    const r = await s.dispatch('sleep 1 ; echo ok', { background: true })
+    await expect(s.dispatch('echo nope')).rejects.toThrow(/E_SESSION_BUSY/)
+    const res = await r.job!.done
+    expect(res.output).toContain('ok')
+    const after = await s.dispatch('echo after')
+    expect(after.output.trim()).toBe('after')
+    await s.dispose()
+  }, 20_000)
+  it('idle TTL never reaps a session whose command is still running (R1 dual condition)', async () => {
+    const pool = new PtyPool({ idleTtlSec: 1 })
+    const s = pool.getOrCreate('t:x', ['bash'])
+    const r = await s.dispatch('sleep 1.6 ; echo long', { background: true })
+    await new Promise((res) => setTimeout(res, 1_400)) // past the idle TTL, job still running
+    expect(s.sessionState).not.toBe('disposed')
+    const res = await r.job!.done
+    expect(res.output).toContain('long')
+    await pool.disposeAll()
   }, 20_000)
 })

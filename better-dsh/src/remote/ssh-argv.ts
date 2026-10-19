@@ -38,6 +38,13 @@ export function sshIdentityArgv(connection: SshConnection, dialect: 'ssh' | 'scp
 /** Full ssh invocation around the shared identity core. base and extra are
  * trusted internal argv (dialect flags incl. BatchMode, forwarding options)
  * — never a model-provided shell string. */
+/** SSH keepalive for PERSISTENT lanes (pty ruling 2026-10-19): client-owned,
+ * fixed cadence — OpenSSH has NO protocol-default keepalive unit (default is
+ * disabled), so we set our own in our own argv. Control-channel probes never
+ * touch the PTY byte stream; NAT/WiFi idle expiry (~5min) would otherwise
+ * silently kill an idle-but-wanted session inside the 15min TTL. CountMax=2
+ * gives ~6min honest dead-detection instead of a hang on next write. */
+export const SSH_PERSISTENT_KEEPALIVE = ['-o', 'ServerAliveInterval=180', '-o', 'ServerAliveCountMax=2'] as const
 export function sshCommandArgv(connection: SshConnection, base: readonly string[], extra: readonly string[], command?: string): string[] {
   const args = ['ssh', ...base, ...sshIdentityArgv(connection, 'ssh'), ...extra, '--', connection.host]
   if (command !== undefined) args.push(command)

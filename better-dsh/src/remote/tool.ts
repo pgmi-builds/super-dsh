@@ -1,4 +1,4 @@
-import { startRemoteJob } from './jobs.ts'
+import { adoptRunningPtyJob, startRemoteJob } from './jobs.ts'
 import { defineTool, type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { RECONNECT_NOTICE } from './pty-session.ts'
@@ -29,6 +29,10 @@ interface RemoteToolValue {
   notice?: string
   /** oneshot 监督路径：`superd-run <ver> (<triple>)` 或 `posix-shim`。 */
   runner?: string
+  /** P4/P5（2026-10-19）：pty 命令仍在前台运行（handoff 回执）；jobId 供 job_output/job_kill。 */
+  running?: boolean
+  /** 本 pty 会话 idle TTL 剩余（秒）；回执即状态快照（P2/P3）。 */
+  ttlSec?: number
 }
 
 const NO_SESSION_KEY = 'remote:no-session'
@@ -41,7 +45,7 @@ const NO_SESSION_KEY = 'remote:no-session'
 const REMOTE_TOOL_DESCRIPTION = `Remote execution and file transfer over ssh / docker / incus, plus persistent named shells. Pick the call shape:
   {}                       → roster (local scan, no dialing)
   {target}                 → status probe: reachable / unreachable — <native error>, or container state + session layer
-  {target, cmd}            → run cmd — oneshot by default; mode "pty" for a persistent shell
+  {target, cmd}            → run cmd — oneshot by default; add mode:"pty" for a persistent stateful shell (same target = same session; cwd/env survive; commands return synchronously with exit+cwd)
   {target, script:"/abs"}  → LOCAL script over stdin to a fixed bash -s (oneshot only; no cmd/stdin/spawn/mode mix)
   {target:"byossh:lbl", ssh:{host,user?,port?,key?,proxyJump?}} → register this Agent's SSH identity (no cmd = register only); reuse the target later with ssh omitted. Same spec idempotent; different spec refused — use another label. key is an existing origin file, never inline material; nothing written or persisted; a new Agent registers again.
   {target:"byop:lbl", spawn, cmd} → create the named shell once; reuse as {target:"byop:lbl", cmd} (no spawn)
@@ -51,7 +55,7 @@ oneshot: stateless bash -lc, stdout/stderr separate, exit code verbatim. Supervi
 
 Files — {action:"copy" | "rsync", src:"[target:]abs", dst:"[target:]abs", argv:["-a"]}: argv tokens pass verbatim before src/dst — no whitelist, no forced defaults (dry run = pass "--dry-run" yourself); the CLI's own exit code and stderr come back in the receipt. copy: local↔SSH scp; SSH↔SSH scp -3 through the origin (identities stay local); docker cp; incus file push/pull; any other pair = two commands with origin staging (per-half options via pullArgv/pushArgv, exclusive with argv); scp -R (uppercase — scp's remote-client mode) is refused; copy of a directory from a LOCAL source auto-appends the route's recursive flag (-r, shown in the receipt argv); from a REMOTE source pass -r yourself or use rsync; mkdir defaults to ensuring the destination's PARENT directory first (one exec pre-hop, outcome in the receipt created field; the operand itself is never pre-created); receipts use stable route ids (scp / scp-3 / docker-cp / incus-file-push / incus-file-pull / staged-pull-push / hub-staged) with ok+reason, the verification tier actually performed (native-exit-only by default; sha256 on the Hub lane) and tool-owned temp paths in argv shown as placeholders. rsync: local↔SSH, or SSH↔SSH with one protocol conversation between the peers (real delta; forwarding denied → honest error, never full copy). rsync src trailing slash copies contents, no slash the directory itself.
 
-Output: pty tails at ~30k chars ("[truncated: …]" header) — redirect bulk output to a file. Hard retention 4,000,000 UTF-16 units per stream (Hub 4MiB bytes); outputStats reports the rest; restart cannot recover discarded output. stdin feeds the command; timeout (seconds) interrupts then kills. run_in_background:true (oneshot) → jobId for job_output/job_kill. Native transport errors pass through verbatim — self-correct from them.`
+Output: pty tails at ~30k chars ("[truncated: …]" header) — redirect bulk output to a file. Hard retention 4,000,000 UTF-16 units per stream (Hub 4MiB bytes); outputStats reports the rest; restart cannot recover discarded output. stdin feeds the command. timeout (seconds): oneshot interrupts then kills; pty does NOT kill — the command hands off as a running job (poll increments with job_output, cancel with job_kill = Ctrl-C; the session survives). run_in_background:true (oneshot AND pty) → jobId for job_output/job_kill; a busy pty session rejects new commands until idle; pty sessions idle out after 15 min. Native transport errors pass through verbatim — self-correct from them.`
 
 export function createRemoteTool(
   driver: RemoteDriver,
@@ -71,7 +75,7 @@ export function createRemoteTool(
       pushArgv: { type: 'array', items: { type: 'string' }, description: 'Options for the PUSH half (origin staging → destination endpoint) of a two-command cross-endpoint copy. Mutually exclusive with argv; must be paired with pullArgv. Only options valid for the push half\'s CLI.' },
       verify: { type: 'boolean', description: 'copy only. Receipts name the verification tier actually performed (D1=A): native CLI routes are "native-exit-only" (no independent check — self-verify via oneshot digest commands when needed); the Hub↔local staged lane computes independent SHA-256 digests by default and verify:false skips them ("not-applicable"). No hash tier exists on native routes.' },
       mkdir: { type: 'boolean', description: 'copy only, all routes. Default true: before transfer, one best-effort exec pre-hop ensures the destination\'s PARENT directory exists (the operand itself is never pre-created — each CLI\'s own layout semantics stay byte-identical). Receipt created field: true (parent created this call) / false (already existed) / "n-a" (skipped or pre-hop unavailable, e.g. docker exec on a stopped container — the native CLI then reports the real error itself). false skips the pre-hop.' },
-      run_in_background: { type: 'boolean', description: 'Oneshot only: return a native jobId immediately, read with job_output, cancel with job_kill; output is available while running. Requires official jobs service/controller.' },
+      run_in_background: { type: 'boolean', description: 'oneshot and pty: return a native jobId immediately, read with job_output, cancel with job_kill; output is available while running. pty mode: the jobId tracks the running command inside the persistent session — job_kill sends Ctrl-C (the session survives). Hub-machine PTY has no background lane. Requires official jobs service/controller.' },
       target: { type: 'string', description: 'Single entry point. byossh:<label> reuses this Agent-scoped registered SSH identity (pass ssh on first call; no cmd registers only). Bare name / IP / domain matches in order: ssh config, then docker, then incus, then a live pty label (a collision goes to the earlier source). "byop:<label>" / "docker:<name>" / "incus:<name>" / "ssh:<name>" force a channel. For "byop:<label>", pass spawn the first time to create it and omit spawn afterwards to reuse it. Omit cmd → status probe.' },
       ssh: { type: 'object', description: 'Only for byossh:<label>: register origin-side connection; omit on reuse. No inline keys or arbitrary SSH options.', additionalProperties: false, properties: {
         host: { type: 'string', required: true, description: 'SSH hostname, IP or native config alias.' },
@@ -83,9 +87,9 @@ export function createRemoteTool(
       spawn: { type: 'string', description: 'Only valid together with a "byop:<label>" target, and required the first time that label is created: the full command that starts an interactive shell (e.g. "docker exec -it img bash"). It is not retained — pass it again if the label answers [E_NO_SESSION]. Requires cmd; mode is locked to pty; nested hops are dumb pipes (only the innermost bash frames).' },
       cmd: { type: 'string', description: "One raw shell string parsed by the remote bash (multi-line = one compound; exit = last command's). Omit with target → status probe; omit everything → roster." },
       script: { type: 'string', description: 'LOCAL absolute script path. Read before any dialing, sent literally over stdin to fixed bash -s. Oneshot only; cannot combine with cmd, stdin, spawn, pty mode or byop target. Hub inline cmd remains limited to 4096; script body is not argv.' },
-      mode: { type: 'string', enum: ['oneshot', 'pty'], description: "'oneshot' (default): stateless `bash -lc`, stdout/stderr separate, exit code is the process's own. 'pty': one persistent shell per (agent, target), cwd/env survive, streams merge, idle TTL 600s. A \"byop:<label>\" target locks mode to 'pty'." },
+      mode: { type: 'string', enum: ['oneshot', 'pty'], description: "'oneshot' (default): stateless bash -lc, stdout/stderr separate, exit code is the process's own. 'pty': one persistent shell per (agent, target) — cwd/env survive, streams merge, every command returns synchronously with exit+cwd; a command that outlives its timeout hands off as a running job (job_output/job_kill); idle TTL 15 min. Prefer pty when you will operate on the same target repeatedly and want shell continuity; prefer oneshot for single stateless shots. A 'byop:<label>' target locks mode to 'pty'." },
       stdin: { type: 'string', description: 'Input fed to the command. oneshot: piped to stdin. pty: written right after the command line (REPL-style) — only helps commands that read stdin there. Requires cmd.' },
-      timeout: { type: 'number', description: 'Per-command timeout in seconds (default 120, row-configurable). pty: Ctrl-C first, then kill; an interrupt does not kill the session.' },
+      timeout: { type: 'number', description: 'Per-command timeout in seconds (default 120, row-configurable). oneshot: interrupts then kills the whole group. pty: the command is NOT killed on timeout — it hands off to a running job you can poll (job_output) and cancel (job_kill = Ctrl-C first, then kill; the session survives an interrupt).' },
     },
     output: {
       schema: {
@@ -108,6 +112,8 @@ export function createRemoteTool(
           session: { type: 'string' },
           notice: { type: 'string' },
           runner: { type: 'string', description: 'oneshot supervision path: superd-run <ver> (<triple>) or posix-shim' },
+          running: { type: 'boolean' },
+          ttlSec: { type: 'integer' },
         },
       },
       render: (_args, value): ContentBlock[] => [{ type: 'text', text: renderValue(value as RemoteToolValue) }],
@@ -156,10 +162,10 @@ export function createRemoteTool(
         throw new Error('[E_SSH_PARAMS] remote: ssh requires a byossh:<label> target; spawn is only for byop:<label>')
       if (args.run_in_background) {
         if (!hasCmd && args.script === undefined) throw new Error('remote: background requires cmd or script')
-        if (args.mode === 'pty' || hasSpawn || args.target?.startsWith('byop:')) throw new Error('remote: background requires oneshot; PTY and BYO-PTY are unsupported')
+        if (args.script !== undefined && (args.mode === 'pty' || hasSpawn)) throw new Error('remote: script is oneshot-only; PTY background takes cmd')
         const jobs = exec.agent?.ctx.get('jobs')
         if (!jobs) throw new Error('remote: background requires the official DSH jobs service and job_output/job_kill controller; foreground execution remains available')
-        const jobId = startRemoteJob(jobs, { target: args.target, cmd: args.cmd, script: args.script, ssh: args.ssh, stdin: args.stdin, mode: 'oneshot', timeout: args.timeout }, exec, driver)
+        const jobId = startRemoteJob(jobs, { target: args.target, spawn: args.spawn, cmd: args.cmd, script: args.script, ssh: args.ssh, stdin: args.stdin, ...(args.mode === 'pty' ? { mode: 'pty' as const } : {}), timeout: args.timeout }, exec, driver)
         return { kind: 'job', jobId, text: `Started ${jobId}. Use job_output to read and job_kill to cancel; completion is reported by the host.`, exit: null, durationMs: 0 }
       }
       // cmd 缺省 + target 在场 = on-demand status（Ruling 16/17）；spawn 无可探测物。
@@ -197,6 +203,17 @@ export function createRemoteTool(
       if (r.session !== undefined) v.session = r.session
       if (r.notice !== undefined) v.notice = r.notice
       if (r.runner !== undefined) v.runner = r.runner
+      if (r.running === true && r.ptyJob !== undefined) {
+        const jobs = exec.agent?.ctx.get('jobs')
+        if (jobs) {
+          const jobId = adoptRunningPtyJob(jobs, exec, `${r.target}: ${args.cmd}`, r.ptyJob)
+          v.jobId = jobId
+          v.running = true
+        } else {
+          r.ptyJob.interrupt()
+          v.notice = 'The command outlived its synchronous wait and no jobs service is available to poll it, so it was interrupted. Use run_in_background:true for long commands.'
+        }
+      }
       return v
     },
   })
@@ -235,13 +252,17 @@ function renderValue(v: RemoteToolValue): string {
   const secs = ((v.durationMs ?? 0) / 1_000).toFixed(1)
   const markers: string[] = []
   if (v.timedOut === true) markers.push('interrupted')
+  if (v.running === true) markers.push(`still running — poll job_output${v.jobId !== undefined ? ` ${v.jobId}` : ''}`)
   if (v.truncated !== undefined) markers.push(`truncated, ${v.outputStatsUnavailable ? 'returned peer tail' : 'original'} ${v.truncated} ${v.outputStats?.stdout.unit === 'bytes' ? 'bytes' : 'chars'}`)
   if (v.outputStatsUnavailable) markers.push('peer output totals/retention unavailable; returned tail only')
   const suffix = markers.length > 0 ? ` · ${markers.join(' · ')}` : ''
   const cwdTag = typeof v.cwd === 'string' && v.cwd.length > 0 ? ` · cwd ${v.cwd}` : ''
+  const ttlTag = typeof v.ttlSec === 'number' ? ` · idle-left ~${Math.max(1, Math.round(v.ttlSec / 60))}m` : ''
   const sessionTag = typeof v.session === 'string' && v.session.length > 0 ? ` · ${v.session}` : ''
   const runnerTag = typeof v.runner === 'string' && v.runner.length > 0 ? ` · runner ${v.runner}` : ''
-  parts.push(`[exit ${v.exit} · ${secs}s${suffix}${cwdTag}${sessionTag}${runnerTag}]`)
+  parts.push(`[exit ${v.exit} · ${secs}s${suffix}${cwdTag}${ttlTag}${sessionTag}${runnerTag}]`)
+  if (v.runner === 'posix-shim' && ((v.exit !== null && v.exit !== 0) || v.timedOut === true))
+    parts.push('note: this oneshot ran through the POSIX fallback on this target; mode:"pty" uses an independent lane and may still work here')
   if (v.stderr !== undefined && v.stderr.length > 0) parts.push('[stderr]', v.stderr)
   return parts.join('\n')
 }

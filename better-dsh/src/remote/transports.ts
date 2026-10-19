@@ -1,5 +1,6 @@
 import type { HelperAssets } from './helper.ts'
 import { sshArgv } from './ssh-targets.ts'
+import { SSH_PERSISTENT_KEEPALIVE } from './ssh-argv.ts'
 import type { TargetPlan } from './target.ts'
 
 /** POSIX 单引号机械转义（唯一一层转义，spec §三"一层机械转义"）。 */
@@ -43,11 +44,13 @@ bash -lc ${shQuote(cmd)}`
   }
 }
 
-/** Persistent pty（Ruling 2）：ssh/incus 走宿主管道，docker 经 script(1) 托管宿主 PTY。 */
+/** Persistent pty（Ruling 2）：ssh/incus 走宿主管道，docker 经 script(1) 托管宿主 PTY。
+ * ssh 基座常驻固定 keepalive（2026-10-19 裁决）：客户端自有、零对端依赖，控制消息
+ * 不触碰 PTY 字节流；oneshot 短命连接不带。 */
 export function buildPtyArgv(plan: TargetPlan): string[] {
   switch (plan.kind) {
     case 'ssh':
-      return sshArgv(plan.connection ?? { host: plan.host }, { tty: true, command: 'bash' })
+      return sshArgv(plan.connection ?? { host: plan.host }, { tty: true, command: 'bash', extraArgs: SSH_PERSISTENT_KEEPALIVE })
     case 'docker':
       return ['script', '-qfec', `stty -echo 2>/dev/null ; exec docker exec -it -- ${shQuote(plan.container)} bash`, '/dev/null']
     case 'incus':

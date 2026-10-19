@@ -5,8 +5,8 @@ import { readFile } from 'node:fs/promises'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import { createRealRemoteHarness } from './real-harness.ts'
 
-async function harness(controller = true) {
-  const h = await createRealRemoteHarness({ copies: 1, driverOptions: { execTimeoutSec: 0.05, oneshotArgvFor: (_p, cmd) => ['bash', '-c', cmd], rosterRunner: async () => { throw new Error('DISCOVERY BEFORE ADMISSION') } } })
+async function harness(controller = true, driverOptions: Record<string, unknown> = {}) {
+  const h = await createRealRemoteHarness({ copies: 1, driverOptions: { execTimeoutSec: 0.05, oneshotArgvFor: (_p, cmd) => ['bash', '-c', cmd], rosterRunner: async () => { throw new Error('DISCOVERY BEFORE ADMISSION') }, ...driverOptions } })
   const jobs = await h.ctx.plugin(LocalJobs, { pumpPollMs: 10 })
   const tools = controller ? await h.ctx.plugin(ToolJobs, { completionDelivery: 'quiet' }) : undefined
   return { ...h, async dispose() { await h.dispose(); await tools?.dispose(); await jobs.dispose() } }
@@ -33,13 +33,38 @@ it('exposes live output through native jobs with owner fencing, consuming reads,
     expect(output.value).toMatchObject({ text: '', job: { status: 'killed' } })
   } finally { await h.dispose() }
 }, 10000)
-it('refuses admission before discovery, refuses PTY backgrounds, and keeps foreground without jobs', async () => {
+
+it('PTY background jobs: live merged output, interrupt cancels with exit 130, session survives; sync timeout hands off with a pollable jobId (P4/P5)', async () => {
+  const h = await harness(true, { execTimeoutSec: 2, ptyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+  try {
+    const a = await h.createAgent('pty-jobs')
+    const registry = a.ctx.get('jobs')!
+    const value = await h.invoke(a, { target: 'ssh:x', mode: 'pty', cmd: 'printf first; sleep 30', run_in_background: true }) as unknown as { jobId: string }
+    expect(value.jobId).toMatch(/^remote-/)
+    const id = JobId(value.jobId)
+    let text = ''
+    for (let i = 0; i < 100 && !text.includes('first'); i++) { text += registry.read(id, a.id).chunks.map(c => c.text).join(''); await new Promise(r => setTimeout(r, 20)) }
+    expect(text).toContain('first')
+    expect(registry.get(id, a.id).status).toBe('running')
+    const killed = await a.ctx.tools.execute({ name: 'job_kill', arguments: { job_id: id }, agent: a, signal: new AbortController().signal, callId: 'pty-kill' as never })
+    expect(killed.isError).toBeFalsy()
+    expect(await registry.wait(id, 5_000, a.id)).toMatchObject({ status: 'killed' })
+    const after = await h.invoke(a, { target: 'ssh:x', mode: 'pty', cmd: 'echo alive' }) as unknown as { text: string }
+    expect(after.text).toContain('alive')
+    const handed = await h.invoke(a, { target: 'ssh:x', mode: 'pty', cmd: 'sleep 2; printf tardy', timeout: 1 }) as unknown as { jobId: string; running?: boolean }
+    expect(handed.jobId).toMatch(/^remote-/)
+    expect(handed.running).toBe(true) // rendered model surface reads 'still running — poll job_output <id>'; the value carries running+jobId fields
+    expect(await registry.wait(JobId(handed.jobId), 5_000, a.id)).toMatchObject({ status: 'completed' })
+  } finally { await h.dispose() }
+}, 20_000)
+it('refuses admission before discovery, refuses hub PTY backgrounds, and keeps foreground without jobs', async () => {
   const h = await harness(false)
   try {
     const a = await h.createAgent('refusal')
     await expect(h.invoke(a, { target: 'bare', cmd: 'true', run_in_background: true })).rejects.toThrow(/controller/)
-    await expect(h.invoke(a, { target: 'byop:x', cmd: 'true', run_in_background: true })).rejects.toThrow(/oneshot/)
-    await expect(h.invoke(a, { target: 'ssh:x', mode: 'pty', cmd: 'true', run_in_background: true })).rejects.toThrow(/oneshot/)
+    await expect(h.invoke(a, { target: 'hub:m', mode: 'pty', cmd: 'true', run_in_background: true })).rejects.toThrow(/hub/)
+    // controller-less harness: registry admission refuses ALL backgrounds (gate precedes routing) —
+    // byop-without-spawn reaching E_NO_SESSION as a failed job is covered by admission order, not testable here
   } finally { await h.dispose() }
   const plain = await createRealRemoteHarness({ copies: 1, driverOptions: { oneshotArgvFor: (_p, cmd) => ['bash', '-c', cmd] } })
   try {

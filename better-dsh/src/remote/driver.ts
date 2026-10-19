@@ -11,7 +11,7 @@ import { startOneShot, runOneShot } from './oneshot.ts'
 import { startBinaryProcess } from './process.ts'
 import { helperAssets, HelperRegistry, type HelperAssets, type HelperRunnerInfo } from './helper.ts'
 import { startOwnedNativeProcess } from './ssh-process.ts'
-import { PtyPool, displayKey } from './pty-session.ts'
+import { PtyPool, displayKey, type PtyRunningJob } from './pty-session.ts'
 import { tailWindow } from './nonce-framing.ts'
 import { resolveTarget, type TargetPlan } from './target.ts'
 import { probeTarget, renderProbe, renderSession, renderPtySession, type ProbeOptions } from './status.ts'
@@ -43,6 +43,11 @@ export interface RemoteCallResult {
   notice?: string
   /** oneshot 监督路径的如实标注：`superd-run <ver> (<triple>)` 或 `posix-shim`（spec remote-rescope §5）。 */
   runner?: string
+  /** P4/P5（2026-10-19）：true = pty 命令仍在前台运行（回执 = handoff），ptyJob 随行供 job 通道接管。 */
+  running?: boolean
+  ptyJob?: PtyRunningJob
+  /** 本会话 idle TTL 剩余（秒）；回执即状态快照（P2/P3：状态留在上下文里）。 */
+  ttlSec?: number
 }
 
 export interface RemoteAuditRecord {
@@ -84,6 +89,10 @@ type BareResolution = TargetPlan | { kind: 'pty'; label: string }
 /** PTY label 字符集：只禁空白 / `:` / 控制字符（roster 一行一 label，带换行的 label 渲染即烂）。 */
 const PTY_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
+/** R1（2026-10-19 二轮修订）：idle TTL 15 min——idle 随活动重置，在用会话永不超时；
+ * 「有运行命令」不算 idle（PtySession 双条件），静默长任务不被掐。 */
+export const REMOTE_PTY_IDLE_TTL_SEC = 900
+
 /** 双轨调度器（spec §七 Phase 2）：参数校验 → 路由 → oneshot 子进程 / pty 会话池。 */
 export class RemoteDriver {
   private readonly sshTargets = new SshTargets()
@@ -98,11 +107,13 @@ export class RemoteDriver {
   private helpers: HelperRegistry | null | undefined
   private readonly runnerOf = new WeakMap<RemoteProcess, string>()
   private disposal: Promise<void> | undefined
+  private readonly ptyIdleTtlSec: number
   constructor(private readonly opts: RemoteDriverOptions = {}) {
-    this.pool = new PtyPool({ idleTtlSec: opts.idleTtlSec ?? 600 })
+    this.ptyIdleTtlSec = opts.idleTtlSec ?? REMOTE_PTY_IDLE_TTL_SEC
+    this.pool = new PtyPool({ idleTtlSec: this.ptyIdleTtlSec })
   }
 
-  async call(params: RemoteCallParams, callCtx: { sessionKey?: string } = {}): Promise<RemoteCallResult> {
+  async call(params: RemoteCallParams, callCtx: { sessionKey?: string; ptyBackground?: boolean } = {}): Promise<RemoteCallResult> {
     const started = Date.now()
     try {
       this.assertOpen()
@@ -442,7 +453,7 @@ export class RemoteDriver {
   private async execute(
     params: PreparedRemoteInput,
     routing: { mode: 'oneshot' | 'pty'; display: string; plan?: TargetPlan; bare?: string; pty?: PtyRouting },
-    callCtx: { sessionKey?: string },
+    callCtx: { sessionKey?: string; ptyBackground?: boolean },
   ): Promise<RemoteCallResult> {
     const timeoutSec = params.timeout ?? this.opts.execTimeoutSec ?? 120
     const cap = this.opts.maxOutputChars ?? 30_000
@@ -482,7 +493,7 @@ export class RemoteDriver {
         routing.display = `byop:${resolved.label}`
       } else routing.plan = resolved
     }
-    if (routing.pty !== undefined) return await this.ptyCall(routing.pty, params, sessionKey, timeoutSec, cap)
+    if (routing.pty !== undefined) return await this.ptyCall(routing.pty, params, sessionKey, timeoutSec, cap, callCtx.ptyBackground === true)
     if (routing.mode === 'oneshot') {
       this.assertOpen()
       const process = this.own(await this.nativeProcess(routing.plan!, params, timeoutSec))
@@ -504,13 +515,15 @@ export class RemoteDriver {
     const argv = (this.opts.ptyArgvFor ?? buildPtyArgv)(routing.plan!)
     const key = `${sessionKey}|t:${routing.display}`
     const session = this.pool.getOrCreate(key, argv)
-    const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec })
+    const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec, ...(callCtx.ptyBackground === true ? { background: true } : {}) })
     const out = tailWindow(r.output, cap, r.outputStats?.stdout)
     return {
       mode: 'pty', target: routing.display, exit: r.exit, cwd: r.cwd,
       timedOut: r.timedOut, reconnected: r.reconnected, stdout: out.text,
       outputStats: out.stats ? { stdout: out.stats } : undefined,
       durationMs: r.durationMs, ...(out.truncated !== undefined ? { truncated: out.truncated } : {}),
+      ...(r.running === true && r.job !== undefined ? { running: true, ptyJob: r.job } : {}),
+      ...this.ptyTtl(key),
     }
   }
 
@@ -522,6 +535,7 @@ export class RemoteDriver {
     sessionKey: string,
     timeoutSec: number,
     cap: number,
+    background: boolean,
   ): Promise<RemoteCallResult> {
     const display = `byop:${pty.label}`
     const key = `${sessionKey}|p:${pty.label}`
@@ -539,14 +553,14 @@ export class RemoteDriver {
     if (session === undefined) {
       if (pty.spawn === undefined)
         throw new Error(
-          `[E_NO_SESSION] remote: no live PTY under ${display} — one exists only after a call that supplies spawn, and it is reaped after the idle TTL (600s).\n` +
+          `[E_NO_SESSION] remote: no live PTY under ${display} — one exists only after a call that supplies spawn, and it is reaped after the idle TTL (15 min).\n` +
             `  Create it:      { target: "${display}", spawn: "…", cmd: "…" }   (the spawn command is not retained; the label is yours to choose)`,
         )
       session = this.pool.getOrCreate(key, (this.opts.spawnArgvFor ?? buildSpawnArgv)(pty.spawn), pty.spawn)
     } else if (pty.spawn !== undefined) {
       notice = `[remote: ${display} already runs that exact command and is persistent — reuse it with { target: "${display}", cmd: "…" }; spawn is only needed to create.]`
     }
-    const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec })
+    const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec, ...(background ? { background: true } : {}) })
     const out = tailWindow(r.output, cap, r.outputStats?.stdout)
     return {
       mode: 'pty', target: display, session: display, exit: r.exit, cwd: r.cwd,
@@ -554,9 +568,17 @@ export class RemoteDriver {
       ...(notice !== undefined ? { notice } : {}),
       outputStats: out.stats ? { stdout: out.stats } : undefined,
       durationMs: r.durationMs, ...(out.truncated !== undefined ? { truncated: out.truncated } : {}),
+      ...(r.running === true && r.job !== undefined ? { running: true, ptyJob: r.job } : {}),
+      ...this.ptyTtl(key),
     }
   }
 
+  /** P2/P3：回执即状态快照——把「idle TTL 剩余」随每次 pty 回执带回（不可得则省略）。 */
+  private ptyTtl(key: string): { ttlSec?: number } {
+    const snap = this.pool.inspect(key)
+    if (snap === undefined || snap.idleMs === null) return {}
+    return { ttlSec: Math.max(0, Math.round(this.ptyIdleTtlSec - snap.idleMs / 1_000)) }
+  }
   hasHub(): boolean { return this.opts.getHub?.() !== undefined }
 
   private requireHub(): HubRemoteTransport {
