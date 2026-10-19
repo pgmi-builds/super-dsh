@@ -15,6 +15,7 @@
    - b. 报告落 `docs/test-reports/`。
    - c. user 对本次发布明确放行，授权不沿用到下次。
    - d. 迭代经 tarball 通道，每轮换字母后缀；补丁号与新 minor 留给真实 feature 发布。npm 不是 git，registry `latest` 保持最近一次获准发布。**2026-10-06 user 澄清**：本条讲的是 registry **不可删除、不可回滚**（npm 发了即定版，与 GitHub tag 可删可逆相对）；registry 版本号形态（含字母后缀）由 user 发布指令逐次指定，不得由本条推断出「字母版本不进 registry」之类的限制。
+   - e. **npm 凭据位置（2026-10-19 user 指定，勿再询问）**：`~/workspaces/base/secrets/npm.env`，变量 `NPM_ACCESS_TOKEN`（账号 pgmi-builds）。发布时把 token 写进 0600 临时 npmrc 并以 `NPM_CONFIG_USERCONFIG` 指向它，发布结束立即删除；token 不得进入仓库、长期 npmrc 或报告。
 2. 验收覆盖实际改动行为；Web 测试线保持运行、提供访问 URL，供 user 亲手验收后收尾。
 3. 未经 user 单次明确同意不得 `npm publish`。
 4. GitHub commit / tag / push 不抢在验收、报告和放行之前定版。
