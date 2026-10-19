@@ -1,24 +1,30 @@
 import { Utf16TailRing } from './output-ring.ts'
 import type { OutputStats, StreamOutputStats } from './hub-contract.ts'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { buildInitCommand, createNonceFrameParser, genNonce, wrapPtyCommand } from './nonce-framing.ts'
+import { buildInitCommand, createNonceFrameParser, decodeEnvSnapshot, diffEnv, genNonce, wrapPtyCommand, type EnvDelta } from './nonce-framing.ts'
 
 /** spec §五.2 逐字。 */
 export const RECONNECT_NOTICE = '[remote: session reconnected to fresh shell; cwd reset to default]'
 
-/** 池键 → 模型面名字：剥掉 agent 前缀与内部标记（`t:` → 裸 target；`p:` → `byop:<label>`）。
- *  这是**唯一**的 key→名字映射规则，roster 与错误面共用——错误面不得回吐内部键：
- *  2026-10-03 实测报告 F1，`E_SESSION_*` 曾把 `session-<uuid>|p:<label>` 整条吐给模型。 */
+/** 池键 → 模型面名字：剥掉 agent 前缀与内部标记（`p:` → `pty:<id>`）。
+ * 这是**唯一**的 key→名字映射规则，roster 与错误面共用——错误面不得回吐内部键：
+ * 2026-10-03 实测报告 F1，`E_SESSION_*` 曾把 `session-<uuid>|p:<label>` 整条吐给模型。 */
 export function displayKey(key: string): string {
   const raw = key.includes('|') ? key.slice(key.indexOf('|') + 1) : key
-  return raw.startsWith('t:') ? raw.slice(2) : raw.startsWith('p:') ? `byop:${raw.slice(2)}` : raw
+  return raw.startsWith('p:') ? `pty:${raw.slice(2)}` : raw
 }
 
 export interface PtySessionOptions {
   key: string
   argv: string[]
-  /** BYO-PTY 创建来源：`byop:<label>` 会话首次创建时给的 spawn 原文；transport target 会话为 undefined。
-   * 唯一用途 = 同 label 再次给 spawn 时判「同一来源 → 复用」还是「不同来源 → 冲突」（driver 判，池不判）。 */
+  /** Workbench 身份（§3）：自动 id（p-xxxx）+ 可选 label + connection 展示名（ssh:dev4 / docker:c / BYOP）。 */
+  id: string
+  label?: string
+  connection: string
+  byo?: boolean
+  /** connection 来自 BYO ssh 身份（card 面标 `(built on)`，与 roster 同词）。 */
+  builtOn?: boolean
+  /** spawn 原文（BYO 会话存档；v2 无 spec 对比——不再参与复用判定，仅供回执/账本溯源）。 */
   origin?: string
   idleTtlSec: number
   initTimeoutSec?: number
@@ -26,11 +32,13 @@ export interface PtySessionOptions {
   onDead?: () => void
 }
 
-export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number; /** P5：立即回执 running job，不等帧（run_in_background 与超时 handoff 共用同一条 job 通道）。 */ background?: boolean }
+export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number; /** 账本键：driver 分配（background 通道预传入 registry jobId；同步命令同格式本地生成）——一个命令永远只有一个 id。 */ commandId: string; /** P5：立即回执 running job，不等帧（run_in_background 与超时 handoff 共用同一条 job 通道）。 */ background?: boolean }
 /** detached job 的完成结果（frame 或会话死亡时结算；与 dispatch 回执同构）。 */
-export interface PtyJobResult { output: string; outputStats?: StreamOutputStats; exit: number | null; cwd: string | null; timedOut: boolean }
+export interface PtyJobResult { output: string; outputStats?: StreamOutputStats; exit: number | null; cwd: string | null; timedOut: boolean; commandId: string; envDelta?: EnvDelta }
 /** P4/P5（2026-10-19）running job 句柄：byte-cursor 增量读 + P8 显式中断 + 完成时帧结算。 */
 export interface PtyRunningJob {
+  /** 账本键：与 jobId 同构（background 通道预传入 registry id；同步完成命令用同格式生成 id）。 */
+  commandId: string
   /** Byte-cursor incremental read over the command's merged output (tail-ring retention; lossy reports eviction). */
   read: (fromByte: number) => { text: string; nextOffset: number; lossy: boolean }
   stats: () => OutputStats
@@ -47,9 +55,20 @@ export interface PtyDispatchResult {
   timedOut: boolean
   reconnected: boolean
   durationMs: number
+  commandId: string
+  /** env delta（E 帧侧信道）：只回名字 + 变动标记，值不回传；init 侧信道失败时省略。 */
+  envDelta?: EnvDelta
   /** P4/P5：true = 命令仍在前台运行，本回执是 handoff（job 句柄随行）。 */
   running?: boolean
   job?: PtyRunningJob
+}
+
+/** 账本条目（§5）：commandId / 摘要 / exit / 耗时；保留最近 20 条（user 定案）。 */
+export interface LedgerEntry { commandId: string; jobId?: string; summary: string; exit: number | null; durationMs: number; running: boolean }
+const LEDGER_MAX = 20
+const summaryOf = (cmd: string): string => {
+  const first = cmd.trim().split(/\r?\n/, 1)[0] ?? ''
+  return first.length > 72 ? `${first.slice(0, 71)}…` : first
 }
 
 export type PtyState = 'cold' | 'starting' | 'ready' | 'dead' | 'disposed'
@@ -74,7 +93,15 @@ export class PtySession {
   private inFlight = 0
   /** P4/P5：当前占用前台的 detached job（background/超时 handoff）。非 null 时新命令拒绝（Q6）。 */
   private detachedJob: PtyRunningJob | null = null
-  private lastSettleAt = 0
+  /** 账本（§5）：本会话最近 20 条命令（FIFO，超出丢最旧）。 */
+  private ledger: LedgerEntry[] = []
+  /** env 侧信道基线（init E 帧）；undefined = 侧信道不可用（不报假 delta）。 */
+  private envBaseline: Map<string, number> | undefined
+  /** idle 起点（ready / settle 时重置）；null = 尚无 idle 时钟（cold 或已 dispose）。 */
+  private idleSince: number | null = null
+  /** 意外死亡后的回收定时器（R2）：ready 过的会话先留池供 reconnect，超时仍无人寻址则出池。 */
+  private deathTimer: NodeJS.Timeout | null = null
+  private lastCwdSeen: string | null = null
   /** 是否曾成功初始化（ready 过）。决定死亡语义：ready 过 → reconnect（留池）；从未 ready → 出池（见 start()）。 */
   private everReady = false
   private disposal: Promise<void> | undefined
@@ -85,28 +112,58 @@ export class PtySession {
 
   get sessionState(): PtyState { return this.state }
 
-  /** 创建来源（spawn 原文）；仅 `byop:<label>` 会话有。 */
+  /** 池键（driver 的 ttl/inspect 用）。 */
+  get key(): string { return this.opts.key }
+
+  /** 最近帧 cwd（card 面）；从未执行过 = null。 */
+  get lastCwd(): string | null { return this.lastCwdSeen }
+
+  /** 占用前台的 detached job 的 commandId（无 = null；close 拒绝与 busy 文案共用）。 */
+  get detachedCommandId(): string | null { return this.detachedJob?.commandId ?? null }
+
+  /** job 通道收养后回填 jobId（timeout handoff 时 registry id ≠ commandId，账本如实记录两者）。 */
+  attachJob(commandId: string, jobId: string): void {
+    const entry = [...this.ledger].reverse().find((e) => e.commandId === commandId)
+    if (entry !== undefined) entry.jobId = jobId
+  }
+
+  /** Workbench 身份（§3）：id + 可选 label + connection + byo 标记。 */
+  get identity(): { id: string; label?: string; connection: string; byo: boolean; builtOn: boolean } {
+    return { id: this.opts.id, ...(this.opts.label !== undefined ? { label: this.opts.label } : {}), connection: this.opts.connection, byo: this.opts.byo === true, builtOn: this.opts.builtOn === true }
+  }
+
+  /** 账本快照（session card 面，只读）。 */
+  ledgerSnapshot(): readonly LedgerEntry[] { return this.ledger }
+
+  /** spawn 创建原文（仅 BYO 会话；v2 起仅存档，不参与复用判定）。 */
   get origin(): string | undefined { return this.opts.origin }
 
   /** status 面快照：state + busy（有命令在跑）+ idleMs（上次 settle 至今）+ pid（进程组头，kill 兜底可观测）。 */
   get snapshot(): SessionSnapshot {
-    return { state: this.state, busy: this.inFlight > 0, idleMs: this.lastSettleAt > 0 ? Date.now() - this.lastSettleAt : null, pid: this.proc?.pid ?? null }
+    return { state: this.state, busy: this.inFlight > 0, idleMs: this.idleSince === null ? null : Date.now() - this.idleSince, pid: this.proc?.pid ?? null }
   }
+  /** 预热创建（创建形无 cmd）：真正拨号到 init 帧——「会话已就绪」必须是真的，
+   * 而且只有 ready 过才挂 idle 回收（cold 会话没有 timer，会永远占配额）。 */
+  async warm(): Promise<void> { await this.start() }
 
   /** 同一会话命令严格串行（FIFO）；死亡/冷态先重启。P4/P5（2026-10-19）：超时不再自动
    * 打断——handoff 成 running job（byte-cursor 轮询 + 显式 interrupt，P8 机制原样保留在
    * job.interrupt）；background 选项让 dispatch 立即回执。占用者是 detached job 时新命令
    * 拒绝（Q6：诚实回状态优先于排队），纯同步并发 FIFO 语义不变。 */
-  dispatch(cmd: string, dOpts: PtyDispatchOptions = {}): Promise<PtyDispatchResult> {
+  dispatch(cmd: string, dOpts: PtyDispatchOptions): Promise<PtyDispatchResult> {
     const attempt = async (): Promise<PtyDispatchResult> => {
       const started = Date.now()
       const reconnected = this.state === 'dead'
       if (this.state !== 'ready') await this.start()
-      if (this.state === 'disposed') throw new Error(`[E_SESSION_DISPOSED] remote pty session '${displayKey(this.opts.key)}' was disposed before dispatch`)
+      if (this.state === 'disposed') throw new Error(`[E_SESSION_DISPOSED] remote pty session '${this.opts.id}' was disposed before dispatch`)
       if (this.detachedJob !== null)
         throw new Error(
-          `[E_SESSION_BUSY] remote pty session '${displayKey(this.opts.key)}' still has a command running in the foreground — poll it with job_output and, if needed, cancel with job_kill; the shell must be idle before a new command`,
+          `[E_SESSION_BUSY] remote: pty session '${this.opts.id}' still runs a detached command (${this.detachedJob.commandId}) — poll job_output ${this.detachedJob.commandId}, cancel with job_kill ${this.detachedJob.commandId}, or address other work to another session / oneshot`,
         )
+      const commandId = dOpts.commandId
+      const entry: LedgerEntry = { commandId, summary: summaryOf(cmd), exit: null, durationMs: 0, running: true }
+      this.ledger.push(entry)
+      if (this.ledger.length > LEDGER_MAX) this.ledger.shift()
       this.inFlight++
       return await new Promise<PtyDispatchResult>((resolve) => {
         const nonce = genNonce()
@@ -117,9 +174,11 @@ export class PtySession {
         let interruptTimer: NodeJS.Timeout | undefined
         let killTimer: NodeJS.Timeout | undefined
         let jobDone: ((r: PtyJobResult) => void) | null = null
+        let envNext: Map<string, number> | undefined
         const detach = (): PtyRunningJob => {
           // handoff：外层立即回执 running；parser/ring/死亡等待继续活着直到 frame/death/interrupt。
           const job: PtyRunningJob = {
+            commandId,
             read: (fromByte) => ring.read(fromByte),
             stats: () => ring.stats(),
             interrupt: () => { if (!jobSettled) twoStage() },
@@ -127,7 +186,7 @@ export class PtySession {
           }
           this.detachedJob = job
           settled = true
-          resolve({ output: ring.text, outputStats: { stdout: ring.stats() }, exit: null, cwd: null, timedOut: false, running: true, job, reconnected, durationMs: Date.now() - started })
+          resolve({ output: ring.text, outputStats: { stdout: ring.stats() }, exit: null, cwd: null, timedOut: false, running: true, job, commandId, reconnected, durationMs: Date.now() - started })
           return job
         }
         const cleanup = (): void => {
@@ -139,14 +198,20 @@ export class PtySession {
           if (interruptTimer !== undefined) clearTimeout(interruptTimer)
           if (killTimer !== undefined) clearTimeout(killTimer)
         }
-        const settle = (r: Omit<PtyJobResult, 'outputStats'>): void => {
+        const settle = (r: Omit<PtyJobResult, 'outputStats' | 'commandId' | 'envDelta'>): void => {
           if (jobSettled) return
           jobSettled = true
           cleanup()
           this.inFlight--
-          this.lastSettleAt = Date.now()
+          this.idleSince = Date.now()
           this.resetIdleTimer()
-          const full: PtyJobResult = { ...r, outputStats: { stdout: ring.stats() } }
+          if (r.cwd !== null) this.lastCwdSeen = r.cwd
+          const envDelta = envNext !== undefined ? diffEnv(this.envBaseline, envNext) : undefined
+          if (envNext !== undefined) this.envBaseline = envNext
+          entry.exit = r.exit
+          entry.durationMs = Date.now() - started
+          entry.running = false
+          const full: PtyJobResult = { ...r, outputStats: { stdout: ring.stats() }, commandId, ...(envDelta !== undefined ? { envDelta } : {}) }
           jobDone?.(full)
           if (!settled) { settled = true; resolve({ ...full, reconnected, durationMs: Date.now() - started }) }
         }
@@ -155,6 +220,7 @@ export class PtySession {
           onOutput: (t) => {
             ring.push(t)
           },
+          onEnv: (b64) => { const m = decodeEnvSnapshot(b64); if (m !== undefined) envNext = m },
           onFrame: ({ exit, cwd }) => settle({ output: ring.text, exit, cwd, timedOut: interrupted }),
         })
         const twoStage = (): void => {
@@ -191,6 +257,7 @@ export class PtySession {
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal
     this.clearIdleTimer()
+    this.clearDeathTimer()
     this.state = 'disposed'
     this.startPromise = null
     const proc = this.proc
@@ -214,6 +281,7 @@ export class PtySession {
   private async start(): Promise<void> {
     if (this.state === 'disposed')
       throw new Error(`[E_SESSION_DISPOSED] remote pty session '${displayKey(this.opts.key)}' was disposed — the pool replaces disposed sessions; this reference is stale`)
+    this.clearDeathTimer()
     if (this.startPromise === null) {
       this.state = 'starting'
       this.startPromise = this.doStart().catch((err: unknown) => {
@@ -260,7 +328,10 @@ export class PtySession {
       }
       this.deathWaiters.push(waiter)
       const parser = createNonceFrameParser(initNonce, {
+        onEnv: (b64) => { const m = decodeEnvSnapshot(b64); if (m !== undefined) this.envBaseline = m },
         onFrame: () => {
+          // R2（2026-10-19 复核 P0）：成功路径必须撤掉 init 超时——否则 30s 后 timer 回调
+          // killTree() 把刚起好的会话整组 SIGTERM（0.3.2-a 回归，模型面只看到 reconnect）。
           clearTimeout(timer)
           this.deathWaiters = this.deathWaiters.filter((w) => w !== waiter)
           if (this.state === 'disposed') {
@@ -291,6 +362,7 @@ export class PtySession {
     this.state = 'dead'
     this.startPromise = null
     this.clearIdleTimer()
+    this.armDeathReaper()
     const waiters = this.deathWaiters
     this.deathWaiters = []
     for (const w of waiters) w()
@@ -301,6 +373,7 @@ export class PtySession {
     if (this.state === 'disposed') return
     // R1 双条件（2026-10-19）：有命令在跑（含 detached job）不算 idle——重挂整段 TTL；
     // 回收只发生在「无运行命令且 idle 超时」，静默长任务不被掐。
+    this.idleSince = Date.now()
     this.idleTimer = setTimeout(() => {
       if (this.inFlight > 0) { this.resetIdleTimer(); return }
       void this.dispose()
@@ -310,6 +383,19 @@ export class PtySession {
 
   private clearIdleTimer(): void {
     if (this.idleTimer !== null) { clearTimeout(this.idleTimer); this.idleTimer = null }
+  }
+
+  /** 意外死亡后的回收：留池只换取一次 reconnect 机会，不得超过一段 idle TTL（R2 复核 P0）。
+   * 否则死会话永久占 label + 永久计入 10 配额，Agent 再也开不出新会话。 */
+  private armDeathReaper(): void {
+    this.clearDeathTimer()
+    if (!this.everReady || this.state !== 'dead') return
+    this.deathTimer = setTimeout(() => { void this.dispose() }, this.opts.idleTtlSec * 1_000)
+    this.deathTimer.unref()
+  }
+
+  private clearDeathTimer(): void {
+    if (this.deathTimer !== null) { clearTimeout(this.deathTimer); this.deathTimer = null }
   }
 
   private killTree(): void {
@@ -392,13 +478,14 @@ export class PtyPool {
     return s === undefined || s.sessionState === 'disposed' ? undefined : s
   }
 
-  getOrCreate(key: string, argv: string[], origin?: string): PtySession {
+  /** v2：创建一律新建（「同 label 同来源复用」废除——复用只走 get/get by id）；disposed 残留由这里替换。 */
+  create(opts: { key: string; argv: string[]; id: string; label?: string; connection: string; byo?: boolean; builtOn?: boolean; origin?: string; onDead?: () => void }): PtySession {
     if (this.disposed) throw new Error('[E_REMOTE_DISPOSED] remote: the owning Agent or plugin PTY pool was disposed')
-    let s = this.sessions.get(key)
-    if (s === undefined || s.sessionState === 'disposed') {
-      s = new PtySession({ key, argv, origin, ...this.defaults, onDead: () => this.sessions.delete(key) })
-      this.sessions.set(key, s)
-    }
+    const existing = this.sessions.get(opts.key)
+    if (existing !== undefined && existing.sessionState !== 'disposed')
+      throw new Error(`[E_INTERNAL] remote: pty pool key collision for ${opts.id}`)
+    const s = new PtySession({ ...opts, ...this.defaults, onDead: () => { this.sessions.delete(opts.key); opts.onDead?.() } })
+    this.sessions.set(opts.key, s)
     return s
   }
 

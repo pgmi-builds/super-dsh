@@ -1,5 +1,7 @@
 # remote-pty-label Specification
 
+> **Superseded（2026-10-19）**：本 spec 的 `byop:<label>` 入口、`mode` 锁定、`p:<label>` 池键与「同 label 复用」语义已被 [PTY Workbench v2 计划](../../superpowers/plans/2026-10-19-pty-workbench.md) 取代：BYO-PTY 并入 `pty:` selector（`spawn` 在场 = BYO）、`byossh:`/`byop:` 前缀移除、`mode` 字段移除且未知参数不强制拒绝、label 与机器名统一池、id 为 `pty-xxxx` / `ssh-xxxx`。下文保留为历史契约参照。
+
 ## Purpose
 
 `remote` 工具的持久化 BYO-PTY 通道从「`spawn` 命令原文即会话键」改为「`target` 选择器寻址的具名会话」。旧实现的池键就是整条 spawn 文本，于是「同一条命令」与「同一个会话」被绑死：改一个 token 就**静默**新开一个 shell（cwd/env 全丢、零提示），roster 又拿整整一条 shell 命令当会话名。本规格固定新契约——`byop:<label>` 是唯一入口、label 由调用方（模型）自选并因此成为复用入口、`spawn` 降格为该 label 首次创建时的伴生参数——并据此定义创建/复用/冲突三分支、失败面，以及裸名候选表的末位新增项。

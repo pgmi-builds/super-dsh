@@ -15,7 +15,7 @@ export function parseFileEndpoint(value: string): {
         throw new Error('file endpoint must be [target:]absolute/path');
     const target = value.slice(0, split), path = value.slice(split + 1);
     checkAbsolute(path);
-    if (target.startsWith('byop:'))
-        throw new Error('BYO-PTY has no binary file lane; select SSH/Docker/Incus/Hub');
+    if (target.startsWith('pty:'))
+        throw new Error('a PTY session is not a filesystem endpoint; select SSH/Docker/Incus/Hub');
     return { target, path };
 }

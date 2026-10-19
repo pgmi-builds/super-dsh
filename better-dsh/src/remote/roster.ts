@@ -1,20 +1,10 @@
 /**
- * Roster — the attention entry point (plan Ruling P19): `remote({})` lists
- * known target NAMES from local sources only (zero dialing, zero
- * reachability checks — those belong to the per-target on-demand probe):
- *
- * - ssh hosts parsed from `~/.ssh/config` (literal aliases; wildcard-only
- *   blocks are defaults, not targets, and are not listed);
- * - docker containers (`docker ps -a`, name + state);
- * - incus containers (`incus list`, name + state);
- * - live pty sessions (the one thing the model cannot see with its own
- *   tools — the daemon-side pool inventory). This section is **caller-scoped**:
- *   the driver filters the pool to the calling agent session, because a live
- *   shell is an operating environment, not public config. The three name
- *   sections above stay global by contrast — they are static public config.
- *
- * Everything is a cheap local scan; each section degrades independently and
- * honestly (native error one-liner, never a fabricated list).
+ * Roster — the attention entry point (plan Ruling P19 + workbench §2.5):
+ * `remote({})` scans local sources only (zero dialing, zero reachability checks)
+ * and REFRESHES the unified label pool (ssh → docker → incus → hub; a late
+ * collision is prefixed `<transport>-<name>`). Machine names are public static
+ * config; pty sessions are the caller's operating environment (agent-scoped).
+ * Each section degrades independently and honestly (native error one-liner).
  *
  * @module dashr/remote/roster
  */
@@ -24,14 +14,21 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { runOneShot, type OneShotOptions, type OneShotResult } from './oneshot.ts'
 import { parseSshConfig } from './ssh-config.ts'
+import type { PoolEntry } from './labels.ts'
+import type { PtySession } from './pty-session.ts'
 
 export interface RosterOptions {
-  byosshLabels?: readonly string[]
   /** 测试缝：替代 runOneShot 的容器扫描执行器。 */
   runner?: (argv: string[], opts?: OneShotOptions) => Promise<OneShotResult>
   /** 测试缝：替代 ~/.ssh/config 读取。 */
   readSshConfig?: () => Promise<string>
   hardTimeoutSec?: number
+}
+
+export interface LocalScan {
+  ssh: { hosts: string[]; wildcardBlocks: number; error?: string }
+  docker: { rows: Array<{ name: string; state: string }>; error?: string; timedOut?: boolean }
+  incus: { rows: Array<{ name: string; state: string }>; error?: string; timedOut?: boolean }
 }
 
 function oneLine(s: string): string {
@@ -50,58 +47,71 @@ export function literalHosts(text: string): { hosts: string[]; wildcardBlocks: n
   return { hosts, wildcardBlocks }
 }
 
-/**
- * Build the roster text. Sections render independently; a failing section
- * renders its native error (honest vocabulary: never invent, never hide).
- */
-export async function renderRoster(
-  sessions: ReadonlyArray<{ target: string; state: string; idleSec: number | null }>,
-  opts: RosterOptions = {},
-): Promise<string> {
+/** 三段本地扫描（各自独立降级，错误如实带回给 roster 呈现）。 */
+export async function scanLocal(opts: RosterOptions = {}): Promise<LocalScan> {
   const runner = opts.runner ?? runOneShot
   const readSshConfig = opts.readSshConfig ?? (async () => await readFile(join(homedir(), '.ssh', 'config'), 'utf8'))
   const hard = opts.hardTimeoutSec ?? 10
-  const lines: string[] = []
 
-  // ssh hosts
+  let ssh: LocalScan['ssh'] = { hosts: [], wildcardBlocks: 0 }
   try {
     const text = await readSshConfig()
-    const { hosts, wildcardBlocks } = literalHosts(text)
-    lines.push(`ssh hosts (~/.ssh/config): ${hosts.length > 0 ? hosts.join(', ') : '(none)'}${wildcardBlocks > 0 ? ` (+${wildcardBlocks} wildcard default blocks, not listed)` : ''}`)
+    ssh = literalHosts(text)
   } catch (error) {
-    lines.push(`ssh hosts: no readable ~/.ssh/config (${error instanceof Error ? error.message : String(error)})`)
+    ssh = { hosts: [], wildcardBlocks: 0, error: error instanceof Error ? error.message : String(error) }
   }
 
-  lines.push(`byossh labels (this Agent, in memory): ${opts.byosshLabels?.map(label => `byossh:${label}`).join(', ') || '(none)'}`)
-
-  // docker containers
   const docker = await runner(['docker', 'ps', '-a', '--format', '{{.Names}}\t{{.State}}'], { timeoutSec: hard })
-  if (docker.exit === 0) {
-    const rows = docker.stdout.trim().split(/\r?\n/).filter(Boolean).map((l) => {
-      const [name, state] = l.split('\t')
-      return `${name}${state !== undefined && state !== '' ? ` (${state})` : ''}`
-    })
-    lines.push(`docker containers: ${rows.length > 0 ? rows.join(', ') : '(none)'}`)
-  } else {
-    lines.push(`docker containers: unavailable — ${docker.timedOut ? `scan timed out after ${hard}s` : oneLine(docker.stderr) || `docker exited ${docker.exit}`}`)
-  }
-
-  // incus containers
   const incus = await runner(['incus', 'list', '--format', 'csv', '--columns', 'ns'], { timeoutSec: hard })
-  if (incus.exit === 0) {
-    const rows = incus.stdout.trim().split(/\r?\n/).filter(Boolean).map((l) => {
-      const [name, state] = l.split(',')
-      return `${name}${state !== undefined && state !== '' ? ` (${state.trim()})` : ''}`
-    })
-    lines.push(`incus containers: ${rows.length > 0 ? rows.join(', ') : '(none)'}`)
-  } else {
-    lines.push(`incus containers: unavailable — ${incus.timedOut ? `scan timed out after ${hard}s` : oneLine(incus.stderr) || `incus exited ${incus.exit}`}`)
+
+  return {
+    ssh,
+    docker: docker.exit === 0
+      ? { rows: docker.stdout.trim().split(/\r?\n/).filter(Boolean).map((l) => { const [name, state] = l.split('\t'); return { name: (name ?? '').trim(), state: (state ?? '').trim() } }).filter((r) => r.name.length > 0) }
+      : { rows: [], error: oneLine(docker.stderr) || `docker exited ${docker.exit}`, ...(docker.timedOut ? { timedOut: true } : {}) },
+    incus: incus.exit === 0
+      ? { rows: incus.stdout.trim().split(/\r?\n/).filter(Boolean).map((l) => { const [name, state] = l.split(','); return { name: (name ?? '').trim(), state: (state ?? '').trim() } }).filter((r) => r.name.length > 0) }
+      : { rows: [], error: oneLine(incus.stderr) || `incus exited ${incus.exit}`, ...(incus.timedOut ? { timedOut: true } : {}) },
+  }
+}
+
+/** 统一池视图的 roster 呈现：机器三段 + BYO ssh 同位（built on）+ pty 会话段（caller-scoped）。 */
+export function renderRoster(
+  scan: LocalScan,
+  entries: readonly PoolEntry[],
+  sessions: readonly PtySession[],
+  hubTargets: ReadonlyArray<{ id: string; label: string; execEnabled: boolean }> | null,
+): string {
+  const lines: string[] = []
+  if (hubTargets !== null)
+    lines.push(`hub machines: ${hubTargets.map(t => `hub:${t.id} (${t.label}${t.execEnabled ? '' : '; exec disabled'})`).join(', ') || 'none'}`)
+
+  if (scan.ssh.error !== undefined) lines.push(`ssh hosts: no readable ~/.ssh/config (${scan.ssh.error})`)
+  else {
+    const sshNames = entries.filter((e) => e.kind === 'ssh').map((e) => e.name)
+    const byoNames = entries.filter((e) => e.kind === 'ssh-byo').map((e) => `${e.name} (built on)`)
+    const all = [...sshNames, ...byoNames]
+    lines.push(`ssh hosts (~/.ssh/config + registered): ${all.length > 0 ? all.join(', ') : '(none)'}${scan.ssh.wildcardBlocks > 0 ? ` (+${scan.ssh.wildcardBlocks} wildcard default blocks, not listed)` : ''}`)
   }
 
-  // live pty sessions (daemon-side pool — invisible to the model's own tools)
-  lines.push(sessions.length > 0
-    ? `live pty sessions: ${sessions.map((s) => `${s.target} [${s.state}${s.idleSec !== null ? `, idle ${s.idleSec}s` : ''}]`).join(', ')}`
-    : 'live pty sessions: none')
+  const dockerStates = new Map(scan.docker.rows.map((r) => [r.name, r.state]))
+  const dockerEntries = entries.filter((e) => e.kind === 'docker')
+  if (scan.docker.error !== undefined) lines.push(`docker containers: unavailable — ${scan.docker.timedOut ? `scan timed out` : scan.docker.error}`)
+  else lines.push(`docker containers: ${dockerEntries.length > 0 ? dockerEntries.map((e) => e.kind === 'docker' && `${e.name}${e.name !== e.container ? ` (= docker:${e.container}${dockerStates.get(e.container) ? `, ${dockerStates.get(e.container)}` : ''})` : dockerStates.get(e.container) !== undefined && dockerStates.get(e.container) !== '' ? ` (${dockerStates.get(e.container)})` : ''}`).join(', ') : '(none)'}`)
+
+  const incusStates = new Map(scan.incus.rows.map((r) => [r.name, r.state]))
+  const incusEntries = entries.filter((e) => e.kind === 'incus')
+  if (scan.incus.error !== undefined) lines.push(`incus containers: unavailable — ${scan.incus.timedOut ? `scan timed out` : scan.incus.error}`)
+  else lines.push(`incus containers: ${incusEntries.length > 0 ? incusEntries.map((e) => e.kind === 'incus' && `${e.name}${e.name !== e.container ? ` (= incus:${e.container}${incusStates.get(e.container) ? `, ${incusStates.get(e.container)}` : ''})` : incusStates.get(e.container) !== undefined && incusStates.get(e.container) !== '' ? ` (${incusStates.get(e.container)})` : ''}`).join(', ') : '(none)'}`)
+
+    lines.push(sessions.length > 0
+    ? `pty sessions: ${sessions.map((s) => {
+        const id = s.identity
+        const snap = s.snapshot
+        const state = snap.busy ? 'busy' : snap.state === 'dead' ? 'died' : `idle ${Math.round((snap.idleMs ?? 0) / 1000)}s`
+        return `pty:${id.id}${id.label !== undefined ? ` (label ${id.label})` : ''} ${id.connection}${id.byo ? ' (byo-pty)' : ''} [${state}]`
+      }).join(' · ')}`
+    : 'pty sessions: none')
 
   return lines.join('\n')
 }

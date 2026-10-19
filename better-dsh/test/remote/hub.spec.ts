@@ -9,7 +9,7 @@ it('rejects unavailable Hub explicitly without falling back to SSH and keeps BYO
   try {
     const a = await h.createAgent('absent')
     await expect(h.invoke(a, { target: 'hub:abcd', cmd: 'printf forbidden' })).rejects.toThrow(/Hub.*unavailable/)
-    expect(await h.invoke(a, { target: 'byop:t', spawn: 'bash', cmd: 'printf ready' })).toMatchObject({ text: 'ready' })
+    expect(await h.invoke(a, { target: 'pty:t', spawn: 'bash', cmd: 'printf ready' })).toMatchObject({ text: 'ready' })
   } finally { await h.dispose() }
 })
 
@@ -55,21 +55,25 @@ it('real scoped Hub calls preserve shell state, isolate Agent incarnations and l
   const providerRow = await h.ctx.plugin({ name: 'real-hub', apply: ctx => installHubRemoteTransport(ctx, { home }) })
   try {
     const first = await h.createAgent('same-session')
-    expect(await h.invoke(first, { target: 'hub:peer', mode: 'pty', cmd: 'cd /tmp; export OWNER_VALUE=old; printf first' })).toMatchObject({ cwd: '/tmp', text: 'first' })
-    expect(await h.invoke(first, { target: 'hub:peer', mode: 'pty', cmd: 'sleep 2' })).toHaveProperty('timedOut', true)
-    const capped = await h.invoke(first, { target: 'hub:peer', mode: 'pty', cmd: 'printf %150s | tr " " x' })
+    const firstPty = await h.invoke(first, { target: 'hub:peer:pty', cmd: 'cd /tmp; export OWNER_VALUE=old; printf first' })
+    // R2：hub PTY 回执自带通道标记（无 session 概念，与 oneshot 区分）
+    expect(firstPty.text).toContain('[hub:peer pty — no session id, no parallel, no background]')
+    expect(firstPty).toMatchObject({ cwd: '/tmp' })
+    expect(firstPty.text).toContain('first')
+    expect(await h.invoke(first, { target: 'hub:peer:pty', cmd: 'sleep 2' })).toHaveProperty('timedOut', true)
+    const capped = await h.invoke(first, { target: 'hub:peer:pty', cmd: 'printf %150s | tr " " x' })
     expect(capped.text).toContain('[truncated: showing last 100 of 150 chars]')
     const oldDisposal = h.disposeAgent(first)
     const next = await h.createAgent('same-session', 'resume')
-    expect(await h.invoke(next, { target: 'hub:peer', mode: 'pty', cmd: 'export OWNER_VALUE=new; printf second' })).toMatchObject({ text: 'second' })
+    expect((await h.invoke(next, { target: 'hub:peer:pty', cmd: 'export OWNER_VALUE=new; printf second' })).text).toContain('second')
     await oldDisposal
     await h.disposeAgent(first)
-    expect(await h.invoke(next, { target: 'hub:peer', mode: 'pty', cmd: 'printf %s "$OWNER_VALUE"' })).toMatchObject({ text: 'new' })
+    expect((await h.invoke(next, { target: 'hub:peer:pty', cmd: 'printf %s "$OWNER_VALUE"' })).text).toContain('new')
     await h.rows[0]!.dispose()
     expect(h.ctx.get('superdRemoteTransport')).toBeDefined()
     expect(h.visibleTools(next).some(t => t.name === 'remote')).toBe(false)
     const fresh = await h.createAgent('fresh')
-    expect(await h.invoke(fresh, { target: 'hub:peer', mode: 'pty', cmd: 'printf "%s" "${OWNER_VALUE-empty}"' })).toMatchObject({ text: 'empty' })
+    expect((await h.invoke(fresh, { target: 'hub:peer:pty', cmd: 'printf "%s" "${OWNER_VALUE-empty}"' })).text).toContain('empty')
   } finally {
     await h.dispose(); await providerRow.dispose(); off()
     await new Promise<void>(resolve => server.close(() => resolve()))

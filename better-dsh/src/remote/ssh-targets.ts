@@ -53,22 +53,6 @@ export function normalizeSshConnection(input: SshConnection): SshConnection {
   })
 }
 
-/** One instance per Agent-owned driver; destroyed with its Agent/plugin owners. */
-export class SshTargets {
-  private readonly targets = new Map<string, SshConnection>()
-  register(label: string, connection: SshConnection): SshConnection {
-    validateSshLabel(label)
-    const normalized = normalizeSshConnection(connection), existing = this.targets.get(label)
-    if (existing && JSON.stringify(existing) !== JSON.stringify(normalized))
-      throw new Error(`[E_LABEL_CONFLICT] remote: byossh:${label} SSH identity conflict — nothing was run. Reuse the label without ssh, or choose another label; existing credentials were not replaced`)
-    if (!existing) this.targets.set(label, normalized)
-    return existing ?? normalized
-  }
-  get(label: string): SshConnection | undefined { validateSshLabel(label); return this.targets.get(label) }
-  entries(): ReadonlyArray<readonly [string, SshConnection]> { return [...this.targets.entries()] }
-  clear(): void { this.targets.clear() }
-}
-
 /** Shared by execution, probes and file/relay consumers. extraArgs is trusted
  * internal SSH argv (e.g. forwarding), never a model-provided shell string.
  * Identity assembly lives in ssh-argv.ts (the ONE policy — 2026-10-17 ruling);

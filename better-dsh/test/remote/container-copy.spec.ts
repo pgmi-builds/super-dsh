@@ -73,12 +73,12 @@ it('copies SSH↔Docker with two native commands, per-half argv and origin stagi
         try {
             await command('docker', ['run', '--pull=never', '-d', '--network', 'none', '--name', name, 'python:3.14-slim', 'sleep', '120']);
             await command('docker', ['exec', name, 'mkdir', '-p', '/root/seg-dst']);
-            driver.registerSsh('byossh:src', f.jump);
+            await driver.call({ target: 'ssh:src', ssh: f.jump }, { sessionKey: 'spec' });
             const remote = join(f.directory, 'seg-src');
             const { mkdir } = await import('node:fs/promises');
             await mkdir(remote);
             await writeFile(join(remote, 'seg-file'), 'seg-payload');
-            const receipt = await driver.copy({ src: `byossh:src:${remote}/`, dst: `docker:${name}:/root/seg-dst`, pullArgv: ['-r'], pushArgv: ['-a'] }, new AbortController().signal) as NativeCopyReceipt;
+            const receipt = await driver.copy({ src: `ssh:src:${remote}/`, dst: `docker:${name}:/root/seg-dst`, pullArgv: ['-r'], pushArgv: ['-a'] }, new AbortController().signal, { sessionKey: 'spec' }) as NativeCopyReceipt;
             expect(receipt.route).toBe('staged-pull-push');
             expect(receipt.argv).toHaveLength(2);
             expect(receipt.argv[0]).toContain('-r');
@@ -93,7 +93,7 @@ it('copies SSH↔Docker with two native commands, per-half argv and origin stagi
             const { stdout } = await command('docker', ['exec', name, 'cat', '/root/seg-dst/staged/seg-file']);
             expect(stdout).toBe('seg-payload');
             // Mixing argv with pull/push is refused before any work.
-            await expect(driver.copy({ src: `byossh:src:${remote}`, dst: `docker:${name}:/root/x`, argv: ['-r'], pullArgv: ['-r'], pushArgv: [] }, new AbortController().signal)).rejects.toThrow(/argv/);
+            await expect(driver.copy({ src: `ssh:src:${remote}`, dst: `docker:${name}:/root/x`, argv: ['-r'], pullArgv: ['-r'], pushArgv: [] }, new AbortController().signal)).rejects.toThrow(/argv/);
         }
         finally {
             await driver.dispose();

@@ -2,6 +2,7 @@
 
 - 日期：2026-10-11（Asia/Hong_Kong）
 - 状态：实施方向，尚未实现或验收。[执行计划](../../superpowers/plans/2026-10-11-remote-native-shortcut.md)。现行代码与本规格不同。
+- 0.3.2-b 对齐（2026-10-19）：`byossh:` 前缀已移除；BYO 身份注册后与原生别名同址（`ssh:<label>`，注册时 `ssh` 字段在场），见 [remote-tools](../../remote-tools.md)。
 - 本规格取代本文先前的“第一阶段双 SSH rsync 保留 Python”和“每次 copy 默认独立哈希验证”方向；不追溯改变已发布产物。
 
 ## 目标与边界

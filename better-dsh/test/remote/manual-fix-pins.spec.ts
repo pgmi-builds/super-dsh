@@ -78,15 +78,15 @@ it('F4 pin (human surface): a destination whose daemon dies before the marker fa
     await withSshFixture(async f => {
         const d = new RemoteDriver({ nativeArgvFor: argv => (argv[0] === 'ssh' || argv[0] === 'scp') ? f.isolateOpts(argv) : argv });
         try {
-            d.registerSsh('byossh:src', f.jump);
-            d.registerSsh('byossh:dst', f.destination);
+            await d.call({ target: 'ssh:src', ssh: f.jump }, { sessionKey: 'spec' });
+            await d.call({ target: 'ssh:dst', ssh: f.destination }, { sessionKey: 'spec' });
             const src = join(f.directory, 'f4-src')
             await mkdir(src)
             await wf(join(src, 'f'), 'f4')
             // Destination directory intentionally NOT created: the daemon script's
             // own directory check exits 64 before the SUPERD-RSYNC-TMP marker —
             // the 0.3.1-e race shape, now surfaced as an explicit human error.
-            await expect(d.rsync({ src: `byossh:src:${src}/`, dst: `byossh:dst:${join(f.directory, 'f4-missing-dst')}/`, argv: ['-a'] }, new AbortController().signal))
+            await expect(d.rsync({ src: `ssh:src:${src}/`, dst: `ssh:dst:${join(f.directory, 'f4-missing-dst')}/`, argv: ['-a'] }, new AbortController().signal))
                 .rejects.toThrow(/daemon exited before serving/)
         }
         finally {

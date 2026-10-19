@@ -6,8 +6,10 @@ import {
 describe('command builders', () => {
   it('wrapPtyCommand braces cmd and bakes nonce marker with $?/$PWD', () => {
     const s = wrapPtyCommand('echo hi', 'abcd1234abcd1234')
-    expect(s).toContain('{\necho hi\n} ; printf')
-    expect(s).toContain(`'\\033]133;D;abcd1234abcd1234;%s;%s\\007' "$?" "$PWD"`)
+    expect(s).toContain('{\necho hi\n} ; __superd_e=$? ; printf')
+    expect(s).toContain(`'\\033]133;E;abcd1234abcd1234;%s\\007' "$(env -0 | base64 | tr -d '\\n\\r')"`)
+    expect(s).toContain(`'\\033]133;D;abcd1234abcd1234;%s;%s\\007' "$__superd_e" "$PWD"`)
+    expect(s.endsWith('unset __superd_e\n')).toBe(true)
     expect(s.endsWith('\n')).toBe(true)
   })
   it('buildInitCommand silences the terminal and ends with the init marker', () => {

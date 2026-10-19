@@ -39,7 +39,7 @@ for(const kind of ['docker','incus'] as const){
     const r=await d.call({target:kind+':'+container,stdin:input,cmd:`python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()); print("stderr-only",file=sys.stderr)'`})
     expect(r.exit).toBe(0);expect(r.stdout).toBe(createHash('sha256').update(input).digest('hex')+'\n');expect(r.stderr).toBe('stderr-only\n')
     const script=join(dir,'literal.sh');await writeFile(script,'printf "script-out😀"\nprintf "script-err" >&2\n')
-    const r2=await d.call({target:kind+':'+container,script});expect(r2.exit).toBe(0);expect(r2.stdout).toBe('script-out😀');expect(r2.stderr).toBe('script-err')
+    const r2=await d.call({target:kind+':'+container,scriptPath: script});expect(r2.exit).toBe(0);expect(r2.stdout).toBe('script-out😀');expect(r2.stderr).toBe('script-err')
     const p=await d.start({target:kind+':'+container,mode:'oneshot',cmd:"trap 'trap \"\" TERM; printf terminal-out; printf terminal-err >&2; exit 0' TERM; printf ready; while :; do sleep .05; done"},new AbortController().signal)
     const end=Date.now()+5000
     while(!p.read('stdout',0).text.includes('ready')){if(Date.now()>end)throw Error('ready timeout');await sleep(20)}

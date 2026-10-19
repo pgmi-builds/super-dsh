@@ -35,11 +35,11 @@ it('exposes live output through native jobs with owner fencing, consuming reads,
 }, 10000)
 
 it('PTY background jobs: live merged output, interrupt cancels with exit 130, session survives; sync timeout hands off with a pollable jobId (P4/P5)', async () => {
-  const h = await harness(true, { execTimeoutSec: 2, ptyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+  const h = await harness(true, { execTimeoutSec: 2, ptyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'], spawnArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
   try {
     const a = await h.createAgent('pty-jobs')
     const registry = a.ctx.get('jobs')!
-    const value = await h.invoke(a, { target: 'ssh:x', mode: 'pty', cmd: 'printf first; sleep 30', run_in_background: true }) as unknown as { jobId: string }
+    const value = await h.invoke(a, { spawn: 'script-bash', target: 'pty:bg1', cmd: 'printf first; sleep 30', run_in_background: true }) as unknown as { jobId: string }
     expect(value.jobId).toMatch(/^remote-/)
     const id = JobId(value.jobId)
     let text = ''
@@ -49,9 +49,9 @@ it('PTY background jobs: live merged output, interrupt cancels with exit 130, se
     const killed = await a.ctx.tools.execute({ name: 'job_kill', arguments: { job_id: id }, agent: a, signal: new AbortController().signal, callId: 'pty-kill' as never })
     expect(killed.isError).toBeFalsy()
     expect(await registry.wait(id, 5_000, a.id)).toMatchObject({ status: 'killed' })
-    const after = await h.invoke(a, { target: 'ssh:x', mode: 'pty', cmd: 'echo alive' }) as unknown as { text: string }
+    const after = await h.invoke(a, { target: 'pty:bg1', cmd: 'echo alive' }) as unknown as { text: string }
     expect(after.text).toContain('alive')
-    const handed = await h.invoke(a, { target: 'ssh:x', mode: 'pty', cmd: 'sleep 2; printf tardy', timeout: 1 }) as unknown as { jobId: string; running?: boolean }
+    const handed = await h.invoke(a, { target: 'pty:bg1', cmd: 'sleep 2; printf tardy', timeout: 1 }) as unknown as { jobId: string; running?: boolean }
     expect(handed.jobId).toMatch(/^remote-/)
     expect(handed.running).toBe(true) // rendered model surface reads 'still running — poll job_output <id>'; the value carries running+jobId fields
     expect(await registry.wait(JobId(handed.jobId), 5_000, a.id)).toMatchObject({ status: 'completed' })
@@ -62,7 +62,7 @@ it('refuses admission before discovery, refuses hub PTY backgrounds, and keeps f
   try {
     const a = await h.createAgent('refusal')
     await expect(h.invoke(a, { target: 'bare', cmd: 'true', run_in_background: true })).rejects.toThrow(/controller/)
-    await expect(h.invoke(a, { target: 'hub:m', mode: 'pty', cmd: 'true', run_in_background: true })).rejects.toThrow(/hub/)
+    await expect(h.invoke(a, { target: 'hub:m:pty', cmd: 'true', run_in_background: true })).rejects.toThrow(/hub/)
     // controller-less harness: registry admission refuses ALL backgrounds (gate precedes routing) —
     // byop-without-spawn reaching E_NO_SESSION as a failed job is covered by admission order, not testable here
   } finally { await h.dispose() }

@@ -2,6 +2,7 @@
 
 - 日期：2026-10-10（Asia/Hong_Kong）
 - 状态：2026-10-10 user 已审阅并明确授权执行；Task0–7 已独立审阅通过；Task8 完整双包消费者验收进行中，L 实装暴露的 worker/SSH cleanup 缺陷已进入修复验证。用户亲验与发布尚未放行。
+- 0.3.2-b 对齐（2026-10-19）：`script` 已定名 `scriptPath`；`mode` 字段已移除（用 `<transport>:pty[:label]` 创建、`pty:<id|label>` 复用）；`byossh:`/`byop:` 前缀已移除（`ssh`/`spawn` 参数在场即 BYO）。下文旧调用形仅作历史。
 - 输入：[2026-10-09 方向稿](../../10_plans/2026-10-09-remote-tool-optimization-directions.md)及 2026-10-10 会话裁决。
 - 执行计划：[2026-10-10-remote-tool-enhancement.md](../../superpowers/plans/2026-10-10-remote-tool-enhancement.md)。本规格优先于方向稿的冲突条款。
 

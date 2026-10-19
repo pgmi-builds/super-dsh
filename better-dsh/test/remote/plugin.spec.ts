@@ -3,9 +3,9 @@ import { apply, Config, name } from '../../src/remote/plugin.ts'
 import type { Context } from '@deepseek-ai/cordis'
 
 describe('dashr-remote row', () => {
-  it('Config defaults: 120s exec, 600s TTL, 30000 chars', () => {
+  it('Config defaults: 120s exec, 15-min PTY TTL, 30000 chars (R2: one TTL source)', () => {
     const c = Config(undefined) as { execTimeoutSec: number; idleTtlSec: number; maxOutputChars: number }
-    expect(c).toMatchObject({ execTimeoutSec: 120, idleTtlSec: 600, maxOutputChars: 30_000 })
+    expect(c).toMatchObject({ execTimeoutSec: 120, idleTtlSec: 900, maxOutputChars: 30_000 })
   })
   it('mounts dormant and installs only an Agent creation listener', () => {
     expect(name).toBe('dashr-remote')

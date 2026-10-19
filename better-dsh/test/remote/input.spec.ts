@@ -54,7 +54,7 @@ it('runs a local large script once through scoped remote, preserving shell liter
   const h = await createRealRemoteHarness({ copies: 1, driverOptions: { oneshotArgvFor: (_plan, cmd) => ['bash', '-c', cmd] } })
   try {
     const a = await h.createAgent('script')
-    expect(await h.invoke(a, { target: 'ssh:fixture', script })).toMatchObject({ text: '$HOME $(printf WRONG) `printf WRONG` 中🙂\n', stderr: 'err', exit: 0 })
+    expect(await h.invoke(a, { target: 'ssh:fixture', scriptPath: script })).toMatchObject({ text: '$HOME $(printf WRONG) `printf WRONG` 中🙂\n', stderr: 'err', exit: 0 })
     expect(await readFile(once, 'utf8')).toBe('x')
     expect(await h.invoke(a, { target: 'ssh:fixture', cmd: 'cat', stdin: 'raw $HOME `x` 中🙂' })).toMatchObject({ text: 'raw $HOME `x` 中🙂' })
   } finally { await h.dispose(); await rm(dir, { recursive: true, force: true }) }
@@ -65,14 +65,14 @@ it('rejects script conflicts before file reads or dial, and read failures before
   try {
     const a = await h.createAgent('invalid-script')
     for (const args of [
-      { target: 'ssh:fixture', script: '/missing', cmd: 'true' },
-      { target: 'ssh:fixture', script: '/missing', stdin: '' },
-      { target: 'ssh:fixture', script: '/missing', mode: 'pty' },
-      { target: 'byop:x', script: '/missing' },
-      { target: 'ssh:fixture', script: 'relative.sh' },
-      { target: 'ssh:fixture', script: '/nul\0.sh' },
+      { target: 'ssh:fixture', scriptPath: '/missing', cmd: 'true' },
+      { target: 'ssh:fixture', scriptPath: '/missing', stdin: '' },
+      { target: 'pty:build', scriptPath: '/missing' },
+      { spawn: 'bash', scriptPath: '/missing' },
+      { target: 'ssh:fixture', scriptPath: 'relative.sh' },
+      { target: 'ssh:fixture', scriptPath: '/nul\0.sh' },
     ]) await expect(h.invoke(a, args)).rejects.toThrow(/E_SCRIPT/)
-    await expect(h.invoke(a, { target: 'fixture', script: '/missing-task3-source.sh' })).rejects.toThrow(/E_SCRIPT_READ/)
+    await expect(h.invoke(a, { target: 'fixture', scriptPath: '/missing-task3-source.sh' })).rejects.toThrow(/E_SCRIPT_READ/)
   } finally { await h.dispose() }
 })
 
@@ -108,7 +108,7 @@ it('scoped script and cmd stdin both cross authenticated Hub HTTP without SSH or
   const providerRow = await h.ctx.plugin({ name: 'real-script-hub', apply: ctx => installHubRemoteTransport(ctx, { home: dir }) })
   try {
     const a = await h.createAgent('hub-script')
-    expect(await h.invoke(a, { target: 'hub:peer', script })).toMatchObject({ text: '$HOME $(printf WRONG) `printf WRONG` 中🙂\n', exit: 0, outputStats: { stdout: { unit: 'bytes' } } })
+    expect(await h.invoke(a, { target: 'hub:peer', scriptPath: script })).toMatchObject({ text: '$HOME $(printf WRONG) `printf WRONG` 中🙂\n', exit: 0, outputStats: { stdout: { unit: 'bytes' } } })
     expect(await readFile(once, 'utf8')).toBe('x')
     expect(await h.invoke(a, { target: 'hub:peer', cmd: 'cat', stdin: 'raw 中🙂' })).toMatchObject({ text: 'raw 中🙂' })
     await expect(h.invoke(a, { target: 'hub:peer', cmd: 'x'.repeat(4097) })).rejects.toThrow(/4096/)

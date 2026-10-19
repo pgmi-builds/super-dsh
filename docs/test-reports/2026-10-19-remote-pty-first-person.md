@@ -3,6 +3,8 @@
 日期：2026-10-19（Asia/Hong_Kong）。基线：`ee64e8e`（0.3.1-f）+ 未提交的 P4/P5 工作树（`better-dsh/src/remote/` 6 文件 +194/−38）。运行面：本 GUI 会话内的 `remote` 工具（4999 线，helper `0.3.1-d.b596`）。目标机：`dev4` = `u1@137.131.54.174`，aarch64 Oracle VM，Ubuntu 24.04。
 性质：**第一人称使用报告 + 设计讨论底稿**。不是发版验收；user 已明确本轮目的是"观察 agent 用不用 PTY，并比对 surface/functionality"。**2026-10-19 三轮定案已回填（§6.0 / §6.7）**；本轮范围只含 beta-remote（better-dsh `remote`），Hub 侧不动。
 
+**实现回填（0.3.2-b）**：落地值以本行为准——id 为 `pty-xxxx` / `ssh-xxxx`（不是 `p-`/`s-`）；BYOP 不写 `byop:` 前缀，而是 `spawn` 在场 + `pty[:label]`（自动 id 即会话 id）；`script` 定名 `scriptPath`；`mode` 字段移除且未知根参数不强制拒绝（user 裁决）。实装面对照见 [PTY Workbench 计划 §12](../superpowers/plans/2026-10-19-pty-workbench.md)。
+
 ---
 
 ## 0. 一句话结论

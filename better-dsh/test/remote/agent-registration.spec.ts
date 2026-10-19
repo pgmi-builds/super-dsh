@@ -3,7 +3,7 @@ import { createConfigProjector, isNativeConfigSchema } from '@deepseek-ai/dsh-ap
 import { deferredTargetResolution, killReturnedShell, descendantIsLive, killFixtureDescendant } from './disposal-fixture.ts'
 import { createRealRemoteHarness } from './real-harness.ts'
 
-const run = { target: 'byop:t', spawn: 'bash', cmd: 'printf ready' }
+const run = { target: 'pty:t', spawn: 'bash', cmd: 'printf ready' }
 describe('Agent-owned remote registration', () => {
   it('does not veto creation when another remote owns this Agent scope', async () => {
     const h = await createRealRemoteHarness()
@@ -36,7 +36,7 @@ describe('Agent-owned remote registration', () => {
       const a = await h.createAgent('a'), b = await h.createAgent('b')
       await h.invoke(a, { ...run, cmd: 'cd /tmp; printf a' })
       expect(await h.invoke(b, { ...run, cmd: 'pwd' })).not.toMatchObject({ cwd: '/tmp' })
-      expect(await h.invoke(a, { target: 'byop:t', cmd: 'pwd' })).toMatchObject({ cwd: '/tmp' })
+      expect(await h.invoke(a, { target: 'pty:t', cmd: 'pwd' })).toMatchObject({ cwd: '/tmp' })
     } finally { await h.dispose() }
   })
   it('propagates unrelated registration errors', async () => {

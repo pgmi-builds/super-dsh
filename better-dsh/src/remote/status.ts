@@ -75,8 +75,16 @@ export function renderSession(s: Pick<SessionSnapshot, 'state' | 'busy' | 'idleM
   return `session: idle ${Math.round((s.idleMs ?? 0) / 1000)}s (connected)`
 }
 
-/** PTY 会话状态行（BYO-PTY 面）：无会话 = 这个 label 下没有活会话，且**不会自建**——
- * 与 transport target 的 "dials on first exec" 是两回事，故不复用那句。 */
+/** PTY 会话状态行（BYO-PTY 面）：无会话 = 这个 label 下没有活会话，且**不会自建**。 */
 export function renderPtySession(s: SessionSnapshot | undefined): string {
   return s === undefined ? 'session: none — no live PTY under this label' : renderSession(s)
+}
+
+/** session card（§5.5，`pty:<id|label>` 无 cmd）：connection/state/cwd/ttl 由调用方拼头行，这里渲染账本。 */
+export function renderLedger(ledger: ReadonlyArray<{ commandId: string; jobId?: string; summary: string; exit: number | null; durationMs: number; running: boolean }>): string {
+  if (ledger.length === 0) return 'ledger: empty — no command has run in this session yet'
+  const rows = [...ledger].reverse().map((e) =>
+    `  ${e.commandId}${e.jobId !== undefined && e.jobId !== e.commandId ? ` (job ${e.jobId})` : ''} · ${e.running ? 'running' : `exit ${e.exit}`}${e.running ? '' : ` · ${(e.durationMs / 1_000).toFixed(1)}s`} · ${e.summary}`,
+  )
+  return `ledger (last ${ledger.length}):\n${rows.join('\n')}`
 }

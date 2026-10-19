@@ -11,27 +11,34 @@ const driverWith = (over: Partial<ConstructorParameters<typeof RemoteDriver>[0]>
     ...over,
   })
 
+const scanStub = {
+  rosterRunner: async () => ({ exit: 0, timedOut: false, stdout: '', stderr: '', durationMs: 1 }),
+}
+
 describe('RemoteDriver validation', () => {
-  it('rejects target+spawn and neither (E_PARAMS), and bad timeout (E_BAD_TIMEOUT)', async () => {
+  it('rejects spawn on machine targets and neither target nor BYO entry (E_PARAMS), and bad timeout', async () => {
     const d = driverWith()
-    await expect(d.call({ target: 'dev4', spawn: 'bash', cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
+    await expect(d.call({ target: 'ssh:dev4', spawn: 'bash', cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
     await expect(d.call({ cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
+    await expect(d.call({ target: 'dev4', spawn: 'bash', ssh: { host: 'h' }, cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
     await expect(d.call({ target: 'dev4', cmd: 'x', timeout: 0 })).rejects.toThrow(/E_BAD_TIMEOUT/)
     await expect(d.call({ target: 'dev4', cmd: 'x', timeout: Number.POSITIVE_INFINITY })).rejects.toThrow(/E_BAD_TIMEOUT/)
+    await d.dispose()
   })
-  it('a byop: selector locks mode to pty; spawn alone is not an entry point', async () => {
+  it('a pty selector addresses; "pty" alone and spawn+ssh combos are refused', async () => {
     const d = driverWith()
-    const r = await d.call({ target: 'byop:x', spawn: 'docker exec -it x bash', cmd: 'echo hi' })
-    expect(r.mode).toBe('pty')
-    expect(r.session).toBe('byop:x')
-    await expect(d.call({ target: 'byop:x', cmd: 'echo hi', mode: 'oneshot' })).rejects.toThrow(/E_BAD_MODE.*locked to 'pty'/)
-    await expect(d.call({ spawn: 'docker exec -it x bash', cmd: 'echo hi' })).rejects.toThrow(/E_PARAMS/)
+    await expect(d.call({ target: 'pty', cmd: 'echo hi' })).rejects.toThrow(/E_PARAMS/)
+    await expect(d.call({ target: 'docker:c', spawn: 'bash', cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
+    await expect(d.call({ target: 'pty:x', ssh: { host: 'h' }, cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
     await d.dispose()
   })
   it('rejects malformed PTY labels before touching the pool', async () => {
     const d = driverWith()
-    for (const bad of ['byop:', 'byop:has space', 'byop:a:b', 'byop:-lead'])
+    for (const bad of ['has space', '-lead'])
       await expect(d.call({ target: bad, spawn: 'bash', cmd: 'echo hi' })).rejects.toThrow(/E_BAD_LABEL/)
+    await expect(d.call({ target: 'a:b', spawn: 'bash', cmd: 'echo hi' })).rejects.toThrow(/E_TARGET_FORMAT/)
+    await expect(d.call({ target: 'pty:a:b', cmd: 'echo hi' })).rejects.toThrow(/E_TARGET_FORMAT/)
+    await expect(d.call({ target: 'pty:pty-1a2b', spawn: 'bash', cmd: 'echo hi' })).rejects.toThrow(/E_BAD_LABEL/)
     await d.dispose()
   })
 })
@@ -50,13 +57,17 @@ describe('RemoteDriver routing', () => {
     expect(seen).toEqual([['oneshot', 'git status']])
     await d.dispose()
   })
-  it('pty mode: session key isolates agents, state persists per key', async () => {
+  it(':pty creation is per agent session — every call opens a new session, state persists per id', async () => {
     const d = driverWith()
-    await d.call({ target: 'dev4', mode: 'pty', cmd: 'cd /tmp' }, { sessionKey: 'a1' })
-    const r = await d.call({ target: 'dev4', mode: 'pty', cmd: 'pwd' }, { sessionKey: 'a1' })
+    const c1 = await d.call({ target: 'ssh:dev4:pty', cmd: 'cd /tmp' }, { sessionKey: 'a1' })
+    expect(c1.session).toMatch(/^pty:pty-[a-z0-9]{4}$/)
+    expect(c1.connection).toBe('ssh:dev4')
+    const r = await d.call({ target: `pty:${c1.session!.slice(4)}`, cmd: 'pwd' }, { sessionKey: 'a1' })
     expect(r.cwd).toBe('/tmp')
-    const r2 = await d.call({ target: 'dev4', mode: 'pty', cmd: 'pwd' }, { sessionKey: 'a2' })
-    expect(r2.cwd).not.toBe('/tmp') // different agent, fresh session
+    const other = await d.call({ target: 'ssh:dev4:pty', cmd: 'pwd' }, { sessionKey: 'a1' })
+    expect(other.session).not.toBe(c1.session) // tab semantics: creation never reuses
+    // another agent never sees this session — the id addresses nothing there
+    await expect(d.call({ target: `pty:${c1.session!.slice(4)}`, cmd: 'pwd' }, { sessionKey: 'a2' })).rejects.toThrow(/E_NO_SESSION/)
     await d.dispose()
   })
   it('truncates oversized output to the tail window with disclosure', async () => {
@@ -78,169 +89,156 @@ describe('RemoteDriver routing', () => {
       oneshotArgvFor: () => ['bash', '-c', 'exit 255'],
     })
     await d255.call({ target: 'no-such-host-xyz', cmd: 'echo no' }).catch(() => {})
-    await expect(d.call({ target: 'a', spawn: 'b', cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
+    await expect(d.call({ target: 'docker:c', spawn: 'bash', cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
     expect(audit[0]).toMatchObject({ target: 'dev4', cmd: 'echo ok', exit: 0 })
     expect(audit[1]).toMatchObject({ target: 'no-such-host-xyz', exit: 255 })
-    expect(audit[2]).toMatchObject({ target: 'a', cmd: 'x', error: expect.stringContaining('E_PARAMS') })
+    expect(audit[2]).toMatchObject({ target: 'docker:c', cmd: 'x', error: expect.stringContaining('E_PARAMS') })
     await d.dispose(); await d255.dispose()
   })
 })
 
-describe('RemoteDriver BYO-PTY labels (target:"byop:<label>")', () => {
-  const scanStub = {
-    rosterRunner: async () => ({ exit: 0, timedOut: false, stdout: '', stderr: '', durationMs: 1 }),
-  }
-
-  it('creates on the first spawn, then reuses by label alone (cwd/env survive)', async () => {
+describe('RemoteDriver BYO pty via spawn (label in the session pool)', () => {
+  it('creates with a label, then reuses by label alone (cwd/env survive); session carries identity', async () => {
     const d = driverWith()
-    const created = await d.call({ target: 'byop:dev3', spawn: 'bash', cmd: 'cd /tmp && export MARK=live' })
-    expect(created.session).toBe('byop:dev3')
-    expect(created.notice).toBeUndefined()
-    const reused = await d.call({ target: 'byop:dev3', cmd: 'echo "$MARK" && pwd' })
-    expect(reused.session).toBe('byop:dev3')
+    const created = await d.call({ target: 'pty:dev3', spawn: 'bash', cmd: 'cd /tmp && export MARK=live' })
+    expect(created.session).toMatch(/^pty:pty-[a-z0-9]{4}$/)
+    expect(created.label).toBe('dev3')
+    expect(created.connection).toBe('BYOP')
+    expect(created.byoTag).toBe('byo-pty')
+    expect(created.commandId).toMatch(/^remote-/)
+    const reused = await d.call({ target: 'pty:dev3', cmd: 'echo "$MARK" && pwd' })
+    expect(reused.session).toBe(created.session)
     expect(reused.stdout).toContain('live')
     expect(reused.cwd).toBe('/tmp')
     await d.dispose()
   })
-
-  it('label namespace is per agent: the same label is a fresh (absent) session for another agent', async () => {
+  it('spawn with no target = auto id; warm creation (no cmd) returns the id without running', async () => {
     const d = driverWith()
-    await d.call({ target: 'byop:dev3', spawn: 'bash', cmd: 'export MARK=mine' }, { sessionKey: 'a1' })
-    await expect(d.call({ target: 'byop:dev3', cmd: 'echo "$MARK"' }, { sessionKey: 'a2' })).rejects.toThrow(/E_NO_SESSION/)
-    const fresh = await d.call({ target: 'byop:dev3', spawn: 'bash', cmd: 'echo "$MARK"done' }, { sessionKey: 'a2' })
+    const warm = await d.call({ spawn: 'bash' })
+    expect(warm.created).toBe(true)
+    expect(warm.session).toMatch(/^pty:pty-[a-z0-9]{4}$/)
+    expect(warm.label).toBeUndefined()
+    // R2：warm 回执必须带整段 TTL（刚起好的会话还没 idle 过）= 本驱动配置的 idleTtlSec
+    expect(warm.ttlSec).toBe(600)
+    const run = await d.call({ target: `pty:${warm.session!.slice(4)}`, cmd: 'echo hi' })
+    expect(run.stdout.trim()).toBe('hi')
+    await d.dispose()
+  })
+  it('label namespace is per agent session: the same label is free for another agent', async () => {
+    const d = driverWith()
+    await d.call({ target: 'pty:dev3', spawn: 'bash', cmd: 'export MARK=mine' }, { sessionKey: 'a1' })
+    await expect(d.call({ target: 'pty:dev3', cmd: 'echo "$MARK"' }, { sessionKey: 'a2' })).rejects.toThrow(/E_NO_SESSION/)
+    const fresh = await d.call({ target: 'pty:dev3', spawn: 'bash', cmd: 'echo "$MARK"done' }, { sessionKey: 'a2' })
     expect(fresh.stdout.trim()).toBe('done')
     await d.dispose()
   })
-
-  it('repeating the same spawn on a live label reuses it and teaches the shorter form', async () => {
+  it('repeating spawn on a live label = E_LABEL_IN_USE (no spec comparison), teaching the shorter form', async () => {
     const d = driverWith()
-    await d.call({ target: 'byop:dev3', spawn: 'bash', cmd: 'export MARK=kept' })
-    const r = await d.call({ target: 'byop:dev3', spawn: 'bash', cmd: 'echo "$MARK"' })
-    expect(r.stdout).toContain('kept')
-    expect(r.notice).toMatch(/already runs that exact command/)
-    expect(r.notice).toContain('{ target: "byop:dev3", cmd:')
+    await d.call({ target: 'pty:dev3', spawn: 'bash', cmd: 'export MARK=kept' })
+    await expect(d.call({ target: 'pty:dev3', spawn: 'bash', cmd: 'echo x' })).rejects.toThrow(/E_LABEL_IN_USE/)
+    await expect(d.call({ target: 'pty:dev3', spawn: 'bash -l', cmd: 'echo x' })).rejects.toThrow(/E_LABEL_IN_USE/)
+    const after = await d.call({ target: 'pty:dev3', cmd: 'echo "$MARK"' })
+    expect(after.stdout).toContain('kept')
     await d.dispose()
   })
-
-  it('a different spawn on a live label refuses with E_LABEL_CONFLICT and runs nothing', async () => {
+  it('an unknown label answers E_NO_SESSION with the create shape', async () => {
     const d = driverWith()
-    await d.call({ target: 'byop:dev3', spawn: 'bash', cmd: 'export MARK=one' })
-    await expect(d.call({ target: 'byop:dev3', spawn: 'bash -l', cmd: 'export MARK=clobbered' }))
-      .rejects.toThrow(/E_LABEL_CONFLICT/)
-    const after = await d.call({ target: 'byop:dev3', cmd: 'echo "$MARK"' })
-    expect(after.stdout).toContain('one')
+    await expect(d.call({ target: 'pty:never', cmd: 'echo hi' })).rejects.toThrow(/E_NO_SESSION/)
+    await expect(d.call({ target: 'pty:never', cmd: 'echo hi' })).rejects.toThrow(/ssh:dev4:pty/)
     await d.dispose()
   })
-
-  it('an unknown label answers E_NO_SESSION with the create shape (spawn is never retained)', async () => {
+  it('label with no cmd = session card (ledger + connection); unknown label says so without dialing', async () => {
     const d = driverWith()
-    await expect(d.call({ target: 'byop:never', cmd: 'echo hi' })).rejects.toThrow(/E_NO_SESSION/)
-    await expect(d.call({ target: 'byop:never', cmd: 'echo hi' })).rejects.toThrow(/Create it:.*target: "byop:never", spawn/)
+    await d.call({ target: 'pty:dev3', spawn: 'bash', cmd: 'echo warm' })
+    const card = await d.call({ target: 'pty:dev3', cmd: '' })
+    expect(card.stdout).toContain('BYOP (byo-pty)')
+    expect(card.stdout).toContain('ledger')
+    await expect(d.call({ target: 'pty:never', cmd: '' })).rejects.toThrow(/E_NO_SESSION/)
     await d.dispose()
   })
-
-  it('label with no cmd = that session status; unknown label says so without dialing', async () => {
+  it('session limit: a tenth session is refused with the live inventory; close frees a slot', async () => {
     const d = driverWith()
-    await d.call({ target: 'byop:dev3', spawn: 'bash', cmd: 'echo warm' })
-    const live = await d.status('byop:dev3')
-    expect(live).toContain('byop:dev3 — BYO pty session')
-    expect(live).toContain('session: idle')
-    expect(await d.status('byop:never')).toContain('session: none — no live PTY under this label')
+    const warm: string[] = []
+    for (let i = 0; i < 10; i++) warm.push((await d.call({ spawn: 'bash' })).session!.slice(4))
+    await expect(d.call({ spawn: 'bash' })).rejects.toThrow(/E_SESSION_LIMIT[\s\S]*pty-/)
+    await expect(d.call({ target: 'ssh:dev4:pty', cmd: 'echo x' })).rejects.toThrow(/E_SESSION_LIMIT/)
+    d.closePty(warm[0]!, 'no-session')
+    const ok = await d.call({ spawn: 'bash' })
+    expect(ok.created).toBe(true)
     await d.dispose()
-  })
-
-  it('roster names sessions by label, never by the spawn command', async () => {
+  }, 20_000)
+  it('close: idempotent; refuses while a job runs and names it; force kills and closes', async () => {
+    const d = driverWith()
+    const warm = await d.call({ spawn: 'bash' })
+    const id = warm.session!.slice(4)
+    const r = await d.call({ target: `pty:${id}`, cmd: 'sleep 1 ; echo late', timeout: 1 })
+    expect(r.running).toBe(true)
+    expect(() => d.closePty(id, 'no-session')).toThrow(/E_SESSION_BUSY[\s\S]*job_kill/)
+    const forced = d.closePty(id, 'no-session', true)
+    expect(forced).toMatchObject({ closed: true })
+    expect(forced.killed.length).toBe(1)
+    const again = d.closePty(id, 'no-session')
+    expect(again).toMatchObject({ closed: false, reason: 'not-found' })
+    await d.dispose()
+  }, 20_000)
+  it('roster names sessions by label/id, never by the spawn command; caller-scoped', async () => {
     const d = driverWith(scanStub)
-    await d.call({ target: 'byop:dev3', spawn: 'UNIQUESPAWNMARKER bash', cmd: 'echo hi' })
-    const text = await d.roster()
-    expect(text).toContain('live pty sessions: byop:dev3')
-    expect(text).not.toContain('UNIQUESPAWNMARKER')
+    await d.call({ target: 'pty:mine', spawn: 'UNIQUESPAWNMARKER bash', cmd: 'echo hi' }, { sessionKey: 'a1' })
+    await d.call({ target: 'pty:theirs', spawn: 'bash', cmd: 'echo hi' }, { sessionKey: 'a2' })
+    const a1 = await d.roster({ sessionKey: 'a1' })
+    expect(a1).toMatch(/pty:pty-[a-z0-9]{4} \(label mine\)/)
+    expect(a1).not.toContain('label theirs')
+    expect(a1).not.toContain('UNIQUESPAWNMARKER')
+    const a2 = await d.roster({ sessionKey: 'a2' })
+    expect(a2).toMatch(/pty:pty-[a-z0-9]{4} \(label theirs\)/)
+    expect(a2).not.toContain('label mine')
+    expect(a1).toContain('incus containers')
     await d.dispose()
   })
-
-  it('a bare name falls through ssh/docker/incus and reaches a live pty label last', async () => {
+  it('a bare name reaches a live session label (claim shadows machines)', async () => {
     const d = driverWith({ ...scanStub, sshConfigReader: async () => 'Host dev3\n' })
-    await d.call({ target: 'byop:lab', spawn: 'bash', cmd: 'export MARK=bare' })
-    // 未指定 mode 的裸名同样命中 PTY 末位候选（懒复用：只写 label，不写 PTY 选择器）
-    const viaBare = await d.call({ target: 'lab', cmd: 'echo "$MARK"' })
+    await d.call({ target: 'pty:lab', spawn: 'bash', cmd: 'export MARK=bare' }, { sessionKey: 'a1' })
+    const viaBare = await d.call({ target: 'lab', cmd: 'echo "$MARK"' }, { sessionKey: 'a1' })
     expect(viaBare.mode).toBe('pty')
-    expect(viaBare.session).toBe('byop:lab')
+    expect(viaBare.label).toBe('lab')
     expect(viaBare.stdout).toContain('bare')
-    // 显式 oneshot 不吃末位候选 —— 裸名在 mode:'oneshot' 下的旧行为逐位保留。
-    const oneShot = await d.call({ target: 'lab', mode: 'oneshot', cmd: 'echo hi' })
-    expect(oneShot.mode).toBe('oneshot')
-    expect(oneShot.session).toBeUndefined()
     await d.dispose()
   })
-
-  it('on a name collision the ssh host wins; only the explicit selector reaches the PTY', async () => {
-    const d = driverWith({ ...scanStub, sshConfigReader: async () => 'Host lab\n' })
-    await d.call({ target: 'byop:lab', spawn: 'bash', cmd: 'export MARK=pty' })
-    const collision = await d.call({ target: 'lab', mode: 'pty', cmd: 'echo hi' })
-    expect(collision.session).toBeUndefined()
-    expect(collision.target).toBe('lab')
-    const explicit = await d.call({ target: 'byop:lab', cmd: 'echo "$MARK"' })
-    expect(explicit.session).toBe('byop:lab')
-    expect(explicit.stdout).toContain('pty')
-    await d.dispose()
-  })
-
-  it('a spawn that never initializes leaves no session behind — the label is immediately reusable', async () => {
+  it('a spawn that never initializes leaves no claim behind — the label is immediately reusable', async () => {
     let argv = ['bash', '-c', 'exit 3']
     const d = driverWith({ spawnArgvFor: () => argv })
-    await expect(d.call({ target: 'byop:x', spawn: 'broken', cmd: 'echo hi' })).rejects.toThrow(/E_SESSION_DIED/)
-    // 池内无残留：不带 spawn 复用得到 E_NO_SESSION，而不是重跑冻结 argv 再死一次
-    await expect(d.call({ target: 'byop:x', cmd: 'echo hi' })).rejects.toThrow(/E_NO_SESSION/)
-    // 换一个能起来的 spawn 直接建成，不再被 origin 比对拦成 E_LABEL_CONFLICT
+    await expect(d.call({ target: 'pty:x', spawn: 'broken', cmd: 'echo hi' })).rejects.toThrow(/E_SESSION_DIED/)
+    await expect(d.call({ target: 'pty:x', cmd: 'echo hi' })).rejects.toThrow(/E_NO_SESSION/)
     argv = ['bash']
-    const ok = await d.call({ target: 'byop:x', spawn: 'good', cmd: 'echo alive' })
-    expect(ok.session).toBe('byop:x')
+    const ok = await d.call({ target: 'pty:x', spawn: 'good', cmd: 'echo alive' })
+    expect(ok.label).toBe('x')
     expect(ok.stdout).toContain('alive')
     await d.dispose()
   })
-
   it('a ready-then-killed session stays in the pool and still reconnects (unchanged)', async () => {
     const d = driverWith()
-    await d.call({ target: 'byop:r', spawn: 'bash', cmd: 'echo warm' })
-    await d.call({ target: 'byop:r', cmd: 'kill -9 $$' })
-    const back = await d.call({ target: 'byop:r', cmd: 'echo back' })
+    await d.call({ target: 'pty:r', spawn: 'bash', cmd: 'echo warm' })
+    await d.call({ target: 'pty:r', cmd: 'kill -9 $$' })
+    const back = await d.call({ target: 'pty:r', cmd: 'echo back' })
     expect(back.reconnected).toBe(true)
     expect(back.stdout).toContain('back')
     await d.dispose()
   })
-
-  it('the init-failure message names the model-facing label, never the internal pool key', async () => {
+  it('the init-failure message names the session id, never the internal pool key', async () => {
     const d = driverWith({ spawnArgvFor: () => ['bash', '-c', 'exit 3'] })
     const msg = await d
-      .call({ target: 'byop:x', spawn: 'broken', cmd: 'echo hi' }, { sessionKey: 'sess-abc' })
+      .call({ target: 'pty:x', spawn: 'broken', cmd: 'echo hi' }, { sessionKey: 'sess-abc' })
       .then(() => '', (e: Error) => e.message)
     expect(msg).toMatch(/E_SESSION_DIED/)
-    expect(msg).toContain("'byop:x'")
+    expect(msg).toMatch(/pty-/)
     expect(msg).not.toContain('sess-abc')
     expect(msg).not.toContain('|p:')
     await d.dispose()
   })
-
-  it('roster is caller-scoped: each agent sees only its own live sessions', async () => {
-    const d = driverWith(scanStub)
-    await d.call({ target: 'byop:mine', spawn: 'bash', cmd: 'export M=mine' }, { sessionKey: 'a1' })
-    await d.call({ target: 'byop:theirs', spawn: 'bash', cmd: 'export M=theirs' }, { sessionKey: 'a2' })
-    const a1 = await d.roster({ sessionKey: 'a1' })
-    expect(a1).toContain('byop:mine')
-    expect(a1).not.toContain('byop:theirs')
-    const a2 = await d.roster({ sessionKey: 'a2' })
-    expect(a2).toContain('byop:theirs')
-    expect(a2).not.toContain('byop:mine')
-    // 名字候选（ssh/docker/incus）是公共静态配置，仍对所有人可见
-    expect(a1).toContain('incus containers')
-    expect(a2).toContain('incus containers')
-    await d.dispose()
-  })
 })
 
-
 describe('RemoteDriver terminal disposal', () => {
-  it.each(['pty', 'oneshot'] as const)('does not launch %s work after disposal while target discovery is pending', async mode => {
+  it.each(['oneshot'] as const)('does not launch %s work after disposal while target discovery is pending', async mode => {
     const gate = deferredTargetResolution()
     const driver = driverWith(gate.options)
     let result: Awaited<ReturnType<RemoteDriver['call']>> | undefined
@@ -251,7 +249,7 @@ describe('RemoteDriver terminal disposal', () => {
       await driver.dispose()
       gate.release()
       expect(await pending).toMatchObject({ error: expect.objectContaining({ message: expect.stringContaining('E_REMOTE_DISPOSED') }) })
-      await expect(driver.call({ target: 'byop:after', spawn: 'bash', cmd: 'echo should-not-run' })).rejects.toThrow('E_REMOTE_DISPOSED')
+      await expect(driver.call({ spawn: 'bash', cmd: 'echo should-not-run' })).rejects.toThrow('E_REMOTE_DISPOSED')
     } finally {
       gate.release()
       killReturnedShell(result?.stdout)
@@ -262,7 +260,7 @@ describe('RemoteDriver terminal disposal', () => {
   it('concurrent disposal calls share completion and settle only after the live shell exits', async () => {
     const driver = driverWith()
     try {
-      const result = await driver.call({ target: 'byop:live', spawn: 'bash', cmd: 'printf %s "$$"' })
+      const result = await driver.call({ spawn: 'bash', cmd: 'printf %s "$$"' })
       const pid = Number(result.stdout)
       const first = driver.dispose(), second = driver.dispose()
       expect(second).toBe(first)

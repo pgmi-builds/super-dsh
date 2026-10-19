@@ -2,11 +2,11 @@ import type { SshConnection } from './ssh-targets.ts'
 /** Owned structural boundary. Better never imports or depends on Super. */
 import type { RemoteCallResult } from './driver.ts'
 export interface RemoteInput {
-  target?: string; spawn?: string; ssh?: SshConnection; cmd?: string; script?: string; stdin?: string
+  target?: string; spawn?: string; ssh?: SshConnection; cmd?: string; scriptPath?: string; stdin?: string
   mode?: 'oneshot' | 'pty'; timeout?: number
 }
 export interface PreparedRemoteInput {
-  target: string; spawn?: string; ssh?: SshConnection; cmd: string; stdin?: string; mode?: 'oneshot' | 'pty'; timeout?: number
+  target?: string; spawn?: string; ssh?: SshConnection; cmd: string; stdin?: string; mode?: 'oneshot' | 'pty'; timeout?: number
 }
 /** Counters exclude diagnostic banners. dropped is ring eviction; total-returned is all omitted output. */
 export type OutputStats = {
