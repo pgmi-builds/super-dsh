@@ -238,4 +238,26 @@ describe('PtySession.input over a real terminal: EOF and control bytes (§3.4)',
       await s.dispose()
     }
   }, 15_000)
+
+  it('bare Ctrl-C leaves the job running (F1, honest); a following interrupt settles exit 130 without the marker being eaten (F2 settle, 0.3.2-d)', async () => {
+    const s = new PtySession({ key: 'k|p:f2', id: 'f2', connection: 'spec', argv: PTY_ARGV, ...OPTS })
+    try {
+      const r = await s.dispatch('sleep 30', { commandId: 'c-f2', background: true })
+      const job = r.job!
+      await s.input({ commandId: 'c-f2', stdin: '\u0003' })
+      // F1 如实披露：裸 ^C 不带 marker，交互 bash 弃行后作业不被误结算——仍在跑。
+      const still = await Promise.race([job.done.then(() => 'settled' as const), wait(1_200)])
+      expect(still).toBe('tick')
+      job.interrupt()
+      const res = await job.done
+      // 旧形状（marker 首字节被 ISIG flush 吃掉）在这里是 'rintf' not found → 会话死 → exit null。
+      expect(res.exit).toBe(130)
+      const next = await s.dispatch('echo AFTER-F2', { commandId: 'c-f2-next' })
+      expect(next.exit).toBe(0)
+      expect(next.output).toContain('AFTER-F2')
+      expect(next.reconnected).toBe(false)
+    } finally {
+      await s.dispose()
+    }
+  }, 20_000)
 })

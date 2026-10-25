@@ -66,7 +66,7 @@ it('real scoped tool advertises binary copy and returns a declared verified rece
         await writeFile(src, Buffer.from([0, 255, 128]));
         const schema = h.visibleTools(agent).find(t => t.name === 'remote_transfer')!;
         expect(schema.description).toContain('Every call declares its mode');
-        expect(h.visibleTools(agent).find(t => t.name === 'remote')!.description).toContain('bash only (no Python)');
+        expect(h.visibleTools(agent).find(t => t.name === 'remote')!.description).toContain('needs bash only — no Python');
         const result = await h.invoke(agent, { mode: 'copy', src, dst }, 'remote_transfer');
         expect((result as { receipt?: { action?: string; route?: string; verification?: string; ok?: boolean; bytes?: number; entries?: number } }).receipt).toMatchObject({ action: 'copy', route: 'hub-staged', verification: 'sha256', ok: true, bytes: 3, entries: 1 });
         expect(result.text).toContain('verification sha256');

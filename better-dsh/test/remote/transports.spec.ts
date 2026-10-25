@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildOneShotArgv, buildPtyArgv, buildSpawnArgv, shQuote } from '../../src/remote/transports.ts'
+import { buildHubPtyArgv, buildOneShotArgv, buildPtyArgv, buildSpawnArgv, shQuote } from '../../src/remote/transports.ts'
 
 describe('shQuote', () => {
   it('wraps in single quotes and escapes embedded quotes POSIX-style', () => {
@@ -63,5 +63,23 @@ describe('buildSpawnArgv (BYO-PTY)', () => {
   it('hosts any spawn command under script with echo pre-silenced', () => {
     expect(buildSpawnArgv('docker exec -it temp-worker bash'))
       .toEqual(['script', '-qfec', 'stty -echo 2>/dev/null ; exec docker exec -it temp-worker bash', '/dev/null'])
+  })
+})
+
+describe('buildHubPtyArgv (hub PTY; 0.3.2-d F4: local half goes raw)', () => {
+  it('script hosts the pump with stty raw -echo — control bytes cross the local line discipline verbatim', () => {
+    const argv = buildHubPtyArgv({ url: 'https://hub.example/ws', cookie: '', wsPath: '/x/ws.js' }, { pumpPath: '/opt/pump/hub-pty-pump.mjs', nodePath: '/usr/bin/node' })
+    expect(argv).toEqual(['script', '-qfec', `stty raw -echo 2>/dev/null ; export SUPERD_HUB_PTY_URL='https://hub.example/ws' SUPERD_HUB_PTY_COOKIE='' SUPERD_HUB_PTY_WS='/x/ws.js' ; exec '/usr/bin/node' '/opt/pump/hub-pty-pump.mjs'`, '/dev/null'])
+    // F4 pin: the wrapper must set the LOCAL line discipline raw. A canonical+ISIG pty turns
+    // 0x03 into a local SIGINT (kills the pump) and 0x04 into EOF before any byte reaches
+    // the WebSocket — input ^C/^D and job_kill then kill the whole session (retest §4).
+    expect(argv[2]!.startsWith('stty raw -echo')).toBe(true)
+    expect(argv[2]!.includes('stty -echo ')).toBe(false)
+  })
+  it('node defaults to process.execPath; connection facts ride env assignments, never argv', () => {
+    const argv = buildHubPtyArgv({ url: 'u', cookie: 'k', wsPath: 'w' }, { pumpPath: '/p.mjs' })
+    expect(argv[2]!).toContain(`exec '${process.execPath}' '/p.mjs'`)
+    expect(argv.slice(0, 2)).toEqual(['script', '-qfec'])
+    expect(argv.at(-1)).toBe('/dev/null')
   })
 })

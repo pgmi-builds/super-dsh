@@ -14,8 +14,12 @@ const ptyOutputSources = (holder: { job?: PtyRunningJob }): JobOutputSource[] =>
   read: (fromByte) => holder.job?.read(fromByte) ?? { text: '', nextOffset: fromByte, lossy: false },
 }]
 
-const ptyOutcome = (aborted: boolean, result: { exit: number | null }): JobOutcome =>
-  ({ status: aborted ? 'killed' : result.exit === null ? 'failed' : 'completed', detail: aborted ? `interrupted: ${result.exit === null ? 'session died' : `exit ${result.exit}`}` : result.exit === null ? 'session died' : `exit code: ${result.exit}` })
+/** 0.3.2-d CF：timedOut=true 且 aborted=false = 会话侧主动收束（close force / 行回收走的
+ * dispose→interrupt 两段路）——同为 killed；exit 到手用 exit，只剩会话死亡时写 session closed。 */
+const ptyOutcome = (aborted: boolean, result: { exit: number | null; timedOut?: boolean }): JobOutcome => {
+  const interrupted = aborted || result.timedOut === true
+  return { status: interrupted ? 'killed' : result.exit === null ? 'failed' : 'completed', detail: interrupted ? `interrupted: ${result.exit === null ? (aborted ? 'session died' : 'session closed') : `exit ${result.exit}`}` : result.exit === null ? 'session died' : `exit code: ${result.exit}` }
+}
 
 /** No preparation or discovery before the official registry's admission. */
 export function startRemoteJob(registry: JobRegistry, input: RemoteInput, exec: ToolRunContext, driver: RemoteDriver): JobId {

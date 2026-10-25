@@ -90,6 +90,9 @@ export interface SessionSnapshot { state: PtyState; busy: boolean; idleMs: numbe
 
 const DEFAULT_INIT_TIMEOUT_SEC = 30
 const INTERRUPT_GRACE_MS = 3_000
+/** F2（0.3.2-d）：\x03 触发 ISIG 时内核 flush 输入队列——130-marker 必须等 flush 完成
+ * 再入队，否则首字节被吞（实测 'rintf' not found → 会话死）。 */
+const MARKER_SETTLE_MS = 80
 /** pty 收集内存安全帽（Ruling P15，与 oneshot HARD_CAP 对齐）：模型面只见尾窗，保留尾部。 */
 const OUTPUT_HARD_CAP = 4_000_000
 
@@ -212,6 +215,7 @@ export class PtySession {
         let jobSettled = false
         let interruptTimer: NodeJS.Timeout | undefined
         let killTimer: NodeJS.Timeout | undefined
+        let markerTimer: NodeJS.Timeout | undefined
         let jobDone: ((r: PtyJobResult) => void) | null = null
         let envNext: Map<string, number> | undefined
         const detach = (): PtyRunningJob => {
@@ -237,6 +241,7 @@ export class PtySession {
           this.deathWaiters = this.deathWaiters.filter((w) => w !== deathWaiter)
           if (interruptTimer !== undefined) clearTimeout(interruptTimer)
           if (killTimer !== undefined) clearTimeout(killTimer)
+          if (markerTimer !== undefined) clearTimeout(markerTimer)
         }
         const settle = (r: Omit<PtyJobResult, 'outputStats' | 'commandId' | 'envDelta'>): void => {
           if (jobSettled) return
@@ -270,7 +275,9 @@ export class PtySession {
           // 读取态后被执行。无论 bash 弃行还是续行，帧都在宽限内到达且 exit=130，
           // 会话存活；若命令 trap 掉 SIGINT，原 marker 先帧、注入行帧后字节被丢弃。
           this.write('\x03')
-          this.write(`printf '\\033]133;D;${nonce};130;%s\\007' "$PWD"\n`)
+          markerTimer = setTimeout(() => {
+            this.write(`printf '\\033]133;D;${nonce};130;%s\\007' "$PWD"\n`)
+          }, MARKER_SETTLE_MS)
           killTimer = setTimeout(() => {
             // Ruling 8 的 kill 兜底：宽限无帧 = 会话不可恢复，杀整组后收尸
             // （否则 trap-INT 的卡死进程永生，重连后旧组再不可达）
@@ -332,6 +339,10 @@ export class PtySession {
     this.clearDeathTimer()
     this.state = 'disposed'
     this.startPromise = null
+    // CF（0.3.2-d）：force-close / 行回收若有 detached job 在跑，先走两段 interrupt 让它
+    // 诚实结算（marker 帧先于 1s TERM 到达 → killed · interrupted: exit 130；帧不可达则
+    // kill 兜底 → killed · interrupted: session closed），不再裸死成 failed/session died。
+    this.detachedJob?.interrupt()
     const proc = this.proc
     const close = this.procClose
     // Captured pgid, not this.proc: the shell may close before redirected
@@ -340,7 +351,9 @@ export class PtySession {
     this.disposal = Promise.all([close, this.groupCleanup, group]).then(() => {
       if (this.proc === proc) this.proc = null
     })
-    this.write('exit\n')
+    // exit\n 仅在无 detached job 时写：CF 路径下它会抢先结束 shell，80ms 后的 130-marker
+    // 就永远无帧（实测 exit null）。有 job 时交给 interrupt 的 marker 帧 + 1s 组杀收尾。
+    if (this.detachedJob === null) this.write('exit\n')
     this.opts.onDead?.()
     return this.disposal
   }
@@ -378,6 +391,9 @@ export class PtySession {
     proc.stdout.setEncoding('utf8')
     proc.stdout.on('data', (d: string) => { this.onChunk?.(d) })
     proc.stderr.setEncoding('utf8').on('data', (d: string) => { this.diag = (this.diag + d).slice(-2_000) })
+    // F3（0.3.2-d）：stdin 异步写错（EPIPE 等）不经私有 write() 的 try/catch，无监听即
+    // 进程级 uncaught。常驻监听只记 diag——死亡语义仍由 proc 'close' → markDead 独占。
+    proc.stdin.on('error', (err: Error) => { this.diag = (this.diag + `\n[remote: stdin write failed: ${err.message}]`).slice(-2_000) })
     this.procClose = new Promise<void>((resolve) => {
       proc.once('close', () => { this.markDead(); resolve() })
     })

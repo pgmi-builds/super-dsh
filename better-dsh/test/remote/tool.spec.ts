@@ -132,7 +132,7 @@ describe('createRemoteTool', () => {
     const added = await tool.execute!({ action: 'add', spawn: 'bash' } as never, exec) as { text: string; session?: string; created?: boolean; notice?: string }
     expect(added.created).toBe(true)
     expect(added.session).toMatch(/^pty:pty-[a-z0-9]{4}$/)
-    expect(added.notice).toContain('registered — address it as')
+    expect(added.notice).toBeUndefined() // 0.3.2-d: spawn 创建的回执由 [session created] 行 + 标记承载，不再叠加 registered notice
     const v = await tool.execute!({ action: 'exec', target: added.session!, cmd: 'echo out' } as never, exec) as { text: string; session?: string; label?: string; connection?: string; commandId?: string }
     expect(v.text).toBe('out\n')
     expect(v.session).toBe(added.session)
@@ -156,14 +156,26 @@ describe('createRemoteTool', () => {
     expect(v.text).toBe('roster-text')
     expect(seen[0]?.sessionKey).toBe('agent-1')
   })
-  it('the description teaches the persistent interactive PTY lane incl. the input flow, without dropping the oneshot guarantee', () => {
+  it('the description teaches the PTY lane in the user-ruled shape (0.3.2-d): four-word lead, pairing line, control bytes, busy four ways', () => {
     const description = createRemoteTool(fakeDriver()).description
-    expect(description).toContain('PTY IS A PERSISTENT, INTERACTIVE TERMINAL SESSION')
-    expect(description).toContain('{action:"input", target:"pty:<id|label>", stdin, commandId?}')
-    expect(description).toContain('the input receipt only confirms N bytes were written')
-    expect(description).toContain('any transport (ssh / docker / incus / hub / BYO)')
+    expect(description).toContain('PTY:\n- stateful oneshot, interact-able stdin, managed output, persistent env')
+    expect(description).toContain('exec.stdin = startup input; input = subsequent input')
+    expect(description).toContain('input is verbatim: "\\n" submits; "\\u0003" Ctrl-C; "\\u0004" Ctrl-D; "" writes nothing. Ctrl-D follows terminal EOF rules.')
+    expect(description).toContain('Busy session: input / poll / cancel / use another session.')
+    expect(description).toContain('Input receipt confirms write only; read result via SAME job.')
+    expect(description).toContain('After creation, reuse the returned session; repeating :pty opens another.')
+    expect(description).toContain('a prompt on a oneshot means cancel (job_kill) and switch to PTY')
     expect(description).toContain('no Python')
     expect(description).not.toContain('action:"copy"')
+  })
+  it('examples stay format-true to the code: action verbs declared, transfer tool separated, receipts match renderValue', () => {
+    const description = createRemoteTool(fakeDriver()).description
+    expect(description).toContain('remote { "action": "add", "spawn": "ssh -t pc ssh -t dev4", "target": "pty:dev4via" }')
+    expect(description).toContain('remote { "action": "exec", "target": "pty:dev4via"')
+    expect(description).toContain('remote_transfer { "mode": "rsync", "src": "ssh:lab:/var/log/app/", "dst": "/home/u1/app-logs/", "argv": ["-a"] }')
+    expect(description).toContain('[pty:pty-irsq (dev4via) (byo-pty) · conn BYOP · idle-left ~15m · exit null · 0.0s]')
+    expect(description).toContain('· conn BYOP · cmd remote-0d89215d1cc64cdc · cwd /home/u1 · idle-left ~15m · exit 0 · 0.3s]')
+    expect(description).toContain('Started remote-47676dff2c6443e8 on pty:pty-irsq (dev4via) (BYOP).')
   })
 })
 

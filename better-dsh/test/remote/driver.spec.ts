@@ -168,15 +168,21 @@ describe('RemoteDriver BYO pty via spawn (label in the session pool)', () => {
     await d.dispose()
   }, 20_000)
   it('close: idempotent; refuses while a job runs and names it; force kills and closes', async () => {
-    const d = driverWith()
+    const d = driverWith({ spawnArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] }) // CF 需要 ^C 真成 SIGINT：真 script pty，非管道 bash
     const warm = await d.call({ spawn: 'bash' })
     const id = warm.session!.slice(4)
-    const r = await d.call({ target: `pty:${id}`, cmd: 'sleep 1 ; echo late', timeout: 1 })
+    const r = await d.call({ target: `pty:${id}`, cmd: 'sleep 30 ; echo late', timeout: 1 })
     expect(r.running).toBe(true)
     expect(() => d.closePty(id, 'no-session')).toThrow(/E_SESSION_BUSY[\s\S]*job_kill/)
     const forced = d.closePty(id, 'no-session', true)
     expect(forced).toMatchObject({ closed: true })
     expect(forced.killed.length).toBe(1)
+    // CF（0.3.2-d）：force-close 先走两段 interrupt 再收组——detached job 结算 killed 族
+    // （marker 帧先于 1s TERM 到达 → exit 130；帧不可达时 exit null + timedOut），
+    // 不再裸死成 failed/session died。夹具用 sleep 30 保证 interrupt 时命令真在跑。
+    const done = await r.ptyJob!.done
+    expect(done.timedOut).toBe(true)
+    expect(done.exit).toBe(130)
     const again = d.closePty(id, 'no-session')
     expect(again).toMatchObject({ closed: false, reason: 'not-found' })
     await d.dispose()
