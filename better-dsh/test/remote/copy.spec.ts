@@ -64,12 +64,13 @@ it('real scoped tool advertises binary copy and returns a declared verified rece
     try {
         const agent = await h.createAgent('copy'), src = join(home, 'source'), dst = join(home, 'dest');
         await writeFile(src, Buffer.from([0, 255, 128]));
-        const schema = h.visibleTools(agent).find(t => t.name === 'remote')!;
-        expect(schema.description).toContain('bash only (no Python)');
-        const result = await h.invoke(agent, { action: 'copy', src, dst });
+        const schema = h.visibleTools(agent).find(t => t.name === 'remote_transfer')!;
+        expect(schema.description).toContain('Every call declares its mode');
+        expect(h.visibleTools(agent).find(t => t.name === 'remote')!.description).toContain('bash only (no Python)');
+        const result = await h.invoke(agent, { mode: 'copy', src, dst }, 'remote_transfer');
         expect((result as { receipt?: { action?: string; route?: string; verification?: string; ok?: boolean; bytes?: number; entries?: number } }).receipt).toMatchObject({ action: 'copy', route: 'hub-staged', verification: 'sha256', ok: true, bytes: 3, entries: 1 });
         expect(result.text).toContain('verification sha256');
-        await expect(h.invoke(agent, { action: 'copy', src, dst, cmd: 'true' })).rejects.toThrow(/cannot be combined/);
+        await expect(h.invoke(agent, { mode: 'copy', src, dst, cmd: 'true' }, 'remote_transfer')).rejects.toThrow(/unknown parameter/);
     }
     finally {
         await h.dispose();
@@ -97,7 +98,7 @@ it('real scoped tool copies Hub-to-Hub through complete origin staging without S
         bytes[1] = 255;
         await writeFile(src, bytes);
         const agent = await h.createAgent('hub-copy');
-        const result = await h.invoke(agent, { action: 'copy', src: `hub:src1:${src}`, dst: `hub:dst1:${dst}` });
+        const result = await h.invoke(agent, { mode: 'copy', src: `hub:src1:${src}`, dst: `hub:dst1:${dst}` }, 'remote_transfer');
         expect((result as { receipt?: { verification?: string; ok?: boolean; bytes?: number } }).receipt).toMatchObject({ verification: 'sha256', ok: true, bytes: bytes.length });
         expect(await readFile(dst)).toEqual(bytes);
     }
@@ -144,7 +145,7 @@ it('real scoped Agent disposal awaits partitioned Hub worker, socket and origin 
     try {
         upsertRemote(home, { id: 'peer', name: 'paired-only', origin: `http://127.0.0.1:${(proxy.address() as import('node:net').AddressInfo).port}`, cookie: 'paired', enabled: true, addedAt: Date.now() });
         row = await h.ctx.plugin({ name: 'hub-file-fault', apply: ctx => installHubRemoteTransport(ctx, { home }) });
-        const agent = await h.createAgent('file-owner'), copy = h.invoke(agent, { action: 'copy', src: `hub:peer:${src}`, dst: join(home, 'destination') }).catch(error => error);
+        const agent = await h.createAgent('file-owner'), copy = h.invoke(agent, { mode: 'copy', src: `hub:peer:${src}`, dst: join(home, 'destination') }, 'remote_transfer').catch(error => error);
         for (let i = 0; i < 100 && !pid; i++) {
             for (const candidate of await readdir('/proc'))
                 if (/^\d+$/.test(candidate)) {
@@ -207,20 +208,20 @@ it('accepts argv for CLI peers and pullArgv/pushArgv for two-segment routes; Hub
         const src = join(home, 'src'), dst = join(home, 'dst');
         await mkdir(src); await writeFile(join(src, 'f'), 'payload');
         // Pure local lane: argv is not a declared capability of the old channel.
-        await expect(h.invoke(a, { action: 'copy', src, dst, argv: ['-p'] })).rejects.toThrow(/argv|not supported|native/);
+        await expect(h.invoke(a, { mode: 'copy', src, dst, argv: ['-p'] }, 'remote_transfer')).rejects.toThrow(/argv|not supported|native/);
         // verify/mkdir remain valid on the local lane.
-        const local = (await h.invoke(a, { action: 'copy', src, dst, verify: true, mkdir: true })) as unknown as { receipt: { verification?: string; ok?: boolean } };
+        const local = (await h.invoke(a, { mode: 'copy', src, dst, verify: true, mkdir: true }, 'remote_transfer')) as unknown as { receipt: { verification?: string; ok?: boolean } };
         expect(local.receipt.verification).toBe('sha256');
         expect(local.receipt.ok).toBe(true);
         // argv + pull/push mixes are rejected before any work.
-        await expect(h.invoke(a, { action: 'copy', src, dst, argv: ['-p'], pullArgv: ['-a'] })).rejects.toThrow(/pullArgv|pushArgv|argv/);
-        await expect(h.invoke(a, { action: 'copy', src, dst, pullArgv: ['-a'], pushArgv: ['-p'] })).rejects.toThrow(/copy|pull|push/);
+        await expect(h.invoke(a, { mode: 'copy', src, dst, argv: ['-p'], pullArgv: ['-a'] }, 'remote_transfer')).rejects.toThrow(/pullArgv|pushArgv|argv/);
+        await expect(h.invoke(a, { mode: 'copy', src, dst, pullArgv: ['-a'], pushArgv: ['-p'] }, 'remote_transfer')).rejects.toThrow(/copy|pull|push/);
         // Removed rsync-only fields on copy are still rejected.
-        await expect(h.invoke(a, { action: 'copy', src, dst, dryRun: true })).rejects.toThrow(/dryRun/);
+        await expect(h.invoke(a, { mode: 'copy', src, dst, dryRun: true }, 'remote_transfer')).rejects.toThrow(/dryRun/);
         // Malformed shapes fail before dialing.
-        await expect(h.invoke(a, { action: 'copy', src, dst, argv: 'not-an-array' })).rejects.toThrow(/argv/);
-        await expect(h.invoke(a, { action: 'copy', src, dst, argv: [7] })).rejects.toThrow(/argv/);
-        await expect(h.invoke(a, { action: 'copy', src, dst, argv: [null] })).rejects.toThrow(/argv/);
+        await expect(h.invoke(a, { mode: 'copy', src, dst, argv: 'not-an-array' }, 'remote_transfer')).rejects.toThrow(/argv/);
+        await expect(h.invoke(a, { mode: 'copy', src, dst, argv: [7] }, 'remote_transfer')).rejects.toThrow(/argv/);
+        await expect(h.invoke(a, { mode: 'copy', src, dst, argv: [null] }, 'remote_transfer')).rejects.toThrow(/argv/);
     }
     finally {
         await h.dispose();

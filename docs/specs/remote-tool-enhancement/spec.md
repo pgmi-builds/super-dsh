@@ -2,6 +2,7 @@
 
 - 日期：2026-10-10（Asia/Hong_Kong）
 - 状态：2026-10-10 user 已审阅并明确授权执行；Task0–7 已独立审阅通过；Task8 完整双包消费者验收进行中，L 实装暴露的 worker/SSH cleanup 缺陷已进入修复验证。用户亲验与发布尚未放行。
+- 2026-10-25 surface 修订（user 指令，本轮实现）：`remote` 的判别字段改为**必填** `action: exec|add|close|status`；文件传输字段（`src`/`dst`/`argv`/`pullArgv`/`pushArgv`/`verify`/`mkdir`）迁到独立工具 `remote_transfer`，判别字段为**必填** `mode: copy|rsync`。`add` 只注册 BYO 身份/终端，不执行命令；`exec` 必填 `target` 且必须执行东西（warm 会话用 `cmd:"true"`）。工具简介把 PTY 重新定位为「stateful oneshot」并鼓励优先使用。下文 §5 的旧 `action:"copy"|"rsync"` 调用形与「无 action」形仅作历史。
 - 0.3.2-b 对齐（2026-10-19）：`script` 已定名 `scriptPath`；`mode` 字段已移除（用 `<transport>:pty[:label]` 创建、`pty:<id|label>` 复用）；`byossh:`/`byop:` 前缀已移除（`ssh`/`spawn` 参数在场即 BYO）。下文旧调用形仅作历史。
 - 输入：[2026-10-09 方向稿](../../10_plans/2026-10-09-remote-tool-optimization-directions.md)及 2026-10-10 会话裁决。
 - 执行计划：[2026-10-10-remote-tool-enhancement.md](../../superpowers/plans/2026-10-10-remote-tool-enhancement.md)。本规格优先于方向稿的冲突条款。

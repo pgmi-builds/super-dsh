@@ -17,7 +17,8 @@ it('official SSH job kill settles the job immediately; remote teardown is best-e
   const h=await createRealRemoteHarness({copies:1});const jobs=await h.ctx.plugin(LocalJobs,{pumpPollMs:10});const controller=await h.ctx.plugin(ToolJobs,{completionDelivery:'quiet'});let pids:number[]=[]
   try{
    const a=await h.createAgent('real-ssh-kill'), file=join(f.directory,'pids')
-   const value=await h.invoke(a,{target:'ssh:owned',ssh:f.destination,cmd:`bash -c ${shQuote('echo $$ > '+shQuote(file)+'; sleep 600 & echo $! >> '+shQuote(file)+'; printf first; sleep .2; printf second; wait')}`,run_in_background:true}) as unknown as {jobId:string}
+   await h.invoke(a,{action:'add',target:'ssh:owned',ssh:f.destination})
+   const value=await h.invoke(a,{action:'exec',target:'ssh:owned',cmd:`bash -c ${shQuote('echo $$ > '+shQuote(file)+'; sleep 600 & echo $! >> '+shQuote(file)+'; printf first; sleep .2; printf second; wait')}`,run_in_background:true}) as unknown as {jobId:string}
    const id=JobId(value.jobId),registry=a.ctx.get('jobs')!
    await until(async()=>{try{pids=(await readFile(file,'utf8')).trim().split(/\s+/).map(Number);return pids.length===2}catch{return false}})
    await until(()=>registry.readAt(id,0,a.id).chunks.map(c=>c.text).join('').includes('first'))

@@ -112,3 +112,13 @@ user 指令：从 registry 安装 dsh 0.2.1-rc.1 + super-dsh 0.3.1-e 到 dev3 �
 - 验收：`https://dsh.pc.internal.test/` = 200；匿名 `/api/`、`/api/superd/machines` = 401；boot 日志无 error（仅六个 world 的 harness-dev-context pending webApp 既有 warning + token 行）；重启后首轮常规 sweep 21:40:36：本地 skc8 采集 ok（7 agents / 74 rows，无 note），remote bfwu ok——与 dev3 21:36:46 的本地采集共同证实 0.3.1-e 本地腿在 rc.1 上工作。
 - 注意：boot tick 按设计跳过 local 腿（`localCollect=false`），本地 agent_status 缓存要到启动后首个 5 分钟常规 tick 才刷新；此前的“失败”条目是上一进程的遗留，不是新 build 的失败。
 - 未触碰：dev3 4998 测试线与 PC 4999 测试线（本次只动两处 prod）。
+
+## 0.2.1-rc.2 生产部署（2026-10-18 15:34–15:44，user 明确授权）
+
+user 指令：从 registry 安装 dsh 0.2.1-rc.2 到 PC 与 dev3 生产并重启 dsh service。两处 profile 在本轮之前已是 super-dsh/better-dsh 0.3.1-f（约 03:00 的既有升级，非本轮操作；本轮重启只刷新 companion receipt），本轮只替换 dsh installation。
+
+- PC（skc8，dsh.pc.internal.test）：stop 15:34:47 → `npm install -g @deepseek-ai/dsh@0.2.1-rc.2`（npm_exit=0，约 20s；npm 12 默认跳 install-scripts，同前轮已验证无害）→ start 15:35:09；`dsh --version` = 0.2.1-rc.2，active，3080 监听。
+- dev3（bfwu，dsh.dev3.internal.test）：stop 15:35:46 → 同命令（added 2 / changed 611，1m）→ start 15:37:00；rc.2，active，3080 监听。
+- 验收（两线同）：`https://dsh.{pc,dev3}.internal.test/` = 200；匿名 `/api/*` = 401；boot 日志无 error（仅各 world 的 harness-dev-context pending webApp 既有 warning 与 MCP 的 "Error Diagnosis" 工具名）；token 行正常。重启后首轮常规 sweep：PC 15:40:24 本地 skc8 ok、remote bfwu ok；dev3 15:42:16 本地 bfwu ok、remote skc8/egv8 ok——rc.2 + 0.3.1-f 的本地会话面/A2A 正常；dev3 hub exec 配对恢复（回读 rc.2 / f）。
+- 启动竞态：rc.2 与 rc.1 相同，listener 先于 webApp 挂载，重启后约 10–20s 内 `/` 返回 404（两线实测），token 行出现后恢复 200——不是故障。
+- 未触碰：测试线（PC 4999 / dev3 4998）、profile 版本、发布与 git；无 publish/push。

@@ -145,21 +145,20 @@ it('declares native argv Surface and returns native receipts through the real sc
     try {
       const a = await h.createAgent('rsync-tool'), src = join(f.directory, 'source'), dst = join(f.directory, 'dest')
       await mkdir(src); await mkdir(dst); await writeFile(join(src, 'test'), 'content')
-      await h.invoke(a, { target: 'ssh:dest', ssh: f.destination })
-      const description = h.visibleTools(a).find(t => t.name === 'remote')!.description
-      expect(description).toContain('argv')
-      // The file-action section needs no Python at all (native CLIs only);
-      // the Modes section carries the explicit "no Python" claim.
-      const fileSection = description.slice(description.indexOf('Files —'))
-      expect(fileSection).not.toContain('Python')
-      expect(description).toContain('no Python')
-      const receipt = ((await h.invoke(a, { action: 'rsync', src: `${src}/`, dst: `ssh:dest:${dst}/`, argv: ['-a'] })) as unknown as { text: string; receipt: Record<string, unknown> }).receipt
+      await h.invoke(a, { action: 'add', target: 'ssh:dest', ssh: f.destination })
+      const transfer = h.visibleTools(a).find(t => t.name === 'remote_transfer')!.description
+      expect(transfer).toContain('argv')
+      // The transfer surface needs no Python at all (native CLIs and the Hub binary lane only).
+      expect(transfer).not.toContain('Python')
+      // The execution surface keeps the oneshot supervision guarantee.
+      expect(h.visibleTools(a).find(t => t.name === 'remote')!.description).toContain('no Python')
+      const receipt = ((await h.invoke(a, { mode: 'rsync', src: `${src}/`, dst: `ssh:dest:${dst}/`, argv: ['-a'] }, 'remote_transfer')) as unknown as { text: string; receipt: Record<string, unknown> }).receipt
       expect(receipt).toMatchObject({ action: 'rsync', exit: 0, verification: 'native-exit-only', ok: true })
       expect(receipt.argv).toEqual(['-a'])
       expect(receipt.verified).toBeUndefined()
       expect(await readFile(join(dst, 'test'), 'utf8')).toBe('content')
       // A real native failure is reported, not hidden as a schema error.
-      await expect(h.invoke(a, { action: 'rsync', src: join(src, 'missing'), dst: `ssh:dest:${dst}/`, argv: ['-a'] })).rejects.toThrow(/No such file/)
+      await expect(h.invoke(a, { mode: 'rsync', src: join(src, 'missing'), dst: `ssh:dest:${dst}/`, argv: ['-a'] }, 'remote_transfer')).rejects.toThrow(/No such file/)
     } finally { await h.dispose() }
   })
 }, 40000)

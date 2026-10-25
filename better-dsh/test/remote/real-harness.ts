@@ -30,8 +30,8 @@ export async function createRealRemoteHarness({ copies = 2, driverOptions = {} a
       catch (error) { await disposers.get(agent)!(); throw error }
     },
     visibleTools: (agent: Agent) => host.tools.schemas(agent),
-    async invoke(agent: Agent, args: Record<string, unknown>) {
-      const result = await agent.ctx.tools.execute({ name: 'remote', arguments: args, agent, signal: new AbortController().signal, callId: 'remote-test' as never })
+    async invoke(agent: Agent, args: Record<string, unknown>, name: 'remote' | 'remote_transfer' = 'remote') {
+      const result = await agent.ctx.tools.execute({ name, arguments: args, agent, signal: new AbortController().signal, callId: `${name}-test` as never })
       if (result.isError) throw new Error(JSON.stringify(result))
       return result.value as { text: string; cwd?: string }
     },

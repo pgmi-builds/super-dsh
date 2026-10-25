@@ -1,12 +1,12 @@
-# Binary copy with `remote`
+# Binary copy with `remote_transfer`
 
 ```json
-{"action":"copy","src":"ssh:build:/srv/output","dst":"hub:review:/srv/review","verify":true,"mkdir":true}
+{"mode":"copy","src":"ssh:build:/srv/output","dst":"hub:review:/srv/review","verify":true,"mkdir":true}
 ```
 
-Use `[target:]absolute/path`; an absolute path without a target is on the initiating runtime. The destination is the exact path, not an implicit parent directory. Files overwrite ordinary files; directories merge and keep unrelated destination entries. Register a `byossh` identity separately before using it in a copy. BYO-PTY is not a file transport.
+Use `[target:]absolute/path`; an absolute path without a target is on the initiating runtime. The destination is the exact path, not an implicit parent directory. Files overwrite ordinary files; directories merge and keep unrelated destination entries. Register a BYO ssh identity with `remote {action:"add",ssh:{…}}` before using it in a copy. BYO-PTY is not a file transport.
 
-Local and Hub endpoints use Node directly. SSH/byossh, Docker and Incus endpoints require **Python 3 already available as `python3` on that peer**. A missing interpreter fails before destination writes. Install it separately through your normal administration process, or choose a Hub endpoint; copy never installs helpers, changes profiles, or falls back to a text/PTY carrier. Older Hub peers without the binary endpoint must be upgraded; they fail explicitly.
+CLI routes are native: `scp`, `docker cp`, `incus file push/pull` and `rsync` must exist on the origin, and rsync routes need `rsync` on the endpoints that execute it. No remote Python, Node, worker or helper is deployed for native routes; the Hub↔local staged lane uses the Hub's own binary file lane, and older Hub peers without it fail explicitly rather than falling back to a text/PTY carrier.
 
 Copy first receives a complete binary carrier into an owned `.scratch/remote-copy-*` directory on the initiating runtime, then sends it to the destination. This is not delta transfer, resume, or direct remote-to-remote streaming. `mkdir` defaults to true and controls creation of destination parents.
 

@@ -4,23 +4,30 @@ Better Dash and Super Dash each provide the native `remote` tool and REPL route.
 
 ## Choose a call
 
+`remote` declares its action; `remote_transfer` declares its mode. Nothing dispatches on which fields happen to be present.
+
 | Goal | Input |
 | --- | --- |
-| List locally known targets without dialing | `{}` |
-| Probe one target | `{target:"ssh:alias"}` |
-| Register an Agent-local SSH identity (no dialing) | `{target:"ssh:build",ssh:{host:"host",user:"user",key:"/origin/key"}}`; omit `target` for an auto id (`ssh-xxxx`) |
-| Stateless command and stdin over an identity | `{target:"ssh:build",cmd:"cat",stdin:"hello"}` |
-| Stream a local script to fixed `bash -s` | `{target:"ssh:alias",scriptPath:"/absolute/script.sh"}` |
-| Create a persistent shell (tab semantics) | `{target:"ssh:alias:pty",cmd:"cd /tmp; export CHECK=ready"}`; append `:label` (`ssh:alias:pty:build`) to name it |
-| Reuse a persistent shell | `{target:"pty:<id\|label>",cmd:"…"}` |
-| Session card (state + ledger, no command) | `{target:"pty:<id\|label>"}` |
-| Create a BYO PTY from a spawn command | `{spawn:"docker exec -it img bash",target:"pty:build",cmd:"…"}`; later `{target:"pty:build",cmd:"…"}` |
-| Background job (oneshot or PTY) | `{target:"ssh:alias",cmd:"long-command",run_in_background:true}` |
-| Close a PTY session | `{action:"close",target:"pty:<id\|label>",force:true}` |
-| Native CLI copy | `{action:"copy",src:"/absolute/source",dst:"ssh:alias:/absolute/destination",argv:["-p"]}` |
-| Native rsync | `{action:"rsync",src:"/absolute/source/",dst:"ssh:alias:/existing/destination/",argv:["-a","--partial","--dry-run"]}` |
+| List locally known targets without dialing | `remote {action:"status"}` |
+| Probe one target / show a session card | `remote {action:"status",target:"ssh:alias"}`, `remote {action:"status",target:"pty:<id\|label>"}` |
+| Register an Agent-local SSH identity (no dialing) | `remote {action:"add",target:"ssh:build",ssh:{host:"host",user:"user",key:"/origin/key"}}`; omit `target` for an auto id (`ssh-xxxx`) |
+| Register a BYO PTY from a spawn command | `remote {action:"add",spawn:"docker exec -it img bash",target:"pty:build"}`; then address it like any session |
+| Stateless command and stdin over an identity | `remote {action:"exec",target:"ssh:build",cmd:"cat",stdin:"hello"}` |
+| Stream a local script to fixed `bash -s` | `remote {action:"exec",target:"ssh:alias",scriptPath:"/absolute/script.sh"}` |
+| Create a persistent shell (tab semantics) | `remote {action:"exec",target:"ssh:alias:pty",cmd:"cd /tmp; export CHECK=ready"}`; append `:label` (`ssh:alias:pty:build`) to name it |
+| Reuse a persistent shell | `remote {action:"exec",target:"pty:<id\|label>",cmd:"…"}` |
+| Background job (oneshot or PTY) | `remote {action:"exec",target:"ssh:alias",cmd:"long-command",run_in_background:true}` |
+| Close a PTY session | `remote {action:"close",target:"pty:<id\|label>",force:true}` |
+| Native CLI copy | `remote_transfer {mode:"copy",src:"/absolute/source",dst:"ssh:alias:/absolute/destination",argv:["-p"]}` |
+| Native rsync | `remote_transfer {mode:"rsync",src:"/absolute/source/",dst:"ssh:alias:/existing/destination/",argv:["-a","--partial","--dry-run"]}` |
 
-`mode` no longer exists: append `:pty` to a transport target to create, address a live shell as `pty:<id|label>`. `scriptPath` cannot combine with cmd/stdin/spawn/PTY. Direct local command execution is not provided; use native local shell tools. Background jobs require the official jobs service/controller and are read/killed with `job_output`/`job_kill`; on PTY lanes a background job's jobId is the commandId (a timeout handoff keeps them as separate ledger fields). SSH keys/config stay on the origin; BYO identities are not persisted across new/cold Agents. PTY backlog recovery and live probes are not part of this release.
+## PTY is a stateful oneshot
+
+Prefer the PTY lane. A PTY dispatch returns synchronously with the same receipt a oneshot returns — output text, exit code, duration — and only adds state: `session`, `cwd`, `envDelta`, `commandId`, `ttlSec`. Nothing is withheld at read time; the terminal merges stderr into the output stream, which is the only receipt difference. What the session buys is durability: cwd, exported environment, shell variables, activated virtualenvs, aliases and an open REPL survive between calls, so a multi-step task becomes N cheap calls instead of N stateless logins, and a command that outlives its timeout hands off to a pollable job instead of being killed.
+
+Use the stateless oneshot when a step is genuinely one-shot (a probe, a pipeline stage, a supervised build you will not revisit) or when the `runner` supervision guarantee matters. Note that `exec` always executes something: a warm session is created by running a command (`true` is enough), never by omitting `cmd`.
+
+There is no `mode` field: append `:pty` to a transport target to create, address a live shell as `pty:<id|label>`. `add` only registers (BYO identity or BYO PTY) and never runs a command. `scriptPath` cannot combine with cmd/stdin/PTY and is `exec`-only. Direct local command execution is not provided; use native local shell tools. Background jobs require the official jobs service/controller and are read/killed with `job_output`/`job_kill`; on PTY lanes a background job's jobId is the commandId (a timeout handoff keeps them as separate ledger fields). SSH keys/config stay on the origin; BYO identities are not persisted across new/cold Agents. PTY backlog recovery and live probes are not part of this release.
 
 PTY state is durable and readable: every dispatch returns exit, cwd and `envDelta` (variable names and change markers only — values never leave the endpoint; fetch them yourself if needed). `close` is idempotent (`closed:false, reason:"not-found"|"already-closed-or-reaped"`); a session with a running job refuses close unless `force:true`, which kills the group and reports `killed`. A busy session rejects new commands instead of queueing; open another PTY or use a oneshot. Idle PTYs are reaped after 15 minutes; an Agent holds at most 10 live sessions across connections, and dead sessions do not count. `hub:<m4>:pty` selects the Hub lane's PTY but exposes no session id, label, parallelism or background works there.
 
@@ -28,7 +35,7 @@ Native/PTY output retains at most 4,000,000 UTF-16 units per stream; Hub oneshot
 
 ## File operations: native CLI semantics
 
-`remote` addresses targets once (`ssh:<name>`, `ssh:<label>` for a BYO identity, `docker:<name>`, `incus:<name>`, `hub:<machine>`, local paths) and hands the actual transfer to the native CLI. `argv` is an ordered array of native option tokens — one element = one argv token, appended verbatim before the parsed `src`/`dst`. There is no option whitelist, no shell parsing, and no forced defaults: no hidden `--dry-run`, no forced archive/timeout, no automatic verification. A dry run means passing `--dry-run` yourself; unknown or incompatible options fail in the native CLI and its exit code and stderr come back as-is. Success of a native command is never reported as independently verified — `verified:false` on native copy receipts means exactly that.
+`remote_transfer` addresses targets once (`ssh:<name>`, `ssh:<label>` for a BYO identity, `docker:<name>`, `incus:<name>`, `hub:<machine>`, local paths) and hands the actual transfer to the native CLI. `mode:"copy"|"rsync"` is required and spans only transfer fields. `argv` is an ordered array of native option tokens — one element = one argv token, appended verbatim before the parsed `src`/`dst`. There is no option whitelist, no shell parsing, and no forced defaults: no hidden `--dry-run`, no forced archive/timeout, no automatic verification. A dry run means passing `--dry-run` yourself; unknown or incompatible options fail in the native CLI and its exit code and stderr come back as-is. Success of a native command is never reported as independently verified — `verified:false` on native copy receipts means exactly that.
 
 ### copy routes
 

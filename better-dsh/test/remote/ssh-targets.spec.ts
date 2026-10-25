@@ -26,20 +26,21 @@ describe('BYO-SSH scoped execution', () => {
         h = await createRealRemoteHarness({ plugins: [{ ...plugin, apply: (ctx: Context, config: Parameters<typeof Remote.apply>[1]) => plugin.apply(ctx, { ...config, ...driverOptions }) }] })
         const a = await h.createAgent('ssh-a'), b = await h.createAgent('ssh-b')
         const cmd = 'printf "%s" "$SSH_CONNECTION"'
-        expect((await h.invoke(a, { target: 'ssh:build', ssh: fixture.destination, cmd })).text).toContain(` ${fixture.destination.port}`)
-        expect((await h.invoke(a, { target: 'ssh:build', cmd })).text).toContain(` ${fixture.destination.port}`)
+        await h.invoke(a, { action: 'add', target: 'ssh:build', ssh: fixture.destination })
+        expect((await h.invoke(a, { action: 'exec', target: 'ssh:build', cmd })).text).toContain(` ${fixture.destination.port}`)
         // v2（2026-10-19）：注册不做 spec 对比——同 label 再次带 ssh（哪怕同 spec）= E_LABEL_IN_USE
-        await expect(h.invoke(a, { target: 'ssh:build', ssh: fixture.destination, cmd })).rejects.toThrow(/E_LABEL_IN_USE/)
-        await expect(h.invoke(a, { target: 'ssh:build', ssh: fixture.jump, cmd })).rejects.toThrow(/E_LABEL_IN_USE/)
-        expect((await h.invoke(a, { target: 'ssh:build', cmd })).text).toContain(` ${fixture.destination.port}`)
-        expect((await h.invoke(b, { target: 'ssh:build', ssh: fixture.jump, cmd })).text).toContain(` ${fixture.jump.port}`)
-        expect((await h.invoke(a, { target: 'fixture-native', cmd })).text).toContain(` ${fixture.destination.port}`)
-        const roster = (await h.invoke(a, {})).text
+        await expect(h.invoke(a, { action: 'add', target: 'ssh:build', ssh: fixture.destination })).rejects.toThrow(/E_LABEL_IN_USE/)
+        await expect(h.invoke(a, { action: 'add', target: 'ssh:build', ssh: fixture.jump })).rejects.toThrow(/E_LABEL_IN_USE/)
+        expect((await h.invoke(a, { action: 'exec', target: 'ssh:build', cmd })).text).toContain(` ${fixture.destination.port}`)
+        await h.invoke(b, { action: 'add', target: 'ssh:build', ssh: fixture.jump })
+        expect((await h.invoke(b, { action: 'exec', target: 'ssh:build', cmd })).text).toContain(` ${fixture.jump.port}`)
+        expect((await h.invoke(a, { action: 'exec', target: 'fixture-native', cmd })).text).toContain(` ${fixture.destination.port}`)
+        const roster = (await h.invoke(a, { action: 'status' })).text
         expect(roster).toContain('build (built on)')
         expect(roster).not.toContain(fixture.destination.key)
         expect(roster).not.toContain(`${fixture.destination.port}`)
         const cold = await h.createAgent('ssh-cold', 'resume')
-        expect((await h.invoke(cold, { target: 'ssh:build', cmd }) as unknown as { exit: number | null }).exit).not.toBe(0) // cold incarnation: the label is gone; ssh:build is just an unresolvable host — native exit 255, honestly
+        expect((await h.invoke(cold, { action: 'exec', target: 'ssh:build', cmd }) as unknown as { exit: number | null }).exit).not.toBe(0) // cold incarnation: the label is gone; ssh:build is just an unresolvable host — native exit 255, honestly
       } finally { await h?.dispose() }
     })
   }, 20000)
@@ -53,14 +54,14 @@ describe('BYO-SSH scoped execution', () => {
           ptyArgvFor: plan => fixture.isolate(buildPtyArgv(plan)),
         } })
         const agent = await h.createAgent('jump')
-        const registration = await h.invoke(agent, { target: 'ssh:jumped', ssh: { ...fixture.destination, proxyJump: 'fixture-jump' } })
+        const registration = await h.invoke(agent, { action: 'add', target: 'ssh:jumped', ssh: { ...fixture.destination, proxyJump: 'fixture-jump' } })
         expect(registration.text).toMatch(/registered.*no.*dial/i)
-        expect((await h.invoke(agent, { target: 'ssh:jumped', cmd: 'printf jumped' })).text).toBe('jumped')
-        const first = await h.invoke(agent, { target: 'ssh:jumped:pty', cmd: 'export SSH_TEST=kept; printf first' }) as unknown as { session: string; text: string }
+        expect((await h.invoke(agent, { action: 'exec', target: 'ssh:jumped', cmd: 'printf jumped' })).text).toBe('jumped')
+        const first = await h.invoke(agent, { action: 'exec', target: 'ssh:jumped:pty', cmd: 'export SSH_TEST=kept; printf first' }) as unknown as { session: string; text: string }
         expect(first.text).toBe('first')
         expect(first.session).toMatch(/^pty:pty-/)
-        expect((await h.invoke(agent, { target: first.session, cmd: 'printf "%s" "$SSH_TEST"' })).text).toBe('kept')
-        const invalid = await h.invoke(agent, { target: 'ssh:offline', ssh: { host: 'unused.invalid', port: 1 } })
+        expect((await h.invoke(agent, { action: 'exec', target: first.session, cmd: 'printf "%s" "$SSH_TEST"' })).text).toBe('kept')
+        const invalid = await h.invoke(agent, { action: 'add', target: 'ssh:offline', ssh: { host: 'unused.invalid', port: 1 } })
         expect(invalid.text).toMatch(/registered.*no.*dial/i)
       } finally { await h?.dispose() }
     })
@@ -79,11 +80,11 @@ describe('BYO-SSH scoped execution', () => {
           { host: '127.0.0.1', proxyJump: `x;touch ${marker}` },
           { host: '127.0.0.1', key: '-----BEGIN OPENSSH PRIVATE KEY-----\nsecret' },
           { host: '127.0.0.1', port: 65536 },
-        ]) await expect(h.invoke(agent, { target: 'ssh:bad', ssh, cmd: 'true' })).rejects.toThrow()
+        ]) await expect(h.invoke(agent, { action: 'add', target: 'ssh:bad', ssh })).rejects.toThrow()
         await expect(access(marker)).rejects.toThrow()
-        await expect(h.invoke(agent, { target: 'ssh:bad label', ssh: fixture.destination })).rejects.toThrow(/label/i)
-        await expect(h.invoke(agent, { target: 'pty:anything', ssh: fixture.destination, cmd: 'true' })).rejects.toThrow(/ssh registration pairs with ssh-form/i)
-        await expect(h.invoke(agent, { target: 'ssh:bad', spawn: 'bash', ssh: fixture.destination, cmd: 'true' })).rejects.toThrow(/spawn/i)
+        await expect(h.invoke(agent, { action: 'add', target: 'ssh:bad label', ssh: fixture.destination })).rejects.toThrow(/label/i)
+        await expect(h.invoke(agent, { action: 'add', target: 'pty:anything', ssh: fixture.destination })).rejects.toThrow(/ssh registration pairs with ssh-form/i)
+        await expect(h.invoke(agent, { action: 'add', target: 'ssh:bad', spawn: 'bash' })).rejects.toThrow(/spawn/i)
       } finally { await h?.dispose() }
     })
   }, 20000)
@@ -133,7 +134,7 @@ describe('SSH text boundaries', () => {
       const agent = await h.createAgent('text-boundary')
       const target = field === 'label' ? 'ssh:invalid\n' : 'ssh:invalid'
       const ssh = { host: 'unused.invalid', ...(field === 'label' ? {} : { [field]: 'unused\n' }) }
-      await expect(h.invoke(agent, { target, ssh })).rejects.toThrow()
+      await expect(h.invoke(agent, { action: 'add', target, ssh })).rejects.toThrow()
     } finally { await h.dispose() }
   })
 })

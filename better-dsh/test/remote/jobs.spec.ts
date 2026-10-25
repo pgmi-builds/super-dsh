@@ -15,7 +15,7 @@ it('exposes live output through native jobs with owner fencing, consuming reads,
   const h = await harness()
   try {
     const a = await h.createAgent('jobs-a'), b = await h.createAgent('jobs-b')
-    const value = await h.invoke(a, { target: 'ssh:x', cmd: 'printf first; printf %s $$ >&2; sleep 30; printf last', run_in_background: true }) as unknown as { jobId: string }
+    const value = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf first; printf %s $$ >&2; sleep 30; printf last', run_in_background: true }) as unknown as { jobId: string }
     expect(value.jobId).toMatch(/^remote-/)
     const id = JobId(value.jobId), registry = a.ctx.get('jobs')!
     let text = ''
@@ -39,7 +39,8 @@ it('PTY background jobs: live merged output, interrupt cancels with exit 130, se
   try {
     const a = await h.createAgent('pty-jobs')
     const registry = a.ctx.get('jobs')!
-    const value = await h.invoke(a, { spawn: 'script-bash', target: 'pty:bg1', cmd: 'printf first; sleep 30', run_in_background: true }) as unknown as { jobId: string }
+    await h.invoke(a, { action: 'add', target: 'pty:bg1', spawn: 'script-bash' })
+    const value = await h.invoke(a, { action: 'exec', target: 'pty:bg1', cmd: 'printf first; sleep 30', run_in_background: true }) as unknown as { jobId: string }
     expect(value.jobId).toMatch(/^remote-/)
     const id = JobId(value.jobId)
     let text = ''
@@ -49,9 +50,9 @@ it('PTY background jobs: live merged output, interrupt cancels with exit 130, se
     const killed = await a.ctx.tools.execute({ name: 'job_kill', arguments: { job_id: id }, agent: a, signal: new AbortController().signal, callId: 'pty-kill' as never })
     expect(killed.isError).toBeFalsy()
     expect(await registry.wait(id, 5_000, a.id)).toMatchObject({ status: 'killed' })
-    const after = await h.invoke(a, { target: 'pty:bg1', cmd: 'echo alive' }) as unknown as { text: string }
+    const after = await h.invoke(a, { action: 'exec', target: 'pty:bg1', cmd: 'echo alive' }) as unknown as { text: string }
     expect(after.text).toContain('alive')
-    const handed = await h.invoke(a, { target: 'pty:bg1', cmd: 'sleep 2; printf tardy', timeout: 1 }) as unknown as { jobId: string; running?: boolean }
+    const handed = await h.invoke(a, { action: 'exec', target: 'pty:bg1', cmd: 'sleep 2; printf tardy', timeout: 1 }) as unknown as { jobId: string; running?: boolean }
     expect(handed.jobId).toMatch(/^remote-/)
     expect(handed.running).toBe(true) // rendered model surface reads 'still running — poll job_output <id>'; the value carries running+jobId fields
     expect(await registry.wait(JobId(handed.jobId), 5_000, a.id)).toMatchObject({ status: 'completed' })
@@ -61,16 +62,16 @@ it('refuses admission before discovery, refuses hub PTY backgrounds, and keeps f
   const h = await harness(false)
   try {
     const a = await h.createAgent('refusal')
-    await expect(h.invoke(a, { target: 'bare', cmd: 'true', run_in_background: true })).rejects.toThrow(/controller/)
-    await expect(h.invoke(a, { target: 'hub:m:pty', cmd: 'true', run_in_background: true })).rejects.toThrow(/hub/)
+    await expect(h.invoke(a, { action: 'exec', target: 'bare', cmd: 'true', run_in_background: true })).rejects.toThrow(/controller/)
+    await expect(h.invoke(a, { action: 'exec', target: 'hub:m:pty', cmd: 'true', run_in_background: true })).rejects.toThrow(/hub/)
     // controller-less harness: registry admission refuses ALL backgrounds (gate precedes routing) —
     // byop-without-spawn reaching E_NO_SESSION as a failed job is covered by admission order, not testable here
   } finally { await h.dispose() }
   const plain = await createRealRemoteHarness({ copies: 1, driverOptions: { oneshotArgvFor: (_p, cmd) => ['bash', '-c', cmd] } })
   try {
     const a = await plain.createAgent('without-jobs')
-    await expect(plain.invoke(a, { target: 'ssh:x', cmd: 'true', run_in_background: true })).rejects.toThrow(/jobs/)
-    expect(await plain.invoke(a, { target: 'ssh:x', cmd: 'printf foreground' })).toMatchObject({ text: 'foreground' })
+    await expect(plain.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'true', run_in_background: true })).rejects.toThrow(/jobs/)
+    expect(await plain.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf foreground' })).toMatchObject({ text: 'foreground' })
   } finally { await plain.dispose() }
 }, 10000)
 
@@ -80,7 +81,7 @@ it('final drains exit output once and reports nonzero exit', async () => {
     const a = await h.createAgent('outcomes')
     Object.assign(a, { inject() {} }) // No model turn: Task8 tests actual model notification delivery.
     const registry = a.ctx.get('jobs')!
-    const v = await h.invoke(a, { target: 'ssh:x', cmd: 'printf last; printf err >&2; exit 7', run_in_background: true }) as unknown as { jobId: string }
+    const v = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf last; printf err >&2; exit 7', run_in_background: true }) as unknown as { jobId: string }
     const id = JobId(v.jobId)
     expect(await registry.wait(id, 5000, a.id)).toMatchObject({ status: 'completed', detail: 'exit code: 7' })
     const read = registry.read(id, a.id)
@@ -94,7 +95,7 @@ it('plugin disposal and immediate job kill settle only after real process cleanu
   try {
     const a = await h.createAgent('dispose-jobs')
     Object.assign(a, { inject() {} })
-    const v = await h.invoke(a, { target: 'ssh:x', cmd: 'sleep 30', run_in_background: true }) as unknown as { jobId: string }
+    const v = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'sleep 30', run_in_background: true }) as unknown as { jobId: string }
     const registry = a.ctx.get('jobs')!, id = JobId(v.jobId)
     await h.rows[0]!.dispose()
     expect((await registry.wait(id, 5000, a.id)).status).toBe('killed')
@@ -108,7 +109,7 @@ it('spawn failure reaches failed job detail without repeated synthetic stderr ch
   try {
     const a = await h.createAgent('spawn-failure')
     Object.assign(a, { inject() {} })
-    const value = await h.invoke(a, { target: 'ssh:x', cmd: 'true', run_in_background: true }) as unknown as { jobId: string }
+    const value = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'true', run_in_background: true }) as unknown as { jobId: string }
     const registry = a.ctx.get('jobs')!, id = JobId(value.jobId)
     expect(await registry.wait(id, 5000, a.id)).toMatchObject({ status: 'failed', detail: expect.stringContaining('ENOENT') })
     expect(registry.read(id, a.id).chunks).toEqual([])
@@ -153,7 +154,7 @@ it('native jobs final-drain real Hub TERM output when cancel ACK outruns the str
   const row = await h.ctx.plugin({ name: 'task4-real-hub', apply: ctx => installHubRemoteTransport(ctx, { home }) })
   try {
     const a = await h.createAgent('hub-job')
-    const value = await h.invoke(a, { target: 'hub:peer', cmd: `trap 'printf TAIL中; printf ERR🙂 >&2; exit 7' TERM; printf first; printf %s $$ >&2; while :; do :; done`, run_in_background: true }) as unknown as { jobId: string }
+    const value = await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: `trap 'printf TAIL中; printf ERR🙂 >&2; exit 7' TERM; printf first; printf %s $$ >&2; while :; do :; done`, run_in_background: true }) as unknown as { jobId: string }
     const registry = a.ctx.get('jobs')!, id = JobId(value.jobId)
     let pid = 0
     for (let i = 0; i < 100 && !pid; i++) { pid = Number(registry.readAt(id, 0, a.id).chunks.filter(c => c.channel === 'stderr').map(c => c.text).join('')); await new Promise(r => setTimeout(r, 20)) }
