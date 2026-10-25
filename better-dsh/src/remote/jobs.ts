@@ -20,12 +20,11 @@ const ptyOutcome = (aborted: boolean, result: { exit: number | null }): JobOutco
 /** No preparation or discovery before the official registry's admission. */
 export function startRemoteJob(registry: JobRegistry, input: RemoteInput, exec: ToolRunContext, driver: RemoteDriver): JobId {
   if (!exec.agent) throw new Error('remote: background jobs require a live Agent owner')
-  // P5（2026-10-19）：pty（含 byop）获得与 oneshot 同形的 background 通道；唯一例外 = hub
-  // 机器（对端 exec-pty 无 background 语义，如实拒绝，不静默降级）。
+  // P5（2026-10-19）：pty（含 byop）获得与 oneshot 同形的 background 通道；0.3.2-c 起 hub
+  // 机器同样入列（hub PTY = canonical 会话，handoff/后台与其他 transport 同形）。
   const form = parseTargetForm(input.target)
   const ptyLane = form.form === 'pty-selector' || form.form === 'create-pty' || form.form === 'hub-pty' || input.spawn !== undefined || input.mode === 'pty'
   if (ptyLane) {
-    if (form.form === 'hub-pty') throw new Error('remote: hub-machine PTY has no background lane; use a direct ssh/docker/incus target or a pty session')
     const holder: { job?: PtyRunningJob } = {}
     return registry.start({
       kind: 'remote', owner: exec.agent.id, label: `${input.target}: ${input.cmd}`,

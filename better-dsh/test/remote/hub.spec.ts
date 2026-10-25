@@ -57,22 +57,26 @@ it('real scoped Hub calls preserve shell state, isolate Agent incarnations and l
   try {
     const first = await h.createAgent('same-session')
     const firstPty = await h.invoke(first, { action: 'exec', target: 'hub:peer:pty', cmd: 'cd /tmp; export OWNER_VALUE=old; printf first' })
-    // R2：hub PTY 回执自带通道标记（无 session 概念，与 oneshot 区分）
-    expect(firstPty.text).toContain('[hub:peer pty — no session id, no parallel, no background]')
+    // 0.3.2-c：hub PTY = canonical 会话——回执有身份与 cwd，不再有「no session id」横幅。
     expect(firstPty).toMatchObject({ cwd: '/tmp' })
+    expect(firstPty).toHaveProperty('session')
     expect(firstPty.text).toContain('first')
-    expect(await h.invoke(first, { action: 'exec', target: 'hub:peer:pty', cmd: 'sleep 2' })).toHaveProperty('timedOut', true)
+    expect(firstPty.text).not.toContain('no session id')
+    const sessionId = (firstPty as unknown as { session: string }).session
+    // 会话内状态跨 dispatch 存活（复用按 id 寻址，与 ssh/docker 同形）。
+    expect((await h.invoke(first, { action: 'exec', target: sessionId, cmd: 'printf %s "$OWNER_VALUE"' })).text).toContain('old')
+    // P4/P5：超时不杀，handoff 成 running job（timedOut 如实，会话存活）。
+    expect(((await h.invoke(first, { action: 'exec', target: sessionId, cmd: 'sleep 2' })) as { notice?: string }).notice ?? '').toContain('interrupted')
     const capped = await h.invoke(first, { action: 'exec', target: 'hub:peer:pty', cmd: 'printf %150s | tr " " x' })
     expect(capped.text).toContain('[truncated: showing last 100 of 150 chars]')
-    const oldDisposal = h.disposeAgent(first)
-    const next = await h.createAgent('same-session', 'resume')
-    expect((await h.invoke(next, { action: 'exec', target: 'hub:peer:pty', cmd: 'export OWNER_VALUE=new; printf second' })).text).toContain('second')
-    await oldDisposal
-    await h.disposeAgent(first)
-    expect((await h.invoke(next, { action: 'exec', target: 'hub:peer:pty', cmd: 'printf %s "$OWNER_VALUE"' })).text).toContain('new')
+    // Agent 隔离：另一个 Agent incarnation 摸不到本 Agent 的会话（owner-scoped 池）。
+    const other = await h.createAgent('other-session')
+    await expect(h.invoke(other, { action: 'exec', target: sessionId, cmd: 'true' })).rejects.toThrow(/E_NO_SESSION/)
+    await h.disposeAgent(other)
+    // 行退出 → 工具面卸载，transport 服务存活；新 Agent 拿到全新 hub shell（旧 owner 的 env 不泄漏）。
     await h.rows[0]!.dispose()
     expect(h.ctx.get('superdRemoteTransport')).toBeDefined()
-    expect(h.visibleTools(next).some(t => t.name === 'remote')).toBe(false)
+    expect(h.visibleTools(first).some(t => t.name === 'remote')).toBe(false)
     const fresh = await h.createAgent('fresh')
     expect((await h.invoke(fresh, { action: 'exec', target: 'hub:peer:pty', cmd: 'printf "%s" "${OWNER_VALUE-empty}"' })).text).toContain('empty')
   } finally {

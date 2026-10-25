@@ -1,6 +1,5 @@
 import type { SshConnection } from './ssh-targets.ts'
 /** Owned structural boundary. Better never imports or depends on Super. */
-import type { RemoteCallResult } from './driver.ts'
 export interface RemoteInput {
   target?: string; spawn?: string; ssh?: SshConnection; cmd?: string; scriptPath?: string; stdin?: string
   mode?: 'oneshot' | 'pty'; timeout?: number
@@ -29,7 +28,9 @@ export interface HubRemoteTransport {
   protocol: 1
   listTargets(): readonly HubTarget[]
   start(machine: string, input: PreparedRemoteInput, owner: string): Promise<RemoteProcess>
-  pty(machine: string, cmd: string, owner: string, options: { stdin?: string; timeout?: number }): Promise<RemoteCallResult>
+  /** Hub PTY 端点（0.3.2-c）：url = ws(s)://<origin>/api/superd/exec/pty；cookie = pairing 凭据；
+   *  wsPath = transport 侧（superd-hub 上下文，分叉的 proven 解析链）解析好的 ws 模块绝对路径。 */
+  ptyEndpoint(machine: string): { url: string; cookie: string; wsPath: string }
   fileEndpoint(machine: string): BinaryFileEndpoint
   releaseOwner(owner: string): Promise<void>
 }

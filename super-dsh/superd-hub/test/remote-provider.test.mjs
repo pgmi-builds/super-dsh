@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHubRemoteTransport } from '../dist/remote-provider.js'
+import { createHubRemoteTransport, createHubExec } from '../dist/remote-provider.js'
 import { ensureSelf, upsertRemote, removeRemote } from '../dist/machines.js'
 import { registerPtyExecutor } from '../dist/exec-pty-rpc.js'
 import { createRemoteJobExecutor } from '../dist/remote-row.js'
@@ -36,8 +36,9 @@ async function peer(t, { cwd } = {}) {
   ensureSelf(home, 'origin')
   upsertRemote(home, row)
   const provider = createHubRemoteTransport(home)
-  t.after(async () => { await provider.dispose(); await executor.dispose(); off(); await new Promise(resolve => http.close(resolve)); rmSync(home, { recursive: true, force: true }) })
-  return { home, row, provider, counts: () => ({ upgrades, posts }), lastExec: () => lastExec }
+  const execFace = createHubExec(home)
+  t.after(async () => { await provider.dispose(); await execFace.dispose(); await executor.dispose(); off(); await new Promise(resolve => http.close(resolve)); rmSync(home, { recursive: true, force: true }) })
+  return { home, row, provider, face: execFace.face, exec: execFace, counts: () => ({ upgrades, posts }), lastExec: () => lastExec }
 }
 
 test('spawn-error adapter preserves executor diagnostic separately from zero process-output byte counters', async t => {
@@ -54,17 +55,17 @@ test('spawn-error adapter preserves executor diagnostic separately from zero pro
 test('paired-only Hub reuses authenticated WS PTY cwd/env and checks latest exec policy on warm sessions', { timeout: 10000 }, async t => {
   const b = await peer(t)
   assert.deepEqual(b.provider.listTargets(), [{ id: 'peer', label: 'paired-only-no-ssh', execEnabled: true }])
-  const first = await b.provider.pty('peer', 'cd /tmp; export HUB_TASK2_VALUE=preserved; printf first', 'owner-a', {})
+  const first = await b.face.pty('owner-a', 'peer', 'cd /tmp; export HUB_TASK2_VALUE=preserved; printf first', {})
   assert.equal(first.cwd, '/tmp')
-  const second = await b.provider.pty('peer', 'printf "%s:%s" "$HUB_TASK2_VALUE" "$PWD"', 'owner-a', {})
-  assert.equal(second.stdout, 'preserved:/tmp')
+  const second = await b.face.pty('owner-a', 'peer', 'printf "%s:%s" "$HUB_TASK2_VALUE" "$PWD"', {})
+  assert.equal(second.output, 'preserved:/tmp')
   assert.equal(b.counts().upgrades, 1)
   upsertRemote(b.home, { ...b.row, execEnabled: false })
-  await assert.rejects(b.provider.pty('peer', 'printf forbidden', 'owner-a', {}), /disabled/)
+  await assert.rejects(b.face.pty('owner-a', 'peer', 'printf forbidden', {}), /disabled/)
   upsertRemote(b.home, { ...b.row, enabled: false })
   await assert.rejects(b.provider.start('peer', { cmd: 'printf forbidden', target: 'hub:peer', mode: 'oneshot' }, 'owner-a'), /disabled/)
   removeRemote(b.home, 'peer')
-  await assert.rejects(b.provider.pty('peer', 'printf forbidden', 'owner-a', {}), /unknown machine/)
+  await assert.rejects(b.face.pty('owner-a', 'peer', 'printf forbidden', {}), /unknown machine/)
   assert.equal(b.counts().upgrades, 1)
 })
 
@@ -94,9 +95,18 @@ test('authenticated foreground wire carries literal stdin and real byte output s
 
 test('old owner cleanup cannot destroy another Agent incarnation shell', async t => {
   const b = await peer(t)
-  await b.provider.pty('peer', 'export OWNER_VALUE=old', 'old-driver', {})
-  await b.provider.pty('peer', 'export OWNER_VALUE=new', 'new-driver', {})
-  await b.provider.releaseOwner('old-driver')
-  assert.equal((await b.provider.pty('peer', 'printf %s "$OWNER_VALUE"', 'new-driver', {})).stdout, 'new')
+  await b.face.pty('old-driver', 'peer', 'export OWNER_VALUE=old', {})
+  await b.face.pty('new-driver', 'peer', 'export OWNER_VALUE=new', {})
+  await b.exec.releaseOwner("old-driver")
+  assert.equal((await b.face.pty('new-driver', 'peer', 'printf %s "$OWNER_VALUE"', {})).output, 'new')
   assert.equal(b.counts().upgrades, 2)
+})
+
+test('two-clock pin: the PEER clock owns hub-lease timeouts (sleep 8 / timeoutSec 1 settles near 1s, timedOut honest)', { timeout: 15000 }, async t => {
+  const b = await peer(t)
+  const proc = await b.provider.start('peer', { target: 'hub:peer', mode: 'oneshot', cmd: 'sleep 8', timeout: 1 }, 'owner')
+  const done = await proc.done
+  assert.equal(done.timedOut, true)
+  assert.ok(done.durationMs < 4000, `peer kill should settle near 1s, took ${done.durationMs}ms`)
+  assert.equal(b.counts().posts, 1)
 })

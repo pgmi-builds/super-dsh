@@ -35,7 +35,7 @@ export type TargetForm =
   | { form: 'direct'; transport: 'ssh' | 'docker' | 'incus'; name: string }     // ssh:dev4（经统一池解析，含 BYO 身份）
   | { form: 'create-pty'; transport: 'ssh' | 'docker' | 'incus'; name: string; label?: string } // ssh:dev4:pty[:label]
   | { form: 'hub'; machine: string }
-  | { form: 'hub-pty'; machine: string }
+  | { form: 'hub-pty'; machine: string; label?: string }                          // hub:<m4>:pty[:label]（0.3.2-c 起入统一会话池）
 
 const TRANSPORTS = ['ssh', 'docker', 'incus'] as const
 
@@ -56,7 +56,11 @@ export function parseTargetForm(target: string | undefined): TargetForm {
     if (segs[0] === undefined || segs[0].length === 0) throw new TargetFormatError(`[E_TARGET_FORMAT] remote: ${JSON.stringify(target)} — hub takes a machine id`)
     if (segs.length === 1) return { form: 'hub', machine: segs[0]! }
     if (segs.length === 2 && segs[1] === 'pty') return { form: 'hub-pty', machine: segs[0]! }
-    throw new TargetFormatError(`[E_TARGET_FORMAT] remote: ${JSON.stringify(target)} — hub PTY takes no label (hub lane has no session id / parallelism this round)`)
+    if (segs.length === 3 && segs[1] === 'pty') {
+      if (segs[2] === undefined || segs[2]!.length === 0) throw new TargetFormatError(`[E_TARGET_FORMAT] remote: ${JSON.stringify(target)} — empty label after ":pty:"`)
+      return { form: 'hub-pty', machine: segs[0]!, label: segs[2]! }
+    }
+    throw new TargetFormatError(`[E_TARGET_FORMAT] remote: ${JSON.stringify(target)} — hub PTY is hub:<m4>:pty[:label]`)
   }
   for (const transport of TRANSPORTS) {
     if (!target.startsWith(`${transport}:`)) continue

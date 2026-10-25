@@ -34,9 +34,9 @@ export function verifyRemoteClosure(packageDir, sourceRepo) {
  const manifest=JSON.parse(readFileSync(join(remote,'provenance.json'),'utf8'))
  if(manifest.format!==1||manifest.entry!=='better-dsh/src/remote/plugin.ts')throw new Error('Invalid remote provenance')
  const actual=readdirSync(remote).sort()
- if(JSON.stringify(actual)!==JSON.stringify(['file-worker.js','helper-bin','plugin.d.ts','plugin.js','provenance.json']))throw new Error('Remote closure must not copy Better shared chunks or payload')
+ if(JSON.stringify(actual)!==JSON.stringify(['file-worker.js','helper-bin','hub-pty-pump.mjs','plugin.d.ts','plugin.js','provenance.json']))throw new Error('Remote closure must not copy Better shared chunks or payload')
  if(manifest.workerEntry!=='better-dsh/src/remote/file-worker.ts')throw new Error('Invalid private file worker provenance')
- for(const name of ['plugin.js','plugin.d.ts','file-worker.js']){
+ for(const name of ['plugin.js','plugin.d.ts','file-worker.js','hub-pty-pump.mjs']){
   const data=readFileSync(join(remote,name))
   if(sha256(data)!==manifest.outputs?.[name])throw new Error(`Remote output hash mismatch: ${name}`)
   if(name==='file-worker.js'&&/(?:from\s*|import\s*\(|import\s+|require\s*\()\s*["'](?!node:)/.test(data.toString()))throw new Error('Private file worker must import Node builtins only')
@@ -56,6 +56,7 @@ export function verifyRemoteClosure(packageDir, sourceRepo) {
  }
  if(sourceRepo){
   const canonical=readdirSync(join(sourceRepo,'better-dsh/src/remote')).filter(file=>file.endsWith('.ts')).map(file=>`better-dsh/src/remote/${file}`)
+  canonical.push('better-dsh/src/remote/hub-pty-pump.mjs')
   if(canonical.some(path=>manifest.sources[path]===undefined))throw new Error('Remote provenance omits canonical source')
  }
  for(const [path,hash] of Object.entries(manifest.sources)){

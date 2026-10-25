@@ -279,7 +279,7 @@ describe('RemoteDriver input (interactive stdin, 2026-10-25)', () => {
     await expect(d.input('ssh:dev4:pty', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
     await expect(d.input('ssh:dev4:pty:lbl', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
     await expect(d.input('hub:m4', { stdin: 'x\n' })).rejects.toThrow(/input writes into a live PTY session/)
-    await expect(d.input('hub:m4:pty', { stdin: 'x\n' })).rejects.toThrow(/Hub PTY lane/)
+    await expect(d.input('hub:m4:pty', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
     await expect(d.input('pty:nosuch', { stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/)
     await expect(d.input('pty', { stdin: 'x\n' })).rejects.toThrow(/E_PARAMS/)
     await d.dispose()
@@ -305,3 +305,100 @@ describe('RemoteDriver input (interactive stdin, 2026-10-25)', () => {
     } finally { await d.dispose() }
   }, 15_000)
 })
+
+describe('hub PTY canonical sessions + oneshot disclosure (0.3.2-c)', () => {
+  const fakeProcess = () => ({
+    cancel: () => {},
+    done: Promise.resolve({ exit: 0, timedOut: false, durationMs: 1 }),
+    read: () => ({ text: 'hub-out', nextOffset: 7, lossy: false }),
+  })
+  const hubStub = (mutate?: (machine: string) => void) => ({
+    protocol: 1 as const,
+    listTargets: () => [{ id: 'm', label: 'peer', execEnabled: true }],
+    start: async () => fakeProcess() as never,
+    ptyEndpoint: (machine: string) => {
+      if (mutate) mutate(machine)
+      return { url: 'ws://127.0.0.1:1/api/superd/exec/pty', cookie: 'c=1', wsPath: '/nowhere/ws' }
+    },
+    fileEndpoint: () => { throw new Error('not needed') },
+    releaseOwner: async () => {},
+  })
+
+  it('hub:<m4>:pty creates an addressable canonical session (label form included); state persists on reuse', async () => {
+    const d = driverWith({ getHub: () => hubStub() as never, hubPtyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+    try {
+      const warm = await d.call({ target: 'hub:m:pty:lbl', cmd: undefined })
+      expect(warm).toMatchObject({ created: true, connection: 'hub:m', label: 'lbl' })
+      expect(warm).toHaveProperty('session')
+      const id = (warm as unknown as { session: string }).session
+      const r1 = await d.call({ target: id, cmd: 'cd /tmp && printf hub-ok' })
+      expect(r1).toMatchObject({ cwd: '/tmp' })
+      expect(r1.stdout).toContain('hub-ok')
+      const r2 = await d.call({ target: id, cmd: 'pwd' })
+      expect(r2).toMatchObject({ cwd: '/tmp' })
+    } finally { await d.dispose() }
+  })
+
+  it('P10: pairing is re-validated on EVERY dispatch into a hub session — reuse is not exempt', async () => {
+    let revoked = false
+    const d = driverWith({ getHub: () => hubStub(() => { if (revoked) throw new Error('exec is disabled for machine "m"') }) as never, hubPtyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+    try {
+      const r = await d.call({ target: 'hub:m:pty', cmd: 'printf first' })
+      const id = (r as unknown as { session: string }).session
+      revoked = true
+      await expect(d.call({ target: id, cmd: 'printf second' })).rejects.toThrow(/disabled for machine/)
+    } finally { await d.dispose() }
+  })
+
+  it('hub sessions share the per-Agent quota with every other transport', async () => {
+    const d = driverWith({ getHub: () => hubStub() as never, hubPtyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+    try {
+      for (let i = 0; i < 10; i++) await d.call({ target: `hub:m:pty:q${i}` })
+      await expect(d.call({ target: 'hub:m:pty:over' })).rejects.toThrow(/E_SESSION_LIMIT/)
+    } finally { await d.dispose() }
+  })
+
+  it('hub oneshot receipts disclose the peer-native supervision (runner field)', async () => {
+    const d = driverWith({ getHub: () => hubStub() as never })
+    try {
+      const r = await d.call({ target: 'hub:m', cmd: 'printf hub-out' })
+      expect(r).toMatchObject({ mode: 'oneshot', runner: 'hub-lease (peer bash -lc, peer Node supervision)' })
+      expect(r.stdout).toContain('hub-out')
+    } finally { await d.dispose() }
+  })
+})
+
+describe('scriptPath over the hub lane + two-clock timeout (0.3.2-c pin)', () => {
+  it('scriptPath rides the hub oneshot as bash -s + literal stdin (no argv quoting of the body)', async () => {
+    const seen: Array<{ cmd: string; stdin?: string }> = []
+    const hub = {
+      protocol: 1 as const,
+      listTargets: () => [{ id: 'm', label: 'peer', execEnabled: true }],
+      start: async (_machine: string, input: { cmd: string; stdin?: string }) => {
+        seen.push({ cmd: input.cmd, stdin: input.stdin })
+        return { cancel: () => {}, done: Promise.resolve({ exit: 0, timedOut: false, durationMs: 1 }), read: () => ({ text: 'ok', nextOffset: 2, lossy: false }) } as never
+      },
+      ptyEndpoint: () => ({ url: 'ws://x', cookie: 'c', wsPath: '/w' }),
+      fileEndpoint: () => { throw new Error('not needed') },
+      releaseOwner: async () => {},
+    }
+    const script = await mkdtempScript()
+    const d = driverWith({ getHub: () => hub as never })
+    try {
+      const r = await d.call({ target: 'hub:m', scriptPath: script })
+      expect(r).toMatchObject({ mode: 'oneshot', exit: 0 })
+      expect(seen.at(-1)).toMatchObject({ cmd: 'bash -s' })
+      expect(seen.at(-1)!.stdin).toContain('SCRIPT-BODY-7f3a')
+    } finally { await d.dispose(); await rm(dirname(script), { recursive: true, force: true }) }
+  })
+})
+
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, dirname } from 'node:path'
+async function mkdtempScript(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'remote-hub-script-'))
+  const p = join(dir, 'body.sh')
+  await writeFile(p, "printf 'SCRIPT-BODY-7f3a %s' \"$(echo quoted)\"\n", 'utf8')
+  return p
+}

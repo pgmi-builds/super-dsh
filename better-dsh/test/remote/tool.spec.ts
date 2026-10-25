@@ -161,7 +161,7 @@ describe('createRemoteTool', () => {
     expect(description).toContain('PTY IS A PERSISTENT, INTERACTIVE TERMINAL SESSION')
     expect(description).toContain('{action:"input", target:"pty:<id|label>", stdin, commandId?}')
     expect(description).toContain('the input receipt only confirms N bytes were written')
-    expect(description).toContain('the Hub PTY lane has no session identity and no input lane')
+    expect(description).toContain('any transport (ssh / docker / incus / hub / BYO)')
     expect(description).toContain('no Python')
     expect(description).not.toContain('action:"copy"')
   })

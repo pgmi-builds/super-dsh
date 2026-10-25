@@ -1,6 +1,6 @@
 // Independent remote entry: canonical Better source, never its multipurpose lib tree.
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from '../../better-dsh/node_modules/tsdown/dist/index.mjs'
@@ -10,6 +10,8 @@ const out = join(repo, 'super-dsh/remote')
 const hash = data => createHash('sha256').update(data).digest('hex')
 export function remoteSources() {
   const inputs = readdirSync(join(repo, 'better-dsh/src/remote')).filter(file => file.endsWith('.ts')).map(file => `better-dsh/src/remote/${file}`)
+  // Verbatim byte-pump asset (0.3.2-c hub-remote-parity §4.1): hashed as a source, copied unchanged.
+  inputs.push('better-dsh/src/remote/hub-pty-pump.mjs')
   function collect(dir) { for (const entry of readdirSync(join(repo, dir), { withFileTypes: true })) { const file = `${dir}/${entry.name}`; if (entry.isDirectory()) collect(file); else if (entry.isFile()) inputs.push(file) } }
   for (const dir of ['better-dsh/third_party/schemastery/lib', 'better-dsh/third_party/schemastery/node_modules/@deepseek-ai/cosmokit/lib', 'better-dsh/third_party/schemastery/node_modules/@standard-schema/spec/dist']) collect(dir)
   return Object.fromEntries(inputs.sort().map(file => [file, hash(readFileSync(join(repo, file)))]))
@@ -41,6 +43,8 @@ export async function buildRemote() {
   rmSync(helperOut, { recursive: true, force: true })
   if (existsSync(join(helperSrc, 'MANIFEST.json'))) cpSync(helperSrc, helperOut, { recursive: true })
   const leaves = []
+  // Hub PTY pump leaf: the dumb WS child of canonical hub PTY sessions (no build transform).
+  copyFileSync(join(repo, 'better-dsh/src/remote/hub-pty-pump.mjs'), join(out, 'hub-pty-pump.mjs'))
   function collectOut(dir) { for (const entry of readdirSync(join(out, dir), { withFileTypes: true })) { const rel = dir ? `${dir}/${entry.name}` : entry.name; if (entry.isDirectory()) collectOut(rel); else leaves.push(rel) } }
   collectOut('')
   const outputs = {}

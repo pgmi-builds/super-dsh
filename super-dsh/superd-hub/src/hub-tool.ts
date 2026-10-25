@@ -42,7 +42,7 @@ import type { A2aDeliveryCtx } from './a2a-delivery.js' // (wireCompletionToDeli
 import type { AgentLink } from './agent-roster.js'
 import type { AgentStatusFile } from './agent-status.js'
 import { parseOneShotExecBody, EXEC_TAIL_WINDOW, type OneShotExecInput, type OneShotExecResult } from './exec.js'
-import { tailWindow } from './exec-pty-framing.js'
+import { tailWindow } from '../../remote/plugin.js'
 
 /** P4 exec face (spec §8.1): the executing side + the wire leg, closed over the hub home by a2a-row. */
 export interface HubToolExecFace {
@@ -57,7 +57,7 @@ export interface HubToolExecFace {
    * machine) shell that KEEPS its cwd/env across dispatches. Throws typed
    * Errors: unknown machine / exec disabled / transport failure.
    */
-  pty(sessionKey: string, machine: string, cmd: string, opts?: { timeoutSec?: number; stdin?: string }): Promise<import('./exec-pty-session.js').PtyDispatchResult>
+  pty(sessionKey: string, machine: string, cmd: string, opts?: { timeoutSec?: number; stdin?: string }): Promise<import('../../remote/plugin.js').PtyDispatchResult>
 }
 import type {
   A2aAddress,

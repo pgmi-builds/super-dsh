@@ -63,6 +63,20 @@ export function buildSpawnArgv(spawnCommand: string): string[] {
   return ['script', '-qfec', `stty -echo 2>/dev/null ; exec ${spawnCommand}`, '/dev/null']
 }
 
+/** Hub PTY 端点事实（ptyEndpoint 的返回形；结构类型，不引 superd-hub）。wsPath 由 transport
+ *  侧解析成绝对路径（superd-hub 上下文 = 分叉验证过的解析链；闭包/泵内绝不做按名解析赌注）。 */
+export interface HubPtyEndpoint { url: string; cookie: string; wsPath: string }
+
+/** Hub PTY（0.3.2-c）：会话子进程 = 本地 `script` PTY 托管的 WS 字节泵（hub-pty-pump.mjs）。
+ *  与 docker exec 的嵌套 PTY 同形（0.3.2-b 已验收 input/^C/EOF 的机器）：会话写 → 本地
+ *  PTY（stty -echo 已关本地回显）→ 泵 stdin → WS → 对端 script PTY → bash，反向同路；
+ *  kill 链 session 组杀 → 泵死 → WS 关 → 对端组杀，双向自然闭合。连接事实走 wrapper 内
+ *  env 赋值（cookie 不进 argv、不落 ps）。 */
+export function buildHubPtyArgv(endpoint: HubPtyEndpoint, assets: { pumpPath: string; nodePath?: string }): string[] {
+  const node = assets.nodePath ?? process.execPath
+  const exportsVars = `export SUPERD_HUB_PTY_URL=${shQuote(endpoint.url)} SUPERD_HUB_PTY_COOKIE=${shQuote(endpoint.cookie)} SUPERD_HUB_PTY_WS=${shQuote(endpoint.wsPath)}`
+  return ['script', '-qfec', `stty -echo 2>/dev/null ; ${exportsVars} ; exec ${shQuote(node)} ${shQuote(assets.pumpPath)}`, '/dev/null']
+}
 /** superd-run helper argv (spec: docs/specs/remote-rescope §5). Probe and upload are single
  *  `sh -c` hops (busybox/alpine/darwin-safe); run/killgroup over ssh go through exactly one
  *  remote-shell parse, same discipline as buildOneShotArgv. */

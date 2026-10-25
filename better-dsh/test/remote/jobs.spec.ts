@@ -58,12 +58,11 @@ it('PTY background jobs: live merged output, interrupt cancels with exit 130, se
     expect(await registry.wait(JobId(handed.jobId), 5_000, a.id)).toMatchObject({ status: 'completed' })
   } finally { await h.dispose() }
 }, 20_000)
-it('refuses admission before discovery, refuses hub PTY backgrounds, and keeps foreground without jobs', async () => {
+it('refuses admission before discovery and keeps foreground without jobs', async () => {
   const h = await harness(false)
   try {
     const a = await h.createAgent('refusal')
     await expect(h.invoke(a, { action: 'exec', target: 'bare', cmd: 'true', run_in_background: true })).rejects.toThrow(/controller/)
-    await expect(h.invoke(a, { action: 'exec', target: 'hub:m:pty', cmd: 'true', run_in_background: true })).rejects.toThrow(/hub/)
     // controller-less harness: registry admission refuses ALL backgrounds (gate precedes routing) —
     // byop-without-spawn reaching E_NO_SESSION as a failed job is covered by admission order, not testable here
   } finally { await h.dispose() }

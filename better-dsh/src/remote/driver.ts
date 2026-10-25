@@ -21,8 +21,10 @@ import { scanLocal, renderRoster, type RosterOptions } from './roster.ts'
 import { literalHosts } from './roster.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { buildOneShotArgv, buildPtyArgv, buildSpawnArgv, buildHelperOneShotArgv, buildHelperKillgroupArgv, buildHelperProbeArgv, buildHelperUploadArgv, helperShellArgv } from './transports.ts'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+import { buildOneShotArgv, buildPtyArgv, buildSpawnArgv, buildHubPtyArgv, buildHelperOneShotArgv, buildHelperKillgroupArgv, buildHelperProbeArgv, buildHelperUploadArgv, helperShellArgv, type HubPtyEndpoint } from './transports.ts'
 
 export type RemoteCallParams = RemoteInput
 
@@ -81,6 +83,8 @@ export interface RemoteDriverOptions {
   oneshotArgvFor?: (plan: TargetPlan, cmd: string, options: { cleanupTag?: string }) => string[]
   ptyArgvFor?: (plan: TargetPlan) => string[]
   spawnArgvFor?: (spawnCommand: string) => string[]
+  /** 测试/验收缝：hub PTY 泵 argv（默认 buildHubPtyArgv + 宿主树 ws 解析）。 */
+  hubPtyArgvFor?: (endpoint: HubPtyEndpoint) => string[]
   probeRunner?: ProbeOptions['runner']
   /** 测试/验收缝：helper 资产来源（默认 lib 旁挂 helper-bin）；显式 null 强制 shim 路径。 */
   helperAssetsFor?: () => HelperAssets | null
@@ -94,6 +98,18 @@ export interface RemoteDriverOptions {
 export const REMOTE_PTY_IDLE_TTL_SEC = 900
 /** P3（user 2026-10-19）：每 agent 10 个 PTY 会话，跨所有 connection 统一计；仅 error message 披露。 */
 export const REMOTE_PTY_SESSION_LIMIT = 10
+
+/** hub 线 one-shot 监督披露（0.3.2-c）：对端 = 我们自己的 hub server（bash -lc 于独立进程组，
+ *  Node 原生 TERM→2s→KILL + 输出环 + 租约生命周期）；superd-run helper 是 dumb-pipe 专用物，
+ *  从不经 hub 上传（non-goal，docs/10_plans/2026-10-25-hub-remote-parity.md §3 O1/O8）。 */
+const HUB_RUNNER = 'hub-lease (peer bash -lc, peer Node supervision)'
+
+/** hub PTY 泵资产：pump 与本模块同目录（npm 包与 Super 闭包同构，helper.ts 同款纪律）。
+ *  ws 模块路径由 transport 侧（superd-hub 上下文，分叉的 proven 解析链）解析后经
+ *  ptyEndpoint 传入——闭包自身子树无可解析的 ws，按名解析不在闭包里做（0.3.2-c 定稿）。 */
+export function hubPtyAssets(): { pumpPath: string } {
+  return { pumpPath: join(dirname(fileURLToPath(import.meta.url)), 'hub-pty-pump.mjs') }
+}
 
 /** 账本键与 jobId 同构（同格式 `<kind>-<16hex>`）；background 通道预传入 registry id 时两者字面相等。 */
 const genCommandId = (): string => `remote-${randomUUID().replace(/-/g, '').slice(0, 16)}`
@@ -172,17 +188,10 @@ export class RemoteDriver {
     const hasCmd = params.cmd !== undefined && params.cmd.length > 0
     const hasSpawn = params.spawn !== undefined && params.spawn.length > 0
 
-    // —— hub lane（协议本轮不动：无 session id、无并行、无 background）——
-    if (form.form === 'hub' || form.form === 'hub-pty') {
+    // —— hub oneshot lane（监督披露 runner=HUB_RUNNER；hub:<m4>:pty 自 0.3.2-c 走下方 createPtyLane 会话形）——
+    if (form.form === 'hub') {
       const hub = this.requireHub()
       this.hubProviders.add(hub)
-      if (form.form === 'hub-pty') {
-        if (!hasCmd) throw new Error('[E_PARAMS] remote: hub PTY takes cmd')
-        const result = await hub.pty(form.machine, params.cmd, this.hubOwner, { stdin: params.stdin, timeout: timeoutSec })
-        const out = tailWindow(result.stdout, cap, result.outputStats?.stdout)
-        // hub lane 没有 session 概念：回执必须自己说明这是 PTY 通道（与 oneshot 可区分，R2 P1-6）。
-        return { ...result, target: `hub:${form.machine}`, connection: `hub:${form.machine}`, stdout: `[hub:${form.machine} pty — no session id, no parallel, no background]\n${out.text}`, ...(out.stats ? { outputStats: { ...result.outputStats, stdout: out.stats } } : {}), ...(out.truncated === undefined ? {} : { truncated: out.truncated }) }
-      }
       const process = this.own(await hub.start(form.machine, { ...params, target: `hub:${form.machine}`, mode: 'oneshot', timeout: timeoutSec }, this.hubOwner))
       if (this.disposed) process.cancel('owner disposed')
       const result = await process.done
@@ -190,7 +199,7 @@ export class RemoteDriver {
       const out = tailWindow(stdout.text, cap, stdout.stats)
       const err = tailWindow(stderr.text, cap, stderr.stats)
       return {
-        ...result, mode: 'oneshot', target: `hub:${form.machine}`, connection: `hub:${form.machine}`, cwd: null, reconnected: false,
+        ...result, mode: 'oneshot', target: `hub:${form.machine}`, connection: `hub:${form.machine}`, cwd: null, reconnected: false, runner: HUB_RUNNER,
         stdout: (!stdout.stats && stdout.lossy ? '[truncated: peer returned only a tail; exact total/retained/dropped unavailable]\n' : '') + out.text,
         stderr: [err.text, stderr.diagnostic].filter(Boolean).join('\n'),
         ...(out.stats ? { outputStats: { stdout: out.stats, stderr: err.stats } } : { outputStatsUnavailable: true }),
@@ -552,6 +561,16 @@ export class RemoteDriver {
       const plan = form.transport === 'ssh' ? this.sshPlanFor(form.name, sessionKey) : resolveTarget(`${form.transport}:${form.name}`)
       return { session: this.createSession({ argv: (this.opts.ptyArgvFor ?? buildPtyArgv)(plan), connection: `${form.transport}:${form.name}`, byo: false, ...(form.label !== undefined ? { label: form.label } : {}) }, sessionKey) }
     }
+    if (form.form === 'hub-pty') {
+      // 0.3.2-c：hub PTY = canonical 会话（BYO 泵子进程），与 ssh/docker/incus 同形——
+      // 身份/label 池/配额/input/handoff/close/card/账本/TTL 全部自动生效。P10：创建即重验
+      // pairing（ptyEndpoint 校验 registry 行；dispatch 侧另有复用重验，复用不豁免）。
+      const hub = this.requireHub()
+      this.hubProviders.add(hub)
+      const endpoint = hub.ptyEndpoint(form.machine)
+      const argv = this.opts.hubPtyArgvFor !== undefined ? this.opts.hubPtyArgvFor(endpoint) : buildHubPtyArgv(endpoint, hubPtyAssets())
+      return { session: this.createSession({ argv, connection: `hub:${form.machine}`, byo: false, ...(form.label !== undefined ? { label: form.label } : {}) }, sessionKey) }
+    }
     return undefined
   }
 
@@ -617,8 +636,8 @@ export class RemoteDriver {
 
   /** §3.1（2026-10-25）interactive-stdin：input 动作——向已有 live PTY 的当前运行命令
    * 追加 stdin。只解析池内已存在的会话（pty:<id|label> / 裸 label 命中 pty 项），
-   * 不触发发现、拨号、创建或重连；machine target、创建形（:pty 后缀）与旧 Hub PTY
-   * 通道一律明确拒绝并给出可恢复指引。回执附 connection/label 供工具层渲染。 */
+   * 不触发发现、拨号、创建或重连；machine target 与创建形（:pty 后缀，含 hub:<m4>:pty）
+   * 一律明确拒绝并给出可恢复指引。回执附 connection/label 供工具层渲染。 */
   async input(target: string, options: PtyInputOptions, callCtx: { sessionKey?: string } = {}): Promise<PtyInputReceipt & { connection: string; label?: string }> {
     this.assertOpen()
     const sessionKey = callCtx.sessionKey ?? 'no-session'
@@ -636,12 +655,10 @@ export class RemoteDriver {
           `[E_NO_SESSION] remote: no live PTY session under ${JSON.stringify(form.name)} in this Agent's pool — input never dials, discovers or creates; run {action:"status"} to list sessions, then address one as pty:<id|label>`,
         )
       selector = form.name
-    } else if (form.form === 'create-pty') {
+    } else if (form.form === 'create-pty' || form.form === 'hub-pty') {
       throw new Error(`[E_TARGET_FORMAT] remote: input writes into a live PTY session — "${target}" is a creation form; input never creates a session. Start the interactive program with {action:"exec", target:"${target}", cmd:…} first, then input into it`)
-    } else if (form.form === 'hub' || form.form === 'hub-pty') {
-      throw new Error('[E_TARGET_FORMAT] remote: input writes into a live PTY session — the Hub PTY lane (hub:<machine>:pty) has no session identity and no input protocol; use an addressable ssh:/docker:/incus:/BYO PTY session')
     } else {
-      throw new Error(`[E_TARGET_FORMAT] remote: input writes into a live PTY session — "${target}" is a machine target and machines are dialed per call. Run the interactive program with exec on a :pty session (e.g. {action:"exec", target:"ssh:dev4:pty", cmd:…}), then input into that session`)
+      throw new Error(`[E_TARGET_FORMAT] remote: input writes into a live PTY session — "${target}" is a machine target and machines are dialed per call. Run the interactive program with exec on a :pty session (e.g. {action:"exec", target:"ssh:dev4:pty" or "hub:<m4>:pty", cmd:…}), then input into that session`)
     }
     const session = this.resolvePty(selector, sessionKey)
     const receipt = await session.input(options)
@@ -655,6 +672,13 @@ export class RemoteDriver {
     timeoutSec: number,
     cap: number,
   ): Promise<RemoteCallResult> {
+    // P10（hub 会话）：每次 dispatch 前重验 pairing——ptyEndpoint 校验 registry 行，复用不豁免。
+    const hubConn = session.identity.connection
+    if (hubConn.startsWith('hub:')) {
+      const hub = this.requireHub()
+      this.hubProviders.add(hub)
+      hub.ptyEndpoint(hubConn.slice(4))
+    }
     const commandId = callCtx.commandId ?? genCommandId()
     const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec, commandId, ...(callCtx.ptyBackground === true ? { background: true, jobId: commandId } : {}) }) // background: commandId 即 registry jobId，账本/input 回执如实携带
     const out = tailWindow(r.output, cap, r.outputStats?.stdout)
@@ -725,7 +749,7 @@ export class RemoteDriver {
     const out = tailWindow(stdout.text, cap, stdout.stats)
     const err = tailWindow(stderr.text, cap, stderr.stats)
     return {
-      ...result, mode: 'oneshot', target: display, connection: display, cwd: null, reconnected: false,
+      ...result, mode: 'oneshot', target: display, connection: display, cwd: null, reconnected: false, runner: HUB_RUNNER,
       stdout: (!stdout.stats && stdout.lossy ? '[truncated: peer returned only a tail; exact total/retained/dropped unavailable]\n' : '') + out.text,
       stderr: [err.text, stderr.diagnostic].filter(Boolean).join('\n'),
       ...(out.stats ? { outputStats: { stdout: out.stats, stderr: err.stats } } : { outputStatsUnavailable: true }),

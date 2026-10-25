@@ -39,6 +39,12 @@ export default { name, inject, Config, apply }
 export type { HubRemoteTransport, HubTarget, RemoteInput, PreparedRemoteInput, RemoteProcess, BinaryFileEndpoint, OutputStats, StreamOutputStats } from './hub-contract.ts'
 export { Utf16TailRing, ByteTailRing, readUtf8Tail } from './output-ring.ts'
 export { startOneShot, startBinaryProcess, PROCESS_CLEANUP_BOUND_MS } from './process.ts'
+export { tailWindow } from './nonce-framing.ts'
+// 0.3.2-c：hub PTY 会话化（Q2）——superd-hub 的 exec face 复用 canonical PtySession 与同一 argv 构造（单一事实源）。
+export { PtySession } from './pty-session.ts'
+export type { PtyDispatchResult } from './pty-session.ts'
+export { buildHubPtyArgv, type HubPtyEndpoint } from './transports.ts'
+export { hubPtyAssets } from './driver.ts'
 export { startRemoteJob } from './jobs.ts'
 
 export { sshArgv } from './ssh-targets.ts'
