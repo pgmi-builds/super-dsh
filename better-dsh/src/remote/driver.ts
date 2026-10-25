@@ -12,7 +12,7 @@ import { startOneShot, runOneShot } from './oneshot.ts'
 import { startBinaryProcess } from './process.ts'
 import { helperAssets, HelperRegistry, type HelperAssets, type HelperRunnerInfo } from './helper.ts'
 import { startOwnedNativeProcess } from './ssh-process.ts'
-import { PtyPool, type PtyRunningJob, type PtySession, type LedgerEntry } from './pty-session.ts'
+import { PtyPool, type PtyRunningJob, type PtySession, type LedgerEntry, type PtyInputOptions, type PtyInputReceipt } from './pty-session.ts'
 import { tailWindow, type EnvDelta } from './nonce-framing.ts'
 import { resolveTarget, parseTargetForm, type TargetForm, type TargetPlan } from './target.ts'
 import { LabelPool, validateLabel, PTY_ID_RE, describeEntry, type PoolEntry } from './labels.ts'
@@ -615,6 +615,39 @@ export class RemoteDriver {
     }
   }
 
+  /** §3.1（2026-10-25）interactive-stdin：input 动作——向已有 live PTY 的当前运行命令
+   * 追加 stdin。只解析池内已存在的会话（pty:<id|label> / 裸 label 命中 pty 项），
+   * 不触发发现、拨号、创建或重连；machine target、创建形（:pty 后缀）与旧 Hub PTY
+   * 通道一律明确拒绝并给出可恢复指引。回执附 connection/label 供工具层渲染。 */
+  async input(target: string, options: PtyInputOptions, callCtx: { sessionKey?: string } = {}): Promise<PtyInputReceipt & { connection: string; label?: string }> {
+    this.assertOpen()
+    const sessionKey = callCtx.sessionKey ?? 'no-session'
+    const form = parseTargetForm(target)
+    let selector: string
+    if (form.form === 'pty-selector') {
+      if (form.idOrLabel === undefined)
+        throw new Error('[E_PARAMS] remote: "pty" alone selects nothing — append an id/label (pty:pty-1a2b, pty:build)')
+      selector = form.idOrLabel
+    } else if (form.form === 'bare') {
+      // 裸 label 只认池内已有 pty 项——绝不为 input 触发机器发现/拨号。
+      const entry = this.labels.resolve(form.name, sessionKey)
+      if (entry?.kind !== 'pty')
+        throw new Error(
+          `[E_NO_SESSION] remote: no live PTY session under ${JSON.stringify(form.name)} in this Agent's pool — input never dials, discovers or creates; run {action:"status"} to list sessions, then address one as pty:<id|label>`,
+        )
+      selector = form.name
+    } else if (form.form === 'create-pty') {
+      throw new Error(`[E_TARGET_FORMAT] remote: input writes into a live PTY session — "${target}" is a creation form; input never creates a session. Start the interactive program with {action:"exec", target:"${target}", cmd:…} first, then input into it`)
+    } else if (form.form === 'hub' || form.form === 'hub-pty') {
+      throw new Error('[E_TARGET_FORMAT] remote: input writes into a live PTY session — the Hub PTY lane (hub:<machine>:pty) has no session identity and no input protocol; use an addressable ssh:/docker:/incus:/BYO PTY session')
+    } else {
+      throw new Error(`[E_TARGET_FORMAT] remote: input writes into a live PTY session — "${target}" is a machine target and machines are dialed per call. Run the interactive program with exec on a :pty session (e.g. {action:"exec", target:"ssh:dev4:pty", cmd:…}), then input into that session`)
+    }
+    const session = this.resolvePty(selector, sessionKey)
+    const receipt = await session.input(options)
+    const id = session.identity
+    return { ...receipt, connection: id.connection, ...(id.label !== undefined ? { label: id.label } : {}) }
+  }
   private async dispatchPty(
     session: PtySession,
     params: PreparedRemoteInput,
@@ -623,7 +656,7 @@ export class RemoteDriver {
     cap: number,
   ): Promise<RemoteCallResult> {
     const commandId = callCtx.commandId ?? genCommandId()
-    const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec, commandId, ...(callCtx.ptyBackground === true ? { background: true } : {}) })
+    const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec, commandId, ...(callCtx.ptyBackground === true ? { background: true, jobId: commandId } : {}) }) // background: commandId 即 registry jobId，账本/input 回执如实携带
     const out = tailWindow(r.output, cap, r.outputStats?.stdout)
     const id = session.identity
     return {

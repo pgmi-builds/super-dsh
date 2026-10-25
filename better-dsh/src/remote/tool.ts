@@ -10,7 +10,7 @@ import type { StreamOutputStats } from './hub-contract.ts'
 type EnvDelta = { added: string[]; changed: string[]; removed: string[] }
 
 interface RemoteToolValue {
-  kind: 'exec' | 'status' | 'roster' | 'job' | 'close'
+  kind: 'exec' | 'status' | 'roster' | 'job' | 'close' | 'input'
   receipt?: import('@deepseek-ai/dsh-util-values').JsonValue
   jobId?: string
   text: string
@@ -42,6 +42,8 @@ interface RemoteToolValue {
   closed?: boolean
   reason?: string
   killed?: string[]
+  /** input 回执（2026-10-25）：实际写入的 UTF-8 字节数；只确认写入，不承诺程序已读取。 */
+  writtenBytes?: number
 }
 
 const NO_SESSION_KEY = 'remote:no-session'
@@ -50,25 +52,26 @@ const NO_SESSION_KEY = 'remote:no-session'
  * The model-visible surface of the `remote` tool (action round, 2026-10-25).
  * ONE template literal — no backticks, no "${".
  *
- * 语义目标（surface 就是产品）：动作是唯一的派发维度；PTY 用「stateful
- * oneshot」定位——回执形状与 oneshot 相同，只是额外携带状态，因此多步任务
- * 应该默认进 PTY 而不是每次重新登录。
- */
+ * 语义目标（surface 就是产品）：动作是唯一的派发维度；PTY 定位是「persistent and
+ * interactive terminal session」——回执形状与 oneshot 相同、只增状态，且运行中的命令
+ * 可以分步观察后再补输（input 动作）；多步与交互任务默认进 PTY。 */
 const REMOTE_TOOL_DESCRIPTION = `Remote execution over ssh / docker / incus / Hub, plus stateful PTY workbenches. Every call declares its action:
 
   {action:"exec", target, cmd}                  → run cmd. target is required. A machine (ssh:dev4 / docker:corti / incus:x / a bare pool name) runs a stateless oneshot; a live PTY session (pty:<id|label> or its bare label) runs inside that session; a machine with a :pty suffix (ssh:dev4:pty[:label]) creates a NEW session on it and runs there.
   {action:"add", ssh:{...} | spawn:"<cmd>"}     → register a BYO endpoint into the pool, no command. Exactly one of ssh (identity) or spawn (PTY). target is the optional label (ssh:<label> / pty:<label> / bare <label>; omit for an auto id). Returns the label — address it later exactly like a discovered name.
   {action:"status"}                             → roster: local scan that refreshes the pool (ssh aliases, BYO identities, docker/incus containers, Hub machines, live PTY sessions).
   {action:"status", target}                     → reachability probe for a machine plus the PTY sessions on that connection, or a session card (connection, cwd, ledger of the last 20 commands) for a pty selector.
-  {action:"close", target:"pty:<id|label>", force?} → close a session. Idempotent (unknown id → closed:false). Default rejects while a job is running and names it (job_kill it first, or wait); force:true closes the tab and kills the group in one step.
+  {action:"input", target:"pty:<id|label>", stdin, commandId?} → append stdin to the command currently running in that PTY session — passwords, OTP, tokens, choices, REPL lines; "\\u0003" Ctrl-C, "\\u0004" Ctrl-D. Receipt confirms the write; read the response via job_output on the same job.
 
-PTY IS A STATEFUL ONESHOT — default to it. A PTY call returns synchronously with the same receipt a oneshot returns (output text, exit, duration) and only adds state: session id, cwd, env delta, commandId, idle-left. Nothing is withheld at read time and nothing is omitted from context. What you gain is the shell: cwd, exported env, shell variables, activated venvs, aliases and a still-open REPL survive between calls, so a multi-step task on one machine becomes N cheap calls instead of N stateless logins — and a command that outlives its timeout is not killed, it hands off to a running job you can poll. Reach for the stateless oneshot when a step is genuinely one-shot (a single probe, a pipeline stage, a supervised build you will not revisit) or when you want the supervision runner guarantee; reach for PTY for exploration, iterative edits, dev servers, and anything with more than one step in the same directory. Creating a session is a target suffix, not a different tool.
+PTY IS A PERSISTENT, INTERACTIVE TERMINAL SESSION — default to it. A PTY call returns synchronously with the same receipt a oneshot returns (output text, exit, duration) and only adds state: session id, cwd, env delta, commandId, idle-left. Nothing is withheld at read time and nothing is omitted from context. What you gain is the shell: cwd, exported env, shell variables, activated venvs, aliases and a still-open REPL survive between calls, so a multi-step task on one machine becomes N cheap calls instead of N stateless logins — and a command that outlives its timeout is not killed, it hands off to a running job you can poll. Interactive programs are first-class: once a command is running you can watch what it printed and then feed it more stdin with the input action — a password, an OTP, a token, a menu choice, a REPL line — into the SAME running command. Reach for the stateless oneshot when a step is genuinely one-shot (a single probe, a pipeline stage, a supervised build you will not revisit) or when you want the supervision runner guarantee; reach for PTY for exploration, iterative edits, dev servers, login prompts, REPLs, and anything with more than one step in the same directory. Creating a session is a target suffix, not a different tool.
 
 Bare names address ONE unified pool (machines + identities + sessions — the status roster lists it; a machine losing its bare name to an earlier claim is shown prefixed docker-foo / incus-foo). Prefixes ssh: / docker: / incus: / hub: force a channel. add always claims a fresh name: a taken label answers [E_LABEL_IN_USE] — address it without add, or pick another (specs are never compared). PTY sessions idle out after 15 min (running commands exempt; status probes do not reset the clock). Max 10 sessions per Agent, ssh:dev4 and docker:corti alike — every creation call opens a NEW session, parallelism is first-class.
 
 oneshot: stdout/stderr separate, exit code verbatim. Supervision prefers a pinned superd-run helper cached on the endpoint (~/.cache/superd/run; first call uploads it over the same exec lane) and falls back to a POSIX wrapper everywhere else — the receipt field "runner" says which ran. Helper or wrapper, backgrounded children are reaped on completion and the whole group is killed on timeout/cancel; the endpoint needs bash only (no Python).
 
-PTY details: output tails at ~30k chars ("[truncated: …]" header) — redirect bulk output to a file; hard retention 4,000,000 UTF-16 units per stream (Hub 4MiB bytes), outputStats reports the rest, a restart cannot recover discarded output. The terminal merges stderr into the output stream (the one receipt difference from a oneshot). A busy session rejects new commands ([E_SESSION_BUSY] names the running id and the ways out: job_output / job_kill / another session or oneshot). stdin is written right after the command line (REPL-style — it only helps commands that read stdin there). timeout (seconds, default 120): the command is not killed on timeout — it hands off as a running job (poll job_output <commandId>, cancel with job_kill; Ctrl-C first, the session survives). run_in_background uses the same lane and its jobId IS the commandId.
+PTY details: output tails at ~30k chars ("[truncated: …]" header) — redirect bulk output to a file; hard retention 4,000,000 UTF-16 units per stream (Hub 4MiB bytes), outputStats reports the rest, a restart cannot recover discarded output. The terminal merges stderr into the output stream (the one receipt difference from a oneshot). A busy session rejects new commands ([E_SESSION_BUSY] names the running id and the ways out: input more stdin / job_output / job_kill / another session or oneshot) — a command waiting for input IS busy; feed it, don't queue a second cmd. stdin on exec is startup input, written right after the command line (REPL-style); everything after the program has already printed goes through the input action instead. timeout (seconds, default 120): the command is not killed on timeout — it hands off as a running job (poll job_output <commandId>, cancel with job_kill; Ctrl-C first, the session survives). run_in_background uses the same lane and its jobId IS the commandId.
+
+Interactive flow (see a prompt → answer it → read the response): 1) start the program with exec + cmd (run_in_background or not — a timeout handoff keeps the same identity). The running receipt carries the output so far plus session / commandId / jobId. 2) Watch for the prompt in that output; job_output <jobId> when you need more. 3) Send the answer: {action:"input", target:"pty:<id|label>", stdin:"the-answer\\n"} — stdin passes through VERBATIM: include the trailing \\n to submit a line; "\\u0003" is Ctrl-C and "\\u0004" is Ctrl-D as raw characters; a literal backslash-x-0-4 stays four characters; "" writes zero bytes (not EOF). Optional commandId must equal the running command's id — a stale id refuses the write instead of feeding the next command. 4) Read the response with job_output on the SAME job — the input receipt only confirms N bytes were written; it never means the password was accepted or the login succeeded; judge from the program's output and the job's exit. Ctrl-D is not a universal EOF: on a line without a trailing newline it first delivers that text — send it again on the emptied line to end a reader like cat; Ctrl-C only interrupts where the terminal mode allows; job_kill stays the explicit cancel. input addresses addressable ssh / docker / incus / BYO PTY sessions only (the Hub PTY lane has no session identity and no input lane — see the Hub note when present). one-shot stdin is startup-only: known data may ride the initial exec, but a oneshot cannot be fed after it starts and its timeout still cancels the whole group — a prompt on a oneshot means cancel (job_kill) and switch to PTY. Heredocs and input redirection remain valid bulk-input alternatives; there is no global stdin ban.
 
 scriptPath (exec, oneshot only): a LOCAL absolute script read before any dialing, sent literally over stdin to a fixed bash -s — the file carrier for multi-line scripts, no quoting. Pairs with neither cmd, stdin, nor a PTY target. Hub inline cmd stays limited to 4096; a script body is not argv.`
 
@@ -79,7 +82,7 @@ scriptPath (exec, oneshot only): a LOCAL absolute script read before any dialing
  * 运行时语义不变——字面量里的 execute 只是三行委托。
  */
 interface RemoteArgs {
-  action?: 'exec' | 'add' | 'close' | 'status'
+  action?: 'exec' | 'add' | 'close' | 'status' | 'input'
   target?: string
   cmd?: string
   stdin?: string
@@ -89,6 +92,8 @@ interface RemoteArgs {
   ssh?: { host: string; user?: string; port?: number; key?: string; proxyJump?: string }
   spawn?: string
   force?: boolean
+  /** input 专用：可选的运行命令匹配保护（来自 exec 回执 / job_output）。 */
+  commandId?: string
 }
 type ExecLike = { signal: AbortSignal; agent?: { id: string; ctx: { get(key: 'jobs'): unknown } } }
 /** 结构性 JobRegistry（与 dsh-jobs 同构）：与 ExecLike 一起隔离上游类型身份。 */
@@ -102,6 +107,7 @@ const ACTION_PARAMS: Record<Action, ReadonlySet<string>> = {
   add: new Set(['action', 'target', 'ssh', 'spawn']),
   status: new Set(['action', 'target']),
   close: new Set(['action', 'target', 'force']),
+  input: new Set(['action', 'target', 'stdin', 'commandId']),
 }
 
 const ACTION_HINT: Record<Action, string> = {
@@ -109,13 +115,14 @@ const ACTION_HINT: Record<Action, string> = {
   add: 'add takes exactly one of ssh or spawn, plus an optional target label',
   status: 'status takes only an optional target — omit it for the roster',
   close: 'close takes target pty:<id|label> and optional force',
+  input: 'input takes target (a live PTY session), stdin, and an optional commandId guard — no cmd, no timeout, no creation',
 }
 
 async function remoteExecute(ENV: { driver: RemoteDriver; getSessionKey: (exec: ExecLike) => string }, args: RemoteArgs, exec: ExecLike): Promise<RemoteToolValue> {
   const action = args.action
-  if (action === undefined) throw new Error('[E_PARAMS] remote: action is required — "exec" (run a command), "add" (register a BYO endpoint), "status" (roster / probe / session card), "close" (close a PTY session)')
+  if (action === undefined) throw new Error('[E_PARAMS] remote: action is required — "exec" (run a command), "add" (register a BYO endpoint), "status" (roster / probe / session card), "close" (close a PTY session), "input" (append stdin to a running PTY command)')
   const allowed = ACTION_PARAMS[action]
-  if (allowed === undefined) throw new Error(`[E_PARAMS] remote: unknown action ${JSON.stringify(String(action))} — one of exec / add / close / status`)
+  if (allowed === undefined) throw new Error(`[E_PARAMS] remote: unknown action ${JSON.stringify(String(action))} — one of exec / add / close / status / input`)
   for (const key of Object.keys(args)) {
     if (!allowed.has(key)) throw new Error(`[E_PARAMS] remote: "${key}" does not belong to action "${action}" — ${ACTION_HINT[action]}`)
   }
@@ -135,6 +142,20 @@ async function remoteExecute(ENV: { driver: RemoteDriver; getSessionKey: (exec: 
       ? `closed ${r.session} (${r.connection})${r.killed.length > 0 ? ` — killed running job ${r.killed.join(', ')}` : ''}`
       : `${r.session}: not closed (${r.reason}) — ${r.message ?? 'no live session'}`
     return { kind: 'close', text, exit: null, durationMs: 0, session: r.session, closed: r.closed, ...(r.reason !== undefined ? { reason: r.reason } : {}), killed: r.killed }
+  }
+
+  // —— action === 'input'（2026-10-25）：只写已有 PTY 的运行中命令，不创建、不重连、不改期限 ——
+  if (action === 'input') {
+    if (!hasTarget) throw new Error('[E_PARAMS] remote: action "input" requires target — the live PTY session whose command is waiting (pty:<id|label> or its bare label)')
+    if (args.stdin === undefined) throw new Error('[E_PARAMS] remote: action "input" requires stdin — the exact text to append; include a trailing \\n to submit a line, "\\u0003" for Ctrl-C, "\\u0004" for Ctrl-D ("" = zero bytes, not EOF)')
+    if (typeof args.commandId === 'string' && args.commandId.length === 0) throw new Error('[E_PARAMS] remote: input: commandId, when given, must be the non-empty id from the exec receipt / job_output')
+    const r = await ENV.driver.input(args.target as string, { stdin: args.stdin as string, ...(args.commandId !== undefined ? { commandId: args.commandId } : {}) }, { sessionKey })
+    const handle = r.jobId ?? r.commandId
+    return {
+      kind: 'input', text: `wrote ${r.writtenBytes} byte${r.writtenBytes === 1 ? '' : 's'} into ${r.session} for command ${r.commandId} — this confirms the write, not the program's response; read the response with job_output ${handle}`,
+      exit: null, durationMs: 0, session: r.session, connection: r.connection, ...(r.label !== undefined ? { label: r.label } : {}),
+      commandId: r.commandId, ...(r.jobId !== undefined ? { jobId: r.jobId } : {}), writtenBytes: r.writtenBytes,
+    }
   }
 
   if (action === 'add') {
@@ -160,7 +181,7 @@ async function remoteExecute(ENV: { driver: RemoteDriver; getSessionKey: (exec: 
     if (hasCmd) throw new Error('[E_SCRIPT_PARAMS] remote: scriptPath and cmd are alternative carriers — pass one')
     if (args.stdin !== undefined) throw new Error('[E_SCRIPT_PARAMS] remote: scriptPath already occupies stdin — do not pass stdin with it')
   }
-  if (args.stdin !== undefined && !hasCmd) throw new Error('[E_STDIN_WITHOUT_CMD] remote: stdin requires cmd — the exec lane pipes stdin only into a command')
+  if (args.stdin !== undefined && !hasCmd) throw new Error('[E_STDIN_WITHOUT_CMD] remote: exec stdin is startup input and requires cmd — to feed a command that is already running in a PTY, use {action:"input", target:"pty:<id|label>", stdin}')
   if (!hasCmd && args.scriptPath === undefined) throw new Error('[E_PARAMS] remote: action "exec" must execute something — pass cmd, or scriptPath for a local script file')
 
   if (args.run_in_background) {
@@ -181,7 +202,7 @@ async function remoteExecute(ENV: { driver: RemoteDriver; getSessionKey: (exec: 
     return {
       kind: 'job', jobId, exit: null, durationMs: 0,
       text: `Started ${jobId}${where}. Use job_output to read and job_kill to cancel; completion is reported by the host.`,
-      ...(lane !== undefined ? { session: lane.session, connection: lane.connection, ...(lane.label !== undefined ? { label: lane.label } : {}) } : {}),
+      ...(lane !== undefined ? { commandId: jobId, session: lane.session, connection: lane.connection, ...(lane.label !== undefined ? { label: lane.label } : {}) } : {}),
     }
   }
 
@@ -215,11 +236,11 @@ export function createRemoteTool(
     description: REMOTE_TOOL_DESCRIPTION,
 
     parameters: {
-      action: { type: 'string', enum: ['exec', 'add', 'status', 'close'], required: true, description: 'Required. exec = run a command (oneshot on a machine, or inside a PTY session); add = register a BYO ssh identity or BYO PTY into the pool; status = roster (no target) or probe/session card (target); close = close a PTY session.' },
-      target: { type: 'string', description: 'exec: required. A machine (bare pool name, ssh:<name>, docker:<name>, incus:<name>, hub:<m4>), a live PTY session (pty:<id|label> or its bare label), or a machine with :pty[:label] to create a new session (ssh:dev4:pty, ssh:dev4:pty:build). add: optional label for the BYO entry. status: optional — omit for the roster. close: pty:<id|label>.' },
+      action: { type: 'string', enum: ['exec', 'add', 'status', 'close', 'input'], required: true, description: 'Required. exec = run a command (oneshot on a machine, or inside a PTY session); add = register a BYO ssh identity or BYO PTY into the pool; status = roster (no target) or probe/session card (target); close = close a PTY session; input = append stdin to the command currently running in a live PTY session.' },
+      target: { type: 'string', description: 'exec: required. A machine (bare pool name, ssh:<name>, docker:<name>, incus:<name>, hub:<m4>), a live PTY session (pty:<id|label> or its bare label), or a machine with :pty[:label] to create a new session (ssh:dev4:pty, ssh:dev4:pty:build). add: optional label for the BYO entry. status: optional — omit for the roster. close / input: pty:<id|label> (input never creates or dials — the session must already run the command).' },
       cmd: { type: 'string', description: "exec: one raw shell string parsed by the remote bash (multi-line = one compound; exit = last command's). Required unless scriptPath is given." },
-      stdin: { type: 'string', description: 'exec: input fed to cmd. oneshot: piped to stdin. pty: written right after the command line (REPL-style). Requires cmd.' },
-      scriptPath: { type: 'string', description: 'exec: LOCAL absolute script path. Read before any dialing, sent literally over stdin to fixed bash -s. Oneshot only — no PTY targets; cannot combine with cmd or stdin. Hub inline cmd remains limited to 4096; script body is not argv.' },
+      stdin: { type: 'string', description: 'exec: startup input fed to cmd — oneshot: piped to stdin; pty: written right after the command line (REPL-style); requires cmd. input: the exact text to append to the RUNNING command — "" writes zero bytes (not EOF); include "\\n" to submit a line; "\\u0003" = Ctrl-C, "\\u0004" = Ctrl-D as raw characters.' },
+      commandId: { type: 'string', description: 'input only: optional guard — when given it must equal the running command\'s id (from the exec receipt or job_output); a stale id refuses the write instead of feeding the next command. Ignored by other actions.' },
       timeout: { type: 'number', description: 'exec: per-command timeout in seconds (default 120). oneshot: interrupts then kills the whole group. pty: the command is NOT killed on timeout — it hands off to a running job you can poll (job_output) and cancel (job_kill = Ctrl-C first; the session survives an interrupt).' },
       run_in_background: { type: 'boolean', description: 'exec: oneshot AND pty — return a native jobId immediately, read with job_output, cancel with job_kill; output is available while running. On pty lanes the jobId IS the commandId — it tracks the running command inside a persistent session; job_kill sends Ctrl-C and the session survives. Hub-machine PTY has no background lane. Requires the official jobs service/controller.' },
       ssh: { type: 'object', description: 'add: BYO ssh identity to register into the pool (no dialing). Later exec calls address the returned label. No inline keys or arbitrary SSH options; nothing is persisted — a new Agent registers again.', additionalProperties: false, properties: {
@@ -237,7 +258,7 @@ export function createRemoteTool(
         type: 'object',
         additionalProperties: false,
         properties: {
-          kind: { type: 'string', required: true, enum: ['exec', 'status', 'roster', 'job', 'close'] },
+          kind: { type: 'string', required: true, enum: ['exec', 'status', 'roster', 'job', 'close', 'input'] },
           text: { type: 'string', required: true },
           jobId: { type: 'string' },
           receipt: { type: 'json' },
@@ -255,6 +276,7 @@ export function createRemoteTool(
           connection: { type: 'string', description: 'underlying connection: ssh:dev4 / docker:c / incus:x / hub:m4 / BYOP' },
           byoTag: { type: 'string' },
           commandId: { type: 'string', description: 'ledger key; equals the jobId whenever a job exists' },
+          writtenBytes: { type: 'integer', description: 'input: UTF-8 bytes actually written; confirms the write, not the program response' },
           envDelta: { type: 'json', description: 'names only: {added,changed,removed}' },
           created: { type: 'boolean' },
           notice: { type: 'string' },
@@ -273,7 +295,7 @@ export function createRemoteTool(
     },
   })
   const description = tool.description
-  Object.defineProperty(tool, 'description', { enumerable: true, get: () => description + (driver.hasHub() ? '\nHub transport available: hub:<m4> selects a paired remote machine (never self). status with no target includes the Hub directory even when empty. Uses authenticated Hub HTTP oneshot / persistent WS PTY (hub:<m4>:pty selects the PTY lane); no SSH alias needed. Hub failures never fall back to SSH.' : '') })
+  Object.defineProperty(tool, 'description', { enumerable: true, get: () => description + (driver.hasHub() ? '\nHub transport available: hub:<m4> selects a paired remote machine (never self). status with no target includes the Hub directory even when empty. Uses authenticated Hub HTTP oneshot / persistent WS PTY (hub:<m4>:pty selects the PTY lane); no SSH alias needed. Hub failures never fall back to SSH. The Hub PTY lane has no session identity and no input protocol — the input action does not address it; use an addressable ssh / docker / incus / BYO PTY session for interactive programs.' : '') })
   return tool
 }
 
@@ -309,7 +331,7 @@ function renderEnvDelta(d: EnvDelta): string | undefined {
 }
 
 function renderValue(v: RemoteToolValue): string {
-  if (v.kind === 'status' || v.kind === 'roster' || v.kind === 'job' || v.kind === 'close') return v.text
+  if (v.kind === 'status' || v.kind === 'roster' || v.kind === 'job' || v.kind === 'close' || v.kind === 'input') return v.text
   const parts: string[] = []
   if (v.reconnected === true) parts.push(RECONNECT_NOTICE)
   if (typeof v.notice === 'string' && v.notice.length > 0) parts.push(v.notice)

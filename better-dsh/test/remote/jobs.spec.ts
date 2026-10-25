@@ -175,3 +175,52 @@ it('native jobs final-drain real Hub TERM output when cancel ACK outruns the str
     await rm(home, { recursive: true, force: true })
   }
 }, 10000)
+
+it('interactive stdin over official jobs: exec → prompt → input → job_output → input → original job completes (2026-10-25)', async () => {
+  const h = await harness(true, { execTimeoutSec: 2, ptyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'], spawnArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+  try {
+    const a = await h.createAgent('pty-ix'), b = await h.createAgent('pty-ix-other')
+    const registry = a.ctx.get('jobs')!
+    await h.invoke(a, { action: 'add', target: 'pty:ix', spawn: 'bash' })
+    const started = await h.invoke(a, { action: 'exec', target: 'pty:ix', cmd: `printf 'Password:'; IFS= read -s -r pw; printf '\\nOTP:'; IFS= read -s -r otp; [ "$pw" = demo ] && [ "$otp" = 123456 ] && printf '\\nACCEPTED\\n'`, run_in_background: true }) as unknown as { jobId: string; commandId: string }
+    expect(started.jobId).toMatch(/^remote-/)
+    expect(started.commandId).toBe(started.jobId) // background lane: commandId IS the registry jobId
+    const id = JobId(started.jobId)
+    const readAll = (jid: JobId = id): string => registry.readAt(jid, 0, a.id).chunks.map((c: { text: string }) => c.text).join('')
+    for (let i = 0; i < 200 && !readAll().includes('Password:'); i++) await new Promise((r) => setTimeout(r, 20))
+    expect(readAll()).toContain('Password:')
+    // busy teaches the four ways out, input included
+    await expect(h.invoke(a, { action: 'exec', target: 'pty:ix', cmd: 'echo nope' })).rejects.toThrow(/E_SESSION_BUSY/)
+    const w1 = await h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'demo\n' }) as unknown as { kind: string; writtenBytes: number; jobId: string; commandId: string; session: string }
+    expect(w1).toMatchObject({ kind: 'input', writtenBytes: 5, jobId: started.jobId, commandId: started.commandId })
+    expect(w1.session).toMatch(/^pty:pty-/)
+    expect(JSON.stringify(w1)).not.toContain('demo') // the receipt never echoes the stdin body
+    for (let i = 0; i < 200 && !readAll().includes('OTP:'); i++) await new Promise((r) => setTimeout(r, 20))
+    expect(readAll()).toContain('OTP:')
+    await h.invoke(a, { action: 'input', target: 'pty:ix', commandId: started.commandId, stdin: '123456\n' })
+    const outcome = await registry.wait(id, 10_000, a.id)
+    expect(outcome.status).toBe('completed')
+    const final = readAll()
+    expect(final).toContain('ACCEPTED')
+    expect(final).not.toContain('demo')
+    // cross-Agent fencing: another Agent's pool has no such session
+    await expect(h.invoke(b, { action: 'input', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/)
+    // stale commandId guard + completion release
+    const started2 = await h.invoke(a, { action: 'exec', target: 'pty:ix', cmd: `IFS= read -s -r v; printf 'OK:%s' "$v"`, run_in_background: true }) as unknown as { jobId: string; commandId: string }
+    await expect(h.invoke(a, { action: 'input', target: 'pty:ix', commandId: started.commandId, stdin: 'x\n' })).rejects.toThrow(/E_COMMAND_MISMATCH/)
+    await h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'go\n' })
+    expect((await registry.wait(JobId(started2.jobId), 10_000, a.id)).status).toBe('completed')
+    expect(readAll(JobId(started2.jobId))).toContain('OK:go')
+    await expect(h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/)
+    // ledger grew by dispatched commands only (busy rejects and inputs add no entries); card teaches, never hides
+    const card = await h.invoke(a, { action: 'status', target: 'pty:ix' }) as unknown as { text: string }
+    expect(card.text).not.toContain('echo nope')
+    expect(card.text).not.toContain('demo')
+    // cancel race: kill a waiting reader, then input honestly refuses
+    const started3 = await h.invoke(a, { action: 'exec', target: 'pty:ix', cmd: 'IFS= read -s -r v; echo stuck', run_in_background: true }) as unknown as { jobId: string }
+    const kill = await a.ctx.tools.execute({ name: 'job_kill', arguments: { job_id: JobId(started3.jobId) }, agent: a, signal: new AbortController().signal, callId: 'ix-kill' as never })
+    expect(kill.isError).toBeFalsy()
+    await registry.wait(JobId(started3.jobId), 5_000, a.id)
+    await expect(h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/)
+  } finally { await h.dispose() }
+}, 30_000)

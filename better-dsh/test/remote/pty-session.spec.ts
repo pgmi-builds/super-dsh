@@ -50,15 +50,14 @@ describe('PtySession over plain local bash', () => {
     expect(pool.inspect('t:x')).toMatchObject({ state: 'ready', busy: false })
     await s.dispose(); await pool.disposeAll()
   })
-  it('serializes concurrent dispatches on one session (clean A/B output = no stdin interleave)', async () => {
+  it('rejects a concurrent second cmd while the first is in its synchronous window (FIFO replaced by immediate busy, 2026-10-25)', async () => {
     const s = new PtySession({ key: 'k', argv: ['bash'], id: 'pty-spec', connection: 'spec', ...OPTS })
-    const [r1, r2] = await Promise.all([
-      s.dispatch('sleep 0.4 ; echo A', { commandId: 'spec-c' }),
-      s.dispatch('echo B', { commandId: 'spec-c' }),
-    ])
+    const first = s.dispatch('sleep 0.4 ; echo A', { commandId: 'spec-a' })
+    await expect(s.dispatch('echo B', { commandId: 'spec-b' })).rejects.toThrow(/E_SESSION_BUSY/)
+    const r1 = await first
     expect(r1.output.trim()).toBe('A')
-    expect(r2.output.trim()).toBe('B')
-    expect(r1.durationMs).toBeGreaterThan(300)
+    const after = await s.dispatch('echo B', { commandId: 'spec-b2' })
+    expect(after.output.trim()).toBe('B')
     await s.dispose()
   })
   it('unexpected shell death: partial + null exit; next dispatch reconnects with the notice', async () => {

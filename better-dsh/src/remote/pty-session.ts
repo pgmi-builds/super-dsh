@@ -1,5 +1,6 @@
 import { Utf16TailRing } from './output-ring.ts'
 import type { OutputStats, StreamOutputStats } from './hub-contract.ts'
+import { Buffer } from 'node:buffer'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { buildInitCommand, createNonceFrameParser, decodeEnvSnapshot, diffEnv, genNonce, wrapPtyCommand, type EnvDelta } from './nonce-framing.ts'
 
@@ -32,7 +33,18 @@ export interface PtySessionOptions {
   onDead?: () => void
 }
 
-export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number; /** 账本键：driver 分配（background 通道预传入 registry jobId；同步命令同格式本地生成）——一个命令永远只有一个 id。 */ commandId: string; /** P5：立即回执 running job，不等帧（run_in_background 与超时 handoff 共用同一条 job 通道）。 */ background?: boolean }
+export interface PtyDispatchOptions { stdin?: string; timeoutSec?: number; /** 账本键：driver 分配（background 通道预传入 registry jobId；同步命令同格式本地生成）——一个命令永远只有一个 id。 */ commandId: string; /** P5：立即回执 running job，不等帧（run_in_background 与超时 handoff 共用同一条 job 通道）。 */ background?: boolean; /** background 通道预传入的 registry jobId（此时与 commandId 字面相等）：账本与 input 回执如实携带，免 driver 侧二次回填。 */ jobId?: string }
+/** §3.3（2026-10-25）interactive-stdin：input 动作的选项与回执（写入成功才回执）。 */
+export interface PtyInputOptions { stdin: string; commandId?: string }
+export interface PtyInputReceipt {
+  /** 模型面会话名（pty:<id>）。 */
+  session: string
+  commandId: string
+  /** 存在官方 job 时才有（background 预传 / timeout handoff 收养回填）。 */
+  jobId?: string
+  /** 实际写入的 UTF-8 字节数。 */
+  writtenBytes: number
+}
 /** detached job 的完成结果（frame 或会话死亡时结算；与 dispatch 回执同构）。 */
 export interface PtyJobResult { output: string; outputStats?: StreamOutputStats; exit: number | null; cwd: string | null; timedOut: boolean; commandId: string; envDelta?: EnvDelta }
 /** P4/P5（2026-10-19）running job 句柄：byte-cursor 增量读 + P8 显式中断 + 完成时帧结算。 */
@@ -85,7 +97,6 @@ export class PtySession {
   private proc: ChildProcess | null = null
   private state: PtyState = 'cold'
   private startPromise: Promise<void> | null = null
-  private queue: Promise<unknown> = Promise.resolve()
   private idleTimer: NodeJS.Timeout | null = null
   private onChunk: ((c: string) => void) | null = null
   private deathWaiters: Array<() => void> = []
@@ -93,6 +104,8 @@ export class PtySession {
   private inFlight = 0
   /** P4/P5：当前占用前台的 detached job（background/超时 handoff）。非 null 时新命令拒绝（Q6）。 */
   private detachedJob: PtyRunningJob | null = null
+  /** §3.2（2026-10-25）：当前占用会话的命令——dispatch 同步占位，settle/cleanup 释放；input 的唯一写入对象。 */
+  private activeCommand: { commandId: string; jobId?: string } | null = null
   /** 账本（§5）：本会话最近 20 条命令（FIFO，超出丢最旧）。 */
   private ledger: LedgerEntry[] = []
   /** env 侧信道基线（init E 帧）；undefined = 侧信道不可用（不报假 delta）。 */
@@ -121,10 +134,11 @@ export class PtySession {
   /** 占用前台的 detached job 的 commandId（无 = null；close 拒绝与 busy 文案共用）。 */
   get detachedCommandId(): string | null { return this.detachedJob?.commandId ?? null }
 
-  /** job 通道收养后回填 jobId（timeout handoff 时 registry id ≠ commandId，账本如实记录两者）。 */
+  /** job 通道收养后回填 jobId（timeout handoff 时 registry id ≠ commandId，账本如实记录两者）；运行中的命令同步携带（input 回执用）。 */
   attachJob(commandId: string, jobId: string): void {
     const entry = [...this.ledger].reverse().find((e) => e.commandId === commandId)
     if (entry !== undefined) entry.jobId = jobId
+    if (this.activeCommand !== null && this.activeCommand.commandId === commandId) this.activeCommand.jobId = jobId
   }
 
   /** Workbench 身份（§3）：id + 可选 label + connection + byo 标记。 */
@@ -146,25 +160,50 @@ export class PtySession {
    * 而且只有 ready 过才挂 idle 回收（cold 会话没有 timer，会永远占配额）。 */
   async warm(): Promise<void> { await this.start() }
 
-  /** 同一会话命令严格串行（FIFO）；死亡/冷态先重启。P4/P5（2026-10-19）：超时不再自动
-   * 打断——handoff 成 running job（byte-cursor 轮询 + 显式 interrupt，P8 机制原样保留在
-   * job.interrupt）；background 选项让 dispatch 立即回执。占用者是 detached job 时新命令
-   * 拒绝（Q6：诚实回状态优先于排队），纯同步并发 FIFO 语义不变。 */
+  /** 同一会话命令占位制（2026-10-25 interactive-stdin 轮）：dispatch 入口**同步**建立
+   * 命令占位（activeCommand + inFlight + 账本条目）——上一条命令仍在运行（同步等待 /
+   * 等输入 / detached job）时新 cmd 立即 E_SESSION_BUSY；原「纯同步并发排 FIFO」语义
+   * 废除（排队会让等输入的命令与补输入动作互相卡死，也给 busy 留下绕行窗口）。
+   * P4/P5：超时不杀命令而是 handoff 成 running job；background 立即回执；P8 显式
+   * interrupt 保留在 job.interrupt；死亡/冷态先重启（reconnect 语义不变）。 */
   dispatch(cmd: string, dOpts: PtyDispatchOptions): Promise<PtyDispatchResult> {
+    if (this.state === 'disposed')
+      return Promise.reject(new Error(`[E_SESSION_DISPOSED] remote pty session '${this.opts.id}' was disposed before dispatch`))
+    if (this.activeCommand !== null) {
+      const handle = this.activeCommand.jobId ?? this.activeCommand.commandId
+      return Promise.reject(new Error(
+        `[E_SESSION_BUSY] remote: pty session '${this.opts.id}' still runs a command (${this.activeCommand.commandId}) — send it more stdin with the input action, follow its output via job_output ${handle} (a synchronous exec hands its job off there on timeout), cancel with job_kill ${handle}, or address other work to another session / oneshot`,
+      ))
+    }
+    const commandId = dOpts.commandId
+    const entry: LedgerEntry = { commandId, summary: summaryOf(cmd), exit: null, durationMs: 0, running: true, ...(dOpts.jobId !== undefined ? { jobId: dOpts.jobId } : {}) }
+    this.ledger.push(entry)
+    if (this.ledger.length > LEDGER_MAX) this.ledger.shift()
+    this.activeCommand = { commandId, ...(dOpts.jobId !== undefined ? { jobId: dOpts.jobId } : {}) }
+    this.inFlight++
     const attempt = async (): Promise<PtyDispatchResult> => {
       const started = Date.now()
       const reconnected = this.state === 'dead'
-      if (this.state !== 'ready') await this.start()
-      if (this.state === 'disposed') throw new Error(`[E_SESSION_DISPOSED] remote pty session '${this.opts.id}' was disposed before dispatch`)
-      if (this.detachedJob !== null)
-        throw new Error(
-          `[E_SESSION_BUSY] remote: pty session '${this.opts.id}' still runs a detached command (${this.detachedJob.commandId}) — poll job_output ${this.detachedJob.commandId}, cancel with job_kill ${this.detachedJob.commandId}, or address other work to another session / oneshot`,
-        )
-      const commandId = dOpts.commandId
-      const entry: LedgerEntry = { commandId, summary: summaryOf(cmd), exit: null, durationMs: 0, running: true }
-      this.ledger.push(entry)
-      if (this.ledger.length > LEDGER_MAX) this.ledger.shift()
-      this.inFlight++
+      /** 占位撤销：命令从未真正启动（建连失败 / 建连中被 dispose）——释放 busy 与计数，
+       * 撤掉账本条目（与旧时序等价：条目原本在 start 成功之后才建立）。 */
+      const abandon = (): void => {
+        this.activeCommand = null
+        this.inFlight--
+        const index = this.ledger.indexOf(entry)
+        if (index >= 0) this.ledger.splice(index, 1)
+      }
+      if (this.state !== 'ready') {
+        try {
+          await this.start()
+        } catch (error) {
+          abandon()
+          throw error
+        }
+      }
+      if (this.state === 'disposed') {
+        abandon()
+        throw new Error(`[E_SESSION_DISPOSED] remote pty session '${this.opts.id}' was disposed before dispatch`)
+      }
       return await new Promise<PtyDispatchResult>((resolve) => {
         const nonce = genNonce()
         const ring = new Utf16TailRing(OUTPUT_HARD_CAP)
@@ -192,6 +231,7 @@ export class PtySession {
         const cleanup = (): void => {
           this.onChunk = null
           this.detachedJob = null
+          this.activeCommand = null
           // I1（终审）：已结算 dispatch 的死亡等待必须摘除——否则闭包钉住整段 output，
           // 长命会话每调用累积一个 waiter（init 路径的 filter 同款形态）
           this.deathWaiters = this.deathWaiters.filter((w) => w !== deathWaiter)
@@ -248,9 +288,41 @@ export class PtySession {
         interruptTimer = setTimeout(() => detach(), dOpts.timeoutSec === undefined ? 120_000 : dOpts.timeoutSec * 1_000)
       })
     }
-    const run = this.queue.then(attempt, attempt)
-    this.queue = run.then(() => undefined, () => undefined)
-    return run
+    return attempt()
+  }
+
+  /** §3.1（2026-10-25）interactive-stdin：向当前运行中的命令追加 stdin——只写既有通道
+   * 与身份，不新建命令、账本条目或输出游标；不重连、不重放（dead/disposed 明确拒绝）。
+   * 校验与写入全同步：多次 input 按调用顺序整段写入不交错；写入失败如实抛错（私有
+   * write() 的静默忽略不适用于回执语义）。stdin:"" 是零字节写入，不是 EOF。 */
+  input(options: PtyInputOptions): Promise<PtyInputReceipt> {
+    const fail = (code: string, hint: string): Promise<PtyInputReceipt> =>
+      Promise.reject(new Error(`${code} remote: ${hint}`))
+    if (this.state === 'disposed')
+      return fail('[E_SESSION_DISPOSED]', `pty session '${displayKey(this.opts.key)}' was disposed — input never reaches a disposed session`)
+    if (this.state === 'dead')
+      return fail('[E_SESSION_NOT_RUNNING]', `pty session '${displayKey(this.opts.key)}' died — input never reconnects or replays; start a new command (exec reconnects a fresh shell) and re-send only what is still needed`)
+    if (this.state === 'starting')
+      return fail('[E_SESSION_NOT_READY]', `pty session '${displayKey(this.opts.key)}' is still initializing — wait for the exec receipt, then input`)
+    const active = this.activeCommand
+    if (active === null)
+      return fail('[E_SESSION_NOT_RUNNING]', `pty session '${displayKey(this.opts.key)}' has no running command (state ${this.state}) — input writes into a command started by exec; it is never an implicit shell command`)
+    if (options.commandId !== undefined && options.commandId !== active.commandId)
+      return fail('[E_COMMAND_MISMATCH]', `commandId ${JSON.stringify(options.commandId)} does not match the running command ${active.commandId} — input aimed at an earlier prompt is never written to the next command`)
+    const stdin = this.proc?.stdin
+    if (stdin?.writable !== true)
+      return fail('[E_SESSION_WRITE_FAILED]', `pty session '${displayKey(this.opts.key)}' has no writable stdin channel (state ${this.state}) — follow the running command via job_output for its settled result`)
+    try {
+      stdin.write(options.stdin)
+    } catch (error) {
+      return fail('[E_SESSION_WRITE_FAILED]', `writing stdin to pty session '${displayKey(this.opts.key)}' failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    return Promise.resolve({
+      session: displayKey(this.opts.key),
+      commandId: active.commandId,
+      ...(active.jobId !== undefined ? { jobId: active.jobId } : {}),
+      writtenBytes: Buffer.byteLength(options.stdin, 'utf8'),
+    })
   }
 
   /** TTL / row teardown：尽力 exit，1s 后杀组，出池。 */

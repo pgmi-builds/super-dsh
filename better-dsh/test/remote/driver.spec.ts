@@ -270,3 +270,38 @@ describe('RemoteDriver terminal disposal', () => {
     } finally { await driver.dispose() }
   })
 })
+
+describe('RemoteDriver input (interactive stdin, 2026-10-25)', () => {
+  it('routes only to live PTY sessions; machine targets, creation forms and hub lanes refuse without discovery', async () => {
+    const d = driverWith({ rosterRunner: async () => { throw new Error('DISCOVERY MUST NOT RUN') } })
+    await expect(d.input('ssh:dev4', { stdin: 'x\n' })).rejects.toThrow(/input writes into a live PTY session/)
+    await expect(d.input('dev4', { stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/) // bare miss never scans or dials
+    await expect(d.input('ssh:dev4:pty', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
+    await expect(d.input('ssh:dev4:pty:lbl', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
+    await expect(d.input('hub:m4', { stdin: 'x\n' })).rejects.toThrow(/input writes into a live PTY session/)
+    await expect(d.input('hub:m4:pty', { stdin: 'x\n' })).rejects.toThrow(/Hub PTY lane/)
+    await expect(d.input('pty:nosuch', { stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/)
+    await expect(d.input('pty', { stdin: 'x\n' })).rejects.toThrow(/E_PARAMS/)
+    await d.dispose()
+  })
+  it('writes into the running command of a live session; receipt carries identity and no guessed jobId; owner-scoped', async () => {
+    const d = driverWith({ spawnArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+    try {
+      const warm = await d.call({ target: 'pty:ix1', spawn: 'bash' })
+      expect(warm.created).toBe(true)
+      const pending = d.call({ target: 'pty:ix1', cmd: `printf 'P:'; IFS= read -s -r v; printf 'OK:%s' "$v"`, timeout: 30 })
+      for (let i = 0; i < 200 && !(await d.status('pty:ix1')).includes('busy'); i++) await new Promise((r) => setTimeout(r, 20))
+      const receipt = await d.input('pty:ix1', { stdin: 'val\n' })
+      expect(receipt.session).toMatch(/^pty:pty-/)
+      expect(receipt.label).toBe('ix1')
+      expect(receipt.connection).toBe('BYOP')
+      expect(receipt.writtenBytes).toBe(4)
+      expect(receipt.commandId).toMatch(/^remote-/)
+      expect(receipt.jobId).toBeUndefined() // no official job exists in the sync window — never guess one
+      await expect(d.input('pty:ix1', { stdin: 'x\n' }, { sessionKey: 'someone-else' })).rejects.toThrow(/E_NO_SESSION/)
+      const r = await pending
+      expect(r.stdout).toContain('OK:val')
+      await expect(d.input('pty:ix1', { stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/) // idle: never an implicit shell command
+    } finally { await d.dispose() }
+  }, 15_000)
+})
