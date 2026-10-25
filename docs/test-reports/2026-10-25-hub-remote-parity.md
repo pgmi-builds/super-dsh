@@ -74,3 +74,12 @@ Session `session-78323c91-5ffc-47e5-8b2e-2cbea7e56b92`（deepseek-flash，真实
 - 未 `npm publish`；未 GitHub push/tag；生产 home/端口/Caddyfile 零触碰（4999/4998 测试线 launcher 常规重启）。
 - `better-dsh/src/remote/` 唯一可编辑源；`super-dsh/remote` 闭包纯生成（重建 + provenance + pair 校验通过）。
 - 泵子进程环境可见性：cookie/URL 走 env（同 uid 可读，与会话进程自身同信任域），不进 argv。
+
+## 8. 独立复测（2026-10-26，0.3.2-c）
+
+独立第一人称复测报告：[2026-10-26-remote-pty-c-retest.md](2026-10-26-remote-pty-c-retest.md)。要点：
+
+- remote PTY（ssh/docker）无回归；hub PTY 的身份/label/提示→input→完成/状态持久/busy/handoff/runner/close/card 均在 `hub:bfwu` 上实测通过。
+- **F4（本轮新发现，与本文件 §5 的「逐动作同形」冲突）**：hub lane 的本地 `script` 包装只有 `stty -echo`、没有 raw，`^C`/`^D` 先被本地终端行规程消费（SIGINT 打死 pump / EOF 结束 pump stdin），因此 hub 上的 `input ^C`、`input ^D`、`job_kill` 都会把整条会话打死（`session died`，下一次 dispatch reconnect），而不是「中断命令、会话存活」。根因与实验室对照见复测报告 §4；修复方向 = wrapper 改 `stty raw -echo`，建议 `0.3.2-d` 并重测。
+- b 轮 F1/F2 在 c 仍复现（`pty-session.ts` 零改动）；F3 未复现但理论风险仍在。
+- 复测期间重跑双套件：better-dsh `241 pass / 8 skip`、superd-hub `643 pass / 1 skip / 0 fail`；dev3 4998 的安装/健康/哈希核验通过。
