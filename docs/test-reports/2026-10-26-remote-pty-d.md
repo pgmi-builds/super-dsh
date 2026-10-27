@@ -102,3 +102,10 @@
 - 验收脚本与产物：`.scratch/v032d-acceptance.mjs`、`.scratch/v032d-acceptance-out.txt`、`/tmp/v032d-acc.jsonl`（保留供查证，可删）。
 - dev3 `.scratch/pack-0.3.2-d/`（tarball 对 + pair.json，安装源，保留）。
 - 双 rig 保持运行（4999 / 4998，0.3.2-d）。
+
+
+---
+
+## 勘误（2026-10-27，发布前复核）
+
+§1 的 better-dsh tarball SHA-256 应为 **`3c8868e4fab07b1738bcc9cf0a72f7d5210fd1f746a12953c97245294cf87fe4`**。原文 `97f21dd4…` 是 `npm run pack`（05:19）打印的**重打包前**值；`start-4999.sh` 的 pack-pair 于 05:22 重打包（pair.json `builtAt=2026-10-25T21:22:18Z`）生成本轮实际发运对——与 0.3.2-c 轮同类现象。发布前复核（2026-10-27）：盘上 tarball 实测与 pair.json 同值 `3c8868e4fab07b1738bcc9cf0a72f7d5210fd1f746a12953c97245294cf87fe4`，`verify-package-pair.mjs` exit 0，双 rig 安装态 `plugin.js` 三处同为 `3528ed04…`。另：独立复测（[2026-10-27-superd-0.3.2-d-retest.md](2026-10-27-superd-0.3.2-d-retest.md)）所指 5 个失败用例在无沙箱运行线复跑为 25/25 全过，确认为 bwrap 夹具环境问题，非产品回归。
