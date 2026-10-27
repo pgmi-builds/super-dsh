@@ -5,7 +5,7 @@
 // tool); it never decides policy — auth is the shared /api fence's, and the
 // initiator-side per-machine knob lives on the caller's registry row.
 //
-// Output discipline (better-dash lesson, spec §8.1): return the LAST 30k of
+// Output discipline (0.3.2-e): return output IN FULL up to the 4MiB retention ring;
 // each stream, retain at most 4M per stream while running (the tail of a
 // capped ring is still the tail of the stream), mark `truncated` whenever a
 // stream's total exceeded what is returned. Kill discipline: SIGTERM to the
@@ -45,8 +45,9 @@ export interface OneShotExecResult {
   outcome: 'exited' | 'signaled' | 'timeout' | 'spawn-error'
 }
 
-/** Per-stream returned tail: at most 30,000 bytes, beginning on a UTF8 boundary. */
-export const EXEC_TAIL_WINDOW = 30_000
+/** 0.3.2-e: the 30K returned-tail window is REMOVED — output returns in full up to
+ * retention and model-context sizing is the native agent runtime's job (spill policy
+ * or its foreign equivalent). Retention below stays the memory-safety bound. */
 /** Hub oneshot per-stream raw-byte retention: 4MiB, distinct from native/PTy UTF16 caps. */
 export const EXEC_RING_HARD_CAP = 4 * 1024 * 1024
 export const EXEC_DEFAULT_TIMEOUT_SEC = 120
@@ -137,7 +138,7 @@ export async function runOneShotExec(input: OneShotExecInput, log?: A2aLogFn): P
   })
   clearTimeout(killTimer)
   if (graceTimer !== undefined) clearTimeout(graceTimer)
-  const outTail = stdout.tail(EXEC_TAIL_WINDOW), errTail = stderr.tail(EXEC_TAIL_WINDOW)
+  const outTail = stdout.tail(), errTail = stderr.tail()
   const outText = outTail.toString('utf8')
   const errText = spawnError !== undefined
     ? `exec: spawn failed — ${spawnError}${input.cwd === undefined ? '' : ` (cwd: ${input.cwd})`}`
@@ -155,7 +156,7 @@ export async function runOneShotExec(input: OneShotExecInput, log?: A2aLogFn): P
     stdout: outText,
     stderr: errText,
     durationMs: Date.now() - started,
-    truncated: stdout.total > outTail.length || stderr.total > errTail.length,
+    truncated: stdout.total > outTail.length || stderr.total > errTail.length, // 0.3.2-e: true 仅当 retention 驱逐（>4MiB）
     outputStats: { stdout: stdout.stats(outTail.length), stderr: stderr.stats(errTail.length) },
     timedOut,
     outcome,

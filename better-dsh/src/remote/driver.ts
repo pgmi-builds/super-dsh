@@ -13,7 +13,7 @@ import { startBinaryProcess } from './process.ts'
 import { helperAssets, HelperRegistry, type HelperAssets, type HelperRunnerInfo } from './helper.ts'
 import { startOwnedNativeProcess } from './ssh-process.ts'
 import { PtyPool, type PtyRunningJob, type PtySession, type LedgerEntry, type PtyInputOptions, type PtyInputReceipt } from './pty-session.ts'
-import { tailWindow, type EnvDelta } from './nonce-framing.ts'
+import { disclose, type EnvDelta } from './nonce-framing.ts'
 import { resolveTarget, parseTargetForm, type TargetForm, type TargetPlan } from './target.ts'
 import { LabelPool, validateLabel, PTY_ID_RE, describeEntry, type PoolEntry } from './labels.ts'
 import { probeTarget, renderProbe, renderLedger, type ProbeOptions } from './status.ts'
@@ -78,7 +78,6 @@ export interface RemoteDriverOptions {
   getHub?: () => HubRemoteTransport | undefined
   execTimeoutSec?: number
   idleTtlSec?: number
-  maxOutputChars?: number
   onAudit?: (r: RemoteAuditRecord) => void
   oneshotArgvFor?: (plan: TargetPlan, cmd: string, options: { cleanupTag?: string }) => string[]
   ptyArgvFor?: (plan: TargetPlan) => string[]
@@ -183,7 +182,6 @@ export class RemoteDriver {
     callCtx: { sessionKey?: string; ptyBackground?: boolean; commandId?: string },
   ): Promise<RemoteCallResult> {
     const timeoutSec = params.timeout ?? this.opts.execTimeoutSec ?? 120
-    const cap = this.opts.maxOutputChars ?? 30_000
     const sessionKey = callCtx.sessionKey ?? 'no-session'
     const hasCmd = params.cmd !== undefined && params.cmd.length > 0
     const hasSpawn = params.spawn !== undefined && params.spawn.length > 0
@@ -196,8 +194,8 @@ export class RemoteDriver {
       if (this.disposed) process.cancel('owner disposed')
       const result = await process.done
       const stdout = process.read('stdout', 0), stderr = process.read('stderr', 0)
-      const out = tailWindow(stdout.text, cap, stdout.stats)
-      const err = tailWindow(stderr.text, cap, stderr.stats)
+      const out = disclose(stdout.text, stdout.stats)
+      const err = disclose(stderr.text, stderr.stats)
       return {
         ...result, mode: 'oneshot', target: `hub:${form.machine}`, connection: `hub:${form.machine}`, cwd: null, reconnected: false, runner: HUB_RUNNER,
         stdout: (!stdout.stats && stdout.lossy ? '[truncated: peer returned only a tail; exact total/retained/dropped unavailable]\n' : '') + out.text,
@@ -212,7 +210,7 @@ export class RemoteDriver {
     if (lane !== undefined) {
       const session = lane.session
       if (!hasCmd) { await session.warm(); return this.warmReceipt(session) }
-      return await this.dispatchPty(session, params, callCtx, timeoutSec, cap)
+      return await this.dispatchPty(session, params, callCtx, timeoutSec)
     }
 
     // —— BYO SSH 注册（ssh 在场、但不是开 PTY 的形态）——
@@ -220,7 +218,7 @@ export class RemoteDriver {
       const label = form.form === 'direct' || form.form === 'bare' ? form.name : undefined
       const name = this.registerByoSsh(label, params.ssh, sessionKey)
       if (!hasCmd) return { mode: 'oneshot', target: `ssh:${name}`, connection: `ssh:${name}`, byoTag: 'byo-ssh', exit: null, cwd: null, timedOut: false, reconnected: false, stdout: `ssh:${name} registered (byo-ssh, no dialing). Reuse the label anywhere ssh: aliases work; a new Agent registers again.`, durationMs: 0 }
-      return await this.oneshot({ kind: 'ssh', host: normalizeSshConnection(params.ssh).host, connection: normalizeSshConnection(params.ssh) }, `ssh:${name}`, params, timeoutSec, cap)
+      return await this.oneshot({ kind: 'ssh', host: normalizeSshConnection(params.ssh).host, connection: normalizeSshConnection(params.ssh) }, `ssh:${name}`, params, timeoutSec)
     }
 
     // —— PTY 复用（pty:<id|label> 或裸 label 命中池内会话）——
@@ -229,12 +227,12 @@ export class RemoteDriver {
     if (form.form === 'pty-selector') {
       const session = this.resolvePty(form.idOrLabel!, sessionKey)
       if (!hasCmd) return this.cardReceipt(session)
-      return await this.dispatchPty(session, params, callCtx, timeoutSec, cap)
+      return await this.dispatchPty(session, params, callCtx, timeoutSec)
     }
     // —— oneshot：direct 前缀或裸名（池解析，miss 触发一次扫描）——
     if (form.form === 'direct') {
       const plan = form.transport === 'ssh' ? this.sshPlanFor(form.name, sessionKey) : resolveTarget(`${form.transport}:${form.name}`)
-      return await this.oneshot(plan, `${form.transport}:${form.name}`, params, timeoutSec, cap)
+      return await this.oneshot(plan, `${form.transport}:${form.name}`, params, timeoutSec)
     }
     if (form.form !== 'bare') throw new Error('[E_INTERNAL] remote: unreachable target form after routing')
     // bare：先池内寻址（pty 会话优先于机器——会话是操作环境），miss 扫描一次再寻址
@@ -242,11 +240,11 @@ export class RemoteDriver {
     if (entry.kind === 'pty') {
       const session = this.resolvePty(form.name, sessionKey)
       if (!hasCmd) return this.cardReceipt(session)
-      return await this.dispatchPty(session, params, callCtx, timeoutSec, cap)
+      return await this.dispatchPty(session, params, callCtx, timeoutSec)
     }
-    if (entry.kind === 'hub') return await this.hubOneshot(entry.machine, `hub:${entry.machine}`, params, timeoutSec, cap)
+    if (entry.kind === 'hub') return await this.hubOneshot(entry.machine, `hub:${entry.machine}`, params, timeoutSec)
     const plan = this.planOf(entry)
-    return await this.oneshot(plan, form.name, params, timeoutSec, cap)
+    return await this.oneshot(plan, form.name, params, timeoutSec)
   }
 
   /** Native-first copy routing (spec: remote-native-shortcut) — unchanged by the workbench round. */
@@ -670,7 +668,6 @@ export class RemoteDriver {
     params: PreparedRemoteInput,
     callCtx: { sessionKey?: string; ptyBackground?: boolean; commandId?: string },
     timeoutSec: number,
-    cap: number,
   ): Promise<RemoteCallResult> {
     // P10（hub 会话）：每次 dispatch 前重验 pairing——ptyEndpoint 校验 registry 行，复用不豁免。
     const hubConn = session.identity.connection
@@ -681,7 +678,7 @@ export class RemoteDriver {
     }
     const commandId = callCtx.commandId ?? genCommandId()
     const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec, commandId, ...(callCtx.ptyBackground === true ? { background: true, jobId: commandId } : {}) }) // background: commandId 即 registry jobId，账本/input 回执如实携带
-    const out = tailWindow(r.output, cap, r.outputStats?.stdout)
+    const out = disclose(r.output, r.outputStats?.stdout)
     const id = session.identity
     return {
       mode: 'pty', target: `pty:${id.id}`, session: `pty:${id.id}`, ...(id.label !== undefined ? { label: id.label } : {}),
@@ -722,15 +719,15 @@ export class RemoteDriver {
     }
   }
 
-  private async oneshot(plan: TargetPlan, display: string, params: PreparedRemoteInput, timeoutSec: number, cap: number): Promise<RemoteCallResult> {
+  private async oneshot(plan: TargetPlan, display: string, params: PreparedRemoteInput, timeoutSec: number): Promise<RemoteCallResult> {
     this.assertOpen()
     const process = this.own(await this.nativeProcess(plan, params, timeoutSec))
     if (this.disposed) process.cancel('owner disposed')
     const result = await process.done
     const stdout = process.read('stdout', 0), stderr = process.read('stderr', 0)
     const r = { ...result, stdout: stdout.text, stderr: [stderr.text, stderr.diagnostic].filter(Boolean).join('\n'), outputStats: { stdout: stdout.stats!, stderr: stderr.stats } }
-    const out = tailWindow(r.stdout, cap, r.outputStats?.stdout)
-    const err = r.stderr.length > 0 ? tailWindow(r.stderr, cap, r.outputStats?.stderr) : undefined
+    const out = disclose(r.stdout, r.outputStats?.stdout)
+    const err = r.stderr.length > 0 ? disclose(r.stderr, r.outputStats?.stderr) : undefined
     return {
       mode: 'oneshot', target: display, exit: r.exit, cwd: null,
       timedOut: r.timedOut, reconnected: false, stdout: out.text,
@@ -741,13 +738,13 @@ export class RemoteDriver {
     }
   }
 
-  private async hubOneshot(machine: string, display: string, params: PreparedRemoteInput, timeoutSec: number, cap: number): Promise<RemoteCallResult> {
+  private async hubOneshot(machine: string, display: string, params: PreparedRemoteInput, timeoutSec: number): Promise<RemoteCallResult> {
     const process = this.own(await this.hubOneshotProcess(machine, params))
     if (this.disposed) process.cancel('owner disposed')
     const result = await process.done
     const stdout = process.read('stdout', 0), stderr = process.read('stderr', 0)
-    const out = tailWindow(stdout.text, cap, stdout.stats)
-    const err = tailWindow(stderr.text, cap, stderr.stats)
+    const out = disclose(stdout.text, stdout.stats)
+    const err = disclose(stderr.text, stderr.stats)
     return {
       ...result, mode: 'oneshot', target: display, connection: display, cwd: null, reconnected: false, runner: HUB_RUNNER,
       stdout: (!stdout.stats && stdout.lossy ? '[truncated: peer returned only a tail; exact total/retained/dropped unavailable]\n' : '') + out.text,

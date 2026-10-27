@@ -45,7 +45,7 @@ it('real scoped Hub calls preserve shell state, isolate Agent incarnations and l
   const { upsertRemote } = await import('../../../super-dsh/superd-hub/dist/machines.js')
   const { installHubRemoteTransport } = await import('../../../super-dsh/superd-hub/dist/remote-row.js')
   const home = await mkdtemp(join(tmpdir(), 'remote-hub-scoped-'))
-  const h = await createRealRemoteHarness({ copies: 2, driverOptions: { maxOutputChars: 100, execTimeoutSec: 1 } })
+  const h = await createRealRemoteHarness({ copies: 2, driverOptions: { execTimeoutSec: 1 } })
   const server = createServer()
   let handler: Parameters<Parameters<typeof registerPtyExecutor>[0]['registerUpgrade']>[0]['handler'] | undefined
   const off = await registerPtyExecutor({ registerUpgrade: route => { handler = route.handler; return () => { handler = undefined } } } as Parameters<typeof registerPtyExecutor>[0], { authorize: req => (req as import('node:http').IncomingMessage).headers.cookie === 'paired=fixture' })
@@ -67,8 +67,8 @@ it('real scoped Hub calls preserve shell state, isolate Agent incarnations and l
     expect((await h.invoke(first, { action: 'exec', target: sessionId, cmd: 'printf %s "$OWNER_VALUE"' })).text).toContain('old')
     // P4/P5：超时不杀，handoff 成 running job（timedOut 如实，会话存活）。
     expect(((await h.invoke(first, { action: 'exec', target: sessionId, cmd: 'sleep 2' })) as { notice?: string }).notice ?? '').toContain('interrupted')
-    const capped = await h.invoke(first, { action: 'exec', target: 'hub:peer:pty', cmd: 'printf %150s | tr " " x' })
-    expect(capped.text).toContain('[truncated: showing last 100 of 150 chars]')
+    const full = await h.invoke(first, { action: 'exec', target: 'hub:peer:pty', cmd: 'printf %150s | tr " " x' })
+    expect(full.text).toBe('x'.repeat(150)) // 0.3.2-e: 自有窗口已删——全量返回，无 banner
     // Agent 隔离：另一个 Agent incarnation 摸不到本 Agent 的会话（owner-scoped 池）。
     const other = await h.createAgent('other-session')
     await expect(h.invoke(other, { action: 'exec', target: sessionId, cmd: 'true' })).rejects.toThrow(/E_NO_SESSION/)

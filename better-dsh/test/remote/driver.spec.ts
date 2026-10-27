@@ -70,14 +70,15 @@ describe('RemoteDriver routing', () => {
     await expect(d.call({ target: `pty:${c1.session!.slice(4)}`, cmd: 'pwd' }, { sessionKey: 'a2' })).rejects.toThrow(/E_NO_SESSION/)
     await d.dispose()
   })
-  it('truncates oversized output to the tail window with disclosure', async () => {
+  it('0.3.2-e: no self-made window — output returns IN FULL; retention (4M) is the only bound, stats report total', async () => {
     const d = new RemoteDriver({
-      maxOutputChars: 10,
       oneshotArgvFor: () => ['bash', '-c', 'printf "x%.0s" $(seq 1 100)'],
     })
     const r = await d.call({ target: 'dev4', cmd: 'x' })
-    expect(r.truncated).toBe(100)
-    expect(r.stdout).toContain('[truncated: showing last 10 of 100 chars]')
+    expect(r.truncated).toBeUndefined()
+    expect(r.stdout).toBe('x'.repeat(100))
+    expect(r.stdout).not.toContain('[truncated')
+    expect(r.outputStats?.stdout).toMatchObject({ total: 100, returned: 100, dropped: 0 })
     await d.dispose()
   })
   it('emits one audit record per attempt (success, nonzero exit, and error paths)', async () => {

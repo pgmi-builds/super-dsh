@@ -130,10 +130,10 @@ describe('independent delivery entries', () => {
     const project = await createConfigProjector()
     for (const { Config } of [Better, Super]) {
       expect(isNativeConfigSchema(Config)).toBe(true)
-      expect(Config['~standard'].validate(undefined)).toMatchObject({ value: { execTimeoutSec: 120, idleTtlSec: 900, maxOutputChars: 30_000 } })
+      expect(Config['~standard'].validate(undefined)).toMatchObject({ value: { execTimeoutSec: 120, idleTtlSec: 900 } })
       expect(Config['~standard'].validate({ execTimeoutSec: 0 })).toHaveProperty('issues')
       const result = project(Config, 'remote')
-      expect(result).toMatchObject({ acceptsMissing: true, limitations: [], schema: { default: { execTimeoutSec: 120, idleTtlSec: 900, maxOutputChars: 30_000 } } })
+      expect(result).toMatchObject({ acceptsMissing: true, limitations: [], schema: { default: { execTimeoutSec: 120, idleTtlSec: 900 } } })
       expect(Config.dict?.execTimeoutSec?.meta).toMatchObject({ min: 1, default: 120 })
     }
   })

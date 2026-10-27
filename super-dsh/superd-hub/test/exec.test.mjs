@@ -10,7 +10,6 @@ import {
   parseOneShotExecBody,
   runOneShotExec,
   postOneShotExec,
-  EXEC_TAIL_WINDOW,
   EXEC_API_BASE,
 } from '../dist/exec.js'
 import { handleExecPost } from '../dist/mesh-rpc.js'
@@ -39,12 +38,13 @@ test('Hub byte cap and returned UTF8 boundary report truthful counters and final
   const r = await runOneShotExec({ cmd: `head -c 4194310 /dev/zero | tr '\\0' x; printf LAST; printf '中🙂' >&2` })
   assert.ok(r.stdout.endsWith('LAST'))
   assert.deepEqual(r.outputStats, {
-    stdout: { unit: 'bytes', total: 4_194_314, retained: 4_194_304, dropped: 10, returned: 30_000, retentionLimit: 4_194_304 },
+    stdout: { unit: 'bytes', total: 4_194_314, retained: 4_194_304, dropped: 10, returned: 4_194_304, retentionLimit: 4_194_304 },
     stderr: { unit: 'bytes', total: 7, retained: 7, dropped: 0, returned: 7, retentionLimit: 4_194_304 },
   })
   const unicode = await runOneShotExec({ cmd: `python3 -c 'import sys;sys.stdout.write("🙂"*8000+"LAST")'` })
-  assert.equal(unicode.stdout, '🙂'.repeat(7499) + 'LAST')
-  assert.equal(unicode.outputStats.stdout.returned, 30_000)
+  assert.equal(unicode.stdout, '🙂'.repeat(8000) + 'LAST', '0.3.2-e: under retention EVERYTHING returns inline — no boundary window')
+  assert.equal(unicode.outputStats.stdout.returned, 32_004)
+  assert.equal(unicode.outputStats.stdout.dropped, 0)
   assert.ok(!unicode.stdout.includes('\ufffd'))
 })
 
@@ -88,26 +88,27 @@ test('runOneShotExec: exit code, stdout/stderr separation, bash -lc, cwd', async
   } finally { rmSync(d, { recursive: true, force: true }) }
 })
 
-test('runOneShotExec: output beyond the tail window is truncated to the LAST 30k', async () => {
+test('runOneShotExec (0.3.2-e): no 30K window — output under retention returns IN FULL', async () => {
   const big = await runOneShotExec({
     cmd: `head -c 100000 /dev/zero | tr '\\0' a; head -c 60000 /dev/zero | tr '\\0' x`,
   })
   assert.equal(big.exit, 0)
-  assert.equal(big.stdout.length, EXEC_TAIL_WINDOW)
-  assert.ok(big.stdout.endsWith('x'), 'the window keeps the TAIL, not the head')
-  assert.ok(!big.stdout.includes('a'), 'the dropped head must not leak into the window')
-  assert.equal(big.truncated, true)
+  assert.equal(big.stdout.length, 160000, 'the whole 160000 bytes return inline — native runtime owns context sizing')
+  assert.ok(big.stdout.startsWith('a') && big.stdout.endsWith('x'), 'head AND tail are both present')
+  assert.equal(big.truncated, false)
+  assert.equal(big.outputStats.stdout.dropped, 0)
 })
 
-test('runOneShotExec: the 4M ring cap never changes the tail semantics', async () => {
+test('runOneShotExec: the 4MiB retention ring stays the only bound — eviction keeps the tail, stats disclose the drop', async () => {
   const huge = await runOneShotExec({
     cmd: `head -c 100000 /dev/zero | tr '\\0' a; head -c 4500000 /dev/zero | tr '\\0' x`,
     timeoutSec: 60,
   })
   assert.equal(huge.exit, 0)
-  assert.equal(huge.stdout.length, EXEC_TAIL_WINDOW)
+  assert.equal(huge.stdout.length, 4 * 1024 * 1024, 'full retained ring returns')
   assert.ok(huge.stdout.split('').every((c) => c === 'x'), 'tail of the capped ring = tail of the stream')
   assert.equal(huge.truncated, true)
+  assert.equal(huge.outputStats.stdout.dropped, 4600000 - 4 * 1024 * 1024)
 }, { timeout: 90_000 })
 
 test('runOneShotExec: timeout → SIGTERM→SIGKILL group kill, timedOut, fast return', async () => {

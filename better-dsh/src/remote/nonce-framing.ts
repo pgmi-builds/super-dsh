@@ -29,16 +29,21 @@ export function normalizePtyText(s: string): string {
   return stripAnsi(s).replace(/\r\n/g, '\n').replace(/\r/g, '')
 }
 
-export function tailWindow(text: string, cap: number, stats?: OutputStats): { text: string; truncated?: number; stats?: OutputStats } {
-  let tail = text.slice(-cap)
-  if (tail.charCodeAt(0) >= 0xdc00 && tail.charCodeAt(0) <= 0xdfff) tail = tail.slice(1)
-  const returned = stats?.unit === 'bytes' ? Buffer.byteLength(tail) : tail.length
-  const total = stats?.total ?? text.length
-  const updated = stats === undefined ? {} : { stats: { ...stats, returned } }
-  if (total <= returned) return { text: tail, ...updated }
-  const unit = stats?.unit === 'bytes' ? 'bytes' : 'chars'
-  const eviction = stats !== undefined && stats.dropped > 0 ? `; retained ${stats.retained}, dropped head ${stats.dropped}, retention limit ${stats.retentionLimit} ${stats.unit === 'bytes' ? 'bytes' : 'UTF-16 code units'}` : ''
-  return { text: `[truncated: showing last ${returned} of ${total} ${unit}${eviction}]\n${tail}`, truncated: total, ...updated }
+/** 0.3.2-e：自有 30K 返回窗口已删（原生 agent runtime 的 spill/输出保护接管模型上下文
+ * 尺寸）。本 helper 只做 retention 披露：ring 留存（4M UTF-16 / 4MiB bytes）未驱逐时
+ * 全量透传（returned=retained，无 banner）；驱逐（dropped>0，仅 >4M 输出发生）时打一行
+ * banner 且 truncated=原始总量。text 已是 ring 尾部，不再二次裁剪。 */
+export function disclose(text: string, stats?: OutputStats): { text: string; truncated?: number; stats?: OutputStats } {
+  if (stats === undefined) return { text }
+  const returned = stats.retained
+  const updated = { stats: { ...stats, returned } }
+  if (stats.dropped <= 0) return { text, ...updated }
+  const unit = stats.unit === 'bytes' ? 'bytes' : 'chars'
+  return {
+    text: `[retention tail: showing last ${stats.retained} of ${stats.total} ${unit}; dropped head ${stats.dropped}, retention limit ${stats.retentionLimit} ${stats.unit === 'bytes' ? 'bytes' : 'UTF-16 code units'}]\n${text}`,
+    truncated: stats.total,
+    ...updated,
+  }
 }
 
 export interface FrameParserEvents {

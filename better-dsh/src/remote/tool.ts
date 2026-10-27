@@ -84,7 +84,7 @@ PTY:
 - input is verbatim: "\\n" submits; "\\u0003" Ctrl-C; "\\u0004" Ctrl-D; "" writes nothing. Ctrl-D follows terminal EOF rules.
 - commandId, if supplied, must match running command.
 - Input receipt confirms write only; read result via SAME job.
-- Output may truncate (~30k chars per read); redirect bulk output to files.
+- Output returns in full up to retention (4M chars per stream; Hub oneshot 4MiB bytes) — beyond it the retained tail plus outputStats. Redirect bulk output to files.
 - Idle expiry: 15 min; running commands exempt.
 
 Oneshot:
@@ -417,7 +417,7 @@ function renderValue(v: RemoteToolValue): string {
   markers.push(`${secs}s`)
   if (v.running === true) markers.push(`still running — poll job_output${v.jobId !== undefined ? ` ${v.jobId}` : ''}`)
   if (v.truncated !== undefined) markers.push(`truncated, ${v.outputStatsUnavailable ? 'returned peer tail' : 'original'} ${v.truncated} ${v.outputStats?.stdout.unit === 'bytes' ? 'bytes' : 'chars'}`)
-  if (v.outputStatsUnavailable) markers.push('peer output totals/retention unavailable; returned tail only')
+  if (v.outputStatsUnavailable) markers.push('peer output totals/retention unavailable')
   parts.push(`[${markers.join(' · ')}]`)
   if (v.runner === 'posix-shim' && ((v.exit !== null && v.exit !== 0) || v.timedOut === true))
     parts.push('note: this oneshot ran through the POSIX fallback on this target; PTY lanes use an independent lane and may still work here')

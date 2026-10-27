@@ -118,7 +118,8 @@ it('scoped script and cmd stdin both cross authenticated Hub HTTP without SSH or
     expect(legacy).toMatchObject({ outputStatsUnavailable: true })
     expect(legacy).not.toHaveProperty('outputStats')
     expect(legacy).not.toHaveProperty('notice')
-    expect(legacy.text).toContain('truncated')
+    expect(legacy.text).not.toContain('truncated') // 0.3.2-e: 客户端留存兜住 3.5M——全量返回，lossy 前缀仅在驱逐时出现
+    expect(legacy.text.startsWith('x')).toBe(true)
     expect(legacy.text.endsWith('LAST')).toBe(true)
     const tool = h.host.tools.get('remote', a)!
     const rendered = tool.output!.render!({} as never, legacy as never)[0] as { text: string }

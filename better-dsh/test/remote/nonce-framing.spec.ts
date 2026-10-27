@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  buildInitCommand, createNonceFrameParser, genNonce, normalizePtyText, tailWindow, wrapPtyCommand,
+  buildInitCommand, createNonceFrameParser, disclose, genNonce, normalizePtyText, wrapPtyCommand,
 } from '../../src/remote/nonce-framing.ts'
 
 describe('command builders', () => {
@@ -108,10 +108,16 @@ describe('text hygiene', () => {
   it('normalizePtyText strips CSI/OSC and normalizes line endings', () => {
     expect(normalizePtyText('a\r\nb\rc \x1b[31mred\x1b[0m\x1b]0;title\x07end')).toBe('a\nbc redend')
   })
-  it('tailWindow caps from the tail with a disclosure header', () => {
-    const r = tailWindow('x'.repeat(100), 10)
-    expect(r.truncated).toBe(100)
-    expect(r.text).toBe('[truncated: showing last 10 of 100 chars]\n' + 'x'.repeat(10))
-    expect(tailWindow('short', 10)).toEqual({ text: 'short' })
+  it('disclose (0.3.2-e) passes text through untouched — no self-made window; stats ride with returned=retained', () => {
+    const stats = { unit: 'utf16' as const, total: 100, retained: 100, dropped: 0, returned: 100, retentionLimit: 4_000_000 }
+    expect(disclose('x'.repeat(100), stats)).toEqual({ text: 'x'.repeat(100), stats: { ...stats, returned: 100 } })
+    expect(disclose('no stats rides')).toEqual({ text: 'no stats rides' })
+  })
+  it('disclose banners ONLY on retention eviction (dropped>0): tail + original total', () => {
+    const stats = { unit: 'utf16' as const, total: 5_000_100, retained: 4_000_000, dropped: 1_000_100, returned: 4_000_000, retentionLimit: 4_000_000 }
+    const r = disclose('x'.repeat(4_000_000), stats)
+    expect(r.truncated).toBe(5_000_100)
+    expect(r.text!.startsWith('[retention tail: showing last 4000000 of 5000100 chars; dropped head 1000100, retention limit 4000000 UTF-16 code units]')).toBe(true)
+    expect(r.stats).toMatchObject({ retained: 4_000_000, returned: 4_000_000 })
   })
 })
