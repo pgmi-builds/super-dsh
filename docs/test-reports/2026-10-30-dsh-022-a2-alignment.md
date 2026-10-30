@@ -69,4 +69,22 @@ user 抽样 Hermes/OMP/PI：模型可选可对话，但 selector 标签恒显「
 - **完整性**：registry `dist.shasum`（SHA-1）与本地发运 tarball 逐字节一致——better `0d90627876a032ed…`、super `9708578d9986d3af…`。
 - **消费者核验**（全新目录 registry 安装）：better-dsh@0.3.3（1 包）`lib/index.js` 叶哈希 `346e650036a4634d4…` = tarball 叶；super-dsh@0.3.3（96 依赖包）closure `remote/plugin.js` `8dd1843f2c57097a…` = tarball 叶。
 - **验收依据**：user 真机复验通过（model selector 卡片正常）后放行；4999 线已刷 0.3.3 交付形态（boot 零 import 失败）并保持运行。
-- **未做**：git tag 未打（本轮指令未含）；dev3 prod 安装 0.3.3（`~/.dsh` + 3080 重启）仍待 user 单独下令。
+- **未做**：git tag 未打（本轮指令未含）；dev3 prod 的 0.3.3 安装已由下方“生产部署”执行。
+
+## 生产部署（2026-10-30 14:10–14:20 HKT，user 指令）
+
+user 指令：三台机器（PC / dev3 / dev2）的 dsh 与本插件升到最新并重启；dev3 的 dsh 已是 alpha 2，作为试验；dev2 的 ds-bot 一并检查上游并升级。
+
+| 机器 | dsh | super-dsh / better-dsh | ds-bot | 重启（dsh.service / 3080） |
+| --- | --- | --- | --- | --- |
+| PC | `0.2.1-rc.3` → **`0.2.2-alpha.2`** | `0.3.2-e` → **`0.3.3`** | — | 14:19:14，active |
+| dev3 | **`0.2.2-alpha.2`**（已是最新，未动） | `0.3.2-e` → **`0.3.3`** | — | 14:11:23，active |
+| dev2 | `0.2.1-rc.2` → **`0.2.2-alpha.2`** | `0.3.2` → **`0.3.3`** | `0.1.7` → **`0.2.4`**（npm latest） | 14:18:36，active |
+
+- **dsh 目标版本说明**：npm dist-tags 为 `latest = 0.2.1-rc.5`、`alpha = 0.2.2-alpha.2`；0.3.3 的 peer 硬要求 `@deepseek-ai/dsh-* >=0.2.2-0`，`latest` 标签反而是更旧的 rc 线且与 0.3.3 不兼容。故三机统一装 **0.2.2-alpha.2**（semver 最新，亦是插件唯一支持线），不是 `@latest` 标签。
+- **dev3**：升级前基线日志有 10-29 00:26 起的 `dashr-repl (better-dsh): failed to import`（022a2 破坏面）；装 0.3.3 + 重启后该行 **0 次**，事故修复。
+- **dev2 安装细节**：npm 全局 prefix 为 `~/.npm-global`，但 `~/.local/bin/dsh` 原指向 `~/.local` 下旧 rc.2 副本；已把该 symlink 重指到 `~/.npm-global/.../dsh/lib/bin.js`（旧副本保留未删），服务 ExecStart 经 PATH 取到 alpha.2。
+- **ds-bot**：上游 npm 最新 `0.2.4`（2026-10-29 发布，README 标注 tested rc.4）；host 侧在 alpha.2 上 import 成功、boot 无错误，client 半未做登录后的浏览器实测（生产密码页），交 user UI 复核。
+- **校验（三机一致）**：`systemctl --user is-active` = active；`/` 200（dev2/dev3 首次 404 后 200，既有热身形状）；重启窗口内 `failed to import` 计数 = 0；`/` 返回 Better 密码页（`Enter the session password`），证明 better-dsh 行已活。六 world 各 `1 entry did not activate` 为既有基线；`api.deepseek.com` 5s 模型列表超时后回退 bundled catalog，属网络瞬态。
+- **PC 范围**：仅重启生产 3080；测试线 4999（`test.pc.internal.test`，13:43 起）已是 0.3.3 + alpha.2，未再动。备份：各机 `/tmp/*-update-*` / `/tmp/*-plugins-*`（package.json + pnpm-lock）。
+- 未做：npm publish、git tag/push。
