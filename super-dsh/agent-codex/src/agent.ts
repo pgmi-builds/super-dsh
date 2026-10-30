@@ -45,6 +45,8 @@ import type {
   AgentStatus,
   CancelOptions,
   InboxTarget,
+  Model,
+  ModelSelection,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents, type AgentEventDispatch } from "@deepseek-ai/dsh-agent";
 import { Inbox } from "./inbox.js";
@@ -67,7 +69,7 @@ import { presetFromEvents, turnPolicyFromEvents } from "./permission.js";
 // Type-only: pulls dsh-commands' `Context.commands` augmentation into this
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
-import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
+import { createAgentModelFace, withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 import { NATIVE_LAUNCH, type CodexLaunch } from "./codex-launch.js";
 import { resolveRoute, type RouteSelection } from "./codex-route.js";
 
@@ -379,6 +381,9 @@ export class CodexAgent implements Agent {
   readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
+  /** Durable model selection (0.2.2 Agent face): the shared hub face over
+   *  `model/selection` events — see superd-hub agent-model-face.ts. */
+  readonly model: Model;
   readonly #client: CodexAppServerClient;
   readonly #loopCtx: Context;
   readonly #scope: Scope;
@@ -466,6 +471,19 @@ export class CodexAgent implements Agent {
     this.id = id;
     this.options = options;
     this.session = withSystemHead(session, () => createSystemMessage(""));
+    this.model = createAgentModelFace<ModelSelection>({
+      session: this.session,
+      options: this.options,
+      appendSelection: (selection) => {
+        this.session.append("model/selection", selection);
+      },
+      readDefault: () => {
+        const service = this.ctx.get("agentDefaultModel") as
+          | { currentSelection?: () => { provider: string; model: string } }
+          | undefined
+        return service?.currentSelection?.()
+      },
+    });
     this.#client = client;
     this.#onIdleExit = onIdleExit;
     this.#runtimeInfo = runtimeInfo;

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { onTestFinished } from 'vitest'
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { DashrRuntime } from '../src/index.ts'
 import type { Config } from '../src/index.ts'
 
@@ -86,6 +88,10 @@ export async function setupPresentation(
   const ctx = new Context()
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime, {})
+  // 0.2.2: prompt assembly resolves executor-owned sections, so the unit
+  // compositions mount the REAL native executor (as the shipped host does) —
+  // without it `systemPrompt.assemble` throws ToolExecutorUnavailableError.
+  await ctx.plugin(NativeToolExecutor)
   if (runtime !== false) {
     const runtimeFiber = await runtime(ctx)
     // The runtime service (a real kernel provider owns a subprocess) must be
@@ -257,12 +263,14 @@ export async function runCell(
   cell: string,
   extras: { agent?: Agent; signal?: AbortSignal; description?: string } = {},
 ): Promise<ToolExecutionResult> {
-  return ctx.tools.execute({
-    signal: toolSignal,
+  // 0.2.2: single model-direct calls exercise the staged pipeline directly
+  // (`executeToolFixture`) — the batch `tools.execute` selects a mounted
+  // executor, which these unit compositions deliberately omit.
+  return executeToolFixture(ctx, {
     callId: toolCallId('call-1'),
     name: 'eval',
     arguments: { cell, description: extras.description ?? 'Run the test cell' },
     ...extras.agent ? { agent: extras.agent } : {},
-    ...extras.signal ? { signal: extras.signal } : {},
+    signal: extras.signal ?? toolSignal,
   })
 }

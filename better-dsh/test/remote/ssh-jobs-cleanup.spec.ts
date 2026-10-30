@@ -4,6 +4,7 @@ import {join} from 'node:path'
 import LocalJobs from '@deepseek-ai/dsh-jobs-local'
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
 import {JobId} from '@deepseek-ai/dsh-jobs'
+import {executeToolFixture} from '@deepseek-ai/dsh-tool-testkit'
 import {withSshFixture} from './ssh-fixture.ts'
 import {createRealRemoteHarness} from './real-harness.ts'
 import {shQuote} from '../../src/remote/transports.ts'
@@ -26,7 +27,8 @@ it('official SSH job kill settles the job immediately; remote teardown is best-e
    const first=registry.read(id,a.id).chunks.map(c=>c.text).join('');expect(first).toContain('first')
    await until(()=>registry.readAt(id,0,a.id).chunks.map(c=>c.text).join('').includes('second'))
    expect(registry.read(id,a.id).chunks.map(c=>c.text).join('')).not.toContain('first')
-   await a.ctx.tools.execute({name:'job_kill',arguments:{job_id:id},agent:a,signal:new AbortController().signal,callId:'owned-ssh-kill' as never})
+   // 0.2.2: the staged pipeline directly (batch execute needs a mounted executor).
+   await executeToolFixture(a.ctx,{callId:'owned-ssh-kill' as never,name:'job_kill',arguments:{job_id:id},agent:a,signal:new AbortController().signal})
    await until(()=>registry.get(id,a.id).status==='killed')
    // Pure-CLI lane: the kill stops the local transport at once. Remote group
    // teardown rides on the wrapper's TERM/HUP trap when sshd delivers it —

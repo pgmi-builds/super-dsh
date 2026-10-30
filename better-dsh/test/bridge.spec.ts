@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool, TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { ToolExecutionPipeline } from '@deepseek-ai/dsh-tools/pipeline'
 import type { PostToolDecision, ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { toolCallId } from '../src/tool-call-id.ts'
@@ -511,7 +512,7 @@ describe('the eval dispatch bridge (result shaping)', () => {
     // directly, the way a composite consumer would.
     const { ctx } = await setupPresentation(fakeRuntime)
     const runtime = ctx.get('replRuntime') as FakeCellRuntime
-    const tool = createRunCellTool(ctx.tools, {
+    const tool = createRunCellTool(ctx.tools, new ToolExecutionPipeline(ctx), {
       requireRuntime: () => runtime,
       maxParallel: 2,
       shapeDispatchLog: async dispatch => dispatch.content,
@@ -535,27 +536,26 @@ describe('the eval dispatch bridge (result shaping)', () => {
   })
 })
 
-describe('v0.2.1c — REPL sub-dispatch resilience (O-3 daemon-crash fix)', () => {
+describe('REPL sub-dispatch resilience (O-3 daemon-crash fix; 0.2.2 pipeline carrier)', () => {
   /**
-   * A dual-copy-shaped tools VIEW: the same NAMED-method surface the
-   * mounted registry exposes, but WITHOUT the `TOOL_RUNTIME_SCHEDULER`
-   * instance symbol as THIS plugin's import sees it (the exact read form
-   * the 2026-09-01 production dual-copy produced — and the crash trigger).
+   * 0.2.2 shape: sub-dispatch rides the plugin-built `ToolExecutionPipeline`
+   * passed to `createRunCellTool` — the retired `TOOL_RUNTIME_SCHEDULER`
+   * symbol-keyed lookup (and the 2026-09-01 dual-copy crash it enabled) no
+   * longer exists. The registry view only projects schemas/bindings, so a
+   * minimal view cannot disable sub-dispatch anymore.
    */
-  function schedulerlessView(ctx: Context): ToolRuntime {
+  function minimalView(ctx: Context): ToolRuntime {
     return {
       register: (definition: Parameters<ToolRuntime['register']>[0]) => { ctx.tools.register(definition); return () => undefined },
       schemas: () => ctx.tools.schemas(),
-      executionMode: (exec: Parameters<ToolRuntime['executionMode']>[0]) => ctx.tools.executionMode(exec),
-      // No [TOOL_RUNTIME_SCHEDULER] member — the bug's trigger.
     } as unknown as ToolRuntime
   }
 
-  it('a tools view missing the scheduler symbol fails the cell with a loud contextual error, not a crash', async () => {
+  it('a minimal registry view (no scheduler members at all) still dispatches — the pipeline carries sub-calls', async () => {
     const { ctx } = await setupPresentation(fakeRuntime)
     registerEcho(ctx)
     const runtime = ctx.get('replRuntime') as FakeCellRuntime
-    const evalTool = createRunCellTool(schedulerlessView(ctx), {
+    const evalTool = createRunCellTool(minimalView(ctx), new ToolExecutionPipeline(ctx), {
       requireRuntime: () => runtime,
       maxParallel: 2,
       shapeDispatchLog: async dispatch => dispatch.content,
@@ -565,7 +565,7 @@ describe('v0.2.1c — REPL sub-dispatch resilience (O-3 daemon-crash fix)', () =
       const echo = tool(request, 'echo')
       try {
         await echo({ value: 'x' })
-        return { logs: [], value: 'unreachable' }
+        return { logs: [], value: 'echo-ok' }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
         return { logs: [], value: message }
@@ -586,44 +586,34 @@ describe('v0.2.1c — REPL sub-dispatch resilience (O-3 daemon-crash fix)', () =
     )) as { logs: string[]; result: string }
     expect(output).toBeDefined()
     const value = output.result
-    expect(value).toContain('TOOL_RUNTIME_SCHEDULER')
-    expect(value).toContain('dual-copy')
-    expect(value).toContain('dsh-tools from:')
+    expect(output.result).toBe('echo-ok')
   })
 
-  it('v0.2.1d — the mounted ToolRuntime is keyed by the SAME symbol this plugin imports (dual-copy invariant)', async () => {
+  it('v0.2.2 — the plugin-built pipeline exposes the full staged carrier (prepare/dispatch/complete/executionMode)', async () => {
     const { ctx } = await setupPresentation(fakeRuntime)
-    // The production bug (2026-09-01) was a dual-copy dsh-tools: the plugin
-    // imported one module instance while the mounted ToolRuntime instance
-    // was keyed by another copy's symbol — named methods kept working, the
-    // symbol-keyed scheduler field read as undefined. This locks the
-    // invariant in composition form: reading through THIS file's imported
-    // symbol must yield a fully shaped scheduler.
-    const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER]
-    expect(scheduler).toBeDefined()
-    expect(typeof scheduler!.prepare).toBe('function')
-    expect(typeof scheduler!.dispatch).toBe('function')
-    expect(typeof scheduler!.finalize).toBe('function')
-    expect(typeof scheduler!.finish).toBe('function')
+    // The retired v0.2.1d invariant (mounted registry keyed by the same
+    // symbol this plugin imports) died with the symbol itself: 0.2.2's
+    // carrier is a plugin-built ToolExecutionPipeline, immune to dual-copy
+    // symbol drift by construction. This locks the new carrier shape.
+    const pipeline = new ToolExecutionPipeline(ctx)
+    expect(typeof pipeline.prepare).toBe('function')
+    expect(typeof pipeline.dispatch).toBe('function')
+    expect(typeof pipeline.complete).toBe('function')
+    expect(typeof pipeline.executionMode).toBe('function')
   })
   it('a thrown start()/prepare failure settles the binding as a visible error instead of an unhandled rejection', async () => {
     const { ctx } = await setupPresentation(fakeRuntime)
     registerEcho(ctx)
     const runtime = ctx.get('replRuntime') as FakeCellRuntime
-    // A registry whose scheduler.prepare throws — the exact O-3 crash site,
-    // now contained by the start() catch (v0.2.1c).
-    const throwingView = {
-      register: (definition: Parameters<ToolRuntime['register']>[0]) => { ctx.tools.register(definition); return () => undefined },
-      schemas: () => ctx.tools.schemas(),
-      executionMode: (exec: Parameters<ToolRuntime['executionMode']>[0]) => ctx.tools.executionMode(exec),
-      [TOOL_RUNTIME_SCHEDULER]: {
-        prepare: async () => { throw new Error('simulated scheduler.prepare failure') },
-        dispatch: async () => { throw new Error('unreachable') },
-        finalize: async () => { throw new Error('unreachable') },
-        finish: () => { throw new Error('unreachable') },
-      },
-    } as unknown as ToolRuntime
-    const evalTool = createRunCellTool(throwingView, {
+    // A pipeline whose prepare throws — the exact O-3 crash site, now
+    // contained by the start() catch (v0.2.1c).
+    const throwingPipeline = {
+      executionMode: () => ({ kind: 'parallel' }),
+      prepare: async () => { throw new Error('simulated scheduler.prepare failure') },
+      dispatch: async () => { throw new Error('unreachable') },
+      complete: async () => { throw new Error('unreachable') },
+    } as unknown as ToolExecutionPipeline
+    const evalTool = createRunCellTool(ctx.tools, throwingPipeline, {
       requireRuntime: () => runtime,
       maxParallel: 2,
       shapeDispatchLog: async dispatch => dispatch.content,
@@ -663,18 +653,13 @@ describe('v0.2.1c — REPL sub-dispatch resilience (O-3 daemon-crash fix)', () =
     const runtime = ctx.get('replRuntime') as FakeCellRuntime
     // classify() throwing is a lane-level failure OUTSIDE start()/commit()
     // containment — the drive() backstop catch must settle the binding.
-    const laneFailView = {
-      register: (definition: Parameters<ToolRuntime['register']>[0]) => { ctx.tools.register(definition); return () => undefined },
-      schemas: () => ctx.tools.schemas(),
+    const laneFailPipeline = {
       executionMode: () => { throw new Error('simulated classify failure') },
-      [TOOL_RUNTIME_SCHEDULER]: {
-        prepare: async () => { throw new Error('unreachable') },
-        dispatch: async () => { throw new Error('unreachable') },
-        finalize: async () => { throw new Error('unreachable') },
-        finish: () => { throw new Error('unreachable') },
-      },
-    } as unknown as ToolRuntime
-    const evalTool = createRunCellTool(laneFailView, {
+      prepare: async () => { throw new Error('unreachable') },
+      dispatch: async () => { throw new Error('unreachable') },
+      complete: async () => { throw new Error('unreachable') },
+    } as unknown as ToolExecutionPipeline
+    const evalTool = createRunCellTool(ctx.tools, laneFailPipeline, {
       requireRuntime: () => runtime,
       maxParallel: 2,
       shapeDispatchLog: async dispatch => dispatch.content,

@@ -14,6 +14,9 @@ const { default: Loader } = await load('@deepseek-ai/cordis-plugin-loader')
 const { default: Timer } = await load('@deepseek-ai/cordis-plugin-timer')
 const { default: NativeHmr } = await load('@deepseek-ai/dsh-hmr')
 const { default: AgentRegistry } = await load('@deepseek-ai/dsh-agent')
+// 0.2.2: AgentRegistry waits for the session-projections owner — mount it or
+// the registry stays pending and `ctx.agents` reads undefined.
+const { default: SessionProjectionRegistry } = await load('@deepseek-ai/dsh-session-projection')
 const { WebServer } = await load('@deepseek-ai/dsh-host-webserver')
 async function fixture(t, Hmr = NativeHmr) {
   const dir = mkdtempSync(join(tmpdir(), 'better-hmr-context-'))
@@ -102,6 +105,7 @@ test('native HMR disposal drains an active operation before completing', { timeo
 
 test('native management preserves caller ALS and AgentRegistry self-disposal lineage', { timeout: 5000 }, async t => {
   const { ctx, hmr } = await fixture(t)
+  await ctx.plugin(SessionProjectionRegistry)
   const scope = await ctx.plugin(AgentRegistry)
   const agents = ctx.agents
   const agent = { id: 'hmr-initiator' }

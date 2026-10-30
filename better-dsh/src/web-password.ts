@@ -518,7 +518,13 @@ class PasswordGate {
    */
   private async serveIndex(res: ServerResponse, head: boolean): Promise<void> {
     const distIndex = await (this.distIndex ??= resolveDistIndex())
-    const body = withBaseHref(this.ctx.webServer.renderIndex(await readFile(distIndex, 'utf8')))
+    // 0.2.2: renderIndex speaks for one Peer; the admission page (pre-auth,
+    // no request peer yet) uses the shared browser peer — the same
+    // representative the upstream SPA fallback passes (frontend-static:
+    // `peer ?? ctx.connection.browserPeer`). The injection rows see the
+    // owner-principal peer exactly as they did before the peer parameter
+    // existed.
+    const body = withBaseHref(this.ctx.webServer.renderIndex(await readFile(distIndex, 'utf8'), this.ctx.connection.browserPeer))
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(head ? undefined : body)
   }

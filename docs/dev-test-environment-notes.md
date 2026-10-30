@@ -4,7 +4,13 @@
 
 现行通用规范以 [Cordis / DSH 开发测试指南](07-cordis-dsh-dev-test-guides.md) 为准，整包与 adapter 局部规则以 [super-dsh/AGENTS.md](../super-dsh/AGENTS.md) 及对应子目录指引为准。启动参数以现行 `super-dsh/test/start-4999.sh` 为入口核实；上游版本以物理 checkout 和本轮对齐报告确认，不能据历史台账推断当前值。
 
-## 2026-10-25 当前上游参考（rc.3）
+## 2026-10-30 当前上游参考（0.2.2-alpha.2）
+
+物理 checkout 已对齐 `dsh-v0.2.2-alpha.2` / `f3803c96974ad4a94195fb97e5c637e9c2a3afe3`（GitHub 直取；origin 镜像仍止于 0.2.1-rc.2）。`checkout -f` + `clean -xdf` + 单补丁原样重放（pnpm-workspace.yaml 两键）后 `npx pnpm@11.28.5 install --frozen-lockfile && run build` → **10/10 gates PASS（145.8s）**（0.2.2 起 gate 从 9 增至 10）。**rc.3→022a2 = 7,251 文件 +311k/−696k**，实质破坏面：dsh-tools 拆出 tool-executor-{native,ptc}（`TOOL_RUNTIME_SCHEDULER` 移除、PTC 事件与 dispatch-log 声明迁入 ptc 包、`tools.execute` 改 batch+executor 架构、prompt assembly 解析 executor sections）、`renderIndex(html, peer)` Peer 化、`Agent.model` 必选面、`installModelSelection` 去 ref 参数、`AgentRegistry` 新增 `sessionProjections` inject、cordis inject 插件 apply 晚于 `await ctx.plugin()`。适配后双包 **0.3.2-g**（f 轮后又修 foreign world 模型选择器投影缺失升 g；0.3.3-a 为 10-25 未发布测试线版本，publish 血脉 0.3.2-e→g 不冲突）；better-dsh 929/6（6=既有 Chrome 环境项）、hub 647/0。本轮报告见 [对齐报告](test-reports/2026-10-30-dsh-022-a2-alignment.md)。
+
+**0.2.2 适配要点（后续开发的活知识）**：① 插件侧 staged 子分发一律 `new ToolExecutionPipeline(ctx)`（`@deepseek-ai/dsh-tools/pipeline`），`complete` 合并了旧 finalize/finish；② 单测单调用用 `executeToolFixture`（dsh-tool-testkit），组合需挂真 `NativeToolExecutor` 且 `AgentRegistry` 旁必须挂 `SessionProjectionRegistry`；③ Web UI 换模型走 `agent.model.select()`——九 adapter 共用 superd-hub `agent-model-face` 模块（fold 扫描复刻原生投影）；④ 拿 session 事件 typing 时注意 `import type {}` 从上游构建 dts 中被洗掉——augmentation 要直连声明包；⑤ **上游 `modelSelection` 投影唯一注册点是 agent-loop 行**——被 wave-1 禁用的 foreign world 必须自注册（world-entry.ts 已挂 `modelSelectionProjectionDefinition`），否则 UI 模型选择器标签恒「正在加载模型」（catalog/选择 RPC 走别的通道不受影响）。
+
+## 2026-10-25 上游参考（rc.3，历史）
 
 物理 checkout 已对齐 `dsh-v0.2.1-rc.3` / `1f81c047fc48fa190a683e469daa699857e9afe8`（GitHub 直取；origin 镜像止于 0.2.1-rc.2）。`git checkout -f` + `git clean -xdf` 后 `npx --cache <仓根>/.npm-cache/npx pnpm@11.7.0 install && run build` → **9/9 gates PASS（137s）**，`node apps/cli/lib/bin.js --version` = `0.2.1-rc.3`；sanctioned 补丁仍为**单补丁**（`pnpm-workspace.yaml` 尾部 `storeDir`/`verifyDepsBeforeRun`；rc.2→rc.3 该文件未变，原样重放）。farm 同步 kept=351 relinked=1 removed=0 total=352。**rc.2→rc.3 delta = 640 文件 +5682/−1021**：实质变更集中在 client UI（sidebar view pin、entry customization、tooltip/primitives、conversation composer/analytics）与 LLM listing/catalog（`llm-deepseek*`），另有 tsconfig/vitest 配置与快照；`core/{tools,agent,scope,session}`、`boot/*`、`client/connection` 等 super-dsh 契约包**只有 package.json 版本 bump，src 零改动**；`web/webserver`、`gateway/stream`、`core/jobs`、`plugin-manager` 零改动 → 零契约漂移。本轮报告见 [对齐 + remote surface 报告](test-reports/2026-10-25-dsh-021-rc3-and-remote-surface.md)。
 

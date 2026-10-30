@@ -17,6 +17,8 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import type { ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { toolCallId } from '../../src/tool-call-id.ts'
 import { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -54,6 +56,8 @@ async function setupSurface(): Promise<Surface> {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime, {})
+  // 0.2.2: mount the real native executor (as the shipped host does) — prompt assembly resolves executor-owned sections.
+  await ctx.plugin(NativeToolExecutor)
   const runtimeFiber = await fakeRuntime(ctx)
   onTestFinished(async () => { await (runtimeFiber as { dispose(): Promise<void> }).dispose() })
   const servicesFiber = await ctx.plugin({
@@ -134,12 +138,13 @@ function registerGlobalFake(ctx: Context, name: string, execute?: (args: unknown
 
 /** Dispatch one model-direct tool call through the registry pipeline. */
 async function modelDirect(surface: Surface, name: string, args: unknown): Promise<ToolExecutionResult> {
-  return await surface.ctx.tools.execute({
-    signal: new AbortController().signal,
+  // 0.2.2: the staged pipeline directly (batch execute needs a mounted executor).
+  return executeToolFixture(surface.ctx, {
     callId: toolCallId('call-direct'),
     name,
     arguments: args,
     agent: surface.agent,
+    signal: new AbortController().signal,
   })
 }
 

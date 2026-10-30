@@ -53,6 +53,8 @@ import type {
   AgentStatus,
   CancelOptions,
   InboxTarget,
+  Model,
+  ModelSelection,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents, type AgentEventDispatch } from "@deepseek-ai/dsh-agent";
 import { Inbox } from "./inbox.js";
@@ -66,7 +68,7 @@ import type {
 } from "@deepseek-ai/dsh-session";
 import type { AssistantMessage, AssistantStreamRecord, ContentBlock, StreamChunk, TokenUsage } from "@deepseek-ai/dsh-llm";
 import { LlmAttemptId, ToolCallId, QUOTA_EXCEEDED_CODE, createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from "@deepseek-ai/dsh-llm";
-import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
+import { createAgentModelFace, recordedModelSelection, withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
 import type { WireAssistantMessageEvent, WireContentBlock, WireEvent, WireMessage } from "./pi-events.js";
 import type { PiSessionClient } from "./pi-client.js";
@@ -272,6 +274,9 @@ export class PiAgent implements Agent {
   readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
+  /** Durable model selection (0.2.2 Agent face): the shared hub face over
+   *  `model/selection` events — see superd-hub agent-model-face.ts. */
+  readonly model: Model;
   readonly #client: PiSessionClient;
   readonly #loopCtx: Context;
   readonly #scope: Scope;
@@ -336,6 +341,19 @@ export class PiAgent implements Agent {
     this.id = id;
     this.options = options;
     this.session = withSystemHead(session, () => createSystemMessage(""));
+    this.model = createAgentModelFace<ModelSelection>({
+      session: this.session,
+      options: this.options,
+      appendSelection: (selection) => {
+        this.session.append("model/selection", selection);
+      },
+      readDefault: () => {
+        const service = this.ctx.get("agentDefaultModel") as
+          | { currentSelection?: () => { provider: string; model: string } }
+          | undefined
+        return service?.currentSelection?.()
+      },
+    });
     this.#client = client;
     this.#onIdleExit = onIdleExit;
     this.#runtimeInfo = runtimeInfo;
@@ -623,7 +641,11 @@ export class PiAgent implements Agent {
    * LIVE (an upgrade over the codex SDK line's next-turn switch).
    */
   async #syncModelSelection(): Promise<void> {
-    const persisted = this.session.requestHeader()?.config;
+    // 0.2.2: the recorded-selection fold (pending ?? last-used) leads the
+    // waterfall, so a `model.select` switch lands on the NEXT turn — the
+    // native precedence (pending retires only on a matching request header).
+    const recorded = recordedModelSelection(this.session.snapshotEvents());
+    const persisted = recorded ?? this.session.requestHeader()?.config;
     const service = this.ctx.get("agentDefaultModel") as AgentDefaultModelSlice | undefined;
     const selection = service?.currentSelection();
     const target =

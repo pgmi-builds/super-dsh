@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import { toolCallId } from '../src/tool-call-id.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { readFileSync } from 'node:fs'
@@ -28,12 +29,13 @@ function registerEcho(ctx: Context, name = 'echo'): unknown[] {
 
 /** Dispatch one model-direct tool call (no parent token) through the registry. */
 async function modelDirect(ctx: Context, name: string, agent: Agent, arguments_: unknown) {
-  return ctx.tools.execute({
-    signal: new AbortController().signal,
+  // 0.2.2: the staged pipeline directly (batch execute needs a mounted executor).
+  return executeToolFixture(ctx, {
     callId: toolCallId('call-direct'),
     name,
     arguments: arguments_,
     agent,
+    signal: new AbortController().signal,
   })
 }
 

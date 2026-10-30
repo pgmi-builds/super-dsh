@@ -33,6 +33,8 @@ import type {
   AgentStatus,
   CancelOptions,
   InboxTarget,
+  Model,
+  ModelSelection,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents, type AgentEventDispatch } from "@deepseek-ai/dsh-agent";
 import { Inbox } from "./inbox.js";
@@ -41,7 +43,7 @@ import type { AssistantMessage, AssistantStreamRecord, ContentBlock, StreamChunk
 import { LlmAttemptId, ToolCallId, createAssistantMessage, createSystemMessage, createToolResultMessage } from "@deepseek-ai/dsh-llm";
 import { createScope, type Scope } from "@deepseek-ai/dsh-scope";
 import type { AgyCliClient } from "./agy-cli-client.js";
-import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
+import { createAgentModelFace, withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 /** The CLI stream transport the agent drives (SDK bridge moved to agent-agy-sdk). */
 export type LiveAgyClient = Pick<
   AgyCliClient,
@@ -146,6 +148,9 @@ export class AgyAgent implements Agent {
   readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
+  /** Durable model selection (0.2.2 Agent face): the shared hub face over
+   *  `model/selection` events — see superd-hub agent-model-face.ts. */
+  readonly model: Model;
   private readonly client: LiveAgyClient;
   private readonly loopCtx: Context;
   private readonly scope: Scope;
@@ -174,6 +179,19 @@ export class AgyAgent implements Agent {
     this.id = id;
     this.options = options;
     this.session = withSystemHead(session, () => createSystemMessage(""));
+    this.model = createAgentModelFace<ModelSelection>({
+      session: this.session,
+      options: this.options,
+      appendSelection: (selection) => {
+        this.session.append("model/selection", selection);
+      },
+      readDefault: () => {
+        const service = this.ctx.get("agentDefaultModel") as
+          | { currentSelection?: () => { provider: string; model: string } }
+          | undefined
+        return service?.currentSelection?.()
+      },
+    });
     this.client = client;
     this.onIdleExit = onIdleExit;
     this.runtimeInfo = runtimeInfo;

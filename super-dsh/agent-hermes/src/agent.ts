@@ -56,6 +56,8 @@ import type {
   AgentStatus,
   CancelOptions,
   InboxTarget,
+  Model,
+  ModelSelection,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents, type AgentEventDispatch } from "@deepseek-ai/dsh-agent";
 import { Inbox } from "./inbox.js";
@@ -75,7 +77,7 @@ import { GatewayRpcError, HERMES_SPAWN_ATTEMPTS, type HermesGatewayClient, type 
 import { approvalChoiceFromOutcome } from "./permission.js";
 // compilation (the runtime service is mounted by the base bundle).
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
-import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
+import { createAgentModelFace, withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 
 /**
  * v2 live assistant-stream publication for the Hermes bridge — the same frame
@@ -388,6 +390,9 @@ export class HermesAgent implements Agent {
   readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
+  /** Durable model selection (0.2.2 Agent face): the shared hub face over
+   *  `model/selection` events — see superd-hub agent-model-face.ts. */
+  readonly model: Model;
   readonly #client: HermesGatewayClient;
   readonly #loopCtx: Context;
   readonly #scope: Scope;
@@ -451,6 +456,19 @@ export class HermesAgent implements Agent {
     this.id = id;
     this.options = options;
     this.session = withSystemHead(session, () => createSystemMessage(""));
+    this.model = createAgentModelFace<ModelSelection>({
+      session: this.session,
+      options: this.options,
+      appendSelection: (selection) => {
+        this.session.append("model/selection", selection);
+      },
+      readDefault: () => {
+        const service = this.ctx.get("agentDefaultModel") as
+          | { currentSelection?: () => { provider: string; model: string } }
+          | undefined
+        return service?.currentSelection?.()
+      },
+    });
     this.#client = client;
     this.#onIdleExit = onIdleExit;
     this.#runtimeInfo = runtimeInfo;

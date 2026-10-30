@@ -275,7 +275,11 @@ describe('root gate over a fake host', () => {
     const ctx = {
       profileContext: options.profileName === undefined ? undefined : { name: options.profileName },
       get: (key: string) => key === 'profileContext' && options.profileName !== undefined ? { name: options.profileName } : undefined,
-      connection: options.auth,
+      // 0.2.2: the gate reads `connection.browserPeer` when rendering the
+      // index (renderIndex speaks for one Peer). The real composition always
+      // provides the connection service; the fake mirrors that, defaulting to
+      // a stand-in peer when a test passes no auth.
+      connection: options.auth ?? { browserPeer: {} as never },
       logger: () => ({ info: () => {}, warn: () => {} }),
       credentials: stubProvider(store),
       webServer: {

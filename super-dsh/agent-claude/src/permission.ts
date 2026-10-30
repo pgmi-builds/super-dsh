@@ -27,6 +27,12 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
+// 0.2.2: dsh-tools' built dts no longer re-carries dsh-user-approval's
+// SessionEventMap augmentation (the rc.3 transitive chain
+// hub-tool.d.ts → dsh-tools → dsh-user-approval broke when upstream moved the
+// augmentation import into pipeline.ts and tsc elided it from the emitted dts)
+// — import the canonical augmentation directly so `approval/policy` narrows.
+import type {} from "@deepseek-ai/dsh-user-approval";
 
 /** The DSH 3-way permission skeleton's preset names. */
 export type PresetName = "read-only" | "workspace-write" | "danger-full-access";

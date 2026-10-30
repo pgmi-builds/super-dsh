@@ -28,6 +28,8 @@ import type {
   AgentStatus,
   CancelOptions,
   InboxTarget,
+  Model,
+  ModelSelection,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents, type AgentEventDispatch } from "@deepseek-ai/dsh-agent";
 import { Inbox } from "./inbox.js";
@@ -50,7 +52,7 @@ import type { OmpAgentRpc } from "./lazy-rpc.js";
 import type { CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
 import { ompPermissionCommand, type PermissionPresetsWriteSlice } from "./permission.js";
 import { getBridgeStore } from "./store/index.js";
-import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
+import { createAgentModelFace, recordedModelSelection, withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 
 /**
  * v2 live assistant-stream publication for the OMP bridge — the same frame
@@ -323,6 +325,11 @@ export class OmpAgent implements Agent {
   readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
+  /** Durable model selection (0.2.2 Agent face): recorded via `model/selection`,
+   *  resolved with the same precedence as the native AgentModel — see
+   *  {@link #recordedModelSelection}. Pushes to OMP at the next turn boundary
+   *  through the existing {@link #syncModelSelection} `set_model` path. */
+  readonly model: Model;
   readonly #rpc: OmpAgentRpc;
   readonly #loopCtx: Context;
   readonly #scope: Scope;
@@ -382,6 +389,15 @@ export class OmpAgent implements Agent {
     this.#onIdleExit = onIdleExit;
     this.#dispatch = agentEvents(loopCtx, this);
     this.inbox = new Inbox();
+    this.model = createAgentModelFace<ModelSelection>({
+      session: this.session,
+      options: this.options,
+      appendSelection: (selection) => {
+        this.session.append("model/selection", selection);
+      },
+      readDefault: () =>
+        (this.ctx.get("agentDefaultModel") as AgentDefaultModelSlice | undefined)?.currentSelection(),
+    });
     this.#scope = createScope(loopCtx, this);
     this.ctx = this.#scope.ctx.extend({ agent: this });
     this.#lastTurn = session.snapshotEvents().findLast((event) => event.type === "turn/start")?.data.turn ?? 0;
@@ -728,8 +744,20 @@ export class OmpAgent implements Agent {
     return base;
   }
 
-  /** Tier-2/3 base: the session's logged header config, else the global default, else agent options. */
+  // The durable-selection fold and the `Model` face moved to the shared hub
+  // module (superd-hub agent-model-face.ts): the constructor builds `this.model`
+  // with `createAgentModelFace`, and {@link #baseModelSelection} reads the fold
+  // through the thin wrapper below.
+  #recordedModelSelection(): ModelSelection | null {
+    return recordedModelSelection(this.session.snapshotEvents()) as ModelSelection | null;
+  }
+
+  /** Tier-0..3 base: pending selection, else the session's logged header config, else the global default, else agent options. */
   #baseModelSelection(): { provider: string; model: string } {
+    const pending = this.#recordedModelSelection();
+    if (pending !== null && pending.provider !== "" && pending.model !== "") {
+      return { provider: pending.provider, model: pending.model };
+    }
     const persisted = this.session.requestHeader()?.config;
     if (persisted !== undefined && persisted.provider !== "" && persisted.model !== "") {
       return { provider: persisted.provider, model: persisted.model };

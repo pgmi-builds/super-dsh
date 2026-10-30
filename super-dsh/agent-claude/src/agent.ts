@@ -46,6 +46,8 @@ import type {
   AssistantStreamFrame,
   CancelOptions,
   InboxTarget,
+  Model,
+  ModelSelection,
 } from "@deepseek-ai/dsh-agent";
 import { agentEvents, type AgentEventDispatch } from "@deepseek-ai/dsh-agent";
 import type {
@@ -81,7 +83,7 @@ import { resolveRoute, routeSeed, type RouteSelection } from "./claude-route.js"
 import { CLAUDE_PROVIDER_ID } from "./adapter.js";
 import { claudePermissionMode, presetFromEvents, type ClaudePermissionMode, type PresetName } from "./permission.js";
 import { catalogFromInit, modelEntryFromSdk, readModelCatalog, setModelCatalog } from "./models.js";
-import { withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
+import { createAgentModelFace, withSystemHead, type WithSystemHead } from "../../superd-hub/dist/index.js";
 import {
   registerClaudeCommands,
   slashCommandsFromReported,
@@ -347,6 +349,9 @@ export class ClaudeAgent implements Agent {
   readonly session: WithSystemHead<Session>;
   readonly inbox: Inbox;
   readonly ctx: Context;
+  /** Durable model selection (0.2.2 Agent face): the shared hub face over
+   *  `model/selection` events — see superd-hub agent-model-face.ts. */
+  readonly model: Model;
   private client: ClaudeSdkClient;
   /** Unsubscriber for the LIVE client's wire listener — released before a swap closes the old child. */
   private clientUnsubscribe: (() => void) | undefined = undefined;
@@ -437,6 +442,19 @@ export class ClaudeAgent implements Agent {
     this.id = id;
     this.options = options;
     this.session = withSystemHead(session, () => createSystemMessage(""));
+    this.model = createAgentModelFace<ModelSelection>({
+      session: this.session,
+      options: this.options,
+      appendSelection: (selection) => {
+        this.session.append("model/selection", selection);
+      },
+      readDefault: () => {
+        const service = this.ctx.get("agentDefaultModel") as
+          | { currentSelection?: () => { provider: string; model: string } }
+          | undefined
+        return service?.currentSelection?.()
+      },
+    });
     this.client = client;
     this.clientFactory = clientFactory;
     this.onIdleExit = onIdleExit;

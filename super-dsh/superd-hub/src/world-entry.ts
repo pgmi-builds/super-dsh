@@ -25,6 +25,7 @@
  * ctx0's fence, never the world's own.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { modelSelectionProjectionDefinition } from '@deepseek-ai/dsh-agent'
 import { noteWorldServer, publishWorldFetch, takeHostMount, type WorldFetchHandler } from './world-host.js'
 import { WorldWebServer } from './world-web-server.js'
 import { superdTrustedHosts } from './world-mount.js'
@@ -79,6 +80,38 @@ export function apply(ctx: Context, config?: { key?: unknown, ownerId?: unknown 
       dropWorldFetch = publishWorldFetch(key, connection.createSharedFetchHandler('/api'), mount)
     }
   })
+
+  // 0.2.2: register the `modelSelection` projection in THIS world's registry.
+  // Upstream's only registrant is the agent-loop row (agent-loop/src:334),
+  // which wave-1 minimization keeps out of world trees — without it the
+  // native model seat's projection frame never resolves and the trigger
+  // label stays "loading models…" forever (the catalog and selectModel RPC
+  // take different paths, which is why they keep working). The definition is
+  // a pure event fold (`model/selection` + `request/header`), no loop
+  // machinery; register() is ref-counted and duplicate-tolerant, so a future
+  // tree that also mounts agent-loop shares the registration cleanly.
+  ctx.inject(['sessionProjections'], (projCtx) => {
+    const projections = projCtx.get('sessionProjections') as
+      | { register(definition: typeof modelSelectionProjectionDefinition): Promise<{ dispose(): Promise<void> }> }
+      | undefined
+    if (projections === undefined) return
+    let disposed = false
+    let handle: { dispose(): Promise<void> } | undefined
+    void projections.register(modelSelectionProjectionDefinition).then(
+      (registered) => {
+        if (disposed) { void registered.dispose(); return }
+        handle = registered
+      },
+      (error) => {
+        ctx.logger?.warn?.(`superd-world-mount: modelSelection projection registration failed: ${String(error)}`)
+      },
+    )
+    return () => {
+      disposed = true
+      void handle?.dispose()
+    }
+  })
+
   ctx.effect(() => () => {
     dropWorldFetch?.()
   }, 'superd-world-mount: virtual webServer')

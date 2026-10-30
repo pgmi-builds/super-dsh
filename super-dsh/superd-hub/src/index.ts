@@ -71,6 +71,14 @@ export {
   type WorldPatchLayer,
 } from './world-mount.js'
 export { withSystemHead, type HeadAwareSessionFace, type HeadPlaceholder, type WithSystemHead } from './system-head.js'
+export {
+  createAgentModelFace,
+  recordedModelSelection,
+  type AgentModelFaceParts,
+  type BridgeModelFace,
+  type ModelSelectionLike,
+  type ModelSessionFace,
+} from './agent-model-face.js'
 export { default as worldApply, name as worldPluginName, type Config as WorldEntryConfig } from './world-entry.js'
 export { default as joinApply, name as worldJoinPluginName, type Config as WorldJoinConfig } from './world-join.js'
 export {

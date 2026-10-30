@@ -80,7 +80,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { DashrRuntime } from './runtime.ts'
 import type { Config as RuntimeConfig } from './runtime.ts'
 import z from '#schemastery'
-import { defineTool, TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { ToolExecutionPipeline } from '@deepseek-ai/dsh-tools/pipeline'
 import type {
   ToolDefinition,
   ToolExecutionInput,
@@ -88,8 +89,14 @@ import type {
   ToolRuntime,
   ToolRunContext,
 } from '@deepseek-ai/dsh-tools'
-// Type-only: brings the `ctx.tools` Context merge into this program.
+
 import type {} from '@deepseek-ai/dsh-tools'
+// Type-only (0.2.2): the PTC session events (`tool/ptc-dispatch{,-start}`)
+// and the `tools/ptc-dispatch-log` waterfall event declarations moved from
+// dsh-tools into the new tool-executor-ptc package — this import pulls their
+// augmentations so this file's own dispatch log keeps its typed carrier.
+// Erased at runtime: hosts without the package are unaffected.
+import type {} from '@deepseek-ai/dsh-tool-executor-ptc'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import { toolCallId, type ToolCallId } from './tool-call-id.ts'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
@@ -115,7 +122,6 @@ import type { DASHRSubagentsSurface, DASHRWorkflowEngine } from './subagents-sur
 import { createAgentBridgeTools } from './bridges/index.ts'
 import { createLlmCompletionTool } from './llm-completion.ts'
 import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { captureAllTools } from './native-capture.ts'
 
 
@@ -458,10 +464,10 @@ declare module '@deepseek-ai/cordis' {
 
 /**
  * Capabilities the `eval` bridge closes over, mirroring upstream's
- * `RunCodeBridgeOptions` (the `requireRuntime` idiom): the registry-private
- * staged scheduler travels through the exported `TOOL_RUNTIME_SCHEDULER`
- * symbol-keyed property rather than a closure, because — unlike upstream —
- * the registry does not mint this tool for us.
+ * `RunCodeBridgeOptions` (the `requireRuntime` idiom): sub-dispatch rides a
+ * plugin-built `ToolExecutionPipeline` (0.2.2) rather than the pre-0.2.2
+ * registry-private staged scheduler, because — unlike upstream's PTC
+ * executor — the registry does not mint this tool for us.
  */
 export interface RunCellBridgeOptions {
   /** Resolves `ctx.replRuntime` or throws the loud misconfiguration error (use-time read). */
@@ -493,18 +499,22 @@ export interface RunCellBridgeOptions {
 /**
  * Build the `eval` {@link ToolDefinition}: required `cell` and
  * `description` parameters, executed through the dispatch bridge described
- * in the module doc. Sub-calls ride the registry's exported staged scheduler
- * (`prepare`/`dispatch`/`finalize`/`finish`) under the native concurrency
- * contract; each sub-dispatch is logged for reconstruction
- * (`tool/ptc-dispatch-start` / `tool/ptc-dispatch`) while only the outer
- * curated result enters model history.
- * @param registry - the host tool registry (sub-calls go through its staged
- *   scheduler, bindings cover its registered tools).
+ * in the module doc. Sub-calls ride the plugin-built staged pipeline
+ * (`prepare`/`dispatch`/`complete` — the 0.2.2 `ToolExecutionPipeline`, the
+ * sanctioned successor of the retired `TOOL_RUNTIME_SCHEDULER` symbol) under
+ * the native concurrency contract; each sub-dispatch is logged for
+ * reconstruction (`tool/ptc-dispatch-start` / `tool/ptc-dispatch`) while only
+ * the outer curated result enters model history.
+ * @param registry - the host tool registry (bindings cover its registered
+ *   tools; schema projection reads it live).
+ * @param pipeline - the staged invocation pipeline built over the same
+ *   registry's mounting context (sub-calls dispatch through it).
  * @param options - the bridge capabilities described above.
  * @returns the registry-ready definition.
  */
-export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeOptions): ToolDefinition {
+export function createRunCellTool(registry: ToolRuntime, pipeline: ToolExecutionPipeline, options: RunCellBridgeOptions): ToolDefinition {
   const { requireRuntime, maxParallel, shapeDispatchLog, warn } = options
+
   return defineTool({
     name: EVAL_NAME,
     description: EVAL_DESCRIPTION,
@@ -557,7 +567,7 @@ export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeO
       // The per-run scheduler uses the registry's staged interface and follows
       // the same concurrency rules as the native loop (ported from upstream
       // code-mode.ts): every ordered stage (the dispatch-start append,
-      // prepare = pre-execute/guards, finalize/finish = post-execute, context
+      // prepare = pre-execute/guards, complete = post-execute, context
       // deferral, the settle append) runs inside ONE driver lane, so ordered
       // policy stages never overlap each other and only the
       // around-dispatch/body stage runs concurrently. Starts are strictly
@@ -683,27 +693,15 @@ export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeO
           signal: runController.signal,
         }
         type DispatchOutcome = { isError: true; message: string } | { isError: false; value: JsonValue }
-        // v0.2.1c (O-3), root cause corrected in v0.2.1d: the production
-        // missing-symbol form (2026-09-01) was a dual-copy dsh-tools — the
-        // deployed plugin's nested @deepseek-ai symlinks pointed into a
-        // second source tree, so the symbol THIS module imported differed
-        // from the one keying the mounted ToolRuntime instance. A bare
-        // `scheduler.prepare` on undefined is a naked TypeError, amplified
-        // by the lane into a daemon crash; fail LOUD instead, naming the
-        // plugin's own dsh-tools resolution path so a future dual-copy
-        // incident diagnoses itself from the error text. The throw rejects
-        // the binding promise, so the kernel surfaces it to the cell as a
-        // ToolCallError.
-        const scheduler = registry[TOOL_RUNTIME_SCHEDULER]
-        if (scheduler === undefined) {
-          let resolvedFrom: string
-          try {
-            resolvedFrom = createRequire(import.meta.url).resolve('@deepseek-ai/dsh-tools')
-          } catch {
-            resolvedFrom = '(unresolvable from the plugin position)'
-          }
-          throw new Error(`${EVAL_NAME}: the tools service mounted by this composition lacks the TOOL_RUNTIME_SCHEDULER symbol as this plugin sees it — REPL sub-dispatch cannot run. Most likely a dual-copy dsh-tools: the symbol keying the mounted ToolRuntime instance is not the symbol this plugin imported (named methods like executionMode keep working across copies; only the symbol-keyed field goes missing). This plugin resolves @deepseek-ai/dsh-tools from: ${resolvedFrom}. Check the deployed plugin's node_modules for stray @deepseek-ai entries (only schemastery and cosmokit belong there)`)
-        }
+        // 0.2.2 alignment: upstream retired the `TOOL_RUNTIME_SCHEDULER`
+        // symbol-keyed accessor (the PTC staged scheduler moved into the
+        // exported `ToolExecutionPipeline`). The pipeline passed in is built
+        // by THIS plugin over the mounting context, so the old dual-copy
+        // hazard — the symbol this module imported differing from the one
+        // keying the mounted ToolRuntime instance (2026-09-01 incident) — is
+        // structurally gone: there is no cross-instance symbol lookup left
+        // to miss.
+
         const outcome = await new Promise<DispatchOutcome>((resolve, reject) => {
           let parked:
             | { kind: 'post-result' | 'final-result'; exec: ToolRunContext; result: ToolExecutionResult }
@@ -754,7 +752,7 @@ export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeO
           pendingQueue.push({
             flight: Promise.resolve(),
             settled: false,
-            classify: () => registry.executionMode(input).kind,
+            classify: () => pipeline.executionMode(input).kind,
             abandon: () => {
               reject(new Error(`${EVAL_NAME} run is over (${String(runController.signal.reason)}); ${name} tool call abandoned`))
             },
@@ -775,9 +773,9 @@ export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeO
                 // Ordered prepare runs INSIDE the driver lane: the next entry's
                 // pre-execute waits for this resolution, as under the native
                 // scheduler. Only the launched body below overlaps.
-                const prepared = await scheduler.prepare(input)
+                const prepared = await pipeline.prepare(input)
                 if (prepared.kind === 'dispatch') {
-                  this.flight = scheduler.dispatch(prepared.exec).then(
+                  this.flight = pipeline.dispatch(prepared.exec).then(
                     (dispatchOutcome) => {
                       parked = { kind: dispatchOutcome.kind, exec: prepared.exec, result: dispatchOutcome.result }
                       this.settled = true
@@ -805,9 +803,10 @@ export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeO
             async commit(): Promise<void> {
               if (parked === undefined) return
               try {
-                const result = parked.kind === 'post-result'
-                  ? await scheduler.finalize(parked.exec, parked.result)
-                  : scheduler.finish(parked.exec, parked.result)
+                // 0.2.2: the retired `finalize`/`finish` pair merged into
+                // the pipeline's single `complete` stage; `parked` already
+                // carries the `ScheduledToolDispatch` shape it consumes.
+                const result = await pipeline.complete(parked.exec, parked)
                 for (const context of result.additionalContexts ?? []) {
                   exec.deferContext(context)
                 }
@@ -822,7 +821,7 @@ export function createRunCellTool(registry: ToolRuntime, options: RunCellBridgeO
                 // bounds their count.
                 while (logWork.size > maxParallel) await Promise.race(logWork)
               } catch (error) {
-                // finalize/finish failure (v0.2.1c): settle the binding as a
+                // complete-stage failure (v0.2.1c): settle the binding as a
                 // visible error; the lane must not die from one commit.
                 settleError(error)
               }
@@ -1054,7 +1053,11 @@ export function apply(ctx: Context, config: Config): void {
       // test harness, whose fake provides it at the root) resolves here.
       return runtimeCtx.get('workflowEngine') as DASHRWorkflowEngine | undefined
     }
-    runtimeCtx.tools.register(createRunCellTool(registry, { requireRuntime, maxParallel, shapeDispatchLog, warn: (message: string) => logger.warn(message) }))
+    // The staged pipeline over THIS mounting context (the same instance
+    // `registry` projects): built here so the construction moment is exactly
+    // when the inject wait guarantees `tools` is mounted.
+    const pipeline = new ToolExecutionPipeline(runtimeCtx)
+    runtimeCtx.tools.register(createRunCellTool(registry, pipeline, { requireRuntime, maxParallel, shapeDispatchLog, warn: (message: string) => logger.warn(message) }))
     // ①¼ The three delegation bridges as REAL registry tools (same host
     // layer as `eval`): the registry projection becomes the single source
     // for wire, catalog, and REPL bindings alike — the auto-bridge picks

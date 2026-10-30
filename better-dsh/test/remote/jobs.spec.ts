@@ -3,7 +3,20 @@ import LocalJobs from '@deepseek-ai/dsh-jobs-local'
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
 import { readFile } from 'node:fs/promises'
 import { JobId } from '@deepseek-ai/dsh-jobs'
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import { createRealRemoteHarness } from './real-harness.ts'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+
+/** One model-direct tool call through the staged pipeline (0.2.2); returns the call's own result. */
+async function callTool(agent: Agent, name: string, args: unknown) {
+  return executeToolFixture(agent.ctx, {
+    callId: `${name}-test` as never,
+    name,
+    arguments: args,
+    agent,
+    signal: new AbortController().signal,
+  })
+}
 
 async function harness(controller = true, driverOptions: Record<string, unknown> = {}) {
   const h = await createRealRemoteHarness({ copies: 1, driverOptions: { execTimeoutSec: 0.05, oneshotArgvFor: (_p, cmd) => ['bash', '-c', cmd], rosterRunner: async () => { throw new Error('DISCOVERY BEFORE ADMISSION') }, ...driverOptions } })
@@ -25,11 +38,11 @@ it('exposes live output through native jobs with owner fencing, consuming reads,
     expect(pid).toBeGreaterThan(0)
     expect(registry.read(id, a.id).chunks).toEqual([])
     expect(() => registry.read(id, b.id)).toThrow(); expect(() => registry.kill(id, b.id)).toThrow()
-    const killed = await a.ctx.tools.execute({ name: 'job_kill', arguments: { job_id: id }, agent: a, signal: new AbortController().signal, callId: 'kill-test' as never })
+    const killed = await callTool(a, 'job_kill', { job_id: id })
     expect(killed.isError).toBeFalsy()
     expect((await registry.wait(id, 5000, a.id)).status).toBe('killed')
     await expect(readFile(`/proc/${pid}/stat`, 'utf8')).rejects.toThrow(/ENOENT/)
-    const output = await a.ctx.tools.execute({ name: 'job_output', arguments: { job_id: id }, agent: a, signal: new AbortController().signal, callId: 'output-test' as never })
+    const output = await callTool(a, 'job_output', { job_id: id })
     expect(output.value).toMatchObject({ text: '', job: { status: 'killed' } })
   } finally { await h.dispose() }
 }, 10000)
@@ -47,7 +60,7 @@ it('PTY background jobs: live merged output, interrupt cancels with exit 130, se
     for (let i = 0; i < 100 && !text.includes('first'); i++) { text += registry.read(id, a.id).chunks.map(c => c.text).join(''); await new Promise(r => setTimeout(r, 20)) }
     expect(text).toContain('first')
     expect(registry.get(id, a.id).status).toBe('running')
-    const killed = await a.ctx.tools.execute({ name: 'job_kill', arguments: { job_id: id }, agent: a, signal: new AbortController().signal, callId: 'pty-kill' as never })
+    const killed = await callTool(a, 'job_kill', { job_id: id })
     expect(killed.isError).toBeFalsy()
     expect(await registry.wait(id, 5_000, a.id)).toMatchObject({ status: 'killed' })
     const after = await h.invoke(a, { action: 'exec', target: 'pty:bg1', cmd: 'echo alive' }) as unknown as { text: string }
@@ -158,7 +171,7 @@ it('native jobs final-drain real Hub TERM output when cancel ACK outruns the str
     let pid = 0
     for (let i = 0; i < 100 && !pid; i++) { pid = Number(registry.readAt(id, 0, a.id).chunks.filter(c => c.channel === 'stderr').map(c => c.text).join('')); await new Promise(r => setTimeout(r, 20)) }
     expect(pid).toBeGreaterThan(0)
-    const call = (name: string) => a.ctx.tools.execute({ name, arguments: { job_id: id }, agent: a, signal: new AbortController().signal, callId: 'hub-job-control' as never })
+    const call = (name: string) => callTool(a, name, { job_id: id })
     expect((await call('job_output')).value).toMatchObject({ text: expect.stringContaining('first'), job: { status: 'running' } })
     expect((await call('job_output')).value).toMatchObject({ text: '' })
     expect((await call('job_kill')).isError).toBeFalsy()
@@ -217,7 +230,7 @@ it('interactive stdin over official jobs: exec → prompt → input → job_outp
     expect(card.text).not.toContain('demo')
     // cancel race: kill a waiting reader, then input honestly refuses
     const started3 = await h.invoke(a, { action: 'exec', target: 'pty:ix', cmd: 'IFS= read -s -r v; echo stuck', run_in_background: true }) as unknown as { jobId: string }
-    const kill = await a.ctx.tools.execute({ name: 'job_kill', arguments: { job_id: JobId(started3.jobId) }, agent: a, signal: new AbortController().signal, callId: 'ix-kill' as never })
+    const kill = await callTool(a, 'job_kill', { job_id: JobId(started3.jobId) })
     expect(kill.isError).toBeFalsy()
     await registry.wait(JobId(started3.jobId), 5_000, a.id)
     await expect(h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/)

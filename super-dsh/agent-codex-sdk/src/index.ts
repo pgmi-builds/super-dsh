@@ -32,7 +32,6 @@ import type {
   CreateAgentOptions,
   ResumeAgentOptions,
 } from "@deepseek-ai/dsh-agent";
-import { installModelSelection } from "@deepseek-ai/dsh-agent";
 import type { LlmRuntime } from "@deepseek-ai/dsh-llm";
 import {
   SessionLogOffset,
@@ -764,16 +763,11 @@ async function setupAndPublish(
         // `ModelSelectionRef` (same shape the controller installs) that the
         // next prompt's route check reads. Synchronous on purpose — the first
         // prompt must not depend on the global default's late flush.
-        let picked: typeof selection | undefined = selection;
-        installModelSelection(agent.ctx, {
-          get current() { return picked },
-          set current(next) { picked = next },
-          assembled: undefined,
-        });
-        // `model/selection` is contributed to `SessionEventMap` by the upstream
-        // session-controller package (declaration merging); this adapter does
-        // not depend on it, so the append goes through a narrow local cast.
-        (session.append as (type: string, data: unknown) => unknown)("model/selection", selection);
+        // 0.2.2: installModelSelection dropped its injected-ref parameter — the
+        // durable face (`agent.model`, the same mechanism session/selectModel
+        // uses) carries the pin: select() appends the typed, deduped
+        // `model/selection` event.
+        agent.model.select(selection);
         trace(`session route pinned: ${route.provider}/${route.model}`);
       }
     } catch (error) {
