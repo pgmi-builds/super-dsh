@@ -60,3 +60,13 @@ user 抽样 Hermes/OMP/PI：模型可选可对话，但 selector 标签恒显「
 **修复**（superd-hub `world-entry.ts`，单份共享、九 world 全覆盖）：world mount 行在 `sessionProjections` inject 内注册 `modelSelectionProjectionDefinition`（`@deepseek-ai/dsh-agent` 导出；纯事件 fold，无 loop 机器；register 引用计数且同 stateVersion 幂等，未来 agent-loop 行若回归也不冲突）。hub package.json 补 `@deepseek-ai/dsh-agent` optional peer 行。版本升 **0.3.2-g**（双包同步重打；better 内容不变，0.3.2-f 从未发布，血脉干净）。
 
 **验证**（4999 线，0.3.2-g，boot 零 import 失败）：以 UI 同款 wire（`/api/<method>?agent=<world>`，client-request 信封 `{args:{request}}`）实测——omp world `session/create` → `session/projections` 含 `modelSelection:{lastUsed:null,next:null}`；`session/selectModel`（deepseek-official/deepseek-flash）→ 复读 `next` 即所选（正是 trigger 标签取值路径 `projected.next ?? catalog.default`）；pi、hermes world 同验在场。真机 UI 复验交 user。
+
+## 发布记录（2026-10-30 13:45–14:10，user 放行 "Publish"）
+
+- **版本定版 0.3.3**（user 指令：相对 registry latest `0.3.2-e` 最小子版本 +1；本地 0.3.2-f/g 为未发布测试字母）。提交 `c12a1e9`（48 文件，含 157 处 peer 范围改 `>=0.2.2-0 <1.0.0-0`、root 测试 hmr-context 同型修复），master 已推。
+- **npm**：better-dsh@0.3.3 → super-dsh@0.3.3，均 `--tag latest`，凭据纪律照章（0600 临时 npmrc → `NPM_CONFIG_USERCONFIG` → 即删）。
+- **收敛**：better ~4 分钟可见；super ~9 分钟（22MB 大包，与 0.3.2-e 轮 ~9.5 分钟同型，等待期零重发）。终态 dist-tags：双包 `latest = 0.3.3`（super `next: 0.1.12-a` 历史标签不动）。
+- **完整性**：registry `dist.shasum`（SHA-1）与本地发运 tarball 逐字节一致——better `0d90627876a032ed…`、super `9708578d9986d3af…`。
+- **消费者核验**（全新目录 registry 安装）：better-dsh@0.3.3（1 包）`lib/index.js` 叶哈希 `346e650036a4634d4…` = tarball 叶；super-dsh@0.3.3（96 依赖包）closure `remote/plugin.js` `8dd1843f2c57097a…` = tarball 叶。
+- **验收依据**：user 真机复验通过（model selector 卡片正常）后放行；4999 线已刷 0.3.3 交付形态（boot 零 import 失败）并保持运行。
+- **未做**：git tag 未打（本轮指令未含）；dev3 prod 安装 0.3.3（`~/.dsh` + 3080 重启）仍待 user 单独下令。
