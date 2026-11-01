@@ -58,78 +58,32 @@ const NO_SESSION_KEY = 'remote:no-session'
  * interact-able stdin / managed output / persistent env——回执形状与 oneshot 相同、只增状态，
  * 运行中的命令可分步观察后再补输（input 动作）；多步与交互任务默认进 PTY。
  */
-const REMOTE_TOOL_DESCRIPTION = `Remote shell over ssh / docker / incus (Hub when configured): one reusable default interactive PTY per machine, plus oneshot for isolated commands.
+const REMOTE_TOOL_DESCRIPTION = `Remote shell (SSH, Docker, Incus, Hub): 1 default interactive PTY per machine (retains cwd/env). \`mode:"oneshot"\` = isolated, stateless.
 
-Actions (action is the only dispatch dimension; unknown fields are rejected):
-- exec {target, cmd | scriptPath, stdin?, mode?:"pty"|"oneshot"="pty", timeout?, run_in_background?}: run a command, or a raw stdin write. Machine target = its default PTY (retains cwd/env across calls; lazily opened, fresh after handoff/close/expiry). mode:"oneshot" = isolated, stateless. PTY stdin alone (no cmd/scriptPath) = raw write into the command currently running in that PTY (exact bytes; optional commandId guard rejects stale writes).
-- handoff {target:<machine>}: detach the machine's default PTY as an addressable pty:<id> — at any time (fresh creates an idle shell first; busy carries the running command with it). The machine's next exec opens a fresh default.
-- add {ssh:{...} | spawn:"<cmd>", target?}: register a BYO endpoint (identity or interactive-shell command); no command runs. Returns the addressable label; a taken label answers [E_LABEL_IN_USE] — address existing names directly, never add again.
-- status {}: roster — the one unified pool (machines, identities, live PTY sessions incl. defaults).
-- status {target}: machine probe (with its default PTY state), or a session card (connection, cwd, running command).
-- close {target, force?}: close a PTY shell — a machine target closes only its default PTY; pty:<id|label> closes that session. A running command refuses close unless force:true (interrupts and closes in one step); cancelling a running command is job_kill's job — close takes no job id.
+Actions:
+- exec {target, cmd? | scriptPath?, stdin?, mode?:"pty"|"oneshot"="pty", timeout?, run_in_background?:boolean, commandId?:string}: run command / script / raw stdin write. Machine target = default PTY. PTY \`stdin\` alone = raw write into running command (optional \`commandId\` guard). \`run_in_background:true\` = async job, returns handle instantly, PTY handed off automatically.
+- handoff {target:<machine>}: detach machine's default PTY -> \`pty:<id>\`. Next exec spawns fresh default.
+- add {ssh:{...} | spawn:"<cmd>", target?}: register BYO identity/PTY. Returns label. Taken label answers \`[E_LABEL_IN_USE]\`.
+- status {target?}: roster pool (no target) or machine probe / session card.
+- close {target, force?:boolean}: close PTY shell. Machine target closes only default PTY. Running command blocks close unless \`force:true\`.
 
-Targets:
-- ssh:<n> / docker:<n> / incus:<n> / bare pool name -> the machine's default PTY (mode:"oneshot" for a stateless run).
-- pty:<id|label> (or its bare label) -> REUSE the live session (from handoff, background, or add {spawn}).
-Prefixes force the channel; bare names resolve through the roster.
+Targets & Semantics:
+- Targets: \`ssh:<n>\`, \`docker:<n>\`, \`incus:<n>\`, \`hub:<m4>\`, \`pty:<id|label>\` (or bare label). Busy PTY rejects new cmds (use input/poll/cancel/handoff/oneshot).
+- PTY: Stream includes echo/stderr. \`envDelta\` lists var names (no values). Expires after 15m idle. Timeout (default 120s) = sync wait limit (command keeps running as job: \`job_output\` / \`job_kill\`).
+- Oneshot: Separate stdout/stderr, verbatim exit code, stateless. \`stdin\` = startup only. Cached \`superd-run\` runner preferred over POSIX shim.
+- Script: \`scriptPath\` = local absolute file read before dial, runs as single \`bash -c\` cmd (same size limit). In PTY, runs as child process (\`cd\`/\`export\` do not affect parent shell). Hub inline cmd limit: 4096 chars.
+- Stdin: oneshot = \`fd0 → pipe\`; PTY = \`fd0 → pty slave\`, line disciplines. Literal bytes (\`\\n\`, \`\\u0003\` = Ctrl-C, \`\\u0004\` = Ctrl-D). Retention: 4M chars/stream (Hub oneshot 4MiB).
 
-PTY:
-- stateful oneshot, interact-able stdin, managed output, persistent env
-- timeout (default 120s) = the sync wait limit: the command is NOT killed — it hands off to a running job you can poll (job_output) and cancel (job_kill = Ctrl-C first; the session survives).
-- run_in_background = the command went async (not bash &): a job handle returns immediately and a completion notification will follow — no polling required. On a default PTY the framed command starts and that PTY is handed off in the same operation; on an addressable PTY it stays in its session. job_output reads the command's full stream from byte 0 (overlap with a pre-handoff receipt is expected); job_kill cancels. Known defect: startup stdin is NOT reliably delivered to a background command — run stdin-consuming commands in the FOREGROUND (or background WITHOUT stdin, then feed stdin-only writes to the session; those are reliable).
-- Busy PTY rejects new cmds (feed it stdin / poll / cancel / handoff it / use another session / oneshot).
-- exec.stdin with a command = startup input (REPL-style; with scriptPath it is the script process's own stdin); stdin alone = raw write; verbatim always: "\\n" submits; "\\u0003" Ctrl-C; "\\u0004" Ctrl-D; "" writes zero bytes. After a raw "\\u0003" the adopted job stays running — settle it with job_kill.
-- Output returns in full up to retention (4M chars per stream; Hub oneshot 4MiB bytes) — beyond it the retained tail plus outputStats. Redirect bulk output to files.
-- Idle expiry: 15 min; running commands exempt.
-
-Oneshot:
-- stdout/stderr separate, exit code verbatim, no retained shell state. stdin is startup-only — a prompt on a oneshot means cancel (job_kill) and switch to PTY.
-- Supervision prefers a pinned superd-run helper cached on the endpoint (~/.cache/superd/run), falls back to a POSIX shim — the receipt field "runner" says which ran. Either way children are reaped and the whole group is killed on timeout/cancel. The endpoint needs bash only — no Python.
-- scriptPath: a LOCAL absolute script read before any dialing and carried as ONE bash -c command (same quoting/size discipline as cmd) — the file carrier for multi-line scripts. Your stdin is the script process's own input (a read inside the script gets exactly your bytes). Works in oneshot and PTY alike; in a PTY it runs as a child command that settles on its own (cd/export never affect the parent shell).
-
-Examples
-
-A machine's default PTY — consecutive calls share one shell (cwd/env persist):
-
-remote { "action": "exec", "target": "ssh:dev4", "cmd": "cd /srv/app && pwd" }
-
-/srv/app
-[pty:pty-irsq · conn ssh:dev4 · cmd remote-0d89215d1cc64cdc · cwd /srv/app · idle-left ~15m · exit 0 · 0.3s]
-
-A long task went async on the default PTY — the same operation hands the PTY off; collect or cancel, the completion notice arrives by itself:
-
-remote { "action": "exec", "target": "ssh:dev4", "cmd": "make test", "run_in_background": true }
-
-Started remote-47676dff2c6443e8 on pty:pty-irsq (ssh:dev4). Use job_output to read and job_kill to cancel; completion is reported by the host.
-
-remote { "action": "handoff", "target": "ssh:dev4" }
-
-handed off pty:pty-irsq — ssh:dev4
-detached
-this machine's next exec opens a fresh default PTY
-
-Answer a prompt inside a running command (raw write; the guard rejects writes aimed at an earlier command):
-
-remote { "action": "exec", "target": "pty:pty-irsq", "stdin": "yes\n", "commandId": "remote-47676dff2c6443e8" }
-
-An isolated, stateless one-off:
-
-remote { "action": "exec", "target": "ssh:dev4", "mode": "oneshot", "cmd": "uname -a" }
-
-No direct route to the endpoint? Compose the transport and land the session on the innermost machine — bring your own PTY. Here: borrow pc as a jump host to reach dev4.
-
-remote { "action": "add", "spawn": "ssh -t pc ssh -t dev4", "target": "pty:dev4via" }
-
-[session created — address it as pty:pty-irsq]
-
-remote { "action": "exec", "target": "pty:dev4via", "cmd": "hostname" }
-
-- BYO PTY fits when the endpoint has no direct route, or the connection/transport layer must be composed yourself (jump chains, docker exec, console servers). It also strips one or two shell-escaping layers — commands go straight to the innermost bash.
-- Register an ssh identity once — the label enters the pool and works everywhere: exec, copy, rsync. Keys stay local-file references; nothing persisted.
-
-remote { "action": "add", "ssh": { "host": "10.0.0.8", "user": "u1", "port": 22, "key": "/home/u1/.ssh/id_key4" }, "target": "ssh:lab" }
-remote { "action": "exec", "target": "ssh:lab", "cmd": "uname -a" }
-remote_transfer { "mode": "rsync", "src": "ssh:lab:/var/log/app/", "dst": "/home/u1/app-logs/", "argv": ["-a"] }`
+Examples:
+remote {"action":"exec","target":"ssh:dev4","cmd":"cd /srv/app && pwd"}
+remote {"action":"exec","target":"ssh:dev4","cmd":"make test","run_in_background":true}
+remote {"action":"handoff","target":"ssh:dev4"}
+remote {"action":"exec","target":"pty:pty-irsq","stdin":"yes\\n","commandId":"remote-47676dff2c6443e8"}
+remote {"action":"exec","target":"ssh:dev4","mode":"oneshot","cmd":"uname -a"}
+remote {"action":"add","spawn":"ssh -t pc ssh -t dev4","target":"pty:dev4via"}
+remote {"action":"exec","target":"pty:dev4via","cmd":"hostname"}
+remote {"action":"add","ssh":{"host":"10.0.0.8","user":"u1","port":22,"key":"~/.ssh/id_key4"},"target":"ssh:lab"}
+remote_transfer {"mode":"rsync","src":"ssh:lab:/var/log/app/","dst":"~/app-logs/","argv":["-a"]}`
 
 /**
  * execute 实现放独立函数 + 结构类型（RemoteArgs/ExecLike）：defineTool 字面量与 typert

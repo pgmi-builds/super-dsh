@@ -21,7 +21,7 @@ it('optional real Hub registration updates existing scoped catalog, keeps empty 
   try {
     const a = await h.createAgent('existing')
     const description = () => h.visibleTools(a).find(t => t.name === 'remote')!.description
-    expect(description()).not.toContain('hub:<m4>')
+    expect(description()).not.toContain('Hub transport available')
     const module = await import('../../../super-dsh/superd-hub/dist/remote-row.js').catch(() => ({}))
     expect(module).toHaveProperty('installHubRemoteTransport')
     const { installHubRemoteTransport } = module as typeof import('../../../super-dsh/superd-hub/dist/remote-row.js')
@@ -33,7 +33,7 @@ it('optional real Hub registration updates existing scoped catalog, keeps empty 
     const { ensureSelf } = await import('../../../super-dsh/superd-hub/dist/machines.js')
     await expect(h.invoke(a, { action: 'exec', target: `hub:${ensureSelf(home, 'local').id}`, cmd: 'printf forbidden' })).rejects.toThrow(/remote machine|local execution/)
     await provider.dispose()
-    expect(description()).not.toContain('hub:<m4>')
+    expect(description()).not.toContain('Hub transport available')
     expect(changes).toBeGreaterThanOrEqual(2)
     await expect(h.invoke(a, { action: 'exec', target: 'hub:abcd', cmd: 'printf forbidden' })).rejects.toThrow(/Hub.*unavailable/)
   } finally { await provider?.dispose(); await h.dispose(); await rm(home, { recursive: true, force: true }) }

@@ -151,7 +151,7 @@ it('declares native argv Surface and returns native receipts through the real sc
       // The transfer surface needs no Python at all (native CLIs and the Hub binary lane only).
       expect(transfer).not.toContain('Python')
       // The execution surface keeps the oneshot supervision guarantee.
-      expect(h.visibleTools(a).find(t => t.name === 'remote')!.description).toContain('no Python')
+      expect(h.visibleTools(a).find(t => t.name === 'remote')!.description).toContain('POSIX shim')
       const receipt = ((await h.invoke(a, { mode: 'rsync', src: `${src}/`, dst: `ssh:dest:${dst}/`, argv: ['-a'] }, 'remote_transfer')) as unknown as { text: string; receipt: Record<string, unknown> }).receipt
       expect(receipt).toMatchObject({ action: 'rsync', exit: 0, verification: 'native-exit-only', ok: true })
       expect(receipt.argv).toEqual(['-a'])
