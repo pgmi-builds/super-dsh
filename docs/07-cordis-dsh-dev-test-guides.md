@@ -207,6 +207,11 @@ npm 可能在返回成功后提示 `Your package is being processed`，此时公
 2. **整包 pack 线冒烟**（场景级验证**唯一入口**）：`bash super-dsh/test/start-4999.sh`（双包本地 pack → 独立 Better Dash 的 Super Dash tarball → 单入口原生 profile → repo build CLI 启动，详见 §8）。冒烟基线：认证后的 shell 200 + roster 全量 + `/hub` 家族语义 + `world failed` 计数 0。
 3. **dev3 目标机实装**（根 AGENTS §〇.0.a）：tarball → restart → journalctl 计数 + 同组探针 → 报告落 `docs/test-reports/` → user 放行 → 才谈 publish。
 
+### 6.1.1 跨机 SSH 测试对端 = DEV2（2026-11-02 user 裁决）
+
+- 需要真机 SSH 对端的行为测试/模型第一人称验证（`ssh:<host>` 目标、跨机 transfer、MUX、PTY 长连接等）一律指向 **DEV2**；不再把 DEV3 当 SSH 对端反复折腾。DEV3 保留两个既有角色：目标机 rig（tarball 实装 + 4998 测试线 + 4996 review 转发）与生产环境本身。
+- 单元测试不受影响：继续用本地 sshd fixture / 127.0.0.1（不涉真机）；只有「真机对端」场景换 DEV2。
+
 ### 6.2 per-agent 场景测试：退役且不回潮（2026-09-24 裁决，2026-09-27 重申）
 
 - **不做 per-agent（单 adapter）的场景测试——即使本次改动是 per-agent 的**。行为级验证一律把**整个 superd app** 拉起来测（整包线 + dev3）。
