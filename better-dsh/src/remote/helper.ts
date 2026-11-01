@@ -79,17 +79,17 @@ export class HelperRegistry {
   constructor(
     private readonly assets: HelperAssets,
     private readonly exec: HelperExec,
-    private readonly probeArgv: (plan: TargetPlan, assets: HelperAssets) => string[],
-    private readonly uploadArgv: (plan: TargetPlan, triple: string, file: string, assets: HelperAssets) => string[],
+    private readonly probeArgv: (plan: TargetPlan, assets: HelperAssets, muxArgv: readonly string[]) => string[],
+    private readonly uploadArgv: (plan: TargetPlan, triple: string, file: string, assets: HelperAssets, muxArgv: readonly string[]) => string[],
   ) {}
 
   /** Never throws: any bootstrap failure resolves null (sticky) and the caller stays on the shim. */
-  ensure(plan: TargetPlan): Promise<HelperRunnerInfo | null> {
+  ensure(plan: TargetPlan, muxArgv: readonly string[] = []): Promise<HelperRunnerInfo | null> {
     if (plan.kind !== 'ssh' && plan.kind !== 'docker' && plan.kind !== 'incus') return Promise.resolve(null)
     const key = planKey(plan)
     let entry = this.states.get(key)
     if (entry === undefined) {
-      entry = this.bootstrap(plan).catch(() => null)
+      entry = this.bootstrap(plan, muxArgv).catch(() => null)
       // Sticky outcome; swallow for any waiter that never awaits.
       entry.catch(() => {})
       this.states.set(key, entry)
@@ -97,9 +97,9 @@ export class HelperRegistry {
     return entry
   }
 
-  private async bootstrap(plan: TargetPlan): Promise<HelperRunnerInfo | null> {
+  private async bootstrap(plan: TargetPlan, muxArgv: readonly string[]): Promise<HelperRunnerInfo | null> {
     const { manifest } = this.assets
-    const first = await this.exec(this.probeArgv(plan, this.assets), { timeoutSec: 15 })
+    const first = await this.exec(this.probeArgv(plan, this.assets, muxArgv), { timeoutSec: 15 })
     const ready = this.parseReady(first.stdout, manifest.ver, manifest.protocol)
     if (ready !== null) return ready
     const probe = PROBE_RE.exec(first.stdout)
@@ -110,9 +110,9 @@ export class HelperRegistry {
     // Upload over the same exec lane: remote `cat > tmp && chmod && mv` with the raw
     // binary on stdin — no base64 inflation, no scp identity plumbing.
     const binary = await readFile(join(this.assets.dir, triple, target.file))
-    const upload = await this.exec(this.uploadArgv(plan, triple, target.file, this.assets), { stdin: binary, timeoutSec: 60 })
+    const upload = await this.exec(this.uploadArgv(plan, triple, target.file, this.assets, muxArgv), { stdin: binary, timeoutSec: 60 })
     if (upload.exit !== 0) return null
-    const second = await this.exec(this.probeArgv(plan, this.assets), { timeoutSec: 15 })
+    const second = await this.exec(this.probeArgv(plan, this.assets, muxArgv), { timeoutSec: 15 })
     return this.parseReady(second.stdout, manifest.ver, manifest.protocol)
   }
 

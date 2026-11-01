@@ -28,7 +28,6 @@ describe('PtySession.input (interactive stdin, 2026-10-25)', () => {
       expect(result.output).toContain('ACCEPTED')
       expect(result.output).not.toContain('demo')
       expect(result.output).not.toContain('123456')
-      expect(session.ledgerSnapshot()).toHaveLength(1) // input 新建零账本条目
       const next = await session.dispatch('pwd', { commandId: 'next' })
       expect(next.exit).toBe(0)
       expect(next.reconnected).toBe(false)
@@ -79,7 +78,7 @@ describe('PtySession.input (interactive stdin, 2026-10-25)', () => {
       expect(receipt).toMatchObject({ session: 'pty:receipt', commandId: 'remote-receipt', jobId: 'remote-receipt', writtenBytes: 3 })
       const res = await r.job!.done
       expect(res.output).toContain('OK:go')
-      expect(s.ledgerSnapshot()).toHaveLength(1)
+      expect(s.active).toBeNull() // settled
     } finally {
       await s.dispose()
     }

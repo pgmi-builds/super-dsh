@@ -35,7 +35,7 @@ it('Hub spawn-error diagnostic reaches scoped model rendering without fabricatin
   const row = await h.ctx.plugin({ name: 'real-spawn-error-hub', apply: ctx => installHubRemoteTransport(ctx, { home: dir }) })
   try {
     const a = await h.createAgent('spawn-error')
-    const value = await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: 'true' })
+    const value = await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: 'true', mode: 'oneshot' })
     expect(originalDiagnostic).toContain('exec: spawn failed')
     const tool = h.host.tools.get('remote', a)!
     const rendered = tool.output!.render!({} as never, value as never)[0] as { text: string }
@@ -54,9 +54,9 @@ it('runs a local large script once through scoped remote, preserving shell liter
   const h = await createRealRemoteHarness({ copies: 1, driverOptions: { oneshotArgvFor: (_plan, cmd) => ['bash', '-c', cmd] } })
   try {
     const a = await h.createAgent('script')
-    expect(await h.invoke(a, { action: 'exec', target: 'ssh:fixture', scriptPath: script })).toMatchObject({ text: '$HOME $(printf WRONG) `printf WRONG` 中🙂\n', stderr: 'err', exit: 0 })
+    expect(await h.invoke(a, { action: 'exec', target: 'ssh:fixture', scriptPath: script, mode: 'oneshot' })).toMatchObject({ text: '$HOME $(printf WRONG) `printf WRONG` 中🙂\n', stderr: 'err', exit: 0 })
     expect(await readFile(once, 'utf8')).toBe('x')
-    expect(await h.invoke(a, { action: 'exec', target: 'ssh:fixture', cmd: 'cat', stdin: 'raw $HOME `x` 中🙂' })).toMatchObject({ text: 'raw $HOME `x` 中🙂' })
+    expect(await h.invoke(a, { action: 'exec', target: 'ssh:fixture', cmd: 'cat', stdin: 'raw $HOME `x` 中🙂', mode: 'oneshot' })).toMatchObject({ text: 'raw $HOME `x` 中🙂' })
   } finally { await h.dispose(); await rm(dir, { recursive: true, force: true }) }
 })
 
@@ -76,7 +76,7 @@ it('rejects script conflicts before file reads or dial, and read failures before
   } finally { await h.dispose() }
 })
 
-it('scoped script and cmd stdin both cross authenticated Hub HTTP without SSH or argv expansion', async () => {
+it('script rides Hub HTTP as ONE quoted bash -c command (F1/F2 fix): body survives the wire, business stdin stays the script input, no expansion', async () => {
   const { createServer } = await import('node:http')
   const { createRemoteJobExecutor } = await import('../../../super-dsh/superd-hub/dist/remote-row.js')
   const executor = createRemoteJobExecutor()
@@ -84,7 +84,7 @@ it('scoped script and cmd stdin both cross authenticated Hub HTTP without SSH or
   const { installHubRemoteTransport } = await import('../../../super-dsh/superd-hub/dist/remote-row.js')
   const dir = await mkdtemp(join(tmpdir(), 'remote-script-hub-'))
   const script = join(dir, 'source.sh'), once = join(dir, 'once')
-  await writeFile(script, '#'.repeat(5000) + `\nprintf x >> '${once}'\ncat <<'LITERAL'\n$HOME $(printf WRONG) \`printf WRONG\` 中🙂\nLITERAL\n`)
+  await writeFile(script, '#'.repeat(2000) + `\nprintf x >> '${once}'\ncat <<'LITERAL'\n$HOME $(printf WRONG) \`printf WRONG\` q't 中🙂\nLITERAL\n`) // 2000 < hub 4096 argv cap (script now IS argv)
   let posts = 0, legacyPeer = false
   const server = createServer(async (req, res) => {
     if (req.headers.cookie !== 'paired=script') { res.writeHead(401); res.end(); return }
@@ -108,13 +108,13 @@ it('scoped script and cmd stdin both cross authenticated Hub HTTP without SSH or
   const providerRow = await h.ctx.plugin({ name: 'real-script-hub', apply: ctx => installHubRemoteTransport(ctx, { home: dir }) })
   try {
     const a = await h.createAgent('hub-script')
-    expect(await h.invoke(a, { action: 'exec', target: 'hub:peer', scriptPath: script })).toMatchObject({ text: '$HOME $(printf WRONG) `printf WRONG` 中🙂\n', exit: 0, outputStats: { stdout: { unit: 'bytes' } } })
+    expect(await h.invoke(a, { action: 'exec', target: 'hub:peer', scriptPath: script, mode: 'oneshot' })).toMatchObject({ text: "$HOME $(printf WRONG) `printf WRONG` q't 中🙂\n", exit: 0, outputStats: { stdout: { unit: 'bytes' } } })
     expect(await readFile(once, 'utf8')).toBe('x')
-    expect(await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: 'cat', stdin: 'raw 中🙂' })).toMatchObject({ text: 'raw 中🙂' })
-    await expect(h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: 'x'.repeat(4097) })).rejects.toThrow(/4096/)
+    expect(await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: 'cat', stdin: 'raw 中🙂', mode: 'oneshot' })).toMatchObject({ text: 'raw 中🙂' })
+    await expect(h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: 'x'.repeat(4097), mode: 'oneshot' })).rejects.toThrow(/4096/)
     expect(posts).toBe(2)
     legacyPeer = true
-    const legacy = await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: `head -c 3500001 /dev/zero | tr '\\0' x; printf LAST` })
+    const legacy = await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: `head -c 3500001 /dev/zero | tr '\\0' x; printf LAST`, mode: 'oneshot' })
     expect(legacy).toMatchObject({ outputStatsUnavailable: true })
     expect(legacy).not.toHaveProperty('outputStats')
     expect(legacy).not.toHaveProperty('notice')

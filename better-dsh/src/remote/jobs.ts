@@ -27,7 +27,10 @@ export function startRemoteJob(registry: JobRegistry, input: RemoteInput, exec: 
   // P5（2026-10-19）：pty（含 byop）获得与 oneshot 同形的 background 通道；0.3.2-c 起 hub
   // 机器同样入列（hub PTY = canonical 会话，handoff/后台与其他 transport 同形）。
   const form = parseTargetForm(input.target)
-  const ptyLane = form.form === 'pty-selector' || form.form === 'create-pty' || form.form === 'hub-pty' || input.spawn !== undefined || input.mode === 'pty'
+  // spec remote-default-pty §1：machine target 默认走 PTY 槽 lane（run_in_background = 提交 framed cmd 的同一操作内
+  // handoff）；mode:"oneshot" 显式走无状态 oneshot job。bare pty 认领由 driver 侧 preparePtyLane 沿旧语义拒绝。
+  const machineForm = form.form === 'direct' || form.form === 'bare' || form.form === 'hub'
+  const ptyLane = form.form === 'pty-selector' || input.spawn !== undefined || input.mode === 'pty' || (machineForm && input.mode !== 'oneshot')
   if (ptyLane) {
     const holder: { job?: PtyRunningJob } = {}
     return registry.start({

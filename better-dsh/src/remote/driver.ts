@@ -12,11 +12,12 @@ import { startOneShot, runOneShot } from './oneshot.ts'
 import { startBinaryProcess } from './process.ts'
 import { helperAssets, HelperRegistry, type HelperAssets, type HelperRunnerInfo } from './helper.ts'
 import { startOwnedNativeProcess } from './ssh-process.ts'
-import { PtyPool, type PtyRunningJob, type PtySession, type LedgerEntry, type PtyInputOptions, type PtyInputReceipt } from './pty-session.ts'
+import { SshMux } from './ssh-mux.ts'
+import { PtyPool, type PtyRunningJob, type PtySession, type PtyInputOptions, type PtyInputReceipt } from './pty-session.ts'
 import { disclose, type EnvDelta } from './nonce-framing.ts'
 import { resolveTarget, parseTargetForm, type TargetForm, type TargetPlan } from './target.ts'
 import { LabelPool, validateLabel, PTY_ID_RE, describeEntry, type PoolEntry } from './labels.ts'
-import { probeTarget, renderProbe, renderLedger, type ProbeOptions } from './status.ts'
+import { probeTarget, renderProbe, type ProbeOptions } from './status.ts'
 import { scanLocal, renderRoster, type RosterOptions } from './roster.ts'
 import { literalHosts } from './roster.ts'
 import { readFile } from 'node:fs/promises'
@@ -79,7 +80,7 @@ export interface RemoteDriverOptions {
   execTimeoutSec?: number
   idleTtlSec?: number
   onAudit?: (r: RemoteAuditRecord) => void
-  oneshotArgvFor?: (plan: TargetPlan, cmd: string, options: { cleanupTag?: string }) => string[]
+  oneshotArgvFor?: (plan: TargetPlan, cmd: string, options: { cleanupTag?: string; muxArgv?: readonly string[] }) => string[]
   ptyArgvFor?: (plan: TargetPlan) => string[]
   spawnArgvFor?: (spawnCommand: string) => string[]
   /** 测试/验收缝：hub PTY 泵 argv（默认 buildHubPtyArgv + 宿主树 ws 解析）。 */
@@ -87,6 +88,8 @@ export interface RemoteDriverOptions {
   probeRunner?: ProbeOptions['runner']
   /** 测试/验收缝：helper 资产来源（默认 lib 旁挂 helper-bin）；显式 null 强制 shim 路径。 */
   helperAssetsFor?: () => HelperAssets | null
+  /** 测试/验收缝：SSH oneshot MUX 状态（默认每 driver 一个 SshMux = 每 Agent 隔离）。 */
+  sshMux?: SshMux
   /** 测试缝：roster 扫描执行器（裸名解析复用）。 */
   rosterRunner?: RosterOptions['runner']
   /** 测试缝：ssh config 读取（裸名解析复用）。 */
@@ -96,7 +99,9 @@ export interface RemoteDriverOptions {
 /** R1：idle TTL 15 min——idle 随活动重置，在用会话永不超时（PtySession 双条件）。 */
 export const REMOTE_PTY_IDLE_TTL_SEC = 900
 /** P3（user 2026-10-19）：每 agent 10 个 PTY 会话，跨所有 connection 统一计；仅 error message 披露。 */
-export const REMOTE_PTY_SESSION_LIMIT = 10
+/** 二/三轮裁决（2026-11-01）：每 Agent session 全局 30 个 active PTY（默认/handoff/BYO 全计入）；
+ * 仅触达上限时的错误回执与 roster 可见性披露，任何模型可见 surface 不预先公布。 */
+export const REMOTE_PTY_SESSION_LIMIT = 30
 
 /** hub 线 one-shot 监督披露（0.3.2-c）：对端 = 我们自己的 hub server（bash -lc 于独立进程组，
  *  Node 原生 TERM→2s→KILL + 输出环 + 租约生命周期）；superd-run helper 是 dumb-pipe 专用物，
@@ -116,6 +121,10 @@ const genCommandId = (): string => `remote-${randomUUID().replace(/-/g, '').slic
 /** 双轨调度器：参数校验 → 目标语法（parseTargetForm）→ 统一 label 池 → oneshot 子进程 / pty 会话池。 */
 export class RemoteDriver {
   private readonly pool: PtyPool
+  /** 默认 PTY 槽（spec remote-default-pty §1）：sessionKey → 归一 machineKey → pool key。
+   * 会话本体是普通 PtySession（id 创建即认领，roster 全可见）；槽登记在 dispose/TTL 后悬空，
+   * 取槽时经 pool.get（disposed 视同出池）惰性清理。 */
+  private readonly defaultSlots = new Map<string, Map<string, string>>()
   private readonly labels = new LabelPool()
   private readonly hubOwner = randomUUID()
   private readonly hubProviders = new Set<HubRemoteTransport>()
@@ -128,7 +137,9 @@ export class RemoteDriver {
   private readonly runnerOf = new WeakMap<RemoteProcess, string>()
   private disposal: Promise<void> | undefined
   private readonly ptyIdleTtlSec: number
+  private readonly mux: SshMux
   constructor(private readonly opts: RemoteDriverOptions = {}) {
+    this.mux = opts.sshMux ?? new SshMux()
     this.ptyIdleTtlSec = opts.idleTtlSec ?? REMOTE_PTY_IDLE_TTL_SEC
     this.pool = new PtyPool({ idleTtlSec: this.ptyIdleTtlSec })
   }
@@ -169,11 +180,10 @@ export class RemoteDriver {
     const ptyForm = form.form === 'pty-selector' || form.form === 'empty' || form.form === 'bare'
     const sshForm = form.form === 'ssh-prefix' || form.form === 'empty' || form.form === 'bare'
       || (form.form === 'direct' && form.transport === 'ssh')
-      || (form.form === 'create-pty' && form.transport === 'ssh')
     if (hasSpawn && !ptyForm)
       throw new Error('[E_PARAMS] remote: spawn pairs only with a pty target (pty, pty:<label>, or a bare label) — machines are dialed, not spawned')
     if (hasSsh && !sshForm)
-      throw new Error('[E_PARAMS] remote: ssh registration pairs with ssh-form targets only (ssh, ssh:<label>, ssh:<label>:pty, a bare label, or no target)')
+      throw new Error('[E_PARAMS] remote: ssh registration pairs with ssh-form targets only (ssh, ssh:<label>, a bare label, or no target)')
   }
 
   private async execute(
@@ -185,6 +195,14 @@ export class RemoteDriver {
     const sessionKey = callCtx.sessionKey ?? 'no-session'
     const hasCmd = params.cmd !== undefined && params.cmd.length > 0
     const hasSpawn = params.spawn !== undefined && params.spawn.length > 0
+
+    // —— 默认 PTY 槽（spec remote-default-pty §1，2026-11-01）：machine target 且未显式 oneshot → 复用每 machine 默认 shell（保留 cwd/env）。BYO 注册（ssh 在场）与 spawn 创建不进槽。——
+    const bareHitsPty = form.form === 'bare' && this.labels.resolve(form.name, sessionKey)?.kind === 'pty' // bare 名先让 pty 认领（claim shadows machines，既有语义）
+    if ((form.form === 'direct' || form.form === 'hub' || (form.form === 'bare' && !bareHitsPty)) && params.mode !== 'oneshot' && params.ssh === undefined && !hasSpawn) {
+      const { session } = await this.defaultSlot(form, sessionKey)
+      if (!hasCmd) return this.cardReceipt(session)
+      return await this.dispatchPty(session, params, callCtx, timeoutSec)
+    }
 
     // —— hub oneshot lane（监督披露 runner=HUB_RUNNER；hub:<m4>:pty 自 0.3.2-c 走下方 createPtyLane 会话形）——
     if (form.form === 'hub') {
@@ -303,7 +321,7 @@ export class RemoteDriver {
         const parsed = parseFileEndpoint(value)
         if (!parsed.target) return { path: parsed.path }
         const form = parseTargetForm(parsed.target)
-        if (form.form === 'hub' || form.form === 'hub-pty' || form.form === 'pty-selector')
+        if (form.form === 'hub' || form.form === 'pty-selector')
           throw new Error('rsync supports SSH endpoints only (plus one local endpoint); no mixed-transport or copy fallback')
         const plan = await this.resolveConnectionTarget(parsed.target, callCtx)
         this.assertOpen(); combined.throwIfAborted()
@@ -345,12 +363,12 @@ export class RemoteDriver {
       // direct 前缀 = 强制通道：不进池、不触发发现（旧 byossh 直接解析同形）。
       const plan = form.transport === 'ssh' ? this.sshPlanFor(form.name, callCtx.sessionKey ?? 'no-session') : resolveTarget(`${form.transport}:${form.name}`)
       this.assertOpen(); signal.throwIfAborted()
-      process = await this.nativeProcess(plan, params, params.timeout, signal)
+      process = await this.nativeProcess(plan, `${form.transport}:${form.name}`, params, params.timeout, signal)
     } else if (form.form === 'bare') {
       const entry = await this.resolvePoolEntry(form.name, callCtx.sessionKey ?? 'no-session')
       this.assertOpen(); signal.throwIfAborted()
       if (entry.kind === 'pty' || entry.kind === 'hub') throw new Error('remote: background requires an ssh/docker/incus target')
-      process = await this.nativeProcess(this.planOf(entry), params, params.timeout, signal)
+      process = await this.nativeProcess(this.planOf(entry), form.name, params, params.timeout, signal)
     } else {
       throw new Error('remote: background oneshot takes a machine target')
     }
@@ -359,19 +377,32 @@ export class RemoteDriver {
     return process
   }
 
-  private async nativeProcess(plan: TargetPlan, params: PreparedRemoteInput, timeoutSec?: number, signal = this.fileAbort.signal): Promise<RemoteProcess> {
+  private async nativeProcess(plan: TargetPlan, display: string, params: PreparedRemoteInput, timeoutSec?: number, signal = this.fileAbort.signal): Promise<RemoteProcess> {
     // Helper fast path first (spec §5): a pinned superd-run on the endpoint gives portable
     // supervision + kernel-anchored disconnect cleanup; every miss falls back to the POSIX
     // wrapper below with byte-identical behavior. The receipt's runner field says which ran.
+    // Task E：SSH oneshot 全链（helper probe/upload/run/killgroup + shim + cleanup）共用同一
+    // MUX 身份（原始 target + 有效连接字段）；docker/incus 不注入。master 与客户端进程组完全
+    // 脱钩（探针 2026-11-01），本地 killpg 取消语义不受影响。
+    const muxArgv = this.muxArgvFor(plan, display)
     const cleanupTag = randomUUID().slice(0, 8)
-    const helper = await this.ensureHelper(plan)
+    const helper = await this.ensureHelper(plan, muxArgv)
     if (helper !== null && !this.disposed) {
-      const process = startOneShot(buildHelperOneShotArgv(plan, helper.binPath, { tag: cleanupTag, cmd: params.cmd }), { stdin: params.stdin, timeoutSec })
+      // Task E：mux master 经 fd-passing 持有被杀客户端的会话 fd 到远端会话结束——cleanup
+      // killer 必须在取消时刻就发射（onCancel），不能等 close 后的 done.then（死锁：close 等
+      // 远端结束、远端结束等 killer）。done.then 仅作兜底（至多一次）。无 mux 时两者等价。
+      let killed = false
+      const kill = () => {
+        if (killed) return
+        killed = true
+        const killer = startOneShot(buildHelperKillgroupArgv(plan, helper.binPath, cleanupTag, muxArgv), { timeoutSec: 15 })
+        killer.done.catch(() => {})
+      }
+      const process = startOneShot(buildHelperOneShotArgv(plan, helper.binPath, { tag: cleanupTag, cmd: params.cmd, ...(muxArgv !== undefined ? { muxArgv } : {}) }), { stdin: params.stdin, timeoutSec, onCancel: kill })
       this.runnerOf.set(process, `superd-run ${helper.ver} (${helper.triple})`)
       void process.done.then(result => {
         if (!result.cancelled && !result.timedOut) return
-        const killer = startOneShot(buildHelperKillgroupArgv(plan, helper.binPath, cleanupTag), { timeoutSec: 15 })
-        killer.done.catch(() => {})
+        kill()
       }).catch(() => {})
       const tracked = Promise.resolve(process)
       this.starting.add(tracked)
@@ -383,14 +414,22 @@ export class RemoteDriver {
     // transport at once; sshd delivers no signal to a no-PTY session, so the
     // remote tree is cleaned through its own session reading the pidfile the
     // wrapper left (same explicit-cleanup shape as the rsync daemon route).
-    const process = startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, params.cmd, { cleanupTag }), { stdin: params.stdin, timeoutSec })
+    // Task E：同上——posix shim 的 pidfile killer 在取消时刻即发（wrapper 首行就写 pidfile，
+    // 取消时已可用）；done.then 兜底保持既有形状。
+    let killed = false
+    const kill = () => {
+      if (killed) return
+      killed = true
+      const pidfile = `"\${TMPDIR:-/tmp}/superd-oneshot-${cleanupTag}.pgid"`
+      const cleanup = `p=$(cat ${pidfile} 2>/dev/null) && { kill -TERM -- "-$p" 2>/dev/null; sleep 0.3; kill -KILL -- "-$p" 2>/dev/null; }; rm -f ${pidfile}`
+      const killer = startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, cleanup, { ...(muxArgv !== undefined ? { muxArgv } : {}) }), { timeoutSec: 15 })
+      killer.done.catch(() => {})
+    }
+    const process = startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, params.cmd, { cleanupTag, ...(muxArgv !== undefined ? { muxArgv } : {}) }), { stdin: params.stdin, timeoutSec, onCancel: kill })
     this.runnerOf.set(process, 'posix-shim')
     void process.done.then(result => {
       if (!result.cancelled && !result.timedOut) return
-      const pidfile = `"\${TMPDIR:-/tmp}/superd-oneshot-${cleanupTag}.pgid"`
-      const cleanup = `p=$(cat ${pidfile} 2>/dev/null) && { kill -TERM -- "-$p" 2>/dev/null; sleep 0.3; kill -KILL -- "-$p" 2>/dev/null; }; rm -f ${pidfile}`
-      const killer = startOneShot((this.opts.oneshotArgvFor ?? buildOneShotArgv)(plan, cleanup, {}), { timeoutSec: 15 })
-      killer.done.catch(() => {})
+      kill()
     }).catch(() => {})
     const work = Promise.resolve(process)
     this.starting.add(work)
@@ -400,13 +439,13 @@ export class RemoteDriver {
 
   /** Helper bootstrap is best-effort and sticky: any failure parks null for this driver
    * lifetime and the shim stays the path. First call to a target pays probe (+ upload). */
-  private async ensureHelper(plan: TargetPlan): Promise<HelperRunnerInfo | null> {
+  private async ensureHelper(plan: TargetPlan, muxArgv?: readonly string[]): Promise<HelperRunnerInfo | null> {
     if (this.helpers === undefined) {
       const assets = this.opts.helperAssetsFor?.() ?? helperAssets()
       this.helpers = assets === null ? null : new HelperRegistry(assets, (argv, options) => this.helperExec(argv, options), buildHelperProbeArgv, buildHelperUploadArgv)
     }
     if (this.helpers === null || this.disposed) return null
-    try { return await this.helpers.ensure(plan) } catch { return null }
+    try { return await this.helpers.ensure(plan, muxArgv ?? []) } catch { return null }
   }
 
   private async helperExec(argv: string[], options?: { stdin?: Buffer; timeoutSec?: number }): Promise<{ exit: number | null; stdout: string }> {
@@ -480,6 +519,14 @@ export class RemoteDriver {
     return { kind: 'ssh', host: name }
   }
 
+  /** Task E MUX 身份：仅 SSH plan 注入（docker/incus/hub 返回 undefined）。身份键 = 原始
+   * target 串 + 有效连接字段（host/user/port/key/ProxyJump）——同身份共享 master，跨身份
+   * 不串 socket；目录/寿命/拆除全部由 SshMux 自持。 */
+  private muxArgvFor(plan: TargetPlan, target: string): readonly string[] | undefined {
+    if (plan.kind !== 'ssh') return undefined
+    return this.mux.argvFor({ target, connection: plan.connection ?? { host: plan.host } })
+  }
+
   /** BYO ssh 注册（v2：无 spec 对比——label 占用即拒；注册成功才认领）。返回实际名（label 或 s-id）。 */
   private registerByoSsh(label: string | undefined, connection: SshConnection, sessionKey: string): string {
     this.assertOpen()
@@ -512,7 +559,8 @@ export class RemoteDriver {
       .filter((s): s is PtySession => s !== undefined && s.sessionState !== 'dead')
     if (live.length >= REMOTE_PTY_SESSION_LIMIT) {
       const listing = live.map(sessionLine).join(' · ')
-      throw new Error(`[E_SESSION_LIMIT] remote: this Agent already holds ${live.length} live PTY sessions (limit ${REMOTE_PTY_SESSION_LIMIT}) — close one ({action:"close", target:"pty:<id>"}); idle sessions are reaped after ${this.ttlMinutes()} min.\n  live: ${listing}`)
+      throw new Error(`[E_SESSION_LIMIT] remote: this Agent already holds ${live.length} live PTY sessions — the per-Agent session global limit (${REMOTE_PTY_SESSION_LIMIT}) is reached. Check the live sessions below (or {action:"status"} for the roster), then close one ({action:"close", target:"pty:<id>" or the machine name}), kill its running job (job_kill), reuse a session, or run {mode:"oneshot"} instead.
+  live: ${listing}`)
     }
     const { label } = opts
     if (label !== undefined) validateLabel(label)
@@ -539,7 +587,7 @@ export class RemoteDriver {
     return connection.startsWith('ssh:') && this.labels.resolve(connection.slice(4), sessionKey)?.kind === 'ssh-byo'
   }
 
-  /** PTY 创建形唯一实现（execute 与 background 预建共用）：spawn BYO / ssh BYO / native `<transport>:pty`。 */
+  /** PTY 创建形唯一实现（execute 与 background 预建共用）：spawn BYO（spec 2026-11-01：native `:pty`/hub-pty 创建语法已删，machine 会话经默认槽 + handoff）。 */
   private createPtyLane(params: PreparedRemoteInput, form: TargetForm, sessionKey: string): { session: PtySession } | undefined {
     const hasSpawn = params.spawn !== undefined && params.spawn.length > 0
     if (hasSpawn) {
@@ -549,27 +597,169 @@ export class RemoteDriver {
       const session = this.createSession({ argv: (this.opts.spawnArgvFor ?? buildSpawnArgv)(params.spawn!), connection: 'BYOP', byo: true, ...(label !== undefined ? { label } : {}), origin: params.spawn! }, sessionKey)
       return { session }
     }
-    if (params.ssh !== undefined && form.form === 'create-pty') {
-      const name = this.registerByoSsh(form.name, params.ssh, sessionKey)
-      const connection = normalizeSshConnection(params.ssh)
-      const plan: TargetPlan = { kind: 'ssh', host: connection.host, connection }
-      return { session: this.createSession({ argv: (this.opts.ptyArgvFor ?? buildPtyArgv)(plan), connection: `ssh:${name}`, byo: false, ...(form.label !== undefined ? { label: form.label } : {}) }, sessionKey) }
+    return undefined
+  }
+
+  // —— 默认 PTY 槽（spec remote-default-pty，2026-11-01）：machine key 归一 + 懒建/复用 + handoff + machine close ——
+
+
+  /** 池条目的槽键归一：同一实体（host/container/machine 身份）跨裸名/前缀/撞名前缀共享同一默认槽。 */
+  private machineKeyOfEntry(entry: PoolEntry): string {
+    switch (entry.kind) {
+      case 'ssh': return `ssh:${entry.host}`
+      case 'ssh-byo': return `byo:${entry.name}`
+      case 'docker': return `docker:${entry.container}`
+      case 'incus': return `incus:${entry.container}`
+      case 'hub': return `hub:${entry.machine}`
+      case 'pty': throw new Error('remote: a PTY session is not a machine slot')
     }
-    if (form.form === 'create-pty') {
-      const plan = form.transport === 'ssh' ? this.sshPlanFor(form.name, sessionKey) : resolveTarget(`${form.transport}:${form.name}`)
-      return { session: this.createSession({ argv: (this.opts.ptyArgvFor ?? buildPtyArgv)(plan), connection: `${form.transport}:${form.name}`, byo: false, ...(form.label !== undefined ? { label: form.label } : {}) }, sessionKey) }
-    }
-    if (form.form === 'hub-pty') {
-      // 0.3.2-c：hub PTY = canonical 会话（BYO 泵子进程），与 ssh/docker/incus 同形——
-      // 身份/label 池/配额/input/handoff/close/card/账本/TTL 全部自动生效。P10：创建即重验
-      // pairing（ptyEndpoint 校验 registry 行；dispatch 侧另有复用重验，复用不豁免）。
+  }
+
+  /** 默认槽的 machine 规格：归一 key + 创建 argv + 展示 connection（hub 每次经 ptyEndpoint 重验 pairing，P10）。 */
+  private async machineSlotSpec(form: TargetForm, sessionKey: string): Promise<{ key: string; argv: string[]; connection: string; builtOn?: boolean }> {
+    if (form.form === 'hub') {
       const hub = this.requireHub()
       this.hubProviders.add(hub)
       const endpoint = hub.ptyEndpoint(form.machine)
-      const argv = this.opts.hubPtyArgvFor !== undefined ? this.opts.hubPtyArgvFor(endpoint) : buildHubPtyArgv(endpoint, hubPtyAssets())
-      return { session: this.createSession({ argv, connection: `hub:${form.machine}`, byo: false, ...(form.label !== undefined ? { label: form.label } : {}) }, sessionKey) }
+      return { key: `hub:${form.machine}`, argv: this.opts.hubPtyArgvFor !== undefined ? this.opts.hubPtyArgvFor(endpoint) : buildHubPtyArgv(endpoint, hubPtyAssets()), connection: `hub:${form.machine}` }
     }
-    return undefined
+    if (form.form === 'direct') {
+      if (form.transport === 'ssh') {
+        const entry = this.labels.resolve(form.name, sessionKey)
+        if (entry?.kind === 'ssh-byo') {
+          const connection = entry.connection
+          return { key: `byo:${entry.name}`, argv: (this.opts.ptyArgvFor ?? buildPtyArgv)({ kind: 'ssh', host: connection.host, connection }), connection: `ssh:${entry.name}`, builtOn: true }
+        }
+        return { key: `ssh:${form.name}`, argv: (this.opts.ptyArgvFor ?? buildPtyArgv)({ kind: 'ssh', host: form.name }), connection: `ssh:${form.name}` }
+      }
+      const plan = resolveTarget(`${form.transport}:${form.name}`)
+      return { key: `${form.transport}:${form.name}`, argv: (this.opts.ptyArgvFor ?? buildPtyArgv)(plan), connection: `${form.transport}:${form.name}` }
+    }
+    if (form.form === 'bare') {
+      const entry = await this.resolvePoolEntry(form.name, sessionKey) // miss 触发一次本地扫描（零拨号，既有语义）
+      this.assertOpen()
+      if (entry.kind === 'hub') return this.machineSlotSpec({ form: 'hub', machine: entry.machine }, sessionKey)
+      if (entry.kind === 'pty') throw new Error('[E_INTERNAL] remote: bare pty entries route before machine slots')
+      const key = this.machineKeyOfEntry(entry)
+      if (entry.kind === 'ssh') return { key, argv: (this.opts.ptyArgvFor ?? buildPtyArgv)({ kind: 'ssh', host: entry.host }), connection: `ssh:${entry.name}` }
+      if (entry.kind === 'ssh-byo') return { key, argv: (this.opts.ptyArgvFor ?? buildPtyArgv)({ kind: 'ssh', host: entry.connection.host, connection: entry.connection }), connection: `ssh:${entry.name}`, builtOn: true }
+      const plan = entry.kind === 'docker' ? resolveTarget(`docker:${entry.container}`) : resolveTarget(`incus:${entry.container}`)
+      return { key, argv: (this.opts.ptyArgvFor ?? buildPtyArgv)(plan), connection: `${entry.kind === 'docker' ? 'docker' : 'incus'}:${entry.name}` }
+    }
+    throw new Error(`[E_TARGET_FORMAT] remote: a machine target is required (ssh:<name>, docker:<name>, incus:<name>, hub:<m4>, or a bare pool name) — got form ${JSON.stringify(form.form)}`)
+  }
+
+  /** 取/懒建 machine 的默认 PTY 槽：dead/disposed 槽惰性重建；id 创建即认领（roster 全可见 + 防撞）。 */
+  private async defaultSlot(form: TargetForm, sessionKey: string): Promise<{ session: PtySession; machineKey: string; isNew: boolean }> {
+    const spec = await this.machineSlotSpec(form, sessionKey)
+    this.assertOpen()
+    const byKey = this.defaultSlots.get(sessionKey) ?? new Map<string, string>()
+    this.defaultSlots.set(sessionKey, byKey)
+    const existingKey = byKey.get(spec.key)
+    if (existingKey !== undefined) {
+      const existing = this.pool.get(existingKey)
+      if (existing !== undefined) return { session: existing, machineKey: spec.key, isNew: false }
+      byKey.delete(spec.key) // TTL/关闭后的悬空登记：惰性清理
+    }
+    const session = this.createSession({ argv: spec.argv, connection: spec.connection, byo: false, ...(spec.builtOn === true ? { builtOn: true } : {}) }, sessionKey)
+    byKey.set(spec.key, session.key)
+    return { session, machineKey: spec.key, isNew: true }
+  }
+
+  private releaseDefaultSlot(machineKey: string, sessionKey: string): void {
+    this.defaultSlots.get(sessionKey)?.delete(machineKey)
+  }
+
+  /** 按池键反查并解绑默认槽（background 提交即 handoff 用）；非槽会话无操作。 */
+  private releaseSlotByPoolKey(poolKey: string, sessionKey: string): void {
+    const byKey = this.defaultSlots.get(sessionKey)
+    if (byKey === undefined) return
+    for (const [machineKey, key] of byKey) if (key === poolKey) { byKey.delete(machineKey); return }
+  }
+
+  /** roster/status 面：本 session 的默认槽标注（session id → machineKey；悬空条目过滤）。 */
+  private defaultMarks(sessionKey: string): Map<string, string> {
+    const marks = new Map<string, string>()
+    const byKey = this.defaultSlots.get(sessionKey)
+    if (byKey === undefined) return marks
+    for (const [machineKey, poolKey] of byKey) {
+      const s = this.pool.get(poolKey)
+      if (s !== undefined) marks.set(s.identity.id, machineKey)
+    }
+    return marks
+  }
+
+  /** spec §1 handoff（2026-11-01 二/三轮裁决）：把 machine 默认 PTY 解绑成可寻址 pty:<id>——同引用移动
+   * （不重启、不复制输出流）；fresh（尚无默认槽）= 后台创建空闲 shell 再隔离（默认 PTY 思维模型恒
+   * ready，创建时机是实现细节）；busy = 附当前命令与 job 句柄。machine 下次 exec 按需新建默认 PTY。 */
+  async handoff(target: string, callCtx: { sessionKey?: string } = {}): Promise<RemoteCallResult> {
+    this.assertOpen()
+    const sessionKey = callCtx.sessionKey ?? 'no-session'
+    const form = parseTargetForm(target)
+    if (form.form !== 'direct' && form.form !== 'bare' && form.form !== 'hub')
+      throw new Error(`[E_TARGET_FORMAT] remote: handoff detaches a machine's default PTY — pass a machine target (ssh:dev4, docker:c, hub:<m4>, or a bare pool name); addressable sessions are already detached, and ${JSON.stringify(target)} is not a machine`)
+    const spec = await this.machineSlotSpec(form, sessionKey)
+    this.assertOpen()
+    let session: PtySession | undefined
+    const poolKey = this.defaultSlots.get(sessionKey)?.get(spec.key)
+    if (poolKey !== undefined) session = this.pool.get(poolKey)
+    let created = false
+    if (session === undefined) {
+      this.releaseDefaultSlot(spec.key, sessionKey)
+      session = this.createSession({ argv: spec.argv, connection: spec.connection, byo: false, ...(spec.builtOn === true ? { builtOn: true } : {}) }, sessionKey)
+      created = true
+      await session.warm() // fresh handoff：真的建一个 ready 的空闲 shell；失败如实抛（createSession 路径已自清，槽不残留）
+    }
+    this.releaseDefaultSlot(spec.key, sessionKey)
+    const id = session.identity
+    const snap = session.snapshot
+    const activeCmd = session.active
+    const lines = [
+      `handed off pty:${id.id}${id.label !== undefined ? ` (label ${id.label})` : ''} — ${id.connection}${id.builtOn ? ' (built on)' : ''}`,
+      created ? 'fresh idle shell created and detached' : snap.state === 'dead' ? 'session died — its next dispatch reconnects a fresh shell' : 'detached',
+      `this machine's next exec opens a fresh default PTY`,
+    ]
+    if (activeCmd !== null)
+      lines.push(`still running: command ${activeCmd.commandId}${activeCmd.jobId !== undefined ? ` — follow with job_output ${activeCmd.jobId}, cancel with job_kill` : ' — a synchronous exec settles into its receipt; a timeout handoff is adoptable via job_output'}`)
+    return {
+      mode: 'pty', target: `pty:${id.id}`, session: `pty:${id.id}`, ...(id.label !== undefined ? { label: id.label } : {}),
+      connection: id.connection, exit: null, cwd: session.lastCwd, timedOut: false, reconnected: false,
+      stdout: lines.join('\n'), durationMs: 0,
+      ...(created ? { created: true } : {}),
+      ...(activeCmd !== null ? { running: true, commandId: activeCmd.commandId } : {}),
+      ...this.ptyTtl(session.key),
+    }
+  }
+
+  /** close 统一入口（spec §1 + 三轮补充裁决）：machine target 只关默认槽；pty selector 关该会话；
+   * 不存在 job 定位——取消运行中命令的唯一入口是官方 job_kill。 */
+  async close(target: string, sessionKey: string, force = false): Promise<{ session: string; connection: string; closed: boolean; reason?: string; killed: string[]; message?: string }> {
+    this.assertOpen()
+    const form = parseTargetForm(target)
+    const bareIsPty = form.form === 'bare' && this.labels.resolve(form.name, sessionKey)?.kind === 'pty'
+    if (form.form === 'direct' || form.form === 'hub' || (form.form === 'bare' && !bareIsPty)) return this.closeDefault(form, sessionKey, force)
+    if (form.form === 'pty-selector') {
+      if (form.idOrLabel === undefined) throw new Error('[E_PARAMS] remote: "pty" alone selects nothing — append an id/label (pty:pty-1a2b, pty:build)')
+      return this.closePty(form.idOrLabel, sessionKey, force)
+    }
+    if (form.form === 'bare') return this.closePty(form.name, sessionKey, force)
+    throw new Error(`[E_TARGET_FORMAT] remote: close takes a machine target (closes its default PTY) or pty:<id|label> — got ${JSON.stringify(target)}`)
+  }
+
+  private async closeDefault(form: TargetForm, sessionKey: string, force: boolean): Promise<{ session: string; connection: string; closed: boolean; reason?: string; killed: string[]; message?: string }> {
+    const spec = await this.machineSlotSpec(form, sessionKey) // bare 归一可能触发一次本地扫描（零拨号）
+    this.assertOpen()
+    const poolKey = this.defaultSlots.get(sessionKey)?.get(spec.key)
+    if (poolKey === undefined)
+      return { session: spec.key, connection: spec.connection, closed: false, reason: 'not-found', killed: [], message: `no default PTY on ${spec.key} — a machine's first exec opens one` }
+    const session = this.pool.get(poolKey)
+    if (session === undefined) {
+      this.releaseDefaultSlot(spec.key, sessionKey)
+      return { session: spec.key, connection: spec.connection, closed: false, reason: 'already-closed-or-reaped', killed: [], message: `the default PTY on ${spec.key} was already closed or reaped after ${this.ttlMinutes()} min idle` }
+    }
+    const r = this.closePty(session.identity.id, sessionKey, force)
+    if (r.closed) this.releaseDefaultSlot(spec.key, sessionKey)
+    return r
   }
 
   /** background PTY lane：会话先占位（不拨号）再进官方 jobs registry——首回执必须能寻址；
@@ -580,7 +770,10 @@ export class RemoteDriver {
     this.assertOpen()
     const sessionKey = callCtx.sessionKey ?? 'no-session'
     const form = parseTargetForm(prepared.target)
-    const target = (id: string): RemoteInput => ({ target: `pty:${id}`, cmd: params.cmd, stdin: params.stdin, timeout: params.timeout, mode: 'pty' })
+    // F3 修复（2026-11-01 独立复测）：lane 输入携带 prepared 的载体——scriptPath 经 prepareRemoteInput
+    // 变换后的 cmd/stdin；旧形状取 params.cmd/params.stdin 会丢掉脚本载体（Started 后 E_STDIN_WITHOUT_CMD
+    // 或 dispatch 失败，脚本从未执行）。
+    const target = (id: string): RemoteInput => ({ target: `pty:${id}`, cmd: prepared.cmd, stdin: prepared.stdin, timeout: prepared.timeout, mode: 'pty' })
     // spawn / :pty 在场 = 创建（无论 target 写成 pty:<label> 还是裸 label）；先于 selector 解析。
     const lane = this.createPtyLane(prepared, form, sessionKey)
     if (lane === undefined && form.form === 'pty-selector') {
@@ -588,6 +781,16 @@ export class RemoteDriver {
         throw new Error('[E_PARAMS] remote: "pty" alone selects nothing — append an id/label (pty:pty-1a2b, pty:build) or pass spawn to create one')
       const id = this.resolvePty(form.idOrLabel, sessionKey).identity
       return { input: target(id.id), session: `pty:${id.id}`, connection: id.connection, ...(id.label !== undefined ? { label: id.label } : {}), cleanup: () => undefined }
+    }
+    // —— machine 默认槽（spec §1）：run_in_background 在默认 PTY 提交 framed cmd 的同一操作内 handoff ——
+    if (lane === undefined && (form.form === 'direct' || form.form === 'hub' || (form.form === 'bare' && this.labels.resolve(form.name, sessionKey)?.kind !== 'pty')) && prepared.mode !== 'oneshot') {
+      const slot = await this.defaultSlot(form, sessionKey) // 懒建占位（不拨号）；bare-pty 认领不进此路径（落穿 oneshot lane 沿用旧拒绝）
+      this.assertOpen()
+      const id = slot.session.identity
+      return {
+        input: target(id.id), session: `pty:${id.id}`, connection: id.connection, ...(id.label !== undefined ? { label: id.label } : {}),
+        cleanup: () => { if (slot.isNew) void slot.session.dispose() }, // registry 拒绝只拆新建槽；复用槽保持
+      }
     }
     if (lane === undefined) return undefined
     const id = lane.session.identity
@@ -632,33 +835,32 @@ export class RemoteDriver {
     }
   }
 
-  /** §3.1（2026-10-25）interactive-stdin：input 动作——向已有 live PTY 的当前运行命令
-   * 追加 stdin。只解析池内已存在的会话（pty:<id|label> / 裸 label 命中 pty 项），
-   * 不触发发现、拨号、创建或重连；machine target 与创建形（:pty 后缀，含 hub:<m4>:pty）
-   * 一律明确拒绝并给出可恢复指引。回执附 connection/label 供工具层渲染。 */
+  /** spec remote-default-pty §1（2026-11-01）：exec stdin-only 写入核心——向已有 live PTY 的当前运行命令
+   * 追加 exact-byte stdin。寻址：pty:<id|label> / 裸 label 命中 pty 项 / machine target（其默认槽的
+   * 当前命令，无槽不懒建、如实报错）。不触发拨号、创建或重连；回执附 connection/label 供工具层渲染。 */
   async input(target: string, options: PtyInputOptions, callCtx: { sessionKey?: string } = {}): Promise<PtyInputReceipt & { connection: string; label?: string }> {
     this.assertOpen()
     const sessionKey = callCtx.sessionKey ?? 'no-session'
     const form = parseTargetForm(target)
-    let selector: string
+    let session: PtySession
     if (form.form === 'pty-selector') {
       if (form.idOrLabel === undefined)
         throw new Error('[E_PARAMS] remote: "pty" alone selects nothing — append an id/label (pty:pty-1a2b, pty:build)')
-      selector = form.idOrLabel
-    } else if (form.form === 'bare') {
-      // 裸 label 只认池内已有 pty 项——绝不为 input 触发机器发现/拨号。
-      const entry = this.labels.resolve(form.name, sessionKey)
-      if (entry?.kind !== 'pty')
-        throw new Error(
-          `[E_NO_SESSION] remote: no live PTY session under ${JSON.stringify(form.name)} in this Agent's pool — input never dials, discovers or creates; run {action:"status"} to list sessions, then address one as pty:<id|label>`,
-        )
-      selector = form.name
-    } else if (form.form === 'create-pty' || form.form === 'hub-pty') {
-      throw new Error(`[E_TARGET_FORMAT] remote: input writes into a live PTY session — "${target}" is a creation form; input never creates a session. Start the interactive program with {action:"exec", target:"${target}", cmd:…} first, then input into it`)
+      session = this.resolvePty(form.idOrLabel, sessionKey)
+    } else if (form.form === 'bare' && this.labels.resolve(form.name, sessionKey)?.kind === 'pty') {
+      session = this.resolvePty(form.name, sessionKey)
+    } else if (form.form === 'direct' || form.form === 'hub' || form.form === 'bare') {
+      // machine target：写入其默认槽的当前命令（spec §1 stdin-only）。不懒建——无槽即无运行命令，诚实报错。
+      const spec = await this.machineSlotSpec(form, sessionKey)
+      this.assertOpen()
+      const poolKey = this.defaultSlots.get(sessionKey)?.get(spec.key)
+      const slot = poolKey !== undefined ? this.pool.get(poolKey) : undefined
+      if (slot === undefined)
+        throw new Error(`[E_SESSION_NOT_RUNNING] remote: no default PTY on ${spec.key} yet — start a command first ({action:"exec", target:"${spec.key}", cmd:…}); a raw stdin write goes to the command running there`)
+      session = slot
     } else {
-      throw new Error(`[E_TARGET_FORMAT] remote: input writes into a live PTY session — "${target}" is a machine target and machines are dialed per call. Run the interactive program with exec on a :pty session (e.g. {action:"exec", target:"ssh:dev4:pty" or "hub:<m4>:pty", cmd:…}), then input into that session`)
+      throw new Error(`[E_TARGET_FORMAT] remote: a raw stdin write goes into a live PTY session — pass pty:<id|label>, a bare session label, or a machine target (its default PTY); got ${JSON.stringify(target)}`)
     }
-    const session = this.resolvePty(selector, sessionKey)
     const receipt = await session.input(options)
     const id = session.identity
     return { ...receipt, connection: id.connection, ...(id.label !== undefined ? { label: id.label } : {}) }
@@ -678,6 +880,9 @@ export class RemoteDriver {
     }
     const commandId = callCtx.commandId ?? genCommandId()
     const r = await session.dispatch(params.cmd, { stdin: params.stdin, timeoutSec, commandId, ...(callCtx.ptyBackground === true ? { background: true, jobId: commandId } : {}) }) // background: commandId 即 registry jobId，账本/input 回执如实携带
+    // spec §1（2026-11-01）：默认槽的 background 提交 = 同一操作内 handoff——命令已启动（running 回执）即解绑槽；
+    // dispatch 失败（busy/死亡）不解绑。同步超时（detach 成 job）不解绑：busy 槽由显式 handoff 或命令结束释放。
+    if (callCtx.ptyBackground === true && r.running === true) this.releaseSlotByPoolKey(session.key, callCtx.sessionKey ?? 'no-session')
     const out = disclose(r.output, r.outputStats?.stdout)
     const id = session.identity
     return {
@@ -714,14 +919,14 @@ export class RemoteDriver {
       mode: 'pty', target: `pty:${id.id}`, session: `pty:${id.id}`, ...(id.label !== undefined ? { label: id.label } : {}),
       connection: id.connection, ...(id.byo ? { byoTag: 'byo-pty' as const } : {}),
       exit: null, cwd: session.lastCwd, timedOut: false, reconnected: false,
-      stdout: [head, renderLedger(session.ledgerSnapshot())].join('\n'), durationMs: 0,
+      stdout: [head, activeLine(session)].join('\n'), durationMs: 0,
       ...this.ptyTtl(session.key),
     }
   }
 
   private async oneshot(plan: TargetPlan, display: string, params: PreparedRemoteInput, timeoutSec: number): Promise<RemoteCallResult> {
     this.assertOpen()
-    const process = this.own(await this.nativeProcess(plan, params, timeoutSec))
+    const process = this.own(await this.nativeProcess(plan, display, params, timeoutSec))
     if (this.disposed) process.cancel('owner disposed')
     const result = await process.done
     const stdout = process.read('stdout', 0), stderr = process.read('stderr', 0)
@@ -772,7 +977,7 @@ export class RemoteDriver {
       .map(({ key }) => { const s = this.pool.get(key); return s === undefined ? null : s })
       .filter((s): s is PtySession => s !== null)
     const hub = this.opts.getHub?.()
-    return renderRoster(scan, this.labels.list(callCtx.sessionKey ?? 'no-session'), sessions, hub === undefined ? null : hub.listTargets())
+    return renderRoster(scan, this.labels.list(callCtx.sessionKey ?? 'no-session'), sessions, hub === undefined ? null : hub.listTargets(), this.defaultMarks(callCtx.sessionKey ?? 'no-session'))
   }
 
   /** status probe（target 无 cmd）：机器面 = probe + 该 connection 上的会话；pty selector = session card。 */
@@ -780,10 +985,16 @@ export class RemoteDriver {
     this.assertOpen()
     const sessionKey = callCtx.sessionKey ?? 'no-session'
     const form = parseTargetForm(target)
-    if (form.form === 'hub' || form.form === 'hub-pty') {
+    if (form.form === 'hub') {
       const row = this.requireHub().listTargets().find((t) => t.id === form.machine)
       if (!row) throw new Error(`unknown remote machine ${form.machine} — select a remote machine from the Hub roster; local execution is not available`)
-      return `hub:${form.machine} — Hub remote machine (${row.label}); exec ${row.execEnabled ? 'enabled' : 'disabled'}; not probed`
+      const hubSlotKey = `hub:${form.machine}`
+      const hubSlotPoolKey = this.defaultSlots.get(sessionKey)?.get(hubSlotKey)
+      const hubSlot = hubSlotPoolKey !== undefined ? this.pool.get(hubSlotPoolKey) : undefined
+      return [
+        `hub:${form.machine} — Hub remote machine (${row.label}); exec ${row.execEnabled ? 'enabled' : 'disabled'}; not probed`,
+        hubSlot === undefined ? `default PTY: none — this machine's first exec opens one` : `default PTY: ${sessionLine(hubSlot)}`,
+      ].join('\n')
     }
     if (form.form === 'pty-selector') {
       if (form.idOrLabel === undefined) throw new Error('[E_PARAMS] remote: "pty" alone selects nothing — append an id/label (pty:pty-1a2b, pty:build)')
@@ -802,13 +1013,17 @@ export class RemoteDriver {
     const plan = this.planOf(entry)
     const head = `${target} — ${plan.kind === 'ssh' ? 'ssh host' : `${plan.kind} container`}${entry.kind === 'ssh-byo' ? ' (built on)' : ''}`
     const runner = this.opts.probeRunner ?? runOneShot
-    const probe = await probeTarget(plan, { runner: (argv, options) => { this.assertOpen(); return runner(argv, options) } })
+    const probe = await probeTarget(plan, { runner: (argv, options) => { this.assertOpen(); return runner(argv, options) }, muxArgvFor: p => this.muxArgvFor(p, target) ?? [] })
     const prefix = `${sessionKey}|`
     const onConnection = this.pool.list()
       .filter(({ key }) => key.startsWith(prefix))
       .map(({ key }) => this.pool.get(key))
       .filter((s): s is PtySession => s !== undefined && s.identity.connection === `${plan.kind === 'ssh' ? 'ssh' : plan.kind}:${name}`)
-    return [head, renderProbe(probe), onConnection.length > 0 ? `pty sessions on this connection: ${onConnection.map(sessionLine).join(' · ')}` : 'pty sessions on this connection: none'].join('\n')
+    const slotKey = this.machineKeyOfEntry(entry)
+    const slotPoolKey = this.defaultSlots.get(sessionKey)?.get(slotKey)
+    const slotSession = slotPoolKey !== undefined ? this.pool.get(slotPoolKey) : undefined
+    const slotLine = slotSession === undefined ? `default PTY: none — this machine's first exec opens one` : `default PTY: ${sessionLine(slotSession)}`
+    return [head, renderProbe(probe), slotLine, onConnection.length > 0 ? `pty sessions on this connection: ${onConnection.map(sessionLine).join(' · ')}` : 'pty sessions on this connection: none'].join('\n')
   }
 
   /** Ruling 13：审计 best-effort——钩子抛错不得影响命令路径。 */
@@ -821,8 +1036,7 @@ export class RemoteDriver {
     this.assertOpen()
     const form = parseTargetForm(target)
     if (form.form === 'pty-selector') throw new Error('remote: a PTY session is not a filesystem connection')
-    if (form.form === 'hub' || form.form === 'hub-pty') throw new Error('remote: hub endpoints resolve through the Hub file lane, not a CLI connection')
-    if (form.form === 'create-pty') throw new Error('remote: a PTY session is not a filesystem connection')
+    if (form.form === 'hub') throw new Error('remote: hub endpoints resolve through the Hub file lane, not a CLI connection')
     if (form.form === 'direct') {
       const plan = form.transport === 'ssh' ? this.sshPlanFor(form.name, callCtx.sessionKey ?? 'no-session') : resolveTarget(`${form.transport}:${form.name}`)
       return plan
@@ -858,19 +1072,27 @@ export class RemoteDriver {
     if (this.disposal) return this.disposal
     this.disposed = true // Close admission synchronously, before draining existing resources.
     this.labels.clear()
+    this.defaultSlots.clear()
     this.fileAbort.abort(new Error('remote owner disposed'))
     for (const process of this.processes) process.cancel('remote owner disposed')
     return this.disposal = (async () => {
       await Promise.allSettled([...this.starting])
       await Promise.all([this.pool.disposeAll(), ...[...this.processes].map(p => p.done), ...[...this.hubProviders].map(hub => hub.releaseOwner(this.hubOwner))])
       this.hubProviders.clear()
+      await this.mux.dispose() // Task E：master 逐 socket `-O exit` 后删 socket 目录（进程已排干，cleanup killer 不再需要 master）
     })()
   }
 }
 
 /** direct 形态回退到 resolveTarget 可解析的名字（ssh:dev4 → dev4）。 */
 function directName(form: TargetForm): string {
-  return form.form === 'direct' ? form.name : form.form === 'create-pty' ? form.name : ''
+  return form.form === 'direct' ? form.name : ''
+}
+
+/** session card 的当前命令行（spec 2026-11-01：历史 ledger 已删，只报活动命令）。 */
+function activeLine(s: PtySession): string {
+  const a = s.active
+  return a === null ? 'no command running' : `running: ${a.commandId}${a.jobId !== undefined ? ` (job ${a.jobId})` : ''} — feed it stdin with exec stdin-only, follow job_output, cancel job_kill`
 }
 
 /** roster/status 一行的会话描述：`p-ab12 (label build) ssh:dev4 idle 12s`。 */

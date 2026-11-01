@@ -44,12 +44,12 @@ describe('RemoteDriver validation', () => {
 })
 
 describe('RemoteDriver routing', () => {
-  it('oneshot default: runs the transport argv, returns binary exit + split stderr', async () => {
+  it('explicit oneshot mode: runs the transport argv, returns binary exit + split stderr', async () => {
     const seen: string[][] = []
     const d = new RemoteDriver({
       oneshotArgvFor: (_plan, cmd) => { seen.push(['oneshot', cmd]); return ['bash', '-c', 'echo out; echo err >&2; exit 3'] },
     })
-    const r = await d.call({ target: 'dev4', cmd: 'git status' })
+    const r = await d.call({ target: 'dev4', cmd: 'git status', mode: 'oneshot' })
     expect(r.mode).toBe('oneshot')
     expect(r.exit).toBe(3)
     expect(r.stdout).toBe('out\n')
@@ -57,16 +57,16 @@ describe('RemoteDriver routing', () => {
     expect(seen).toEqual([['oneshot', 'git status']])
     await d.dispose()
   })
-  it(':pty creation is per agent session — every call opens a new session, state persists per id', async () => {
+  it('the :pty creation suffix is gone (spec 2026-11-01): E_TARGET_FORMAT teaches default + handoff; a machine keeps ONE default session across agents', async () => {
     const d = driverWith()
-    const c1 = await d.call({ target: 'ssh:dev4:pty', cmd: 'cd /tmp' }, { sessionKey: 'a1' })
-    expect(c1.session).toMatch(/^pty:pty-[a-z0-9]{4}$/)
+    await expect(d.call({ target: 'ssh:dev4:pty', cmd: 'cd /tmp' }, { sessionKey: 'a1' })).rejects.toThrow(/:pty creation suffix is gone/)
+    await expect(d.call({ target: 'hub:m:pty:lbl' }, { sessionKey: 'a1' })).rejects.toThrow(/handoff detaches it as pty:<id>/)
+    const c1 = await d.call({ target: 'ssh:dev4', cmd: 'cd /tmp' }, { sessionKey: 'a1' }) // machine exec = default slot
     expect(c1.connection).toBe('ssh:dev4')
     const r = await d.call({ target: `pty:${c1.session!.slice(4)}`, cmd: 'pwd' }, { sessionKey: 'a1' })
     expect(r.cwd).toBe('/tmp')
-    const other = await d.call({ target: 'ssh:dev4:pty', cmd: 'pwd' }, { sessionKey: 'a1' })
-    expect(other.session).not.toBe(c1.session) // tab semantics: creation never reuses
-    // another agent never sees this session — the id addresses nothing there
+    const again = await d.call({ target: 'ssh:dev4', cmd: 'pwd' }, { sessionKey: 'a1' })
+    expect(again.session).toBe(c1.session) // the default reuses until handoff/close
     await expect(d.call({ target: `pty:${c1.session!.slice(4)}`, cmd: 'pwd' }, { sessionKey: 'a2' })).rejects.toThrow(/E_NO_SESSION/)
     await d.dispose()
   })
@@ -74,7 +74,7 @@ describe('RemoteDriver routing', () => {
     const d = new RemoteDriver({
       oneshotArgvFor: () => ['bash', '-c', 'printf "x%.0s" $(seq 1 100)'],
     })
-    const r = await d.call({ target: 'dev4', cmd: 'x' })
+    const r = await d.call({ target: 'dev4', cmd: 'x', mode: 'oneshot' })
     expect(r.truncated).toBeUndefined()
     expect(r.stdout).toBe('x'.repeat(100))
     expect(r.stdout).not.toContain('[truncated')
@@ -84,12 +84,12 @@ describe('RemoteDriver routing', () => {
   it('emits one audit record per attempt (success, nonzero exit, and error paths)', async () => {
     const audit: RemoteAuditRecord[] = []
     const d = driverWith({ onAudit: (r) => audit.push(r) })
-    await d.call({ target: 'dev4', cmd: 'echo ok' })
+    await d.call({ target: 'dev4', cmd: 'echo ok', mode: 'oneshot' })
     const d255 = new RemoteDriver({
       onAudit: (r) => audit.push(r),
       oneshotArgvFor: () => ['bash', '-c', 'exit 255'],
     })
-    await d255.call({ target: 'no-such-host-xyz', cmd: 'echo no' }).catch(() => {})
+    await d255.call({ target: 'no-such-host-xyz', cmd: 'echo no', mode: 'oneshot' }).catch(() => {})
     await expect(d.call({ target: 'docker:c', spawn: 'bash', cmd: 'x' })).rejects.toThrow(/E_PARAMS/)
     expect(audit[0]).toMatchObject({ target: 'dev4', cmd: 'echo ok', exit: 0 })
     expect(audit[1]).toMatchObject({ target: 'no-such-host-xyz', exit: 255 })
@@ -153,16 +153,16 @@ describe('RemoteDriver BYO pty via spawn (label in the session pool)', () => {
     await d.call({ target: 'pty:dev3', spawn: 'bash', cmd: 'echo warm' })
     const card = await d.call({ target: 'pty:dev3', cmd: '' })
     expect(card.stdout).toContain('BYOP (byo-pty)')
-    expect(card.stdout).toContain('ledger')
+    expect(card.stdout).toContain('no command running')
     await expect(d.call({ target: 'pty:never', cmd: '' })).rejects.toThrow(/E_NO_SESSION/)
     await d.dispose()
   })
-  it('session limit: a tenth session is refused with the live inventory; close frees a slot', async () => {
+  it('session limit: the 31st session is refused with the live inventory; close frees a slot', async () => {
     const d = driverWith()
     const warm: string[] = []
-    for (let i = 0; i < 10; i++) warm.push((await d.call({ spawn: 'bash' })).session!.slice(4))
+    for (let i = 0; i < 30; i++) warm.push((await d.call({ spawn: 'bash' })).session!.slice(4))
     await expect(d.call({ spawn: 'bash' })).rejects.toThrow(/E_SESSION_LIMIT[\s\S]*pty-/)
-    await expect(d.call({ target: 'ssh:dev4:pty', cmd: 'echo x' })).rejects.toThrow(/E_SESSION_LIMIT/)
+    await expect(d.call({ target: 'ssh:macq', cmd: 'echo x' })).rejects.toThrow(/E_SESSION_LIMIT/)
     d.closePty(warm[0]!, 'no-session')
     const ok = await d.call({ spawn: 'bash' })
     expect(ok.created).toBe(true)
@@ -279,14 +279,12 @@ describe('RemoteDriver terminal disposal', () => {
 })
 
 describe('RemoteDriver input (interactive stdin, 2026-10-25)', () => {
-  it('routes only to live PTY sessions; machine targets, creation forms and hub lanes refuse without discovery', async () => {
+  it('stdin-only routing (spec 2026-11-01): pty selector / bare pty label / machine default slot; no slot is created, discovery never dials', async () => {
     const d = driverWith({ rosterRunner: async () => { throw new Error('DISCOVERY MUST NOT RUN') } })
-    await expect(d.input('ssh:dev4', { stdin: 'x\n' })).rejects.toThrow(/input writes into a live PTY session/)
-    await expect(d.input('dev4', { stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/) // bare miss never scans or dials
-    await expect(d.input('ssh:dev4:pty', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
-    await expect(d.input('ssh:dev4:pty:lbl', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
-    await expect(d.input('hub:m4', { stdin: 'x\n' })).rejects.toThrow(/input writes into a live PTY session/)
-    await expect(d.input('hub:m4:pty', { stdin: 'x\n' })).rejects.toThrow(/creation form/)
+    await expect(d.input('ssh:dev4', { stdin: 'x\n' })).rejects.toThrow(/no default PTY on ssh:dev4 yet/) // machine: honest, no lazy creation
+    await expect(d.input('dev4', { stdin: 'x\n' })).rejects.toThrow(/no default PTY on/) // bare machine name resolves the same key (local, zero dialing)
+    await expect(d.input('ssh:dev4:pty', { stdin: 'x\n' })).rejects.toThrow(/:pty creation suffix is gone/)
+    await expect(d.input('hub:m4', { stdin: 'x\n' })).rejects.toThrow(/E_HUB_UNAVAILABLE/) // hub transport gates before the slot lookup
     await expect(d.input('pty:nosuch', { stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/)
     await expect(d.input('pty', { stdin: 'x\n' })).rejects.toThrow(/E_PARAMS/)
     await d.dispose()
@@ -331,18 +329,19 @@ describe('hub PTY canonical sessions + oneshot disclosure (0.3.2-c)', () => {
     releaseOwner: async () => {},
   })
 
-  it('hub:<m4>:pty creates an addressable canonical session (label form included); state persists on reuse', async () => {
+  it('hub machine default PTY (spec 2026-11-01): exec opens the default session; handoff detaches it as pty:<id> and the machine gets a fresh one', async () => {
     const d = driverWith({ getHub: () => hubStub() as never, hubPtyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
     try {
-      const warm = await d.call({ target: 'hub:m:pty:lbl', cmd: undefined })
-      expect(warm).toMatchObject({ created: true, connection: 'hub:m', label: 'lbl' })
-      expect(warm).toHaveProperty('session')
-      const id = (warm as unknown as { session: string }).session
-      const r1 = await d.call({ target: id, cmd: 'cd /tmp && printf hub-ok' })
-      expect(r1).toMatchObject({ cwd: '/tmp' })
+      await expect(d.call({ target: 'hub:m:pty:lbl', cmd: undefined })).rejects.toThrow(/handoff detaches it as pty:<id>/) // old creation form is gone
+      const r1 = await d.call({ target: 'hub:m', cmd: 'cd /tmp && printf hub-ok' })
+      expect(r1.connection).toBe('hub:m')
       expect(r1.stdout).toContain('hub-ok')
-      const r2 = await d.call({ target: id, cmd: 'pwd' })
+      const h = await d.handoff('hub:m')
+      expect(h.session).toBe(r1.session)
+      const r2 = await d.call({ target: r1.session!, cmd: 'pwd' }) // the detached session keeps state
       expect(r2).toMatchObject({ cwd: '/tmp' })
+      const fresh = await d.call({ target: 'hub:m', cmd: 'pwd' }) // machine got a fresh default
+      expect(fresh.session).not.toBe(r1.session)
     } finally { await d.dispose() }
   })
 
@@ -350,7 +349,7 @@ describe('hub PTY canonical sessions + oneshot disclosure (0.3.2-c)', () => {
     let revoked = false
     const d = driverWith({ getHub: () => hubStub(() => { if (revoked) throw new Error('exec is disabled for machine "m"') }) as never, hubPtyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
     try {
-      const r = await d.call({ target: 'hub:m:pty', cmd: 'printf first' })
+      const r = await d.call({ target: 'hub:m', cmd: 'printf first' })
       const id = (r as unknown as { session: string }).session
       revoked = true
       await expect(d.call({ target: id, cmd: 'printf second' })).rejects.toThrow(/disabled for machine/)
@@ -360,15 +359,15 @@ describe('hub PTY canonical sessions + oneshot disclosure (0.3.2-c)', () => {
   it('hub sessions share the per-Agent quota with every other transport', async () => {
     const d = driverWith({ getHub: () => hubStub() as never, hubPtyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
     try {
-      for (let i = 0; i < 10; i++) await d.call({ target: `hub:m:pty:q${i}` })
-      await expect(d.call({ target: 'hub:m:pty:over' })).rejects.toThrow(/E_SESSION_LIMIT/)
+      for (let i = 0; i < 30; i++) await d.handoff(`hub:q${i}`)
+      await expect(d.handoff('hub:over')).rejects.toThrow(/E_SESSION_LIMIT/)
     } finally { await d.dispose() }
   })
 
   it('hub oneshot receipts disclose the peer-native supervision (runner field)', async () => {
     const d = driverWith({ getHub: () => hubStub() as never })
     try {
-      const r = await d.call({ target: 'hub:m', cmd: 'printf hub-out' })
+      const r = await d.call({ target: 'hub:m', cmd: 'printf hub-out', mode: 'oneshot' })
       expect(r).toMatchObject({ mode: 'oneshot', runner: 'hub-lease (peer bash -lc, peer Node supervision)' })
       expect(r.stdout).toContain('hub-out')
     } finally { await d.dispose() }
@@ -392,11 +391,46 @@ describe('scriptPath over the hub lane + two-clock timeout (0.3.2-c pin)', () =>
     const script = await mkdtempScript()
     const d = driverWith({ getHub: () => hub as never })
     try {
-      const r = await d.call({ target: 'hub:m', scriptPath: script })
+      const r = await d.call({ target: 'hub:m', scriptPath: script, mode: 'oneshot' })
       expect(r).toMatchObject({ mode: 'oneshot', exit: 0 })
-      expect(seen.at(-1)).toMatchObject({ cmd: 'bash -s' })
-      expect(seen.at(-1)!.stdin).toContain('SCRIPT-BODY-7f3a')
+      // F1/F2 fix：载体 = 一条 bash -c 引号命令（argv 通道）；业务 stdin 不再与脚本正文拼接
+      expect(seen.at(-1)!.cmd.startsWith("bash -c '")).toBe(true)
+      expect(seen.at(-1)!.cmd).toContain("SCRIPT-BODY-7f3a")
+      expect(seen.at(-1)!.cmd).toContain("'\\''") // shQuote 单引号转义（'\''）
+      expect(seen.at(-1)!.stdin).toBeUndefined()
     } finally { await d.dispose(); await rm(dirname(script), { recursive: true, force: true }) }
+  })
+})
+
+describe('scriptPath carrier regressions (F1/F2 fix, 2026-11-01 independent re-test)', () => {
+  it('PTY: a script settles on its own (no interactive bash -s takeover), cd/export never leak into the session shell', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'remote-script-pty-'))
+    const script = join(dir, 'leak.sh')
+    await writeFile(script, 'cd /tmp\nexport LEAK=1\nprintf IN-SCRIPT\n', 'utf8')
+    const d = driverWith({ ptyArgvFor: () => ['bash'] })
+    try {
+      const r = await d.call({ target: 'ssh:s1', scriptPath: script, timeout: 15 })
+      expect(r.exit).toBe(0) // settles — the F1 hang (exit null + still running) is gone
+      expect(r.stdout).toContain('IN-SCRIPT')
+      const after = await d.call({ target: 'ssh:s1', cmd: 'printf "LEAK=%s cwd=%s" "${LEAK:-unset}" "$(basename "$(pwd)")"' })
+      expect(after.stdout).toContain('LEAK=unset') // export stayed inside the child bash -c
+      expect(after.stdout).not.toContain('cwd=tmp') // cd stayed inside the child bash -c
+      expect(after.session).toBe(r.session) // same default session, not a nested takeover
+    } finally { await d.dispose(); await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('PTY + oneshot stdin separation: a mid-script read consumes ONLY the business stdin, never script bytes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'remote-script-read-'))
+    const script = join(dir, 'read.sh')
+    await writeFile(script, 'IFS= read -r v\necho "GOT:$v"\n', 'utf8')
+    const d = driverWith({ ptyArgvFor: () => ['bash'], oneshotArgvFor: (_plan, cmd) => ['bash', '-c', cmd] })
+    try {
+      const pty = await d.call({ target: 'ssh:s1', scriptPath: script, stdin: 'hello-pty\n', timeout: 15 })
+      expect(pty.exit).toBe(0)
+      expect(pty.stdout.trim()).toBe('GOT:hello-pty') // read got the business stdin, not the next script line
+      const one = await d.call({ target: 'ssh:s1', scriptPath: script, stdin: 'hello-one\n', mode: 'oneshot' })
+      expect(one).toMatchObject({ exit: 0, stdout: 'GOT:hello-one\n' })
+    } finally { await d.dispose(); await rm(dir, { recursive: true, force: true }) }
   })
 })
 

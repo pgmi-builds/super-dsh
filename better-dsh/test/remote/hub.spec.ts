@@ -56,7 +56,7 @@ it('real scoped Hub calls preserve shell state, isolate Agent incarnations and l
   const providerRow = await h.ctx.plugin({ name: 'real-hub', apply: ctx => installHubRemoteTransport(ctx, { home }) })
   try {
     const first = await h.createAgent('same-session')
-    const firstPty = await h.invoke(first, { action: 'exec', target: 'hub:peer:pty', cmd: 'cd /tmp; export OWNER_VALUE=old; printf first' })
+    const firstPty = await h.invoke(first, { action: 'exec', target: 'hub:peer', cmd: 'cd /tmp; export OWNER_VALUE=old; printf first' })
     // 0.3.2-c：hub PTY = canonical 会话——回执有身份与 cwd，不再有「no session id」横幅。
     expect(firstPty).toMatchObject({ cwd: '/tmp' })
     expect(firstPty).toHaveProperty('session')
@@ -67,7 +67,9 @@ it('real scoped Hub calls preserve shell state, isolate Agent incarnations and l
     expect((await h.invoke(first, { action: 'exec', target: sessionId, cmd: 'printf %s "$OWNER_VALUE"' })).text).toContain('old')
     // P4/P5：超时不杀，handoff 成 running job（timedOut 如实，会话存活）。
     expect(((await h.invoke(first, { action: 'exec', target: sessionId, cmd: 'sleep 2' })) as { notice?: string }).notice ?? '').toContain('interrupted')
-    const full = await h.invoke(first, { action: 'exec', target: 'hub:peer:pty', cmd: 'printf %150s | tr " " x' })
+    // spec 2026-11-01: the timed-out session is still the machine's busy default — hand it off, then the machine exec opens a fresh one
+    await h.invoke(first, { action: 'handoff', target: 'hub:peer' })
+    const full = await h.invoke(first, { action: 'exec', target: 'hub:peer', cmd: 'printf %150s | tr " " x' })
     expect(full.text).toBe('x'.repeat(150)) // 0.3.2-e: 自有窗口已删——全量返回，无 banner
     // Agent 隔离：另一个 Agent incarnation 摸不到本 Agent 的会话（owner-scoped 池）。
     const other = await h.createAgent('other-session')
@@ -78,7 +80,7 @@ it('real scoped Hub calls preserve shell state, isolate Agent incarnations and l
     expect(h.ctx.get('superdRemoteTransport')).toBeDefined()
     expect(h.visibleTools(first).some(t => t.name === 'remote')).toBe(false)
     const fresh = await h.createAgent('fresh')
-    expect((await h.invoke(fresh, { action: 'exec', target: 'hub:peer:pty', cmd: 'printf "%s" "${OWNER_VALUE-empty}"' })).text).toContain('empty')
+    expect((await h.invoke(fresh, { action: 'exec', target: 'hub:peer', cmd: 'printf "%s" "${OWNER_VALUE-empty}"' })).text).toContain('empty')
   } finally {
     await h.dispose(); await providerRow.dispose(); off()
     await new Promise<void>(resolve => server.close(() => resolve()))

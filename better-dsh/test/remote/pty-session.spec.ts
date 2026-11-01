@@ -276,20 +276,14 @@ describe('PTY workbench: identity, ledger, env delta (2026-10-19)', () => {
     expect(s2.identity).toMatchObject({ id: 'pty-c3d4', label: 'build', connection: 'BYOP', byo: true })
     await s.dispose(); await s2.dispose()
   })
-  it('every dispatch carries its commandId; the ledger records summary/exit/duration, capped at 20', async () => {
+  it('every dispatch carries its commandId; the historical ledger is gone — results ride the receipts only (spec 2026-11-01)', async () => {
     const s = new PtySession({ key: 'k', argv: ['bash'], id: 'pty-l1', connection: 'spec', ...OPTS })
     const r = await s.dispatch('echo one', { commandId: 'remote-aaa' })
     expect(r.commandId).toBe('remote-aaa')
-    await s.dispatch('false', { commandId: 'remote-bbb' })
-    const ledger = s.ledgerSnapshot()
-    expect(ledger.map((e) => e.commandId)).toEqual(['remote-aaa', 'remote-bbb'])
-    expect(ledger[0]).toMatchObject({ summary: 'echo one', exit: 0, running: false })
-    expect(ledger[1]!.exit).toBe(1)
-    expect(ledger[1]!.durationMs).toBeGreaterThanOrEqual(0)
-    for (let i = 0; i < 21; i++) await s.dispatch(`echo n${i}`, { commandId: `remote-x${i}` })
-    const capped = s.ledgerSnapshot()
-    expect(capped.length).toBe(20)
-    expect(capped[0]!.commandId).toBe('remote-x1') // 2+21=23 条，丢最旧 3 条
+    expect(r.exit).toBe(0) // exit/duration live in the dispatch result, not in any stored history
+    const second = await s.dispatch('false', { commandId: 'remote-bbb' })
+    expect(second.exit).toBe(1)
+    expect(second.durationMs).toBeGreaterThanOrEqual(0)
     await s.dispose()
   })
   it('env delta reports NAMES only: added/changed/removed; values never render', async () => {
@@ -314,8 +308,7 @@ describe('PTY workbench: identity, ledger, env delta (2026-10-19)', () => {
     expect(r.job!.commandId).toBe('remote-w2')
     s.attachJob('remote-w2', 'bash-999')
     await r.job!.done
-    const entry = [...s.ledgerSnapshot()].reverse().find((e) => e.commandId === 'remote-w2')
-    expect(entry?.jobId).toBe('bash-999')
+    expect(s.active).toBeNull() // settled — no running command; attachJob's backfill targets activeCommand (no ledger)
     await s.dispose()
   })
   it('detachedCommandId names the foreground occupant while a background job runs', async () => {

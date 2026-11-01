@@ -81,6 +81,8 @@ export function renderRoster(
   entries: readonly PoolEntry[],
   sessions: readonly PtySession[],
   hubTargets: ReadonlyArray<{ id: string; label: string; execEnabled: boolean }> | null,
+  /** 默认 PTY 槽标注（spec remote-default-pty）：session id → 归一 machineKey；未传 = 无默认槽展示。 */
+  defaults?: ReadonlyMap<string, string>,
 ): string {
   const lines: string[] = []
   if (hubTargets !== null)
@@ -109,7 +111,7 @@ export function renderRoster(
         const id = s.identity
         const snap = s.snapshot
         const state = snap.busy ? 'busy' : snap.state === 'dead' ? 'died' : `idle ${Math.round((snap.idleMs ?? 0) / 1000)}s`
-        return `pty:${id.id}${id.label !== undefined ? ` (label ${id.label})` : ''} ${id.connection}${id.byo ? ' (byo-pty)' : ''} [${state}]`
+        return `pty:${id.id}${id.label !== undefined ? ` (label ${id.label})` : ''} ${id.connection}${id.byo ? ' (byo-pty)' : ''} [${state}${defaults?.get(id.id) !== undefined ? `; default on ${defaults.get(id.id)}` : ''}]`
       }).join(' · ')}`
     : 'pty sessions: none')
 

@@ -1,7 +1,7 @@
 {
   "name": "superd-workspace",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.3.3-d",
   "releaseTarget": "0.3.0",
   "type": "module",
   "description": "Super D unified development repository: Better Dash native tools and Super Dash multi-agent platform.",

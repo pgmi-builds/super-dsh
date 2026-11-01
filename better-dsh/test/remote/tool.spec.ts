@@ -19,7 +19,7 @@ describe('createRemoteTool', () => {
     expect(tool.name).toBe('remote')
     const { required, properties } = tool.parameters as unknown as { required?: string[]; properties: Record<string, { enum?: string[] }> }
     expect(required).toEqual(['action'])
-    expect(properties.action?.enum).toEqual(['exec', 'add', 'status', 'close', 'input'])
+    expect(properties.action?.enum).toEqual(['exec', 'handoff', 'add', 'status', 'close'])
   })
   it('executes through the driver and returns the value envelope', async () => {
     const tool = createRemoteTool(fakeDriver())
@@ -90,31 +90,28 @@ describe('createRemoteTool', () => {
     expect(v.text).toContain('pty sessions on this connection: none')
     expect(v.text).not.toContain('offline')
   })
-  it('close mutex and stdin-without-cmd fail loud before any execution', async () => {
+  it('close mutex and oneshot stdin-without-cmd fail loud before any execution', async () => {
     const tool = createRemoteTool(fakeDriver())
     const exec = fakeExec()
     await expect(tool.execute!({ action: 'close', target: 'pty:x', cmd: 'x' } as never, exec)).rejects.toThrow(/E_PARAMS/)
-    await expect(tool.execute!({ action: 'exec', target: 'dev4', stdin: 's' } as never, exec)).rejects.toThrow(/E_STDIN_WITHOUT_CMD/)
-    await expect(tool.execute!({ action: 'exec', target: 'ssh:dev4:pty', cmd: 'x', scriptPath: '/tmp/x.sh' } as never, exec)).rejects.toThrow(/E_SCRIPT_PARAMS/)
+    await expect(tool.execute!({ action: 'exec', target: 'dev4', stdin: 's', mode: 'oneshot' } as never, exec)).rejects.toThrow(/E_STDIN_WITHOUT_CMD/)
+    await expect(tool.execute!({ action: 'exec', target: 'ssh:dev4:pty', cmd: 'x' } as never, exec)).rejects.toThrow(/E_TARGET_FORMAT/) // :pty creation suffix removed (spec 2026-11-01)
+    await expect(tool.execute!({ action: 'exec', target: 'dev4', cmd: 'x', scriptPath: '/tmp/x.sh' } as never, exec)).rejects.toThrow(/E_SCRIPT_PARAMS/)
   })
-  it('action input: own field set only; schema and execute layers agree (2026-10-25)', async () => {
+  it('exec stdin-only (raw write): schema and execute layers agree (spec remote-default-pty)', async () => {
     const tool = createRemoteTool(fakeDriver())
     const { properties } = tool.parameters as unknown as { properties: Record<string, { enum?: string[]; type?: string }> }
-    expect(properties.action?.enum).toEqual(['exec', 'add', 'status', 'close', 'input'])
     expect(properties.commandId).toBeDefined()
-    expect(properties.stdin).toBeDefined()
+    expect(properties.mode).toBeDefined()
     const exec = fakeExec()
-    await expect(tool.execute!({ action: 'input', target: 'pty:x' } as never, exec)).rejects.toThrow(/requires stdin/)
-    await expect(tool.execute!({ action: 'input', stdin: 'x\n' } as never, exec)).rejects.toThrow(/requires target/)
-    await expect(tool.execute!({ action: 'input', target: 'pty:x', stdin: 'x\n', cmd: 'y' } as never, exec)).rejects.toThrow(/does not belong to action "input"/)
-    await expect(tool.execute!({ action: 'input', target: 'pty:x', stdin: 'x\n', timeout: 5 } as never, exec)).rejects.toThrow(/does not belong to action "input"/)
-    await expect(tool.execute!({ action: 'input', target: 'pty:x', stdin: 'x\n', run_in_background: true } as never, exec)).rejects.toThrow(/does not belong to action "input"/)
-    await expect(tool.execute!({ action: 'input', target: 'pty:x', stdin: 'x\n', force: true } as never, exec)).rejects.toThrow(/does not belong to action "input"/)
-    await expect(tool.execute!({ action: 'input', target: 'pty:x', stdin: 'x\n', commandId: '' } as never, exec)).rejects.toThrow(/commandId/)
-    // exec keeps its own stdin contract (startup input only); unknown sessions fail loud without dialing
-    await expect(tool.execute!({ action: 'exec', target: 'pty:nosuch', stdin: 's' } as never, exec)).rejects.toThrow(/E_STDIN_WITHOUT_CMD/)
-    await expect(tool.execute!({ action: 'input', target: 'pty:nosuch', stdin: 'x\n' } as never, exec)).rejects.toThrow(/E_NO_SESSION/)
-    await expect(tool.execute!({ action: 'input', target: 'ssh:dev4', stdin: 'x\n' } as never, exec)).rejects.toThrow(/input writes into a live PTY session/)
+    await expect(tool.execute!({ action: 'exec', target: 'pty:x' } as never, exec)).rejects.toThrow(/must execute something/)
+    await expect(tool.execute!({ action: 'exec', target: 'dev4', stdin: 's', mode: 'oneshot' } as never, exec)).rejects.toThrow(/E_STDIN_WITHOUT_CMD/)
+    await expect(tool.execute!({ action: 'exec', target: 'pty:x', stdin: 'x\n', run_in_background: true } as never, exec)).rejects.toThrow(/cannot go background/)
+    await expect(tool.execute!({ action: 'exec', target: 'pty:x', stdin: 'x\n', cmd: 'y', commandId: 'c' } as never, exec)).rejects.toThrow(/commandId guards a raw stdin write/)
+    await expect(tool.execute!({ action: 'exec', target: 'pty:x', stdin: 'x\n', commandId: '' } as never, exec)).rejects.toThrow(/commandId/)
+    await expect(tool.execute!({ action: 'handoff', target: 'pty:x' } as never, exec)).rejects.toThrow(/E_TARGET_FORMAT/)
+    // unknown sessions fail loud without dialing
+    await expect(tool.execute!({ action: 'exec', target: 'pty:nosuch', stdin: 'x\n' } as never, exec)).rejects.toThrow(/E_NO_SESSION/)
   })
   it('input receipts render the passthrough text and never echo the stdin body', async () => {
     const tool = createRemoteTool(fakeDriver())
@@ -156,26 +153,32 @@ describe('createRemoteTool', () => {
     expect(v.text).toBe('roster-text')
     expect(seen[0]?.sessionKey).toBe('agent-1')
   })
-  it('the description teaches the PTY lane in the user-ruled shape (0.3.2-d): four-word lead, pairing line, control bytes, busy four ways', () => {
+  it('the description teaches the reviewed surface (spec remote-default-pty, 2026-11-01): default PTY, went-async + completion notice, verbatim bytes, busy exits, close has no job id', () => {
     const description = createRemoteTool(fakeDriver()).description
     expect(description).toContain('PTY:\n- stateful oneshot, interact-able stdin, managed output, persistent env')
-    expect(description).toContain('exec.stdin = startup input; input = subsequent input')
-    expect(description).toContain('input is verbatim: "\\n" submits; "\\u0003" Ctrl-C; "\\u0004" Ctrl-D; "" writes nothing. Ctrl-D follows terminal EOF rules.')
-    expect(description).toContain('Busy session: input / poll / cancel / use another session.')
-    expect(description).toContain('Input receipt confirms write only; read result via SAME job.')
-    expect(description).toContain('After creation, reuse the returned session; repeating :pty opens another.')
+    expect(description).toContain('- run_in_background = the command went async (not bash &): a job handle returns immediately and a completion notification will follow — no polling required.')
+    expect(description).toContain('verbatim always: "\\n" submits; "\\u0003" Ctrl-C; "\\u0004" Ctrl-D; "" writes zero bytes.')
+    expect(description).toContain('Busy PTY rejects new cmds')
+    expect(description).toContain('mode:"oneshot" = isolated, stateless')
+    expect(description).toContain('PTY stdin alone (no cmd/scriptPath) = raw write into the command currently running in that PTY')
     expect(description).toContain('a prompt on a oneshot means cancel (job_kill) and switch to PTY')
     expect(description).toContain('no Python')
+    expect(description).toContain("cancelling a running command is job_kill's job — close takes no job id")
     expect(description).not.toContain('action:"copy"')
+    expect(description).not.toContain(':pty"') // the creation suffix is gone from the surface (session ids like pty:pty-irsq are fine)
+    expect(description).not.toContain(':pty:')
   })
   it('examples stay format-true to the code: action verbs declared, transfer tool separated, receipts match renderValue', () => {
     const description = createRemoteTool(fakeDriver()).description
+    expect(description).toContain('remote { "action": "exec", "target": "ssh:dev4", "cmd": "cd /srv/app && pwd" }')
+    expect(description).toContain('[pty:pty-irsq · conn ssh:dev4 · cmd remote-0d89215d1cc64cdc · cwd /srv/app · idle-left ~15m · exit 0 · 0.3s]')
+    expect(description).toContain('remote { "action": "exec", "target": "ssh:dev4", "cmd": "make test", "run_in_background": true }')
+    expect(description).toContain('completion is reported by the host.')
+    expect(description).toContain('remote { "action": "handoff", "target": "ssh:dev4" }')
     expect(description).toContain('remote { "action": "add", "spawn": "ssh -t pc ssh -t dev4", "target": "pty:dev4via" }')
     expect(description).toContain('remote { "action": "exec", "target": "pty:dev4via"')
+    expect(description).toContain('remote { "action": "exec", "target": "ssh:dev4", "mode": "oneshot", "cmd": "uname -a" }')
     expect(description).toContain('remote_transfer { "mode": "rsync", "src": "ssh:lab:/var/log/app/", "dst": "/home/u1/app-logs/", "argv": ["-a"] }')
-    expect(description).toContain('[pty:pty-irsq (dev4via) (byo-pty) · conn BYOP · idle-left ~15m · exit null · 0.0s]')
-    expect(description).toContain('· conn BYOP · cmd remote-0d89215d1cc64cdc · cwd /home/u1 · idle-left ~15m · exit 0 · 0.3s]')
-    expect(description).toContain('Started remote-47676dff2c6443e8 on pty:pty-irsq (dev4via) (BYOP).')
   })
 })
 

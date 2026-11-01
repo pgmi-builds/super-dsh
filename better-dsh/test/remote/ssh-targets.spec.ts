@@ -40,7 +40,7 @@ describe('BYO-SSH scoped execution', () => {
         expect(roster).not.toContain(fixture.destination.key)
         expect(roster).not.toContain(`${fixture.destination.port}`)
         const cold = await h.createAgent('ssh-cold', 'resume')
-        expect((await h.invoke(cold, { action: 'exec', target: 'ssh:build', cmd }) as unknown as { exit: number | null }).exit).not.toBe(0) // cold incarnation: the label is gone; ssh:build is just an unresolvable host — native exit 255, honestly
+        expect((await h.invoke(cold, { action: 'exec', target: 'ssh:build', cmd, mode: 'oneshot' }) as unknown as { exit: number | null }).exit).not.toBe(0) // cold incarnation: the label is gone; ssh:build is just an unresolvable host — native exit 255, honestly
       } finally { await h?.dispose() }
     })
   }, 20000)
@@ -57,7 +57,7 @@ describe('BYO-SSH scoped execution', () => {
         const registration = await h.invoke(agent, { action: 'add', target: 'ssh:jumped', ssh: { ...fixture.destination, proxyJump: 'fixture-jump' } })
         expect(registration.text).toMatch(/registered.*no.*dial/i)
         expect((await h.invoke(agent, { action: 'exec', target: 'ssh:jumped', cmd: 'printf jumped' })).text).toBe('jumped')
-        const first = await h.invoke(agent, { action: 'exec', target: 'ssh:jumped:pty', cmd: 'export SSH_TEST=kept; printf first' }) as unknown as { session: string; text: string }
+        const first = await h.invoke(agent, { action: 'exec', target: 'ssh:jumped', cmd: 'export SSH_TEST=kept; printf first' }) as unknown as { session: string; text: string }
         expect(first.text).toBe('first')
         expect(first.session).toMatch(/^pty:pty-/)
         expect((await h.invoke(agent, { action: 'exec', target: first.session, cmd: 'printf "%s" "$SSH_TEST"' })).text).toBe('kept')
@@ -117,6 +117,11 @@ describe('SSH target identity contract', () => {
         const { writeFile } = await import('node:fs/promises')
         await writeFile(script, 'printf script')
         expect(await driver.call({ target: 'ssh:script', ssh: fixture.destination, scriptPath: script })).toMatchObject({ exit: 0, stdout: 'script' })
+        // F2 回归（2026-11-01 复测）：真实 sshd 上脚本中途 read 只吃业务 stdin——旧形状里 read 吃掉脚本下一行、
+        // 业务 stdin 被 bash 当命令执行（exit 127）。
+        const readScript = join(fixture.directory, 'read.sh')
+        await writeFile(readScript, 'IFS= read -r v\necho "READ:GOT:$v"\n')
+        expect(await driver.call({ target: 'ssh:script', scriptPath: readScript, stdin: 'hello-f2\n', mode: 'oneshot' })).toMatchObject({ exit: 0, stdout: 'READ:GOT:hello-f2\n' }) // reuse the registered label, no re-registration
         const process = await driver.start({ target: 'ssh:start', ssh: fixture.destination, cmd: 'printf canonical' }, new AbortController().signal)
         expect(await process.done).toMatchObject({ exit: 0 })
         expect(process.read('stdout', 0).text).toBe('canonical')

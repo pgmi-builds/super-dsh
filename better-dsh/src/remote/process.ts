@@ -14,15 +14,21 @@ export interface ProcessOptions {
   onOutput?: () => void
   /** Overlay on process.env (tool-built values only, e.g. RSYNC_RSH). */
   env?: NodeJS.ProcessEnv
+  /** Task E（SSH MUX）：取消（timeout 或显式 cancel）即同步回调，不等 close。mux master 会经
+   *  fd-passing 持有被杀客户端的会话 fd 直到远端会话结束——若远端清理 killer 等 close 后才发射，
+   *  就成了「close 等远端结束、远端结束等 killer」死锁。此处先行启动 killer 才能解开 close。至多一次。 */
+  onCancel?: () => void
 }
 
 /** Real detached process. Completion includes group cleanup, even after its leader closes. */
-export function startBinaryProcess(argv: string[], options: Pick<ProcessOptions, 'cwd' | 'timeoutSec' | 'env'> = {}): { stdout: Readable; stderr: Readable; stdin: Writable; cancel(): void; done: RemoteProcess['done']; diagnostic(): string | undefined } {
+export function startBinaryProcess(argv: string[], options: Pick<ProcessOptions, 'cwd' | 'timeoutSec' | 'env' | 'onCancel'> = {}): { stdout: Readable; stderr: Readable; stdin: Writable; cancel(): void; done: RemoteProcess['done']; diagnostic(): string | undefined } {
   const started = Date.now()
   const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env === undefined ? process.env : { ...process.env, ...options.env }, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
   let diagnostic: string | undefined
   let timedOut = false, finished = false, cancelled = false
   let cleanup: Promise<void> | undefined
+  let cancelledNotified = false
+  const notifyCancel = () => { if (!cancelledNotified) { cancelledNotified = true; try { options.onCancel?.() } catch { /* cleanup hook failure is never the command's failure */ } } }
   let timer: NodeJS.Timeout | undefined
   const signal = (sig: NodeJS.Signals | 0): boolean => {
     if (child.pid === undefined) return false
@@ -41,7 +47,7 @@ export function startBinaryProcess(argv: string[], options: Pick<ProcessOptions,
     const grace = setTimeout(() => { signal('SIGKILL'); setTimeout(finish, KILL_SETTLE_MS) }, TERM_GRACE_MS)
     void close.then(() => { if (!signal(0)) finish() })
   })
-  const cancel = () => { if (!finished) { cancelled = true; void reap() } }
+  const cancel = () => { if (!finished) { cancelled = true; notifyCancel(); void reap() } }
   child.stdin.on('error', () => {})
   child.once('error', error => { diagnostic = `exec: spawn failed — ${error.message}${options.cwd === undefined ? '' : ` (cwd: ${options.cwd})`}` })
   const done: RemoteProcess['done'] = new Promise(resolve => {

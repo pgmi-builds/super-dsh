@@ -14,6 +14,8 @@ export interface ProbeOptions {
   connectTimeoutSec?: number
   hardTimeoutSec?: number
   runner?: (argv: string[], opts?: OneShotOptions) => Promise<OneShotResult>
+  /** Task E：SSH 探测与 oneshot 执行链共用 MUX（同一身份 → 同一 master，探测零额外握手）。 */
+  muxArgvFor?: (plan: TargetPlan) => readonly string[]
 }
 
 function oneLine(s: string): string {
@@ -31,7 +33,7 @@ export async function probeTarget(plan: TargetPlan, opts: ProbeOptions = {}): Pr
   const started = Date.now()
   const argv =
     plan.kind === 'ssh'
-      ? sshArgv(plan.connection ?? { host: plan.host }, { extraArgs: ['-o', `ConnectTimeout=${ct}`], command: 'true' })
+      ? sshArgv(plan.connection ?? { host: plan.host }, { extraArgs: [...(opts.muxArgvFor?.(plan) ?? []), '-o', `ConnectTimeout=${ct}`], command: 'true' })
       : plan.kind === 'docker'
         ? ['docker', 'inspect', '--format', '{{.State.Status}}', plan.container]
         : ['incus', 'list', plan.container, '--format', 'csv', '--columns', 'ns']

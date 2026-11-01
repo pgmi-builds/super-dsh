@@ -1,7 +1,9 @@
 import { expect, it } from 'vitest'
 import LocalJobs from '@deepseek-ai/dsh-jobs-local'
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
-import { readFile } from 'node:fs/promises'
+import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import { createRealRemoteHarness } from './real-harness.ts'
@@ -28,7 +30,7 @@ it('exposes live output through native jobs with owner fencing, consuming reads,
   const h = await harness()
   try {
     const a = await h.createAgent('jobs-a'), b = await h.createAgent('jobs-b')
-    const value = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf first; printf %s $$ >&2; sleep 30; printf last', run_in_background: true }) as unknown as { jobId: string }
+    const value = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf first; printf %s $$ >&2; sleep 30; printf last', mode: 'oneshot', run_in_background: true }) as unknown as { jobId: string }
     expect(value.jobId).toMatch(/^remote-/)
     const id = JobId(value.jobId), registry = a.ctx.get('jobs')!
     let text = ''
@@ -71,19 +73,65 @@ it('PTY background jobs: live merged output, interrupt cancels with exit 130, se
     expect(await registry.wait(JobId(handed.jobId), 5_000, a.id)).toMatchObject({ status: 'completed' })
   } finally { await h.dispose() }
 }, 20_000)
+it('default-PTY background (spec remote-default-pty Task C): submit + same-operation handoff — addressable session, native from-0 output, machine gets a fresh slot', async () => {
+  const h = await harness(true, { ptyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+  try {
+    const a = await h.createAgent('bg-default')
+    const registry = a.ctx.get('jobs')!
+    const started = await h.invoke(a, { action: 'exec', target: 'ssh:dev4', cmd: 'printf first; sleep 1; printf last', run_in_background: true }) as unknown as { jobId: string; session: string }
+    expect(started.jobId).toMatch(/^remote-/)
+    expect(started.session).toMatch(/^pty:pty-[a-z0-9]{4}$/) // addressable immediately
+    const id = JobId(started.jobId)
+    let text = ''
+    for (let i = 0; i < 150 && !text.includes('first'); i++) { text += registry.read(id, a.id).chunks.map(c => c.text).join(''); await new Promise(r => setTimeout(r, 20)) }
+    expect(text).toContain('first') // live merged output, native from-0 read
+    expect(registry.get(id, a.id).status).toBe('running')
+    // same-operation handoff: the machine's next exec opens a FRESH default; the detached one stays busy with the job
+    const next = await h.invoke(a, { action: 'exec', target: 'ssh:dev4', cmd: 'echo fresh' }) as unknown as { session: string; text: string }
+    expect(next.session).not.toBe(started.session)
+    expect(next.text).toContain('fresh')
+    await expect(h.invoke(a, { action: 'exec', target: `pty:${started.session!.slice(4)}`, cmd: 'echo busy' })).rejects.toThrow(/E_SESSION_BUSY/)
+    expect(await registry.wait(id, 10_000, a.id)).toMatchObject({ status: 'completed' })
+    const out = await callTool(a, 'job_output', { job_id: id })
+    expect((out.value as { text: string }).text).toContain('last') // incremental tail after consumed reads
+  } finally { await h.dispose() }
+}, 20_000)
+
+it('background + scriptPath (F3 fix, 2026-11-01 re-test): the lane carries the prepared carrier — script actually runs, with and without business stdin', async () => {
+  const h = await harness(true, { ptyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
+  const dir = await mkdtemp(join(tmpdir(), 'remote-bg-script-'))
+  const readScript = join(dir, 'read.sh'), plainScript = join(dir, 'plain.sh')
+  await writeFile(readScript, 'printf BG-SCRIPT; IFS= read -r v; printf "GOT:%s" "$v"\n', 'utf8')
+  await writeFile(plainScript, 'printf PLAIN-BG\n', 'utf8')
+  try {
+    const a = await h.createAgent('bg-script')
+    const registry = a.ctx.get('jobs')!
+    // with business stdin: the script's read consumes it (old shape failed E_STDIN_WITHOUT_CMD after "Started")
+    const s1 = await h.invoke(a, { action: 'exec', target: 'ssh:dev4', run_in_background: true, scriptPath: readScript, stdin: 'z\n' }) as unknown as { jobId: string }
+    const id1 = JobId(s1.jobId!)
+    expect(await registry.wait(id1, 15_000, a.id)).toMatchObject({ status: 'completed' })
+    expect((await callTool(a, 'job_output', { job_id: id1 })).value as { text: string }).toMatchObject({ text: expect.stringContaining('BG-SCRIPTGOT:z') })
+    // without stdin: plain script runs to completion (old shape failed "pty dispatch did not hand off a running job")
+    const s2 = await h.invoke(a, { action: 'exec', target: 'ssh:dev4', run_in_background: true, scriptPath: plainScript }) as unknown as { jobId: string }
+    const id2 = JobId(s2.jobId!)
+    expect(await registry.wait(id2, 15_000, a.id)).toMatchObject({ status: 'completed' })
+    expect(((await callTool(a, 'job_output', { job_id: id2 })).value as { text: string }).text).toContain('PLAIN-BG')
+  } finally { await h.dispose(); await rm(dir, { recursive: true, force: true }) }
+}, 25_000)
+
 it('refuses admission before discovery and keeps foreground without jobs', async () => {
   const h = await harness(false)
   try {
     const a = await h.createAgent('refusal')
-    await expect(h.invoke(a, { action: 'exec', target: 'bare', cmd: 'true', run_in_background: true })).rejects.toThrow(/controller/)
+    await expect(h.invoke(a, { action: 'exec', target: 'bare', cmd: 'true', mode: 'oneshot', run_in_background: true })).rejects.toThrow(/controller/)
     // controller-less harness: registry admission refuses ALL backgrounds (gate precedes routing) —
     // byop-without-spawn reaching E_NO_SESSION as a failed job is covered by admission order, not testable here
   } finally { await h.dispose() }
   const plain = await createRealRemoteHarness({ copies: 1, driverOptions: { oneshotArgvFor: (_p, cmd) => ['bash', '-c', cmd] } })
   try {
     const a = await plain.createAgent('without-jobs')
-    await expect(plain.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'true', run_in_background: true })).rejects.toThrow(/jobs/)
-    expect(await plain.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf foreground' })).toMatchObject({ text: 'foreground' })
+    await expect(plain.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'true', mode: 'oneshot', run_in_background: true })).rejects.toThrow(/jobs/)
+    expect(await plain.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf foreground', mode: 'oneshot' })).toMatchObject({ text: 'foreground' })
   } finally { await plain.dispose() }
 }, 10000)
 
@@ -93,7 +141,7 @@ it('final drains exit output once and reports nonzero exit', async () => {
     const a = await h.createAgent('outcomes')
     Object.assign(a, { inject() {} }) // No model turn: Task8 tests actual model notification delivery.
     const registry = a.ctx.get('jobs')!
-    const v = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf last; printf err >&2; exit 7', run_in_background: true }) as unknown as { jobId: string }
+    const v = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'printf last; printf err >&2; exit 7', mode: 'oneshot', run_in_background: true }) as unknown as { jobId: string }
     const id = JobId(v.jobId)
     expect(await registry.wait(id, 5000, a.id)).toMatchObject({ status: 'completed', detail: 'exit code: 7' })
     const read = registry.read(id, a.id)
@@ -107,7 +155,7 @@ it('plugin disposal and immediate job kill settle only after real process cleanu
   try {
     const a = await h.createAgent('dispose-jobs')
     Object.assign(a, { inject() {} })
-    const v = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'sleep 30', run_in_background: true }) as unknown as { jobId: string }
+    const v = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'sleep 30', mode: 'oneshot', run_in_background: true }) as unknown as { jobId: string }
     const registry = a.ctx.get('jobs')!, id = JobId(v.jobId)
     await h.rows[0]!.dispose()
     expect((await registry.wait(id, 5000, a.id)).status).toBe('killed')
@@ -121,7 +169,7 @@ it('spawn failure reaches failed job detail without repeated synthetic stderr ch
   try {
     const a = await h.createAgent('spawn-failure')
     Object.assign(a, { inject() {} })
-    const value = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'true', run_in_background: true }) as unknown as { jobId: string }
+    const value = await h.invoke(a, { action: 'exec', target: 'ssh:x', cmd: 'true', mode: 'oneshot', run_in_background: true }) as unknown as { jobId: string }
     const registry = a.ctx.get('jobs')!, id = JobId(value.jobId)
     expect(await registry.wait(id, 5000, a.id)).toMatchObject({ status: 'failed', detail: expect.stringContaining('ENOENT') })
     expect(registry.read(id, a.id).chunks).toEqual([])
@@ -166,7 +214,7 @@ it('native jobs final-drain real Hub TERM output when cancel ACK outruns the str
   const row = await h.ctx.plugin({ name: 'task4-real-hub', apply: ctx => installHubRemoteTransport(ctx, { home }) })
   try {
     const a = await h.createAgent('hub-job')
-    const value = await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: `trap 'printf TAIL中; printf ERR🙂 >&2; exit 7' TERM; printf first; printf %s $$ >&2; while :; do :; done`, run_in_background: true }) as unknown as { jobId: string }
+    const value = await h.invoke(a, { action: 'exec', target: 'hub:peer', cmd: `trap 'printf TAIL中; printf ERR🙂 >&2; exit 7' TERM; printf first; printf %s $$ >&2; while :; do :; done`, mode: 'oneshot', run_in_background: true }) as unknown as { jobId: string }
     const registry = a.ctx.get('jobs')!, id = JobId(value.jobId)
     let pid = 0
     for (let i = 0; i < 100 && !pid; i++) { pid = Number(registry.readAt(id, 0, a.id).chunks.filter(c => c.channel === 'stderr').map(c => c.text).join('')); await new Promise(r => setTimeout(r, 20)) }
@@ -188,7 +236,7 @@ it('native jobs final-drain real Hub TERM output when cancel ACK outruns the str
   }
 }, 10000)
 
-it('interactive stdin over official jobs: exec → prompt → input → job_output → input → original job completes (2026-10-25)', async () => {
+it('interactive stdin over official jobs: exec → prompt → exec stdin-only → job_output → stdin-only → original job completes (spec 2026-11-01)', async () => {
   const h = await harness(true, { execTimeoutSec: 2, ptyArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'], spawnArgvFor: () => ['script', '-qfec', 'bash', '/dev/null'] })
   try {
     const a = await h.createAgent('pty-ix'), b = await h.createAgent('pty-ix-other')
@@ -201,29 +249,29 @@ it('interactive stdin over official jobs: exec → prompt → input → job_outp
     const readAll = (jid: JobId = id): string => registry.readAt(jid, 0, a.id).chunks.map((c: { text: string }) => c.text).join('')
     for (let i = 0; i < 200 && !readAll().includes('Password:'); i++) await new Promise((r) => setTimeout(r, 20))
     expect(readAll()).toContain('Password:')
-    // busy teaches the four ways out, input included
+    // busy teaches the ways out, stdin-only included
     await expect(h.invoke(a, { action: 'exec', target: 'pty:ix', cmd: 'echo nope' })).rejects.toThrow(/E_SESSION_BUSY/)
-    const w1 = await h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'demo\n' }) as unknown as { kind: string; writtenBytes: number; jobId: string; commandId: string; session: string }
+    const w1 = await h.invoke(a, { action: 'exec', target: 'pty:ix', stdin: 'demo\n' }) as unknown as { kind: string; writtenBytes: number; jobId: string; commandId: string; session: string }
     expect(w1).toMatchObject({ kind: 'input', writtenBytes: 5, jobId: started.jobId, commandId: started.commandId })
     expect(w1.session).toMatch(/^pty:pty-/)
     expect(JSON.stringify(w1)).not.toContain('demo') // the receipt never echoes the stdin body
     for (let i = 0; i < 200 && !readAll().includes('OTP:'); i++) await new Promise((r) => setTimeout(r, 20))
     expect(readAll()).toContain('OTP:')
-    await h.invoke(a, { action: 'input', target: 'pty:ix', commandId: started.commandId, stdin: '123456\n' })
+    await h.invoke(a, { action: 'exec', target: 'pty:ix', commandId: started.commandId, stdin: '123456\n' })
     const outcome = await registry.wait(id, 10_000, a.id)
     expect(outcome.status).toBe('completed')
     const final = readAll()
     expect(final).toContain('ACCEPTED')
     expect(final).not.toContain('demo')
     // cross-Agent fencing: another Agent's pool has no such session
-    await expect(h.invoke(b, { action: 'input', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/)
+    await expect(h.invoke(b, { action: 'exec', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_NO_SESSION/)
     // stale commandId guard + completion release
     const started2 = await h.invoke(a, { action: 'exec', target: 'pty:ix', cmd: `IFS= read -s -r v; printf 'OK:%s' "$v"`, run_in_background: true }) as unknown as { jobId: string; commandId: string }
-    await expect(h.invoke(a, { action: 'input', target: 'pty:ix', commandId: started.commandId, stdin: 'x\n' })).rejects.toThrow(/E_COMMAND_MISMATCH/)
-    await h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'go\n' })
+    await expect(h.invoke(a, { action: 'exec', target: 'pty:ix', commandId: started.commandId, stdin: 'x\n' })).rejects.toThrow(/E_COMMAND_MISMATCH/)
+    await h.invoke(a, { action: 'exec', target: 'pty:ix', stdin: 'go\n' })
     expect((await registry.wait(JobId(started2.jobId), 10_000, a.id)).status).toBe('completed')
     expect(readAll(JobId(started2.jobId))).toContain('OK:go')
-    await expect(h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/)
+    await expect(h.invoke(a, { action: 'exec', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/)
     // ledger grew by dispatched commands only (busy rejects and inputs add no entries); card teaches, never hides
     const card = await h.invoke(a, { action: 'status', target: 'pty:ix' }) as unknown as { text: string }
     expect(card.text).not.toContain('echo nope')
@@ -233,6 +281,6 @@ it('interactive stdin over official jobs: exec → prompt → input → job_outp
     const kill = await callTool(a, 'job_kill', { job_id: JobId(started3.jobId) })
     expect(kill.isError).toBeFalsy()
     await registry.wait(JobId(started3.jobId), 5_000, a.id)
-    await expect(h.invoke(a, { action: 'input', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/)
+    await expect(h.invoke(a, { action: 'exec', target: 'pty:ix', stdin: 'x\n' })).rejects.toThrow(/E_SESSION_NOT_RUNNING/)
   } finally { await h.dispose() }
 }, 30_000)

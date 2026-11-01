@@ -75,13 +75,6 @@ export interface PtyDispatchResult {
   job?: PtyRunningJob
 }
 
-/** 账本条目（§5）：commandId / 摘要 / exit / 耗时；保留最近 20 条（user 定案）。 */
-export interface LedgerEntry { commandId: string; jobId?: string; summary: string; exit: number | null; durationMs: number; running: boolean }
-const LEDGER_MAX = 20
-const summaryOf = (cmd: string): string => {
-  const first = cmd.trim().split(/\r?\n/, 1)[0] ?? ''
-  return first.length > 72 ? `${first.slice(0, 71)}…` : first
-}
 
 export type PtyState = 'cold' | 'starting' | 'ready' | 'dead' | 'disposed'
 
@@ -109,8 +102,6 @@ export class PtySession {
   private detachedJob: PtyRunningJob | null = null
   /** §3.2（2026-10-25）：当前占用会话的命令——dispatch 同步占位，settle/cleanup 释放；input 的唯一写入对象。 */
   private activeCommand: { commandId: string; jobId?: string } | null = null
-  /** 账本（§5）：本会话最近 20 条命令（FIFO，超出丢最旧）。 */
-  private ledger: LedgerEntry[] = []
   /** env 侧信道基线（init E 帧）；undefined = 侧信道不可用（不报假 delta）。 */
   private envBaseline: Map<string, number> | undefined
   /** idle 起点（ready / settle 时重置）；null = 尚无 idle 时钟（cold 或已 dispose）。 */
@@ -137,10 +128,10 @@ export class PtySession {
   /** 占用前台的 detached job 的 commandId（无 = null；close 拒绝与 busy 文案共用）。 */
   get detachedCommandId(): string | null { return this.detachedJob?.commandId ?? null }
 
-  /** job 通道收养后回填 jobId（timeout handoff 时 registry id ≠ commandId，账本如实记录两者）；运行中的命令同步携带（input 回执用）。 */
+  /** handoff/card 面（2026-11-01 默认 PTY 轮）：当前占用会话的命令与可选 job 句柄；无 = null。 */
+  get active(): { commandId: string; jobId?: string } | null { return this.activeCommand === null ? null : { ...this.activeCommand } }
+  /** job 通道收养后回填 jobId（timeout handoff 时 registry id ≠ commandId）；运行中的命令同步携带（stdin-only 写入回执用）。 */
   attachJob(commandId: string, jobId: string): void {
-    const entry = [...this.ledger].reverse().find((e) => e.commandId === commandId)
-    if (entry !== undefined) entry.jobId = jobId
     if (this.activeCommand !== null && this.activeCommand.commandId === commandId) this.activeCommand.jobId = jobId
   }
 
@@ -149,8 +140,6 @@ export class PtySession {
     return { id: this.opts.id, ...(this.opts.label !== undefined ? { label: this.opts.label } : {}), connection: this.opts.connection, byo: this.opts.byo === true, builtOn: this.opts.builtOn === true }
   }
 
-  /** 账本快照（session card 面，只读）。 */
-  ledgerSnapshot(): readonly LedgerEntry[] { return this.ledger }
 
   /** spawn 创建原文（仅 BYO 会话；v2 起仅存档，不参与复用判定）。 */
   get origin(): string | undefined { return this.opts.origin }
@@ -175,13 +164,10 @@ export class PtySession {
     if (this.activeCommand !== null) {
       const handle = this.activeCommand.jobId ?? this.activeCommand.commandId
       return Promise.reject(new Error(
-        `[E_SESSION_BUSY] remote: pty session '${this.opts.id}' still runs a command (${this.activeCommand.commandId}) — send it more stdin with the input action, follow its output via job_output ${handle} (a synchronous exec hands its job off there on timeout), cancel with job_kill ${handle}, or address other work to another session / oneshot`,
+        `[E_SESSION_BUSY] remote: pty session '${this.opts.id}' still runs a command (${this.activeCommand.commandId}) — feed it more stdin with {action:"exec", target:..., stdin:...} (stdin-only write), follow its output via job_output ${handle} (a synchronous exec hands its job off there on timeout), cancel with job_kill ${handle}, or address other work to another session / oneshot`,
       ))
     }
     const commandId = dOpts.commandId
-    const entry: LedgerEntry = { commandId, summary: summaryOf(cmd), exit: null, durationMs: 0, running: true, ...(dOpts.jobId !== undefined ? { jobId: dOpts.jobId } : {}) }
-    this.ledger.push(entry)
-    if (this.ledger.length > LEDGER_MAX) this.ledger.shift()
     this.activeCommand = { commandId, ...(dOpts.jobId !== undefined ? { jobId: dOpts.jobId } : {}) }
     this.inFlight++
     const attempt = async (): Promise<PtyDispatchResult> => {
@@ -192,8 +178,6 @@ export class PtySession {
       const abandon = (): void => {
         this.activeCommand = null
         this.inFlight--
-        const index = this.ledger.indexOf(entry)
-        if (index >= 0) this.ledger.splice(index, 1)
       }
       if (this.state !== 'ready') {
         try {
@@ -253,9 +237,6 @@ export class PtySession {
           if (r.cwd !== null) this.lastCwdSeen = r.cwd
           const envDelta = envNext !== undefined ? diffEnv(this.envBaseline, envNext) : undefined
           if (envNext !== undefined) this.envBaseline = envNext
-          entry.exit = r.exit
-          entry.durationMs = Date.now() - started
-          entry.running = false
           const full: PtyJobResult = { ...r, outputStats: { stdout: ring.stats() }, commandId, ...(envDelta !== undefined ? { envDelta } : {}) }
           jobDone?.(full)
           if (!settled) { settled = true; resolve({ ...full, reconnected, durationMs: Date.now() - started }) }
@@ -287,8 +268,11 @@ export class PtySession {
           }, INTERRUPT_GRACE_MS)
         }
         this.onChunk = (c) => parser.feed(c)
-        this.write(wrapPtyCommand(cmd, nonce))
-        if (dOpts.stdin !== undefined) this.write(dOpts.stdin) // Ruling 11: REPL 式紧随
+        // Ruling 11（REPL 式紧随）+ 2026-11-01 竞态防御：framed 命令与 startup stdin 合并为**单次**
+        // stream write——两次独立 write 会让字节分两批到达远端 tty，中间窗口偶发丢失后段
+        //（rig 实测：framed 到达、随行 stdin 字节消失且不可恢复；合并后同批原子入队，窗口消除）。
+        const startup = dOpts.stdin === undefined ? wrapPtyCommand(cmd, nonce) : wrapPtyCommand(cmd, nonce) + dOpts.stdin
+        this.write(startup)
         this.deathWaiters.push(deathWaiter)
         if (dOpts.background === true) { detach(); return }
         // P4：同步等待到期 = handoff（不再自动 ^C）；命令由 job 通道继续（job_output 增量 / job_kill 显式中断）。
