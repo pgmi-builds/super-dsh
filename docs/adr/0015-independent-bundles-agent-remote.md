@@ -1,6 +1,9 @@
 # ADR 0015 — Independent bundles and Agent-owned remote tools
 
-Status: accepted design (2026-10-10); consumer acceptance tracked separately.
+Status: accepted design (2026-10-10); consumer acceptance tracked separately. The
+companion-install and Super remote-tool-row legs are superseded by
+[ADR 0016](0016-two-independent-packages-no-companion.md) (2026-11-02); the
+Better-owned remote tools and the hub-target integration are retained.
 
 ## Context
 

@@ -234,14 +234,12 @@ npm 可能在返回成功后提示 `Your package is being processed`，此时公
 
 ---
 
-## 8. Better Dash 双构建与原生 companion 交付（2026-10-09 再修订）
+## 8. Better Dash 双构建与两包独立交付（2026-11-02 再修订）
 
-两包同仓、同步版本、独立 npm 发布与原生 bundle。Super 不声明任何 Better dependency/optional/peer，也不内嵌其整包或归档；唯一窄例外是 canonical `better-dsh/src/remote/` 经生成器产出独立 Super `remote/` ESM/dts 闭包及 SHA-256 provenance，不含 Better client/其他工具，不形成 npm 依赖边（[ADR 0015](adr/0015-independent-bundles-agent-remote.md)）；Pi 的 bundled dependency 不变。双构建核验同步版本、独立 YAML、browser exports、无 Better 依赖边与 payload，`pair.json` 记录 SHA256 和 `independentPackages`。
+两包同仓、同步版本、独立 npm 发布与原生 bundle，互不安装、互不提升（[ADR 0016](adr/0016-two-independent-packages-no-companion.md)；companion 协调器、`superdCompanions` 服务与 Hub Settings 安装入口已于 2026-11-02 移除）。Super 不声明任何 Better dependency/optional/peer，也不内嵌其整包或归档；canonical `better-dsh/src/remote/` 经生成器产出的 Super `remote/` 闭包收窄为 **hub 内部私有依赖**——无公开导出、无 `superd-remote` 组合行，仅由 hub exec/PTY/task/file lanes 引用其进程原语（`PtySession`、oneshot/binary process 等），SHA-256 provenance 与逐叶子核验不变；模型侧 `remote`/`remote_transfer` 工具只由 Better Dash 注册，两包同装时 Better 的 remote 工具仍自动把 Super hub 列为 `hub:<m4>` target（检测逻辑在 Better 侧，未改动）。Pi 的 bundled dependency 不变。双构建核验同步版本、独立 YAML、browser exports、无 Better 依赖边与 payload、无 `./remote`/`./setup` 导出与 remote 组合行，`pair.json` 记录 SHA256 和 `independentPackages`。
 
-- 用户安装 Super 后，运行时 setup 调用当前 profile 的原生 `pluginManager.installBundle`，优先 `better-dsh@<已安装 Super 版本>`，失败依次回退 `better-dsh@latest`、裸包名 `better-dsh`。检查原生 ChangeResult 和最终安装状态，不自行操作 npm/pnpm/store/lock 或写 bundle manifest。
-- cold app readiness 触发首次自动安装；Plugin Manager 热装 Super 则等待它在 HMR 结束后发出的 changed 事件，回调不等待子安装，以免嵌套事务或持有父 profile writer lock。仅文件 watcher 挂载已 ready 的 Super 时，需后续原生管理事件或 Settings 显式安装。
-- companion 意图按 profile 保存在 `$DSH_HOME/superd/companions/<profile-dir-sha256>.json`；旧顶层 `companion-registration` receipt 迁移后删除自身文件，目录空时移除。第一次尝试在调用原生安装前持久化；失败展示重试入口。既有 Better 不自动升级、替换或启用；用户卸载后不在重启或 Super 升级时装回。
-- Hub Settings 第一行展示本机 Better 的安装/version/enablement 和错误，缺失时 Install 按钮复用上述 exact/latest/裸包名操作。管理始终寻址 CTX0，不随当前 foreign world 分流；装卸和 component 开关仍由原生 Plugin Manager 掌管。
+- DSH 上游兼容范围统一为 `>=0.2.0-0 <1.0.0-0`（2026-11-02 user 裁决），覆盖两包及全部子 manifest 的 `@deepseek-ai/dsh*` peers；发布以真实最低支持版本验收为准。
+- 装哪个包由用户自己决定：Super 不自动安装、不手动安装、不升级、不重装 Better，也不保留卸载意图 receipt。旧 `$DSH_HOME/superd/companions/` 残留文件惰性无害，可手删；`companion-registration` 迁移随读取方一并退役。
 - 测试 launcher 使用同轮未改 tarball 的只读 registry：Better/Super 的 exact 与 latest 都来自本轮产物，其它包转发正常 registry。保留 profile 已有独立安装/关闭选择；launcher 不预装 Better、不写测试专用业务补丁。
 - Better 不替换原生 WebServer 或 HMR，不改变 bind 默认值。WebTrust/mobile 继续使用原生公开事件；测试 CLI 明确 `--host 127.0.0.1`，LAN 通过既有 test-only relay。生产 Caddy 及 domain flags 独立于插件启停。
 - `dashr-welcome-notice` 是前端策略的生命周期 marker。客户端在官方 `settings.onboarding` 中以相同 `welcome-notice` ID、较低 priority 遮蔽原生贡献，调用 owner `complete()` 跳过每次选中的欢迎步骤；首次访问、新 chat 和显式打开都覆盖。关闭对应 component/Better 后撤销贡献；其它 onboarding 步骤保留。无 server ack、private state、localStorage 或 DOM 自动点击。

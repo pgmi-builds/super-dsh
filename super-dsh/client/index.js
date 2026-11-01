@@ -2272,145 +2272,6 @@ async function removeProvider(agentKey, namespace, id, doFetch) {
 }
 
 //#endregion
-//#region src/client/companion-api.ts
-async function callCompanion(operation, doFetch) {
-	const method = `superdCompanions/${operation}`;
-	const response = await (doFetch ?? ((path, init) => fetch(path, init)))(`/api/${method}`, {
-		method: "POST",
-		credentials: "same-origin",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({
-			type: "client-request",
-			rpcId: mintRpcId(),
-			method,
-			payload: { args: {} }
-		})
-	});
-	if (!response.ok) throw new Error(`Better Dash: HTTP ${response.status}`);
-	let body;
-	try {
-		body = JSON.parse(await response.text());
-	} catch {
-		throw new Error("Better Dash: unreadable response");
-	}
-	const result = body?.result;
-	if (result?.ok !== true) throw new Error(result?.error?.message ?? "Better Dash: request failed");
-	const value = result.value;
-	if (value === null || typeof value !== "object" || typeof value.installed !== "boolean" || typeof value.installing !== "boolean" || typeof value.requestedVersion !== "string" || value.version !== void 0 && typeof value.version !== "string" || value.enabled !== void 0 && typeof value.enabled !== "boolean" || value.error !== void 0 && typeof value.error !== "string") throw new Error("Better Dash: invalid status");
-	return value;
-}
-
-//#endregion
-//#region src/client/CompanionSettings.tsx
-/** Native plugin switches remain in Plugin Manager; this row provides explicit recovery. */
-function CompanionSettings() {
-	const [status, setStatus] = react.default.useState();
-	const [error, setError] = react.default.useState();
-	const [busy, setBusy] = react.default.useState(false);
-	const live = react.default.useRef(false);
-	const operation = react.default.useRef(false);
-	react.default.useEffect(() => {
-		live.current = true;
-		let reading = false;
-		const refresh = async () => {
-			if (reading || operation.current) return;
-			reading = true;
-			try {
-				const next = await callCompanion("getBetterDash");
-				if (live.current) {
-					setStatus(next);
-					setError(next.error);
-				}
-			} catch (cause) {
-				if (live.current) setError(cause instanceof Error ? cause.message : String(cause));
-			} finally {
-				reading = false;
-			}
-		};
-		refresh();
-		const timer = window.setInterval(() => {
-			refresh();
-		}, 5e3);
-		return () => {
-			live.current = false;
-			window.clearInterval(timer);
-		};
-	}, []);
-	const install = async () => {
-		if (operation.current) return;
-		operation.current = true;
-		setBusy(true);
-		setError(void 0);
-		try {
-			const next = await callCompanion("installBetterDash");
-			if (live.current) {
-				setStatus(next);
-				setError(next.error);
-			}
-		} catch (cause) {
-			if (live.current) setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			operation.current = false;
-			if (live.current) setBusy(false);
-		}
-	};
-	const installing = busy || status?.installing === true;
-	const label = status === void 0 ? "Loading…" : status.installed ? `Installed${status.version ? " · " + status.version : ""}${status.enabled === false ? " · Disabled" : ""}` : "Not installed";
-	return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-		style: {
-			borderRadius: 12,
-			padding: "12px 14px",
-			background: "var(--dsw-alias-interactive-bg-hover)"
-		},
-		children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-			style: {
-				display: "flex",
-				alignItems: "center",
-				gap: 16
-			},
-			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				style: { flex: 1 },
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-					style: {
-						fontSize: 14,
-						fontWeight: 600
-					},
-					children: "Better Dash"
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-					role: "status",
-					style: {
-						fontSize: 12,
-						color: "var(--dsw-alias-label-secondary)",
-						marginTop: 4
-					},
-					children: installing ? "Installing…" : label
-				})]
-			}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-				type: "button",
-				disabled: installing || status?.installed === true,
-				onClick: () => {
-					install();
-				},
-				style: {
-					padding: "6px 12px",
-					borderRadius: 8,
-					cursor: installing || status?.installed ? "default" : "pointer"
-				},
-				children: installing ? "Installing…" : status?.installed ? "Installed" : "Install"
-			})]
-		}), error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-			role: "alert",
-			style: {
-				fontSize: 12,
-				margin: "8px 0 0",
-				color: "var(--dsw-alias-state-error-primary)"
-			},
-			children: error
-		})]
-	});
-}
-
-//#endregion
 //#region src/client/HubPage.tsx
 const EMPTY_DRAFT = {
 	name: "",
@@ -2440,6 +2301,16 @@ const chipMonoId = {
 	fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
 	fontSize: 10.5
 };
+/** Machine-row display name: shrinkable, so an arbitrarily long name can
+*  never force the row wider than the viewport — it ellipsizes like the
+*  origin URL beside it. */
+const rowNameStyle = {
+	fontWeight: 500,
+	whiteSpace: "nowrap",
+	minWidth: 0,
+	overflow: "hidden",
+	textOverflow: "ellipsis"
+};
 /** The status dot's fixed part (the color is decided per row). */
 const dotStyle = {
 	width: 8,
@@ -2449,7 +2320,7 @@ const dotStyle = {
 };
 /** The machine origin column: monospace, eats the leftover row width. */
 const originStyle = {
-	flex: 1,
+	flex: "1 1 150px",
 	minWidth: 0,
 	overflow: "hidden",
 	textOverflow: "ellipsis",
@@ -2563,7 +2434,7 @@ const sectionHeadStyle = {
 * keeps the surface lit while its panel is open, so the open row stays
 * identifiable after the pointer leaves. The switch lives in the row's button.
 */
-function HoverRow({ children, onClick, clickable, expanded }) {
+function HoverRow({ children, onClick, clickable, expanded, wrap }) {
 	const [hover, setHover] = react.useState(false);
 	return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
 		onClick,
@@ -2577,7 +2448,8 @@ function HoverRow({ children, onClick, clickable, expanded }) {
 		style: {
 			display: "flex",
 			alignItems: "center",
-			gap: 12,
+			flexWrap: wrap ? "wrap" : "nowrap",
+			gap: wrap ? "4px 12px" : 12,
 			margin: "0 -8px",
 			padding: "9px 8px",
 			borderRadius: 12,
@@ -3573,11 +3445,7 @@ function HubPage() {
 						gap: 4,
 						borderBottom: "1px solid var(--dsw-alias-border-l3)"
 					},
-					children: [
-						["home", "Home"],
-						["workflows", "Workflows"],
-						["settings", "Settings"]
-					].map(([id, label]) => {
+					children: [["home", "Home"], ["workflows", "Workflows"]].map(([id, label]) => {
 						const active = tab === id;
 						return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 							type: "button",
@@ -3618,17 +3486,6 @@ function HubPage() {
 						},
 						children: "Orchestration across the machines and runtimes above — workflow authoring lands with the hub service."
 					})]
-				}),
-				tab === "settings" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
-					style: {
-						display: "flex",
-						flexDirection: "column",
-						gap: 8
-					},
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(GroupHead, {
-						title: "Settings",
-						count: 1
-					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CompanionSettings, {})]
 				}),
 				tab === "home" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
 					style: {
@@ -3716,98 +3573,98 @@ function HubPage() {
 									},
 									children: "No machines yet — add the first one with its token URL."
 								}),
-								mesh.self !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, { children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										"aria-hidden": true,
-										style: {
-											...dotStyle,
-											background: "var(--dsw-alias-state-success-primary)"
-										}
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: {
-											fontWeight: 500,
-											whiteSpace: "nowrap"
-										},
-										children: mesh.self.label
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-										style: {
-											...originStyle,
-											flex: "0 0 auto"
-										},
-										children: [hereOrigin, mesh.self.tokenPreview !== void 0 ? `/?token=${mesh.self.tokenPreview}` : ""]
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-										type: "button",
-										"aria-label": "Copy this machine's pairing URL",
-										title: pairingBusy ? "Minting pairing URL…" : "Copy the token URL another machine can Add machine with",
-										disabled: pairingBusy,
-										onClick: () => {
-											copyPairingUrl();
-										},
-										style: iconActionStyle,
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular, { size: 15 })
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { style: { flex: 1 } }),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: chipMonoId,
-										children: mesh.self.id
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: chipSelf,
-										children: "self"
-									})
-								] }),
-								mesh.machines.map((machine) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, { children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										title: machine.status,
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusMark, {
-											status: machine.status,
-											size: 16
+								mesh.self !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, {
+									wrap: true,
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											"aria-hidden": true,
+											style: {
+												...dotStyle,
+												background: "var(--dsw-alias-state-success-primary)"
+											}
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: rowNameStyle,
+											children: mesh.self.label
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											style: {
+												...originStyle,
+												flex: "0 1 auto"
+											},
+											children: [hereOrigin, mesh.self.tokenPreview !== void 0 ? `/?token=${mesh.self.tokenPreview}` : ""]
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											"aria-label": "Copy this machine's pairing URL",
+											title: pairingBusy ? "Minting pairing URL…" : "Copy the token URL another machine can Add machine with",
+											disabled: pairingBusy,
+											onClick: () => {
+												copyPairingUrl();
+											},
+											style: iconActionStyle,
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconCopyOutlineRegular, { size: 15 })
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { style: { flex: 1 } }),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: chipMonoId,
+											children: mesh.self.id
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: chipSelf,
+											children: "self"
 										})
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: {
-											fontWeight: 500,
-											whiteSpace: "nowrap"
-										},
-										children: machine.name
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: originStyle,
-										children: machine.origin
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: chipMonoId,
-										children: machine.id
-									}),
-									machineVersionChip(machine) !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										style: chipWarn,
-										title: `machine ${machine.id}`,
-										children: machine.versionWarning
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-										type: "button",
-										"aria-label": `Refresh ${machine.name}`,
-										title: `Refresh ${machine.name}`,
-										onClick: () => {
-											reprobeRemote(machine.id);
-										},
-										style: iconActionStyle,
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconRefreshOutlineRegular, { size: 15 })
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-										type: "button",
-										"aria-label": `Remove ${machine.name}`,
-										title: `Remove ${machine.name}`,
-										onClick: () => {
-											removeRemote(machine.id);
-										},
-										style: iconActionStyle,
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconTrashOutlineRegular, { size: 15 })
-									})
-								] }, machine.id))
+									]
+								}),
+								mesh.machines.map((machine) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(HoverRow, {
+									wrap: true,
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											title: machine.status,
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusMark, {
+												status: machine.status,
+												size: 16
+											})
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: rowNameStyle,
+											children: machine.name
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: originStyle,
+											children: machine.origin
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: chipMonoId,
+											children: machine.id
+										}),
+										machineVersionChip(machine) !== void 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											style: chipWarn,
+											title: `machine ${machine.id}`,
+											children: machine.versionWarning
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											"aria-label": `Refresh ${machine.name}`,
+											title: `Refresh ${machine.name}`,
+											onClick: () => {
+												reprobeRemote(machine.id);
+											},
+											style: iconActionStyle,
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconRefreshOutlineRegular, { size: 15 })
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											"aria-label": `Remove ${machine.name}`,
+											title: `Remove ${machine.name}`,
+											onClick: () => {
+												removeRemote(machine.id);
+											},
+											style: iconActionStyle,
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(__deepseek_ai_dsh_client_ui_primitives.IconTrashOutlineRegular, { size: 15 })
+										})
+									]
+								}, machine.id))
 							]
 						}),
 						showAdd && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {

@@ -138,7 +138,6 @@ try {
   // is active.
   const isExempt = (path) => path === CONTROL || path.startsWith(CONTROL + '/')
     || path === CONTROL_PREFIX || path.startsWith(CONTROL_PREFIX + '/')
-    || path === '/api/superdCompanions' || path.startsWith('/api/superdCompanions/')
   // Key compare matches the server demux shape: searchParams.get('agent')
   // looks up PERCENT-DECODED keys, so '%61gent=x' demuxes as agent=x and the
   // surgery must strip those spellings too (+' ' wins the '+' spelling).

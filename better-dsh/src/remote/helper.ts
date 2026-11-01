@@ -32,9 +32,9 @@ export interface HelperRunnerInfo {
 export type HelperExecResult = { exit: number | null; stdout: string }
 export type HelperExec = (argv: string[], options?: { stdin?: Buffer; timeoutSec?: number }) => Promise<HelperExecResult>
 
-/** Reads helper-bin/MANIFEST.json next to the compiled module (lib/remote in the npm
- * package, super-dsh/remote in the Super closure — same relative layout). Missing or
- * malformed assets ⇒ null ⇒ shim-only mode; never throws. */
+/** Reads helper-bin/MANIFEST.json next to the compiled module (lib/remote in
+ * the npm package). Missing or malformed assets ⇒ null ⇒ shim-only mode;
+ * never throws. */
 export function helperAssets(baseDir?: string): HelperAssets | null {
   const dir = baseDir ?? join(dirname(fileURLToPath(import.meta.url)), 'helper-bin')
   try {

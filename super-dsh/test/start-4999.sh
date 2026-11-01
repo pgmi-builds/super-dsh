@@ -6,8 +6,8 @@
 #   fresh profile  →  boot via the repo build's dsh CLI.
 #
 # No hand-written compositions, no @pgmi-builds symlink farms, no library boot
-# script: the native profile activates Super Dash only. Its runtime coordinator installs
-# Better as an independent bundle through the native package operation.
+# script: the native profile activates the selected product only. The two packages
+# are installed independently; nothing promotes one from the other.
 #
 # Red line (repo AGENTS §〇): this script refuses to run against any home that
 # is not this repo's .tests tree — the launch step owns the dev/test boundary,
@@ -145,21 +145,6 @@ else
   (cd "$DEV_WEBMCP" && npm run build --silent)
 fi
 PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
-# Retain an independently registered companion and its bundle enablement.
-# Removing Better while keeping the companion receipt means an
-# intentional user uninstall to the shipped coordinator. A fresh profile still
-# declares only the selected product; this never performs first promotion.
-COMPANION_STATE="$("$NODE_BIN" --input-type=module - "$PROFILE_DIR/package.json" <<'JS'
-import { readFileSync } from 'node:fs'
-let previous
-try { previous = JSON.parse(readFileSync(process.argv[2], 'utf8')) }
-catch (error) { if (error.code !== 'ENOENT') throw error }
-const spec = previous?.dependencies?.['better-dsh']
-console.log(JSON.stringify(typeof spec === 'string' ? {
-  spec, enabled: previous.dsh?.profile?.bundles?.includes('better-dsh') ?? false,
-} : {}))
-JS
-)"
 # Stop/restart only this rig's read-only registry endpoint after pair validation.
 REGISTRY_UNIT="superd-${PORT}-pair-registry"
 REGISTRY_PORT="${SUPERD_TEST_REGISTRY_PORT:-$((PORT + 10000))}"
@@ -178,22 +163,18 @@ for _ in $(seq 1 30); do
 done
 curl --noproxy '*' --fail --silent "$REGISTRY_URL$CONSUMER" > /dev/null || exit 1
 mkdir -p "$PROFILE_DIR"
-"$NODE_BIN" --input-type=module - "$PROFILE_DIR/package.json" "$CONSUMER" "$TARBALL" "$DEV_WEBMCP" "$COMPANION_STATE" <<'JS'
+"$NODE_BIN" --input-type=module - "$PROFILE_DIR/package.json" "$CONSUMER" "$TARBALL" "$DEV_WEBMCP" <<'JS'
 import { writeFileSync, readFileSync, existsSync } from 'node:fs'
-const [file, consumer, tarball, webmcp, retained] = process.argv.slice(2)
-const companion = JSON.parse(retained)
+const [file, consumer, tarball, webmcp] = process.argv.slice(2)
 const previous = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
 const bundles = [...new Set([...(previous.dsh?.profile?.bundles ?? []), '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', consumer, '@pgmi-builds/better-dsh-dev-webmcp'])]
 const dependencies = { ...previous.dependencies, [consumer]: 'file:' + tarball, '@pgmi-builds/better-dsh-dev-webmcp': 'file:' + webmcp }
-if (consumer === 'super-dsh' && companion.spec !== undefined) {
-  dependencies['better-dsh'] = companion.spec
-  if (companion.enabled && !bundles.includes('better-dsh')) bundles.push('better-dsh')
-}
 writeFileSync(file, JSON.stringify({ ...previous, name: consumer + '-test-profile', private: true,
   dsh: { ...previous.dsh, profile: { ...previous.dsh?.profile, bundles } }, dependencies }, null, 2) + '\n')
 JS
-# First consumption still relies exclusively on the delivered coordinator;
-# repeat consumption preserves its native registration and independent disablement.
+# First consumption declares only the selected product; repeat consumption
+# preserves whatever the profile already carries (e.g. an independently
+# installed Better Dash) — nothing is promoted or removed here.
 cat > "$PROFILE_DIR/pnpm-workspace.yaml" <<EOF
 packages:
   - .

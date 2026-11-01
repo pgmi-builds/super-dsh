@@ -14,14 +14,20 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
 test('Super ships a self-contained remote closure from the canonical Better source', () => {
   execFileSync(process.execPath, ['super-dsh/scripts/build-remote.mjs'], { cwd: repo, stdio: 'pipe' })
   const pkg = JSON.parse(readFileSync(join(repo, 'super-dsh/package.json')))
-  assert.deepEqual(pkg.exports['./remote'], { types: './remote/plugin.d.ts', default: './remote/plugin.js' })
+  // ADR 0016: the closure is a PRIVATE hub-internal dependency — no public
+  // export and no companion setup export; the model-facing remote tools ship
+  // only in Better Dash. The closure leaves still ride the tarball (files).
+  assert.equal(pkg.exports['./remote'], undefined)
+  assert.equal(pkg.exports['./setup'], undefined)
+  assert.ok(pkg.files.includes('remote'))
   const manifest = JSON.parse(readFileSync(join(repo, 'super-dsh/remote/provenance.json')))
   for (const [path, hash] of Object.entries(manifest.sources)) {
     assert.equal(createHash('sha256').update(readFileSync(join(repo, path))).digest('hex'), hash)
     assert.equal(path.startsWith('/'), false)
   }
-  for (const file of readdirSync(join(repo, 'super-dsh/remote'))) {
-    const content = readFileSync(join(repo, 'super-dsh/remote', file), 'utf8')
+  for (const entry of readdirSync(join(repo, 'super-dsh/remote'), { withFileTypes: true })) {
+    if (!entry.isFile()) continue // helper-bin/ leaves are provenance-checked by verifyRemoteClosure
+    const content = readFileSync(join(repo, 'super-dsh/remote', entry.name), 'utf8')
     assert.doesNotMatch(content, /(?:from\s*|import\s*\()["'](?:better-dsh|#schemastery)/)
     assert.equal(content.includes(repo), false)
   }
@@ -37,12 +43,12 @@ test('Super ships a self-contained remote closure from the canonical Better sour
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 
-test('independent default remote rows coexist without a Better disable override', () => {
+test('remote tools compose only in Better; Super carries no remote row', () => {
   const better = parseYaml(readFileSync(join(repo, 'better-dsh/cordis.patch.yml'), 'utf8'))
   const superPatch = parseYaml(readFileSync(join(repo, 'super-dsh/cordis.patch.yml'), 'utf8'))
   const rows = patch => patch.flatMap(row => row.insert || [])
   assert.deepEqual(rows(better).filter(row => row.name === 'better-dsh/remote').map(row => [row.id, !!row.disabled]), [['dashr-remote', false]])
-  assert.deepEqual(rows(superPatch).filter(row => row.name === 'super-dsh/remote').map(row => [row.id, !!row.disabled]), [['superd-remote', false]])
+  assert.deepEqual(rows(superPatch).filter(row => row.name === 'super-dsh/remote'), [])
   assert.equal(superPatch.some(row => row.id === 'dashr-remote'), false)
 })
 

@@ -47,7 +47,6 @@ import {
   setAuthMode,
   settingsErrorText,
 } from './runtime-settings-api.js'
-import {CompanionSettings} from './CompanionSettings.js'
 
 /**
  * The Hub main panel (`main`, key `hub`): the hub-functionality home page.
@@ -115,6 +114,17 @@ const chipMonoId: React.CSSProperties = {
   fontSize: 10.5,
 }
 
+/** Machine-row display name: shrinkable, so an arbitrarily long name can
+ *  never force the row wider than the viewport — it ellipsizes like the
+ *  origin URL beside it. */
+const rowNameStyle: React.CSSProperties = {
+  fontWeight: 500,
+  whiteSpace: 'nowrap',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+}
+
 /** The status dot's fixed part (the color is decided per row). */
 const dotStyle: React.CSSProperties = {
   width: 8,
@@ -125,7 +135,11 @@ const dotStyle: React.CSSProperties = {
 
 /** The machine origin column: monospace, eats the leftover row width. */
 const originStyle: React.CSSProperties = {
-  flex: 1,
+  // `1 1 150px`: on a wide row the origin grows into the leftover width
+  // exactly like `flex: 1` did; once the row is too narrow it wraps onto a
+  // full-width line of its own (see HoverRow `wrap`) and still ellipsizes —
+  // the row itself can never grow past the viewport again.
+  flex: '1 1 150px',
   minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -248,7 +262,7 @@ const sectionHeadStyle: React.CSSProperties = {
  * keeps the surface lit while its panel is open, so the open row stays
  * identifiable after the pointer leaves. The switch lives in the row's button.
  */
-function HoverRow({ children, onClick, clickable, expanded }: {
+function HoverRow({ children, onClick, clickable, expanded, wrap }: {
   children: React.ReactNode
   /** Row-body click handler (P3: the settings accordion toggle). */
   onClick?: (event: React.MouseEvent) => void
@@ -256,6 +270,12 @@ function HoverRow({ children, onClick, clickable, expanded }: {
   clickable?: boolean
   /** The row's settings panel is open. */
   expanded?: boolean
+  /**
+   * Wrap this row's items (the machine rows): on a narrow viewport the long
+   * origin URL takes a full-width line of its own instead of overflowing the
+   * row — a wrapped line is still one visual row, so the tighter row-gap.
+   */
+  wrap?: boolean
 }): React.JSX.Element {
   const [hover, setHover] = React.useState(false)
   return (
@@ -267,7 +287,8 @@ function HoverRow({ children, onClick, clickable, expanded }: {
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
+        flexWrap: wrap ? 'wrap' : 'nowrap',
+        gap: wrap ? '4px 12px' : 12,
         margin: '0 -8px',
         padding: '9px 8px',
         borderRadius: 12,
@@ -808,7 +829,7 @@ export function HubPage(): React.JSX.Element {
   const [pairingBusy, setPairingBusy] = React.useState(false)
   const [agents, setAgents] = React.useState<AgentLink[] | null>(() => rosterFromGlobal() ?? null)
   const [rosterFailed, setRosterFailed] = React.useState(false)
-  const [tab, setTab] = React.useState<'home' | 'workflows' | 'settings'>('home')
+  const [tab, setTab] = React.useState<'home' | 'workflows'>('home')
   // Baked before app boot and never mutated afterwards: per-page constant.
   const fusion = fusionPage()
   // The flag-off shape (T-E): with no /<label>/ routes and no world UIs left
@@ -1074,7 +1095,7 @@ export function HubPage(): React.JSX.Element {
             the orchestration surface (placeholder until the hub service
             lands). */}
         <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--dsw-alias-border-l3)' }}>
-          {([['home', 'Home'], ['workflows', 'Workflows'], ['settings', 'Settings']] as const).map(([id, label]) => {
+          {([['home', 'Home'], ['workflows', 'Workflows']] as const).map(([id, label]) => {
             const active = tab === id
             return (
               <button
@@ -1109,12 +1130,6 @@ export function HubPage(): React.JSX.Element {
           </section>
         )}
 
-        {tab === 'settings' && (
-          <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <GroupHead title="Settings" count={1} />
-            <CompanionSettings />
-          </section>
-        )}
 
         {tab === 'home' && (<>
 
@@ -1177,10 +1192,10 @@ export function HubPage(): React.JSX.Element {
                 is the other machine's Add-machine form (mutual pairing —
                 either side's copy pairs both). */}
             {mesh.self !== undefined && (
-              <HoverRow>
+              <HoverRow wrap>
                 <span aria-hidden style={{ ...dotStyle, background: 'var(--dsw-alias-state-success-primary)' }} />
-                <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{mesh.self.label}</span>
-                <span style={{ ...originStyle, flex: '0 0 auto' }}>
+                <span style={rowNameStyle}>{mesh.self.label}</span>
+                <span style={{ ...originStyle, flex: '0 1 auto' }}>
                   {hereOrigin}{mesh.self.tokenPreview !== undefined ? `/?token=${mesh.self.tokenPreview}` : ''}
                 </span>
                 <button
@@ -1199,7 +1214,7 @@ export function HubPage(): React.JSX.Element {
               </HoverRow>
             )}
             {mesh.machines.map((machine) => (
-              <HoverRow key={machine.id}>
+              <HoverRow key={machine.id} wrap>
                 {/* Connection mark (2026-10-07 user ruling): the Wi-Fi-style
                     signal glyph replaces the text chip; the word survives on
                     the title/aria-label. The dot goes with it — the mark IS
@@ -1207,7 +1222,7 @@ export function HubPage(): React.JSX.Element {
                 <span title={machine.status}>
                   <StatusMark status={machine.status} size={16} />
                 </span>
-                <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{machine.name}</span>
+                <span style={rowNameStyle}>{machine.name}</span>
                 <span style={originStyle}>{machine.origin}</span>
                 <span style={chipMonoId}>{machine.id}</span>
                 {/* I2 version-mismatch chip: present exactly when the hub's

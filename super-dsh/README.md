@@ -22,20 +22,21 @@ six primary `@pgmi-builds/agent-*` packages and three OPTIONAL SDK halves).
 Restart the profile after replacing a loaded package. Each foreign world's
 DSH home is created under `<DSH_HOME>/agents/<label>/` on first boot.
 
-## Better Dash delivery
+## Better Dash
 
-Super installs [Better Dash](../better-dsh/) at runtime through the native DSH
-Plugin Manager, requesting its installed Super version first, then `better-dsh@latest`, then bare
-`better-dsh` after each preceding failure. The packages have no dependency edge or shared physical payload;
-both retain independent native Plugin Manager rows and component switches.
+Better Dash and Super Dash are fully independent packages: neither installs,
+promotes, or reinstalls the other ([ADR 0016](../docs/adr/0016-two-independent-packages-no-companion.md)).
+Install each one yourself from the plugin market; the packages share no
+dependency edge and no physical payload, and both keep independent native
+Plugin Manager rows and component switches. Both packages ship at synchronized
+versions; publish Better before Super. Pi's prebuilt SDK retains its separate
+bundled delivery.
 
-First-use intent lives under `$DSH_HOME/superd/companions/`, so manual removal
-remains removed across restarts and upgrades. Hub Settings offers explicit
-reinstallation. Both packages ship at synchronized versions; publish Better
-before Super. Pi's prebuilt SDK retains its separate bundled delivery.
-
-Better's welcome policy uses the official client onboarding slot. Native
-WebServer and HMR stay in place; listener configuration belongs to deployment.
+The model-facing `remote` / `remote_transfer` tools ship only in Better Dash.
+When both packages are installed, Better's remote tool automatically detects
+this hub and lists its machines as `hub:<m4>` targets. Better's welcome policy
+uses the official client onboarding slot. Native WebServer and HMR stay in
+place; listener configuration belongs to deployment.
 
 ## Runtimes
 

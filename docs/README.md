@@ -16,4 +16,4 @@ Matching shared files were reused. Different root documents were preserved rathe
 
 The version/history/layout decision is recorded in [the monorepo spec](specs/monorepo-030/spec.md). Hub-only documents remain in the shared tree but are absent from the Better Dash package unless deliberately selected. Better runtime resources in `better-dsh/dsh-docs/` remain package-owned assets.
 
-Current remote ownership and independent-bundle architecture: [ADR 0015](adr/0015-independent-bundles-agent-remote.md), [remote specification](specs/remote-tool-enhancement/spec.md), and [remote user guide](remote-tools.md). ADR 0014 documents the superseded dependency architecture.
+Current remote ownership and independent-package architecture: [ADR 0016](adr/0016-two-independent-packages-no-companion.md) (remote tools live only in Better Dash; no companion install), [ADR 0015](adr/0015-independent-bundles-agent-remote.md) (partially superseded), [remote specification](specs/remote-tool-enhancement/spec.md), and [remote user guide](remote-tools.md). ADR 0014 documents the superseded dependency architecture.

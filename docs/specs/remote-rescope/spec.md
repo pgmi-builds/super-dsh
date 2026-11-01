@@ -1,6 +1,7 @@
 # Remote 透传再定位：默认值层、诚实回执与对端 Helper
 
 - 日期：2026-10-13（Asia/Hong_Kong）
+- 2026-11-02 注记（ADR 0016）：`superd-run` helper 体系（`src/remote/helper/`、better-dsh `lib/remote/helper-bin/`、回执 `runner` 字段、POSIX shim 回退）继续有效；Super 侧生成闭包保留为 hub 内部私有依赖（模型侧 remote 工具行与公开导出已删），`build-remote.mjs` 的 helper-bin 复制与逐叶子 provenance 核验一腿不变。
 - 状态：**讨论草案**。未定版、未实现、未验收；不改变现行代码与已发布产物的任何承诺。Phase 0 审计已于 2026-10-13 执行完毕，结果并入 §2；生命周期澄清见 §5.6。
 - 来源：2026-10-12/13 两轮对话（user 与 agent），含 user 对 binary 动机的重排论证。
 - 关系：

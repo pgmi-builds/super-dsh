@@ -6,12 +6,12 @@ This repository develops and releases two packages together:
 
 | Package | Source | What installing it provides |
 | --- | --- | --- |
-| `super-dsh` | [Super Dash](./super-dsh/) | Better Dash tools and native Web policies, plus the Hub and foreign-agent adapters |
+| `super-dsh` | [Super Dash](./super-dsh/) | The multi-machine Hub and foreign-agent adapters (no Better tools inside) |
 | `better-dsh` | [Better Dash](./better-dsh/) | Native DSH tools and Web policies independently |
 
-Super Dash and Better Dash are independent packages. On first use, Super requests Better through the native DSH Plugin Manager: its own installed version first, then `better-dsh@latest`, then bare `better-dsh` if each preceding request fails. User disable/removal choices survive restarts and upgrades; Hub Settings offers explicit reinstall. Both retain independent YAML, Plugin Manager rows and component switches; dev WebMCP remains separate.
+Super Dash and Better Dash are fully independent packages: neither installs, promotes, or reinstalls the other ([ADR 0016](./docs/adr/0016-two-independent-packages-no-companion.md)) — install each one yourself from the plugin market. The `remote` / `remote_transfer` tools ship only in Better Dash; when both packages are installed, Better's remote tool automatically lists Super's hub machines as `hub:<m4>` targets. Both retain independent YAML, Plugin Manager rows and component switches; dev WebMCP remains separate.
 
-The two packages share test iteration **0.3.0-f** (unpublished). Earlier npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
+The two packages share test iteration **0.3.3-b** (unpublished). Earlier npm releases retain their original versions. The old Better Dash checkout remains intact for historical reference; active development happens here.
 
 ## Development
 

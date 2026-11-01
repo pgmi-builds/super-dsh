@@ -22,9 +22,6 @@
 # Profile-layer values (webserver port/host, settings path) stay in the USER's
 # profile patch layer, never here.
 - insert:
-    # Expose native companion management and perform first-use installation.
-    - id: superd-bundle-setup
-      name: 'super-dsh/setup'
     # BARE package row: subpath rows (…/agents/omp) are permanently not client
     # rows in client-modules' scan (exactPackageSpecifier), so THIS row is
     # what registers the package's client half — the sidebar selector.
@@ -51,9 +48,6 @@
     # get their own injection in P5, spec §10). Dormant without tools.
     # Off: restate with `disabled: true` or drop the row — nothing else
     # registers the tool.
-    # Independent build of Better's canonical remote source; default-on per Agent.
-    - id: superd-remote
-      name: 'super-dsh/remote'
     - id: superd-a2a
       name: 'super-dsh/a2a'
     - id: agent-omp

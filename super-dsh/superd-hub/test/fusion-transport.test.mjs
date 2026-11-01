@@ -244,17 +244,6 @@ test('foreign fetch: the hub /api/superd control family is NEVER rewritten (2026
   assert.equal(String(sandbox.calls.fetch[4].input), '/hub/api/superdoxx/not-hub?agent=q7nat', 'the exemption is the exact /api/superd prefix, not a substring')
 })
 
-test('foreign selection never routes companion management to a remote agent', async () => {
-  const {sandbox, install} = page()
-  install(); sandbox.__SUPERD_UI_STATE__.setAgent('remote')
-  await sandbox.fetch('/api/superdCompanions/getBetterDash')
-  await sandbox.fetch('/api/superdCompanions/installBetterDash')
-  await sandbox.fetch('/api/superdCompanionsOther/get')
-  assert.deepEqual(sandbox.calls.fetch.map(c => String(c.input)), [
-    '/api/superdCompanions/getBetterDash', '/api/superdCompanions/installBetterDash',
-    '/hub/api/superdCompanionsOther/get?agent=remote',
-  ])
-})
 
 test('foreign: WebSocket, EventSource and XMLHttpRequest follow the same rule', () => {
   const { sandbox, install } = page()
@@ -308,7 +297,7 @@ test('foreign rewrite: non-agent query bytes keep their places, the demux key la
   assert.equal(sandbox.calls.fetch[0].input, '/hub/api/x?a=1&b=2&agent=omp#h')
   await sandbox.fetch('http://host:4999/api/x?agent=claude&y=1')
   assert.equal(sandbox.calls.fetch[1].input, 'http://host:4999/hub/api/x?y=1&agent=omp')
-  // The companion deferred minor: a bare-'?' URL collapses into ONE fresh
+  // A deferred minor: a bare-'?' URL collapses into ONE fresh
   // question mark — the old '??' doubled form swallowed the demux key.
   await sandbox.fetch('/api/session.export?')
   assert.equal(sandbox.calls.fetch[2].input, '/hub/api/session.export?agent=omp')

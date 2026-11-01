@@ -103,7 +103,7 @@ const DISABLED_ROWS = [
   'superd-join-claude', 'directory-picker-browse', 'directory-picker-browse-surface',
   // This injection fixture supplies no native tools/settings or startup service.
   'dashr-repl', 'dashr-url-schemes', 'dashr-welcome-notice', 'dashr-webserver',
-  'dashr-hmr', 'dashr-bundle-delivery', 'superd-bundle-setup',
+  'dashr-hmr', 'dashr-bundle-delivery',
 ]
 
 function ctx0Home(extraProfileRows) {

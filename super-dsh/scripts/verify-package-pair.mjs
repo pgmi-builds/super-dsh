@@ -13,10 +13,15 @@ export function verifyPackagePair(tarball, dependencyTarball, sourceRepo) {
   const a=JSON.parse(readFileSync(join(outer,'package.json'))),b=JSON.parse(readFileSync(join(better,'package.json')))
   if(a.name!=='super-dsh'||b.name!=='better-dsh'||a.version!==b.version)throw new Error('Super and Better must have synchronized package versions')
   if(['dependencies','optionalDependencies','peerDependencies'].some(field=>a[field]?.['better-dsh']!==undefined))throw new Error('Super must not declare a Better dependency')
-  if(a.exports?.['./remote']!==undefined){
-   const exp=a.exports['./remote'];if(exp?.types!=='./remote/plugin.d.ts'||exp?.default!=='./remote/plugin.js')throw new Error('Invalid standalone remote export')
-   verifyRemoteClosure(outer,sourceRepo)
-  }
+  // ADR 0016 (2026-11-02): the model-facing remote tools live ONLY in Better
+  // Dash — Super exports no remote entry and composes no remote row. The
+  // generated remote/ closure that Super still ships is a PRIVATE hub-internal
+  // dependency (the hub exec/PTY/file lanes import its process primitives), so
+  // whenever it is present it must be exactly the provenance-checked closure.
+  if(a.exports?.['./remote']!==undefined)throw new Error('Super must not export a remote tools entry')
+  if(a.exports?.['./setup']!==undefined)throw new Error('Super must not export a companion setup entry')
+  if(readFileSync(join(outer,'cordis.patch.yml'),'utf8').includes('super-dsh/remote'))throw new Error('Super must not compose a remote tools row')
+  if(existsSync(join(outer,'remote')))verifyRemoteClosure(outer,sourceRepo)
   const bundled=a.bundledDependencies??a.bundleDependencies
   if(bundled===true||Array.isArray(bundled)&&bundled.includes('better-dsh'))throw new Error('Physical Better bundling is forbidden')
   const files=execFileSync('tar',['-tf',tarball],{encoding:'utf8',maxBuffer:16*1024*1024}).split('\n')
@@ -28,7 +33,7 @@ export function verifyPackagePair(tarball, dependencyTarball, sourceRepo) {
  }finally{rmSync(scratch,{recursive:true,force:true})}
 }
 
-/** The remote exception permits only the independent, provenance-checked entry. */
+/** The private hub-internal remote closure permits only the provenance-checked entry. */
 export function verifyRemoteClosure(packageDir, sourceRepo) {
  const remote=join(packageDir,'remote')
  const manifest=JSON.parse(readFileSync(join(remote,'provenance.json'),'utf8'))
@@ -65,3 +70,4 @@ export function verifyRemoteClosure(packageDir, sourceRepo) {
  }
  return true
 }
+
