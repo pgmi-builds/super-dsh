@@ -69,6 +69,7 @@ machine key 统一 `ssh:<name>` 与无歧义裸名，避免同机双默认 shell
 3. MUX `ControlPersist` 时长与清理时机 —— 已定（Task E，发起端 OpenSSH 10.2p1 实测 2026-11-01）：`ControlPersist=600`；teardown = Agent dispose 逐 socket `ssh -O exit` 后删 socket 目录；master 与客户端进程组完全脱钩（客户端 killpg 取消不影响 master，后续 oneshot 继续复用）；master 被 SIGKILL 留下的残 socket 由 `ControlMaster=auto` 下一个客户端自愈重建；超长 socket 路径或目录不可建时诚实退化为普通连接（不注入选项）。关键实测发现：mux master 经 fd-passing 持有被杀客户端的会话 fd 到远端会话结束——远端清理 killer 必须在**取消时刻**发射（process `onCancel` 钩子），不能等本地 close 之后的 done（否则 close 等远端结束、远端结束等 killer，死锁）。
 4. surface 示例中 `~/.ssh/...` key 路径展开与现有 key 规则核对（Task A）。
 5. scriptPath 载体定稿（2026-11-01 独立复测 + 修复轮 0.3.3-c/d）：载体 = `bash -c '<script>'` 单条引号命令（argv 通道，与 cmd 同一纪律；NUL 拒绝 `E_SCRIPT_NUL`），业务 stdin 整体归脚本 fd0；PTY 中为普通子进程命令（结算、不泄漏父 shell）。hub oneshot 的 4096 上限随之约束 scriptPath（如实标注）。**已知缺陷（未根治，surface 已披露）**：rig 上 `run_in_background` + startup stdin 概率性丢失（bg lane；stdin-only 补写可靠）——详见 docs/test-reports/2026-11-01-remote-default-pty-c-d-fix-round.md §3。
+  **勘误（2026-11-01 R1 定位轮，docs/test-reports/2026-11-01-r1-localization.md）**：全部丢失样本实测发生在 0.3.3-c（两段 write 时代）；「合并缓解无效」系构建归属错误（rate2 跑在 c 进程）。0.3.3-d 合并单写在 d/e 上 45/45 送达（含 8+6 纯净 d 对照、值完整可见）。surface 的 Known defect 披露文本已过时，待发布构建移除。
 
 ## 8. 验收
 

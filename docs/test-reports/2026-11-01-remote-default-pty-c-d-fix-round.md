@@ -45,6 +45,8 @@
 
 **已做缓解**：`pty-session.ts` 把 framed 命令与 startup stdin **合并为单次 stream write**（0.3.3-d）——理论消除两段到达窗口，但对 bg-read 形状无效（rate2 6/6 仍丢）。
 
+> **勘误（2026-11-01 深夜定位轮）**：本节「合并无效」结论不成立——rate2（22:15）实跑在 0.3.3-c 进程（d 22:32 才装载），丢失从未在 d 上复现。定位轮以纯净 d + 0.3.3-e 插桩复刻原始组合：d 8/8 完成 + 值可见 6/6 送达，e 31/31 送达。**合并单写即 R1 的修复**。证据链与机制见 [2026-11-01-r1-localization.md](2026-11-01-r1-localization.md)。
+
 **surface 处置（0.3.3-d 已上）**：`run_in_background` 参数与工具描述两处标注 **Known defect: startup stdin is NOT reliably delivered to a background command — run stdin-consuming commands in the FOREGROUND, or background them WITHOUT stdin and feed stdin-only writes afterwards (reliable)**。
 
 **定位边界**：丢失点在 rig 宿主进程 → ssh 客户端 → 远端 tty 链路的某环，仅 rig 长驻进程复现；机制未定（远端 read 得空 EOF 与永等两种表现并存，排除「两段劈开」）。彻底定位需 rig 进程内插桩（本轮未做，避免为调试改动交付物）——留待专门一轮。

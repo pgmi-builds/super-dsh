@@ -3,6 +3,7 @@ import type { OutputStats, StreamOutputStats } from './hub-contract.ts'
 import { Buffer } from 'node:buffer'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { buildInitCommand, createNonceFrameParser, decodeEnvSnapshot, diffEnv, genNonce, wrapPtyCommand, type EnvDelta } from './nonce-framing.ts'
+import { trace, traceFlush, traceRepr } from './trace.ts'
 
 /** spec §五.2 逐字。 */
 export const RECONNECT_NOTICE = '[remote: session reconnected to fresh shell; cwd reset to default]'
@@ -98,6 +99,7 @@ export class PtySession {
   private deathWaiters: Array<() => void> = []
   private diag = ''
   private inFlight = 0
+  private cmdSeq = 0 // R1 插桩：会话累计 dispatch 计数（priorCmds 字段）
   /** P4/P5：当前占用前台的 detached job（background/超时 handoff）。非 null 时新命令拒绝（Q6）。 */
   private detachedJob: PtyRunningJob | null = null
   /** §3.2（2026-10-25）：当前占用会话的命令——dispatch 同步占位，settle/cleanup 释放；input 的唯一写入对象。 */
@@ -170,6 +172,7 @@ export class PtySession {
     const commandId = dOpts.commandId
     this.activeCommand = { commandId, ...(dOpts.jobId !== undefined ? { jobId: dOpts.jobId } : {}) }
     this.inFlight++
+    this.cmdSeq++
     const attempt = async (): Promise<PtyDispatchResult> => {
       const started = Date.now()
       const reconnected = this.state === 'dead'
@@ -191,9 +194,11 @@ export class PtySession {
         abandon()
         throw new Error(`[E_SESSION_DISPOSED] remote pty session '${this.opts.id}' was disposed before dispatch`)
       }
-      return await new Promise<PtyDispatchResult>((resolve) => {
+        return await new Promise<PtyDispatchResult>((resolve) => {
         const nonce = genNonce()
         const ring = new Utf16TailRing(OUTPUT_HARD_CAP)
+        let traceChunkSeq = 0 // R1 插桩：仅前 60 个输出块入 trace（repr 截断）
+        trace('disp', { s: this.opts.id, key: this.opts.key, commandId, bg: dOpts.background === true, stdinGiven: dOpts.stdin !== undefined, cmdLen: cmd.length, stdinLen: dOpts.stdin?.length ?? 0, cmdRepr: traceRepr(cmd, 140), stdinRepr: traceRepr(dOpts.stdin ?? '', 60), state: this.state, priorCmds: this.cmdSeq })
         let interrupted = false
         let settled = false // 外层 dispatch 回执已提前结算（background / 超时 handoff）
         let jobSettled = false
@@ -213,6 +218,8 @@ export class PtySession {
           }
           this.detachedJob = job
           settled = true
+          trace('detach', { s: this.opts.id, commandId, outLen: ring.text.length, tail: traceRepr(ring.text, 220) })
+          void traceFlush()
           resolve({ output: ring.text, outputStats: { stdout: ring.stats() }, exit: null, cwd: null, timedOut: false, running: true, job, commandId, reconnected, durationMs: Date.now() - started })
           return job
         }
@@ -230,6 +237,8 @@ export class PtySession {
         const settle = (r: Omit<PtyJobResult, 'outputStats' | 'commandId' | 'envDelta'>): void => {
           if (jobSettled) return
           jobSettled = true
+          trace('settle', { s: this.opts.id, commandId, exit: r.exit, timedOut: r.timedOut, cwd: r.cwd, outLen: r.output.length, tail: traceRepr(r.output, 260) })
+          void traceFlush()
           cleanup()
           this.inFlight--
           this.idleSince = Date.now()
@@ -245,6 +254,7 @@ export class PtySession {
         const parser = createNonceFrameParser(nonce, {
           onOutput: (t) => {
             ring.push(t)
+            if (traceChunkSeq < 60) trace('out', { s: this.opts.id, commandId, n: traceChunkSeq++, len: t.length, text: traceRepr(t, 180) })
           },
           onEnv: (b64) => { const m = decodeEnvSnapshot(b64); if (m !== undefined) envNext = m },
           onFrame: ({ exit, cwd }) => settle({ output: ring.text, exit, cwd, timedOut: interrupted }),
@@ -272,7 +282,23 @@ export class PtySession {
         // stream write——两次独立 write 会让字节分两批到达远端 tty，中间窗口偶发丢失后段
         //（rig 实测：framed 到达、随行 stdin 字节消失且不可恢复；合并后同批原子入队，窗口消除）。
         const startup = dOpts.stdin === undefined ? wrapPtyCommand(cmd, nonce) : wrapPtyCommand(cmd, nonce) + dOpts.stdin
-        this.write(startup)
+        // R1 插桩：startup 写入直接仪器化（ret/writableLength/drain），语义与 write() 等价
+        const wStdin = this.proc?.stdin
+        if (wStdin?.writable === true) {
+          const wl0 = wStdin.writableLength
+          let wret: boolean | undefined
+          try {
+            wret = wStdin.write(startup)
+          } catch (error) {
+            trace('werr', { s: this.opts.id, commandId, msg: error instanceof Error ? error.message : String(error) })
+          }
+          if (wret !== undefined) {
+            trace('w1', { s: this.opts.id, commandId, bytes: Buffer.byteLength(startup), ret: wret, wl0, wl1: wStdin.writableLength, payloadTail: traceRepr(startup.slice(-90), 120) })
+            if (wret === false) wStdin.once('drain', () => { trace('drain', { s: this.opts.id, commandId }) })
+          }
+        } else {
+          trace('wskip', { s: this.opts.id, commandId })
+        }
         this.deathWaiters.push(deathWaiter)
         if (dOpts.background === true) { detach(); return }
         // P4：同步等待到期 = handoff（不再自动 ^C）；命令由 job 通道继续（job_output 增量 / job_kill 显式中断）。
@@ -305,6 +331,7 @@ export class PtySession {
       return fail('[E_SESSION_WRITE_FAILED]', `pty session '${displayKey(this.opts.key)}' has no writable stdin channel (state ${this.state}) — follow the running command via job_output for its settled result`)
     try {
       stdin.write(options.stdin)
+      trace('in', { s: this.opts.id, commandId: active.commandId, bytes: Buffer.byteLength(options.stdin, 'utf8'), repr: traceRepr(options.stdin, 60) })
     } catch (error) {
       return fail('[E_SESSION_WRITE_FAILED]', `writing stdin to pty session '${displayKey(this.opts.key)}' failed: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -322,6 +349,7 @@ export class PtySession {
     this.clearIdleTimer()
     this.clearDeathTimer()
     this.state = 'disposed'
+    trace('dispose', { s: this.opts.id, key: this.opts.key }); void traceFlush()
     this.startPromise = null
     // CF（0.3.2-d）：force-close / 行回收若有 detached job 在跑，先走两段 interrupt 让它
     // 诚实结算（marker 帧先于 1s TERM 到达 → killed · interrupted: exit 130；帧不可达则
@@ -372,6 +400,7 @@ export class PtySession {
       detached: true, // Ruling 9: 进程组杀法
     })
     this.proc = proc
+    trace('start', { s: this.opts.id, key: this.opts.key, argv: this.opts.argv, pid: proc.pid })
     proc.stdout.setEncoding('utf8')
     proc.stdout.on('data', (d: string) => { this.onChunk?.(d) })
     proc.stderr.setEncoding('utf8').on('data', (d: string) => { this.diag = (this.diag + d).slice(-2_000) })
@@ -432,6 +461,7 @@ export class PtySession {
       return
     }
     this.state = 'dead'
+    trace('dead', { s: this.opts.id, diagTail: this.diag.slice(-500) }); void traceFlush()
     this.startPromise = null
     this.clearIdleTimer()
     this.armDeathReaper()
