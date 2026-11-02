@@ -1,6 +1,8 @@
 # Hermes auto-attach（G5 边界收口）— 0.3.4-c 验收报告
 
-**日期**：2026-11-02 23:0x–23:2x HKT · **版本**：super-dsh 0.3.4-c（tarball，未 publish）· **执行**：pc-deepseek-default
+**日期**：2026-11-02 23:0x–23:2x HKT · **版本**：super-dsh 0.3.4-c · **执行**：pc-deepseek-default
+
+> **Publish（user 放行后执行）**：`better-dsh@0.3.4-c` + `super-dsh@0.3.4-c` 已发 npm registry `--tag latest`（2026-11-03 00:04 / 00:20 HKT 落库，npm 服务端 staging 处理各延迟 ~11/~27 分钟，期间重发探测得 E409 "previously staged version" 证实受理无丢失）；GitHub master = `4a40e1d` 已推。临时 npmrc 用后即删。
 
 ## 1. 背景与裁决
 
