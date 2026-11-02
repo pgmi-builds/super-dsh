@@ -1056,18 +1056,18 @@ test('Hub preparation supplies only session binding additions to the real child 
  assert.equal(disposed,1)
 })
 
-test("transport selection: process env wins, native .env next, unknown/garbage falls back to stdio", async () => {
-  const { resolveHermesTransport } = await import("../dist/hermes-client.js");
+test("transport selection: process env wins, native .env next, unknown/garbage falls back to auto", async () => {
+  const { resolveHermesTransportMode } = await import("../dist/hermes-client.js");
   const prev = process.env.SUPERD_HERMES_TRANSPORT;
   delete process.env.SUPERD_HERMES_TRANSPORT;
   try {
-    assert.equal(resolveHermesTransport({}), "stdio");
-    assert.equal(resolveHermesTransport({ SUPERD_HERMES_TRANSPORT: "attach" }), "attach");
-    assert.equal(resolveHermesTransport({ SUPERD_HERMES_TRANSPORT: "nonsense" }), "stdio");
+    assert.equal(resolveHermesTransportMode({}), "auto");
+    assert.equal(resolveHermesTransportMode({ SUPERD_HERMES_TRANSPORT: "attach" }), "attach");
+    assert.equal(resolveHermesTransportMode({ SUPERD_HERMES_TRANSPORT: "nonsense" }), "auto");
     process.env.SUPERD_HERMES_TRANSPORT = "stdio";
-    assert.equal(resolveHermesTransport({ SUPERD_HERMES_TRANSPORT: "attach" }), "stdio", "process env wins over native .env");
+    assert.equal(resolveHermesTransportMode({ SUPERD_HERMES_TRANSPORT: "attach" }), "stdio", "process env wins over native .env");
     process.env.SUPERD_HERMES_TRANSPORT = "attach";
-    assert.equal(resolveHermesTransport({}), "attach");
+    assert.equal(resolveHermesTransportMode({}), "attach");
   } finally {
     if (prev === undefined) delete process.env.SUPERD_HERMES_TRANSPORT;
     else process.env.SUPERD_HERMES_TRANSPORT = prev;
@@ -1093,11 +1093,11 @@ test("attach transport spawns the shipped ws-bridge; stdio keeps tui_gateway.ent
     await pending;
     client.close();
 
-    delete process.env.SUPERD_HERMES_TRANSPORT;
+    process.env.SUPERD_HERMES_TRANSPORT = "stdio";
     const client2 = HermesGatewayClient.spawn({ lazy: true });
     const pending2 = client2.ensureStarted();
     await delay(5);
-    assert.deepEqual(factoryCalls.at(-1).args, ["-m", "tui_gateway.entry"], "stdio default unchanged");
+    assert.deepEqual(factoryCalls.at(-1).args, ["-m", "tui_gateway.entry"], "explicit stdio spawns the in-child gateway entry (default/auto covered in auto-attach.test.mjs)");
     lastChild.emitEvent("gateway.ready", undefined, {});
     await pending2;
     client2.close();

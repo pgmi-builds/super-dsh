@@ -2,10 +2,11 @@
  * HermesGatewayClient — the reusable TUI-gateway client seam (AW-H Task 3).
  *
  * One client = one gateway child bound to one gateway session. Transports:
- * `stdio` (legacy default) spawns `python -m tui_gateway.entry` (owns the
- * Hermes home); `attach` (SUPERD_HERMES_TRANSPORT=attach) spawns the
+ * `stdio` spawns `python -m tui_gateway.entry` (owns the Hermes home
+ * exclusively); `attach` (SUPERD_HERMES_TRANSPORT=attach) spawns the
  * WS-attach bridge — same stdio ndjson JSON-RPC contract, frames relayed to
- * the profile's canonical gateway WebSocket. Spawn/env/ready patterns
+ * the profile's canonical gateway WebSocket; `auto` (default) = stdio first,
+ * flips to attach on the gateway ownership refusal (resolveHermesTransportMode).
  * follow the upstream reference client `ui-tui/src/gatewayClient.ts` and the
  * Task 1 spike (`src/spike.ts`, live-pinned protocol facts):
  *
@@ -268,11 +269,32 @@ export function loadHermesDotEnv(): Record<string, string> {
  *  stdio spawn died with `[gateway-exit] refused: ... owned by a running
  *  gateway`, and the reserved-turn failure window corrupted session logs).
  *  Selection: `SUPERD_HERMES_TRANSPORT` process env wins, then the native
- *  `~/.hermes/.env` key (hot-editable without touching the host process),
- *  else `stdio`. Unknown values fall back to `stdio`. */
-export function resolveHermesTransport(dotEnv: Record<string, string> = {}): "stdio" | "attach" {
-  const raw = process.env.SUPERD_HERMES_TRANSPORT?.trim() || dotEnv.SUPERD_HERMES_TRANSPORT?.trim() || "stdio";
-  return raw === "attach" ? "attach" : "stdio";
+ *  `~/.hermes/.env` key (hot-editable without touching the host process).
+ *  Values: `stdio` / `attach` LOCK the transport; `auto` — the DEFAULT since
+ *  0.3.4-c — starts on stdio and flips to attach (process-wide, sticky) the
+ *  moment a spawn fails with the gateway ownership refusal. Zero manual
+ *  levers: install-and-works on machines with a resident gateway (G5,
+ *  agent-adapter-rules/10-dsh-checkpoints.md). Unknown values fall back to
+ *  `auto`. */
+export type HermesTransportMode = "stdio" | "attach" | "auto";
+
+export function resolveHermesTransportMode(dotEnv: Record<string, string> = {}): HermesTransportMode {
+  const raw = (process.env.SUPERD_HERMES_TRANSPORT?.trim() || dotEnv.SUPERD_HERMES_TRANSPORT?.trim() || "auto").toLowerCase();
+  return raw === "stdio" || raw === "attach" ? raw : "auto";
+}
+
+/** The hermes-side refusal that makes stdio impossible while a resident
+ *  gateway holds the home: `... is owned by a running gateway; attach to it
+ *  instead` (hermes' own exit text, observed 2026-11-02 on PC + dev3). */
+const GATEWAY_OWNERSHIP_REFUSAL = /owned by a running gateway/i;
+
+/** Process-wide sticky: a resident gateway owns `~/.hermes`; every future
+ *  spawn in this process (any client) skips the doomed stdio attempt. */
+let gatewayOwnershipDetected = false;
+
+/** Test-only: clear the sticky auto-attach flip between tests. */
+export function resetHermesAutoAttachForTests(): void {
+  gatewayOwnershipDetected = false;
 }
 
 /** The WS-attach bridge script, shipped at the package root (`bridge/`). */
@@ -321,6 +343,8 @@ export class HermesGatewayClient {
   #readySettled = false;
   /** Pre-ready respawn attempts (full-lazy ruling: bounded at SPAWN_ATTEMPTS). */
   #spawnAttempts = 0;
+  /** Transport used by the CURRENT child attempt (drives the auto-attach flip). */
+  #transport: "stdio" | "attach" = "stdio";
   #readyTimer: ReturnType<typeof setTimeout> | null = null;
   #killTimer: ReturnType<typeof setTimeout> | null = null;
   #failure: Error | null = null;
@@ -371,7 +395,12 @@ export class HermesGatewayClient {
     const root = resolveHermesRoot();
     const python = resolveHermesPython(root);
     const dotEnv = loadHermesDotEnv();
-    const transport = resolveHermesTransport(dotEnv);
+    const mode = resolveHermesTransportMode(dotEnv);
+    // auto: stdio first; once a resident gateway's ownership refusal is seen,
+    // the whole process flips to attach (sticky — later clients skip the
+    // doomed stdio attempt entirely). Explicit stdio/attach never flip.
+    const transport = mode === "attach" || (mode === "auto" && gatewayOwnershipDetected) ? "attach" : "stdio";
+    this.#transport = transport;
     const env: Record<string, string> = { ...(opts.env ?? process.env) } as Record<string, string>;
     if (this.#hubSession !== undefined) env.SUPERD_HUB_SESSION = this.#hubSession;
     else delete env.SUPERD_HUB_SESSION;
@@ -1070,6 +1099,10 @@ export class HermesGatewayClient {
       this.#fail(error);
       return;
     }
+    if (!gatewayOwnershipDetected && this.#transport === "stdio" && GATEWAY_OWNERSHIP_REFUSAL.test(error.message)) {
+      gatewayOwnershipDetected = true;
+      this.#trace("gateway ownership refusal in spawn failure — auto-attach engaged for future spawns");
+    }
     if (this.#spawnAttempts < HERMES_SPAWN_ATTEMPTS) {
       this.#trace(`pre-ready failure on spawn attempt ${this.#spawnAttempts}/${HERMES_SPAWN_ATTEMPTS} — respawning: ${error.message.slice(0, 200)}`);
       this.#discardChildQuietly();
@@ -1158,6 +1191,10 @@ export class HermesGatewayClient {
     this.#stderrLines.push(trimmed.length > 4096 ? `${trimmed.slice(0, 4096)}… [truncated]` : trimmed);
     if (this.#stderrLines.length > STDERR_RING) this.#stderrLines.shift();
     this.#trace(`stderr: ${trimmed.slice(0, 240)}`);
+    if (!gatewayOwnershipDetected && this.#transport === "stdio" && GATEWAY_OWNERSHIP_REFUSAL.test(trimmed)) {
+      gatewayOwnershipDetected = true;
+      this.#trace("gateway ownership refusal on stderr — auto-attach engaged for future spawns");
+    }
   }
 
   #stderrTail(): string {
