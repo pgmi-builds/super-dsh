@@ -155,6 +155,10 @@ npm 可能在返回成功后提示 `Your package is being processed`，此时公
 - **安装失败会回滚** `package.json` + `pnpm-lock.yaml` 并打印 `dsh: installation rejected` ⇒ 「试装」安全。
 - ⚠ **热生效有时延**：`add` / `remove` 后的刷新链（chokidar 写入稳定 → `loadProfileDirectory` 全量重载 → `reconcileProfilePatches` 异步 import/dispose）实测 **≈5–15s**——窗口期内 graph「还在/已不在」都是假象，勿据此下结论（测量纪律见 §5.2.6）。
 
+### 4.2 UI 验收走真实浏览器交互工具（2026-11-02 user 裁决）
+
+**行为验收优先用真实 UI 交互式浏览器工具，不用 API/脚本替身。** 现行工具 = browser bridge（受管 CDP Chromium + MV3 扩展，`bridge_input` DOM 交互 / `dom_snapshot` 读取 / `bridge_shot` 截图）；后续若有本地同功能工具照此优先。理由：agent adapter 普遍「能 spawn、能 API 通，最后一公里卡在 UI」——API/curl 通过证明不了交付面，只有像 human user 一样过 Web UI 才测得到真实故障（2026-11-02 hermes ws-attach 验收实证）。纪律：解锁走页面口令（默认 `admin`，先 grep 源码，不询问、不注 cookie），业务步骤全部页面点击/输入/读取，报告留截图与步骤表。
+
 ---
 
 ## 5. 热插拔规范（Comply or Explain）
