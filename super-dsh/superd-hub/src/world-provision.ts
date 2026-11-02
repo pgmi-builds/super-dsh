@@ -112,6 +112,33 @@ export interface ProvisionWorldOptions {
   worldHome: string
   /** Profile directory name under `<worldHome>/profiles`. Default `'web'`. */
   profileName?: string
+  /** Host surface (the caller's ctx0 context) — carries `profileContext` for CTX0 mirrors. */
+  host?: { get(name: string): unknown }
+}
+/**
+ * Copy the CTX0 profile patch's `ui-settings-general` row (id..next-row) verbatim
+ * into a world's patch template. Best-effort: no CTX0 facts or no row → no lines.
+ */
+function mirrorCtx0SettingsGeneralRow(host?: { get(name: string): unknown }): string[] {
+  try {
+    const launcher = host?.get('profileContext') as { home?: unknown; name?: unknown } | undefined
+    if (launcher === undefined || typeof launcher.home !== 'string' || typeof launcher.name !== 'string') return []
+    const patch = readFileSync(join(launcher.home, 'profiles', launcher.name, 'cordis.patch.yml'), 'utf8')
+    const lines = patch.split('\n')
+    const start = lines.findIndex((line) => line.trim() === '- id: ui-settings-general')
+    if (start < 0) return []
+    let end = start + 1
+    while (end < lines.length && !lines[end].startsWith('- id:')) end++
+    while (end > start && lines[end - 1].trim() === '') end--
+    return [
+      '# Mirror of the CTX0 profile patch (ui-settings-general): worlds project the',
+      '# same settings namespace values — the welcome-notice ack rides this row.',
+      ...lines.slice(start, end),
+      '',
+    ]
+  } catch {
+    return [] // best-effort mirror: the notice degrades to today's behavior
+  }
 }
 
 /**
@@ -191,6 +218,13 @@ function provisionWorldProfileUnchecked(opts: ProvisionWorldOptions): boolean {
       '  disabled: true',
       '- id: client-hmr',
       '  disabled: true',
+      // Native settings namespaces project their values from the composition
+      // row, not a mutable store: without this mirror every world reads
+      // `ui-settings-general` as UNACKNOWLEDGED and the native Preview Notice
+      // mounts (its Continue cannot save — the read-back projects the same
+      // composition). Mirror the CTX0 row verbatim so worlds see what ctx0
+      // sees; upstream version bumps flow through automatically.
+      ...mirrorCtx0SettingsGeneralRow(opts.host),
       '',
     ].join('\n'),
   )

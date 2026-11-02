@@ -79,6 +79,7 @@ export function apply(ctx: HostContext, config?: Partial<Config>): void {
     key,
     adapterPkg: '@pgmi-builds/agent-claude',
     worldHome,
+    host: ctx,
   })
   const world = ownWorld(ctx, { key, label }, (ownerId) => spawnWorld({
     appName: `superd-${key}`,

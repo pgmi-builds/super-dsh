@@ -63,6 +63,7 @@ export function apply(ctx: HostContext): void {
     key: KEY,
     adapterPkg: '@pgmi-builds/agent-agy-sdk',
     worldHome,
+    host: ctx,
   })
   const world = ownWorld(ctx, { key: KEY, label: 'Antigravity (SDK)' }, (ownerId) => spawnWorld({
     appName: `superd-${KEY}`,

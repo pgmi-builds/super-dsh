@@ -57,6 +57,7 @@ export function apply(ctx: HostContext): void {
     key: KEY,
     adapterPkg: '@pgmi-builds/agent-codex',
     worldHome,
+    host: ctx,
   })
   const world = ownWorld(ctx, { key: KEY, label: 'Codex' }, (ownerId) => spawnWorld({
     appName: `superd-${KEY}`,
