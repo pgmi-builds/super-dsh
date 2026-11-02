@@ -153,9 +153,10 @@ describe('createRemoteTool', () => {
     expect(v.text).toBe('roster-text')
     expect(seen[0]?.sessionKey).toBe('agent-1')
   })
-  it('the description is the user-pinned 0.3.3-b surface (2026-11-02): exact header, actions, semantics, and the R1 corrigendum (no Known-defect text)', () => {
+  it('the description is the user-pinned 0.3.4-d surface (2026-11-03): exact header, actions, semantics; doubled Examples: heading preserved byte-exact from the native surface', () => {
     const description = createRemoteTool(fakeDriver()).description
-    expect(description).toContain('Remote shell (SSH, Docker, Incus, Hub): 1 default interactive PTY per machine (retains cwd/env).')
+    expect(description).toContain('Remote shell (SSH, Docker, Incus, Hub): Default PTY, stateful one-shot, persistent cwd/env, interactive stdin, managed bounded terminal output, exact exit/cwd/env-delta receipts, both stdout/stderr in output.')
+    expect(description).toContain('Examples:\nExamples:') // 0.3.4-d：原生 surface 自带重复 Examples: 标题行，按 exact-content 裁决原样保留
     expect(description).toContain('`mode:\"oneshot\"` = isolated, stateless.')
     expect(description).toContain('PTY `stdin` alone = raw write into running command (optional `commandId` guard).')
     expect(description).toContain('`run_in_background:true` = async job, returns handle instantly, PTY handed off automatically.')
@@ -171,9 +172,13 @@ describe('createRemoteTool', () => {
     expect(description).not.toContain(':pty\"') // the creation suffix is gone from the surface (session ids like pty:pty-irsq are fine)
     expect(description).not.toContain(':pty:')
   })
-  it('examples stay format-true to the code: compact JSON calls, all five actions exercised, transfer tool separated', () => {
+  it('examples stay format-true to the code (0.3.4-d surface): PTY receipts shown inline, all five actions exercised, transfer tool separated', () => {
     const description = createRemoteTool(fakeDriver()).description
-    expect(description).toContain('remote {\"action\":\"exec\",\"target\":\"ssh:dev4\",\"cmd\":\"cd /srv/app && pwd\"}')
+    expect(description).toContain('remote {"action":"exec","target":"ssh:dev4","cmd":"cd /srv/app && export STAGE=dev && pwd"}')
+    expect(description).toContain('[pty:pty-irsq · conn ssh:dev4 · cmd remote-a1 · cwd /srv/app · env +STAGE · idle-left ~15m · exit 0 · 0.1s]')
+    expect(description).toContain('remote {"action":"exec","target":"ssh:dev4","cmd":"printf \'stage=%s\\\\n\' \\"$STAGE\\"; printf \'bad config\\\\n\' >&2; exit 23"}')
+    expect(description).toContain('[pty:pty-irsq · conn ssh:dev4 · cmd remote-a2 · cwd /srv/app · idle-left ~15m · exit 23 · 0.1s]')
+    expect(description).toContain('# Use oneshot only when isolation is intentional.')
     expect(description).toContain('remote {\"action\":\"exec\",\"target\":\"ssh:dev4\",\"cmd\":\"make test\",\"run_in_background\":true}')
     expect(description).toContain('remote {\"action\":\"handoff\",\"target\":\"ssh:dev4\"}')
     expect(description).toContain('remote {\"action\":\"exec\",\"target\":\"pty:pty-irsq\",\"stdin\":\"yes\\n\",\"commandId\":\"remote-47676dff2c6443e8\"}')

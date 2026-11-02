@@ -58,7 +58,7 @@ const NO_SESSION_KEY = 'remote:no-session'
  * interact-able stdin / managed output / persistent env——回执形状与 oneshot 相同、只增状态，
  * 运行中的命令可分步观察后再补输（input 动作）；多步与交互任务默认进 PTY。
  */
-const REMOTE_TOOL_DESCRIPTION = `Remote shell (SSH, Docker, Incus, Hub): 1 default interactive PTY per machine (retains cwd/env). \`mode:"oneshot"\` = isolated, stateless.
+const REMOTE_TOOL_DESCRIPTION = `Remote shell (SSH, Docker, Incus, Hub): Default PTY, stateful one-shot, persistent cwd/env, interactive stdin, managed bounded terminal output, exact exit/cwd/env-delta receipts, both stdout/stderr in output. \`mode:"oneshot"\` = isolated, stateless.
 
 Actions:
 - exec {target, cmd? | scriptPath?, stdin?, mode?:"pty"|"oneshot"="pty", timeout?, run_in_background?:boolean, commandId?:string}: run command / script / raw stdin write. Machine target = default PTY. PTY \`stdin\` alone = raw write into running command (optional \`commandId\` guard). \`run_in_background:true\` = async job, returns handle instantly, PTY handed off automatically.
@@ -75,11 +75,26 @@ Targets & Semantics:
 - Stdin: oneshot = \`fd0 → pipe\`; PTY = \`fd0 → pty slave\`, line disciplines. Literal bytes (\`\\n\`, \`\\u0003\` = Ctrl-C, \`\\u0004\` = Ctrl-D). Retention: 4M chars/stream (Hub oneshot 4MiB).
 
 Examples:
-remote {"action":"exec","target":"ssh:dev4","cmd":"cd /srv/app && pwd"}
+Examples:
+
+# Repeated exploratory work: PTY.
+remote {"action":"exec","target":"ssh:dev4","cmd":"cd /srv/app && export STAGE=dev && pwd"}
+/srv/app
+[pty:pty-irsq · conn ssh:dev4 · cmd remote-a1 · cwd /srv/app · env +STAGE · idle-left ~15m · exit 0 · 0.1s]
+
+# cwd/env survive; PTY presents stdout and stderr together, followed by the exact exit receipt.
+remote {"action":"exec","target":"ssh:dev4","cmd":"printf 'stage=%s\\\\n' \\"$STAGE\\"; printf 'bad config\\\\n' >&2; exit 23"}
+stage=dev
+bad config
+[pty:pty-irsq · conn ssh:dev4 · cmd remote-a2 · cwd /srv/app · idle-left ~15m · exit 23 · 0.1s]
+
 remote {"action":"exec","target":"ssh:dev4","cmd":"make test","run_in_background":true}
 remote {"action":"handoff","target":"ssh:dev4"}
 remote {"action":"exec","target":"pty:pty-irsq","stdin":"yes\\n","commandId":"remote-47676dff2c6443e8"}
+
+# Use oneshot only when isolation is intentional.
 remote {"action":"exec","target":"ssh:dev4","mode":"oneshot","cmd":"uname -a"}
+
 remote {"action":"add","spawn":"ssh -t pc ssh -t dev4","target":"pty:dev4via"}
 remote {"action":"exec","target":"pty:dev4via","cmd":"hostname"}
 remote {"action":"add","ssh":{"host":"10.0.0.8","user":"u1","port":22,"key":"~/.ssh/id_key4"},"target":"ssh:lab"}
