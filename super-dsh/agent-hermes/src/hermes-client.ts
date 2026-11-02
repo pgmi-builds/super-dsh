@@ -1,8 +1,11 @@
 /**
  * HermesGatewayClient — the reusable TUI-gateway client seam (AW-H Task 3).
  *
- * One client = one spawned gateway child (`python -m tui_gateway.entry`,
- * stdio ndjson JSON-RPC) = one bound gateway session. Spawn/env/ready patterns
+ * One client = one gateway child bound to one gateway session. Transports:
+ * `stdio` (legacy default) spawns `python -m tui_gateway.entry` (owns the
+ * Hermes home); `attach` (SUPERD_HERMES_TRANSPORT=attach) spawns the
+ * WS-attach bridge — same stdio ndjson JSON-RPC contract, frames relayed to
+ * the profile's canonical gateway WebSocket. Spawn/env/ready patterns
  * follow the upstream reference client `ui-tui/src/gatewayClient.ts` and the
  * Task 1 spike (`src/spike.ts`, live-pinned protocol facts):
  *
@@ -64,6 +67,7 @@ import { spawn, execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ForeignHubBinding } from "@pgmi-builds/superd-hub/foreign-hub";
 import { prepareHermesNativePlugin } from "@pgmi-builds/superd-hub/foreign-native";
@@ -255,6 +259,29 @@ export function loadHermesDotEnv(): Record<string, string> {
   }
 }
 
+/** Gateway child transport. `stdio` = the legacy in-child `tui_gateway.entry`
+ *  server (owns the Hermes home exclusively). `attach` = the WS-attach bridge
+ *  (`bridge/hermes-ws-bridge.py`): frames ride the profile's canonical gateway
+ *  WebSocket via `hermes_cli.gateway_client.connect_gateway`, which attaches
+ *  to the running owner or starts an idle-exit one — REQUIRED whenever the
+ *  user's native Hermes gateway already owns `~/.hermes` (2026-11-02: every
+ *  stdio spawn died with `[gateway-exit] refused: ... owned by a running
+ *  gateway`, and the reserved-turn failure window corrupted session logs).
+ *  Selection: `SUPERD_HERMES_TRANSPORT` process env wins, then the native
+ *  `~/.hermes/.env` key (hot-editable without touching the host process),
+ *  else `stdio`. Unknown values fall back to `stdio`. */
+export function resolveHermesTransport(dotEnv: Record<string, string> = {}): "stdio" | "attach" {
+  const raw = process.env.SUPERD_HERMES_TRANSPORT?.trim() || dotEnv.SUPERD_HERMES_TRANSPORT?.trim() || "stdio";
+  return raw === "attach" ? "attach" : "stdio";
+}
+
+/** The WS-attach bridge script, shipped at the package root (`bridge/`). */
+export function hermesBridgeScriptPath(): string {
+  const path = fileURLToPath(new URL("../bridge/hermes-ws-bridge.py", import.meta.url));
+  if (!existsSync(path)) throw new Error(`hermes ws-attach bridge missing: ${path}`);
+  return path;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -343,6 +370,8 @@ export class HermesGatewayClient {
     const attempt = this.#spawnAttempts;
     const root = resolveHermesRoot();
     const python = resolveHermesPython(root);
+    const dotEnv = loadHermesDotEnv();
+    const transport = resolveHermesTransport(dotEnv);
     const env: Record<string, string> = { ...(opts.env ?? process.env) } as Record<string, string>;
     if (this.#hubSession !== undefined) env.SUPERD_HUB_SESSION = this.#hubSession;
     else delete env.SUPERD_HUB_SESSION;
@@ -350,7 +379,7 @@ export class HermesGatewayClient {
     // pi runtimes load their own native `.env`; the hermes gateway child does
     // not, and the harness env carries no provider keys — without this fill
     // every provider request dies as quota/auth regardless of model.
-    for (const [dotKey, dotValue] of Object.entries(loadHermesDotEnv())) {
+    for (const [dotKey, dotValue] of Object.entries(dotEnv)) {
       if (env[dotKey] === undefined || env[dotKey] === "") env[dotKey] = dotValue;
     }
     const prevPath = env.PYTHONPATH?.trim();
@@ -363,12 +392,11 @@ export class HermesGatewayClient {
     delete env.HERMES_TUI_GATEWAY_URL;
     delete env.HERMES_TUI_SIDECAR_URL;
 
-    this.#child = gatewayFactory({
-      command: python,
-      args: ["-m", "tui_gateway.entry"],
-      cwd: opts.cwd ?? root,
-      env,
-    });
+    const childSpec = transport === "attach"
+      ? { command: python, args: [hermesBridgeScriptPath()], cwd: opts.cwd ?? root, env }
+      : { command: python, args: ["-m", "tui_gateway.entry"], cwd: opts.cwd ?? root, env };
+    this.#trace(`spawn transport=${transport} cmd=${childSpec.command} args=${JSON.stringify(childSpec.args)}`);
+    this.#child = gatewayFactory(childSpec);
 
     // The ready gate is created ONCE and survives every pre-ready respawn —
     // replacing it would orphan callers awaiting the earlier object.
@@ -381,7 +409,9 @@ export class HermesGatewayClient {
       // surface an unhandledRejection when this gate rejects (timeout/close).
       this.#readyPromise.catch(() => { });
     }
-    const readyTimeoutMs = opts.readyTimeoutMs ?? READY_TIMEOUT_MS;
+    // attach: gateway discovery (5s) or an idle-exit daemon start (ensure
+    // timeout 30s) can exceed the stdio boot budget before gateway.ready.
+    const readyTimeoutMs = opts.readyTimeoutMs ?? (transport === "attach" ? 45_000 : READY_TIMEOUT_MS);
     this.#readyTimer = setTimeout(() => {
       this.#preReadyFailure(new Error(
         `timed out waiting for gateway.ready after ${readyTimeoutMs}ms (spawn attempt ${attempt}/${HERMES_SPAWN_ATTEMPTS}); stderr tail:\n${this.#stderrTail()}`,

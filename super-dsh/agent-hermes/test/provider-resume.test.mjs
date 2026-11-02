@@ -39,7 +39,7 @@ test("resume fails closed when the DSH session id has no recorded Hermes gateway
   );
 });
 
-test("resume fails closed when the record has no durable gateway session id (predates durable-id capture)", async () => {
+test("resume fails closed when the record has no durable gateway session id and no assistant output (cold-start failure)", async () => {
   const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
   upsertSession(home, "session-blank", { gatewaySessionId: null, gatewayStoredSessionId: null, cwd: home, createdAt: Date.now(), preset: null });
   const ctx = providerContext(home, {persistence:false});
@@ -47,6 +47,18 @@ test("resume fails closed when the record has no durable gateway session id (pre
   const provider = new HermesProvider(ctx);
   await assert.rejects(
     () => provider.resume(ctx, { resumeSessionId: "session-blank" }),
+    /no durable gateway session id is recorded \(the Hermes gateway failed before this session was created/,
+  );
+});
+
+test("resume fails closed when a pre-capture record has completed turns (assistant output present)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "superd-hermes-provider-"));
+  upsertSession(home, "session-old", { gatewaySessionId: null, gatewayStoredSessionId: null, cwd: home, createdAt: Date.now(), preset: null });
+  const ctx = providerContext(home, {persistence:false});
+  ctx.provide("sessionPersistence", { open: async () => ({ read: async () => ({events:[{type:"user/message",data:{}},{type:"assistant/message",data:{}}]}), close: async()=>{} }) });
+  const provider = new HermesProvider(ctx);
+  await assert.rejects(
+    () => provider.resume(ctx, { resumeSessionId: "session-old" }),
     /no durable gateway session id is recorded \(this record predates durable-id capture/,
   );
 });

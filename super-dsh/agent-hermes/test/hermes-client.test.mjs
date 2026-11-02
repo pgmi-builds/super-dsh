@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   HermesGatewayClient,
   setGatewayFactory,
@@ -1055,3 +1055,54 @@ test('Hub preparation supplies only session binding additions to the real child 
  client.close()
  assert.equal(disposed,1)
 })
+
+test("transport selection: process env wins, native .env next, unknown/garbage falls back to stdio", async () => {
+  const { resolveHermesTransport } = await import("../dist/hermes-client.js");
+  const prev = process.env.SUPERD_HERMES_TRANSPORT;
+  delete process.env.SUPERD_HERMES_TRANSPORT;
+  try {
+    assert.equal(resolveHermesTransport({}), "stdio");
+    assert.equal(resolveHermesTransport({ SUPERD_HERMES_TRANSPORT: "attach" }), "attach");
+    assert.equal(resolveHermesTransport({ SUPERD_HERMES_TRANSPORT: "nonsense" }), "stdio");
+    process.env.SUPERD_HERMES_TRANSPORT = "stdio";
+    assert.equal(resolveHermesTransport({ SUPERD_HERMES_TRANSPORT: "attach" }), "stdio", "process env wins over native .env");
+    process.env.SUPERD_HERMES_TRANSPORT = "attach";
+    assert.equal(resolveHermesTransport({}), "attach");
+  } finally {
+    if (prev === undefined) delete process.env.SUPERD_HERMES_TRANSPORT;
+    else process.env.SUPERD_HERMES_TRANSPORT = prev;
+  }
+});
+
+test("attach transport spawns the shipped ws-bridge; stdio keeps tui_gateway.entry", async () => {
+  const { hermesBridgeScriptPath } = await import("../dist/hermes-client.js");
+  const bridgePath = hermesBridgeScriptPath();
+  assert.ok(bridgePath.endsWith(join("bridge", "hermes-ws-bridge.py")), "bridge ships at package root");
+  assert.ok(existsSync(bridgePath), "bridge file exists in dist layout");
+
+  const prev = process.env.SUPERD_HERMES_TRANSPORT;
+  process.env.SUPERD_HERMES_TRANSPORT = "attach";
+  installFake();
+  try {
+    const client = HermesGatewayClient.spawn({ lazy: true });
+    const pending = client.ensureStarted();
+    await delay(5);
+    assert.equal(factoryCalls.at(-1).args.length, 1);
+    assert.equal(factoryCalls.at(-1).args[0], bridgePath, "attach spawns the bridge script");
+    lastChild.emitEvent("gateway.ready", undefined, {});
+    await pending;
+    client.close();
+
+    delete process.env.SUPERD_HERMES_TRANSPORT;
+    const client2 = HermesGatewayClient.spawn({ lazy: true });
+    const pending2 = client2.ensureStarted();
+    await delay(5);
+    assert.deepEqual(factoryCalls.at(-1).args, ["-m", "tui_gateway.entry"], "stdio default unchanged");
+    lastChild.emitEvent("gateway.ready", undefined, {});
+    await pending2;
+    client2.close();
+  } finally {
+    if (prev === undefined) delete process.env.SUPERD_HERMES_TRANSPORT;
+    else process.env.SUPERD_HERMES_TRANSPORT = prev;
+  }
+});

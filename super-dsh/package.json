@@ -1,6 +1,6 @@
 {
   "name": "super-dsh",
-  "version": "0.3.3-c",
+  "version": "0.3.4-a",
   "description": "Super D for the DeepSeek Harness (DSH) — one dsh plugin that mounts the superd hub (runtime selector, roster, per-runtime agents) and joins local foreign-agent runtimes (OMP, Codex, Claude, Pi, Hermes, Antigravity) into the DSH Web UI. Each runtime keeps its native home and session store; the hub only bridges.",
   "type": "module",
   "license": "MIT",
@@ -61,6 +61,7 @@
     "agent-hermes/dist",
     "agent-hermes/package.json",
     "agent-hermes/cordis.patch.yml",
+    "agent-hermes/bridge",
     "agent-agy/dist",
     "agent-agy/package.json",
     "agent-agy/cordis.patch.yml",

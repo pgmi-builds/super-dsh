@@ -405,6 +405,10 @@ export class HermesAgent implements Agent {
   #step = 0;
   #lastTurn = 0;
   #turnOpen = false;
+  /** True once the reserved turn's `turn/start` (+ user/message) actually committed to the log. */
+  #turnStarted = false;
+  /** The reserved turn's prompt, held until its opening pair commits (or the turn unwinds). */
+  #reservedMessage: UserMessage | undefined = undefined;
   #cancelCause: AgentCancelCause | null = null;
   /** Terminal model failure of the open turn (`message_end` stopReason "error"); consumed by `agent_end`. */
   #pendingFailure: { message: string; code: string } | null = null;
@@ -624,7 +628,9 @@ export class HermesAgent implements Agent {
     // Reserve the turn synchronously: busy-flag semantics stay identical to the
     // eager line, but NOTHING is appended yet — the log stays empty until the
     // gateway session exists, so a failed cold start leaves no orphan turn.
-    this.#reserveTurn();
+    // The message rides the reservation so a failure that closes the turn
+    // inside the reserved window can still commit the opening pair.
+    this.#reserveTurn(message);
     clearTimeout(this.#idleExitTimer);
     this.#idleExitTimer = undefined;
     this.#beginActivity();
@@ -647,8 +653,8 @@ export class HermesAgent implements Agent {
       const failure = classifyTurnError(error, this.#failureContext());
       trace(`#startTurn cold start failed [${failure.code}]: ${failure.message}`);
       if (this.#turnOpen) {
-        this.session.append("turn/start", { turn: this.#dashTurn });
-        this.session.append("user/message", message, { surfaceOp: "append" });
+        // #closeTurn commits the opening pair (turn/start + user/message) when
+        // the turn never got past its reservation — the single append path.
         this.#closeTurn({ kind: "error", error: failure });
       }
       this.#endActivity();
@@ -659,6 +665,8 @@ export class HermesAgent implements Agent {
     }
     if (this.#disposed) return;
     this.session.append("turn/start", { turn: this.#dashTurn });
+    this.#turnStarted = true;
+    this.#reservedMessage = undefined;
     await this.#emitRequestContext();
     const event = this.session.append("user/message", message, { surfaceOp: "append" }) as { seq: number };
     this.#titleSourceSeq ??= event.seq;
@@ -826,16 +834,31 @@ export class HermesAgent implements Agent {
    * synchronously, then commits turn/start + user/message only after the
    * cold start (#startTurn).
    */
-  #reserveTurn(): void {
+  #reserveTurn(message: UserMessage): void {
     if (this.#turnOpen) return;
     this.#dashTurn = ++this.#lastTurn;
     this.#step = 0;
     this.#turnOpen = true;
+    this.#turnStarted = false;
+    this.#reservedMessage = message;
   }
 
   #closeTurn(reason: TurnEndReason): void {
     if (!this.#turnOpen) return;
+    if (!this.#turnStarted) {
+      // Failure closed the turn while it was still only RESERVED (pre
+      // `turn/start`; the cold-start window). Commit the opening pair first:
+      // a `turn/end` without `turn/start` is a corrupt v4 log (2026-11-02 —
+      // `client.onFailure` beat the cold-start catch to `#closeTurn` when the
+      // gateway child exited during `#materializeSession`).
+      this.session.append("turn/start", { turn: this.#dashTurn });
+      if (this.#reservedMessage !== undefined) {
+        this.session.append("user/message", this.#reservedMessage, { surfaceOp: "append" });
+      }
+      this.#turnStarted = true;
+    }
     this.#turnOpen = false;
+    this.#reservedMessage = undefined;
     this.#clearTurnDeadline();
     this.session.append("turn/end", { turn: this.#dashTurn, reason });
   }

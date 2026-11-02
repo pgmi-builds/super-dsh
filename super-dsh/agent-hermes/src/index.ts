@@ -436,11 +436,20 @@ export class HermesProvider extends Service implements AgentFactory {
       throw new Error(`cannot resume session "${id}": no Hermes gateway session is recorded for this Dash session id`);
     }
     const persistence = this.requirePersistence("resume");
-    if ((record.gatewayStoredSessionId === null || record.gatewayStoredSessionId === undefined)
-      && (await readStoredEvents(persistence, id, options.signal)).some(event =>
+    if (record.gatewayStoredSessionId === null || record.gatewayStoredSessionId === undefined) {
+      const events = await readStoredEvents(persistence, id, options.signal);
+      if (events.some(event =>
         event.type === "turn/start" || event.type === "user/message" || event.type === "assistant/message"
       )) {
-      throw new Error(`cannot resume session "${id}": no durable gateway session id is recorded (this record predates durable-id capture; re-create the session)`);
+        if (events.some(event => event.type === "assistant/message")) {
+          // Completed turns but no durable id: a record from before the adapter captured ids.
+          throw new Error(`cannot resume session "${id}": no durable gateway session id is recorded (this record predates durable-id capture; re-create the session)`);
+        }
+        // Turn content with no assistant output and no durable id: the gateway never produced a
+        // session for this record (cold-start failure — e.g. the native home was owned by a
+        // running gateway). Nothing in it reached the model, so resume has nothing to attach to.
+        throw new Error(`cannot resume session "${id}": no durable gateway session id is recorded (the Hermes gateway failed before this session was created; its recorded turn never reached the model — re-create the session)`);
+      }
     }
 
     // Spawn cwd comes from the recorded pairing — re-realpath and re-verify.

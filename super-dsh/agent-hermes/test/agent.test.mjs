@@ -521,6 +521,33 @@ test("cold start against a dead client classifies CLIENT_CLOSED and self-heals",
   assert.equal(disposeCalls, 1, "the next prompt re-resumes a fresh client (host-side)");
 });
 
+test("gateway death in the reserved window commits turn/start before turn/end (no dangling turn/end)", async () => {
+  // 2026-11-02 incident: `client.onFailure` fires synchronously during
+  // `#materializeSession` (gateway child exits pre-ready) while `#startTurn`
+  // is still awaiting — `#fail` reached `#closeTurn` in the reserved window
+  // and appended a `turn/end` with no `turn/start`, corrupting the v4 log.
+  const session = makeFakeSession();
+  const client = makeFakeClient({ usable: false });
+  client.ensureStarted = async () => {
+    // mirrors HermesGatewayClient#preReadyFailure: listeners first, then the
+    // ready gate rejects and the awaited call throws.
+    client.emitFailure(new Error("gateway child exited (code=1); stderr tail:\n[gateway-exit] refused"));
+    throw new Error("gateway child exited (code=1); stderr tail:\n[gateway-exit] refused");
+  };
+  const agent = new HermesAgent(new Context(), "s1", { provider: "hermes" }, session, client, () => { }, makeRuntimeInfo());
+
+  agent.send(makeUserMessage("hi"), "next-turn", true);
+  await delay(10);
+
+  const kinds = session.events.filter((e) => e.type === "turn/start" || e.type === "user/message" || e.type === "turn/end").map((e) => e.type);
+  assert.deepEqual(kinds, ["turn/start", "user/message", "turn/end"], "opening pair precedes turn/end");
+  const turnStart = session.events.find((e) => e.type === "turn/start");
+  const turnEnd = session.events.find((e) => e.type === "turn/end");
+  assert.equal(turnStart.data.turn, turnEnd.data.turn, "same turn id");
+  const userMsg = session.events.find((e) => e.type === "user/message");
+  assert.ok(userMsg, "reserved prompt committed with the failed turn");
+});
+
 test("routeContext receives the {provider, model} selection (real-slug threading)", async () => {
   const seen = [];
   const runtimeInfo = {
