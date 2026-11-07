@@ -65,7 +65,7 @@ const GENERATED = [
   join(LINE, 'superd-hub', 'dist'),
   join(LINE, 'superd-hub', 'lib'),
   ...AGENTS.map((pkg) => join(LINE, pkg, 'dist')),
-  join(LINE, 'agent-omp', 'lib'),
+
 ]
 for (const dir of GENERATED) rmSync(dir, { recursive: true, force: true })
 console.log(`[pack] cleaned ${GENERATED.length} generated dir(s)`)

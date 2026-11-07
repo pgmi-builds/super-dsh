@@ -49,7 +49,6 @@ import { OMP_NATIVE_HOME, STORAGE_RECONCILE_INTERVAL_MS } from "./knobs.js";
 import { defaultPermissionPreset, envApprovalMode, resolveSpawnPermission } from "./permission.js";
 import { closeBridgeStore, getBridgeStore, initBridgeStore } from "./store/index.js";
 import { prepareIndex, upsertCreated } from "./store/reconcile.js";
-import { installMobileBootScript } from "./mobile-boot.js";
 import { installOmpDiscovery } from "./discovery.js";
 
 /** Realpath of a recorded cwd, accepted only when it names an existing directory. */
@@ -198,10 +197,6 @@ export class OmpProvider extends Service implements AgentFactory {
     registerOmpPreset(ctx);
     ctx.effect(() => () => closeBridgeStore(), "ompProvider.storeClose()");
     this.#reconcileWorkspaces();
-    // Mobile page-config boot script (host half): sets `window.__AGENT_OMP_MOBILE__`
-    // + the iOS zoom-guard section. Fail-open — a missing webServer leaves the
-    // feature dormant, and an injection failure is logged, never thrown.
-    installMobileBootScript(ctx);
     // OMP skills + slash commands into the host's `skills`/`commands` seams.
     installOmpDiscovery(ctx);
   }

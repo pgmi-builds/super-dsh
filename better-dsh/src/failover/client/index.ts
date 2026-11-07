@@ -47,15 +47,15 @@ export const inject = ['slots', 'locale', 'remote', 'remote.settings', 'remote.s
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'llm-failover: dictionaries')
 
-  // Mobile responsiveness (v0.2.1f): CSS + swipe gesture, config-gated by
-  // the host half's boot script (`window.__DASHR_MOBILE__`); inert when the
-  // host did not opt the page in.
-  setupMobileLayout(ctx)
 
   // Automatic-compaction threshold row (its host half is
   // `src/compaction/index.ts`, installed by the plugin's host apply).
   setupCompactionRow(ctx)
   setupWelcomeNotice(ctx)
+
+  // Mobile swipe gestures on rc.1's native drawer (its host half is
+  // `src/mobile/`, the `dashr-mobile` row).
+  setupMobileLayout(ctx)
 
   // The package client remains loaded when a Host component is disabled.
   // Follow the owning namespace rather than offering an unserved editor.

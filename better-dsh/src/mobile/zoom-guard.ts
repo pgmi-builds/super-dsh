@@ -109,7 +109,9 @@ export function mergeViewportTokens(content: string, tokens: Record<string, stri
  * `'off'` disarms the guard. Unknown non-`off` values read as `'meta'`
  * (schema validation makes them unreachable in production; benign here).
  *
- * @param config - the `__DASHR_MOBILE__` payload (only `zoomGuard` is read).
+ * @param config - config object reading only `zoomGuard` (the `__DASHR_MOBILE__`
+ *   payload channel retired 2026-11-08; the embedded section now passes
+ *   `null`, i.e. always-eligible — the off decision is build-time).
  * @param isIOS - {@link isIOSClassUA} verdict for this page load.
  * @param isNarrow - `matchMedia('(max-width: breakpoint-0.02px)')` verdict.
  * @returns `true` when the viewport rewrite should be applied.
@@ -233,10 +235,13 @@ export function buildZoomGuardSection(): string {
     `var ZD=${isStandaloneDisplay.toString()};`,
     `var ZF=${buildFontFloorCss.toString()};`,
     '(function(){',
-    'var m=window.__DASHR_MOBILE__;',
     'var ios=ZI(navigator.userAgent,(navigator.maxTouchPoints||0));',
     'if(!ios)return;',
-    "var bpx=(m&&typeof m.breakpoint==='number'&&m.breakpoint>0)?m.breakpoint:768;",
+    // 2026-11-08: the page-global read is gone with the retired payload — the
+    // band is the section's own fixed internal default (the `breakpoint` knob
+    // was already removed from the config in the 2026-09-11 wave, so the read
+    // had been vestigial ever since).
+    'var bpx=768;',
     'var bp=bpx-0.02;',
     "var sa=ZD((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches),(navigator.standalone===true));",
     "if(sa){var f=document.createElement('style');f.setAttribute('id','ios-zoom-font-floor');f.setAttribute('data-plugin','better-dsh');f.setAttribute('data-plugin-css','better-dsh/zoom-font-floor');f.textContent=ZF(bpx);headEl().appendChild(f);return}",
@@ -273,7 +278,7 @@ export function buildZoomGuardSection(): string {
     "if(applied){dropMine();meta=el;mine=false;meta.setAttribute('content',ZM(stock,T))}",
     'else{dropMine();meta=null;stock=null}',
     '}',
-    'function re(){apply(ZS(m,true,mq?mq.matches:false))}',
+    'function re(){apply(ZS(null,true,mq?mq.matches:false))}',
     'function tick(){',
     'lad=null;',
     're();',

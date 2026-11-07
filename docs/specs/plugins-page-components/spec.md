@@ -20,7 +20,7 @@ bundle patch（`cordis.patch.yml`）SHALL 恰好声明 6 条 insert 行，全部
 | `dashr-failover` | `better-dsh/failover` | LLM failover 瀑布（settings 驱动，行配置 = 两个 fallback 槽） |
 | `dashr-compaction-tuning` | `better-dsh/compaction-tuning` | 自动压缩阈值偏好（settings 驱动） |
 | `dashr-web-trust` | `better-dsh/web-trust` | `webserver/index-inject` **authorities 腿**（`__DSH_TRANSPORT__.ownsHost`）；行配置 `trustedPageAuthorities`（schema 默认派生自 `DSH_TRUSTED_HOSTS`） |
-| `dashr-mobile` | `better-dsh/mobile` | `webserver/index-inject` **mobile 腿**（`__DASHR_MOBILE__` + zoomGuard 段）；行配置 = 原 `MOBILE_CONFIG` |
+| `dashr-mobile` | `better-dsh/mobile` | `webserver/index-inject` **mobile 腿**（**2026-11-08 手势复活**：`__DASHR_MOBILE__` global + zoomGuard 段双 cargo；行配置 = `enabled` + `gesture` + 五个阈值钮 + `zoomGuard`；识别设计原样——120px 左带/右侧 ¾ 起点、≥40px、×1.3、0.15px/ms、拖动中一击；接线全官方（`ctx.layout.toggleSidebar()`、`[data-sidebar-collapsed]`、右栏官方按钮与 `data-rightbar-*` 双 facet）+ rc.1 drawer-mask 单击吞没守卫；**零轨 CSS 不复活**——rc.1 原生 drawer 拥有布局面） |
 
 #### Scenario: 页面呈现
 
@@ -57,12 +57,12 @@ bundle patch（`cordis.patch.yml`）SHALL 恰好声明 6 条 insert 行，全部
 
 ### Requirement: 双腿 boot script
 
-`buildBootScript` SHALL 拆为两个纯函数腿构建器：`buildTrustScript`（authorities 段）与 `buildMobileScript`（`__DASHR_MOBILE__` + zoomGuard 段），各自为空即注入 nothing；两行各自注册 `webserver/index-inject` 监听器（list 事件，`table.push` 天然可组合）。
+`buildBootScript` SHALL 拆为两个纯函数腿构建器：`buildTrustScript`（authorities 段）与 `buildMobileScript`（**2026-11-08 起仅 zoomGuard 段**；布局/手势 client 半与 `__DASHR_MOBILE__` global 已随上游 0.2.2-rc.1 原生 mobile adaptation 退役），各自为空即注入 nothing；两行各自注册 `webserver/index-inject` 监听器（list 事件，`table.push` 天然可组合）。
 
 #### Scenario: 单腿开关
 
 - **WHEN** `dashr-mobile` 行关闭而 `dashr-web-trust` 行开启
-- **THEN** 页面仍注入 authorities 腿脚本，`__DASHR_MOBILE__` 缺席，client 移动手势/zoomGuard 保持惰性（client 半无改动，读页面全局缺席即休眠）
+- **THEN** 页面仍注入 authorities 腿脚本，zoomGuard 段缺席（`enabled: false` 或 `zoomGuard: 'off'`；client 半已于 2026-11-08 退役，无页面 global）
 
 ### Requirement: override 行保持原样
 

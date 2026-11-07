@@ -335,17 +335,21 @@ describe('generated zoomGuard section (shape)', () => {
     expect(run.page.mediaQueries).toEqual(['(display-mode: standalone)', '(max-width:767.98px)'])
   })
 
-  it('serializes the configured zoomGuard into the payload verbatim', () => {
-    expect(buildMobileScript({ zoomGuard: 'off' })).toContain('"zoomGuard":"off"')
-    expect(buildMobileScript({ zoomGuard: 'meta' })).toContain('"zoomGuard":"meta"')
-    // Absent config = default meta: payload omits the key, script still ships.
+  it('ships the gesture config global alongside the zoomGuard section (2026-11-08 revival)', () => {
+    // One leg off keeps the other: zoomGuard off still plants the global.
+    const gestureOnly = buildMobileScript({ zoomGuard: 'off' })!
+    expect(gestureOnly).toContain('__DASHR_MOBILE__')
+    expect(gestureOnly).not.toContain('var ZI=')
+    expect(buildMobileScript({ zoomGuard: 'meta' })).toContain('var ZI=')
+    // Absent config = both legs on: section + default-only global.
     const text = buildMobileScript({})!
     expect(text).not.toContain('"zoomGuard"')
     expect(text).toContain('var ZI=')
+    expect(text).toContain('__DASHR_MOBILE__')
   })
 
-  it('omits the whole section when zoomGuard is off or the mobile leg is disabled', () => {
-    expect(buildMobileScript({ zoomGuard: 'off' })).not.toContain('var ZI=')
+  it('injects nothing only when the row is disabled or BOTH legs are off', () => {
+    expect(buildMobileScript({ zoomGuard: 'off', gesture: 'off' })).toBeUndefined()
     expect(buildMobileScript({ enabled: false })).toBeUndefined()
   })
 })
@@ -463,12 +467,12 @@ describe('boot script evaluation (iOS × viewport × config matrix)', () => {
     expect(run.page.metas()[0]!.getAttribute('content')).toBe(STOCK_GUARDED)
   })
 
-  it('zoomGuard off: no section, no rewriting anywhere (the escape hatch)', () => {
-    const run = runBootScript({ zoomGuard: 'off' })
-    expect(run.page.metas()).toHaveLength(0)
-    expect(run.page.resizeHandlers).toHaveLength(0)
-    run.page.parse(run.page.stockMeta())
-    expect(run.page.metas()[0]!.getAttribute('content')).toBe(STOCK)
+  it('zoomGuard off: no zoomGuard machinery anywhere in the script (the escape hatch)', () => {
+    // 2026-11-08 revival: 'off' keeps the OTHER leg — the script still
+    // plants the gesture config global, but carries no zoomGuard section.
+    const text = buildMobileScript({ zoomGuard: 'off' })!
+    expect(text).toContain('__DASHR_MOBILE__')
+    expect(text).not.toContain('var ZI=')
   })
 
   it('coexists with the authorities row: two pushed scripts, one page, both legs live', () => {
@@ -491,7 +495,7 @@ describe('boot script evaluation (iOS × viewport × config matrix)', () => {
       )
     }
     expect(window.__DSH_TRANSPORT__).toEqual({ ownsHost: true })
-    expect(window.__DASHR_MOBILE__).toEqual({ enabled: true })
+    expect(window.__DASHR_MOBILE__).toEqual({ enabled: true }) // gesture leg revived 2026-11-08
     expect(doc.metas()[0]!.getAttribute('content')).toBe('maximum-scale=1, user-scalable=no')
   })
 
@@ -590,15 +594,12 @@ describe('boot script evaluation (standalone display mode matrix)', () => {
     expect(run.page.metas()[0]!.getAttribute('content')).toBe('maximum-scale=1, user-scalable=no')
   })
 
-  it('zoomGuard off: neither branch in any display mode', () => {
-    const off = buildMobileScript({ zoomGuard: 'off' })!
-    expect(off).not.toContain('var ZD=')
-    expect(off).not.toContain('ios-zoom-font-floor')
-    const run = runBootScript({ zoomGuard: 'off' }, IPHONE_UA, 5, true, true)
-    expect(run.page.getElementsByTagName('style')).toHaveLength(0)
-    expect(run.page.metas()).toHaveLength(0)
-    run.page.parse(run.page.stockMeta())
-    expect(run.page.metas()[0]!.getAttribute('content')).toBe(STOCK)
+  it('zoomGuard off: no zoomGuard branch can run in any display mode', () => {
+    // The off config yields the gesture-global-only script: no meta
+    // rewriting can occur in any display mode by construction.
+    const text = buildMobileScript({ zoomGuard: 'off' })!
+    expect(text).not.toContain('var ZI=')
+    expect(text).not.toContain('maximum-scale')
   })
 })
 

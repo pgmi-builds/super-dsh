@@ -73,18 +73,35 @@ describe('authorities leg (buildTrustScript)', () => {
 })
 
 describe('mobile leg (buildMobileScript)', () => {
-  it('ships the mobile page config by default (absent mobile = enabled)', () => {
+  it('ships the page global and the zoomGuard section by default (2026-11-08 revival)', () => {
     const enabled = buildMobileScript({})!
+    expect(enabled).toContain('maximum-scale')
     const window = runScript(enabled, { window: {}, location: { hostname: 'x' } })
     expect(window.__DASHR_MOBILE__).toEqual({ enabled: true })
-
-    const tuned = buildMobileScript({ swipeDistancePx: 64 })!
-    const win2 = runScript(tuned, { window: {}, location: { hostname: 'x' } })
-    expect(win2.__DASHR_MOBILE__).toEqual({ enabled: true, swipeDistancePx: 64 })
   })
 
-  it('injects nothing when explicitly disabled', () => {
+  it('serializes tuned thresholds into the global verbatim', () => {
+    const text = buildMobileScript({ swipeDistancePx: 60, dominanceRatio: 1.5, leftEdgeBandPx: 90, rightZoneRatio: 0.3, swipeVelocityPxPerMs: 0.2 })!
+    const window = runScript(text, { window: {}, location: { hostname: 'x' } })
+    expect(window.__DASHR_MOBILE__).toEqual({
+      enabled: true,
+      swipeDistancePx: 60,
+      dominanceRatio: 1.5,
+      leftEdgeBandPx: 90,
+      rightZoneRatio: 0.3,
+      swipeVelocityPxPerMs: 0.2,
+    })
+  })
+
+  it('each leg has its own escape hatch; both off (or the row off) injects nothing', () => {
     expect(buildMobileScript({ enabled: false })).toBeUndefined()
+    expect(buildMobileScript({ gesture: 'off', zoomGuard: 'off' })).toBeUndefined()
+    const zoomOnly = buildMobileScript({ gesture: 'off' })!
+    expect(zoomOnly).toContain('var ZI=')
+    expect(zoomOnly).not.toContain('__DASHR_MOBILE__')
+    const gestureOnly = buildMobileScript({ zoomGuard: 'off' })!
+    expect(gestureOnly).toContain('__DASHR_MOBILE__')
+    expect(gestureOnly).not.toContain('var ZI=')
   })
 })
 
@@ -99,10 +116,11 @@ describe('row config schemas', () => {
     )
   })
 
-  it('dashr-mobile resolves all knobs with the wave defaults', () => {
+  it('dashr-mobile resolves both knobs with the defaults', () => {
     const resolve = MobileRowConfig as unknown as (v?: unknown) => Record<string, unknown>
     expect(resolve({})).toEqual({
       enabled: true,
+      gesture: 'on',
       swipeDistancePx: 40,
       dominanceRatio: 1.3,
       leftEdgeBandPx: 120,

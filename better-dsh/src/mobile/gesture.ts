@@ -8,6 +8,13 @@
  * supplemental requirement — the only constant here without a source
  * precedent; `0` disarms it and restores the source's behavior verbatim).
  *
+ * 2026-11-08 revival: restored VERBATIM (constants and predicates) after
+ * the rc.1 retirement — upstream 0.2.2-rc.1's native mobile adaptation
+ * ships the drawer UI but no touch gestures, so the field-tested swipe
+ * design rides again, re-wired onto the native drawer surfaces (see
+ * ./client/index.ts; the wiring map is documented there). The zero-rail
+ * CSS leg stays retired.
+ *
  * Source semantics, preserved number-for-number:
  * - **Start admission** (pointerdown): with BOTH panels closed, only the
  *   left band `x ≤ 120` (the source's X120) or the right three quarters

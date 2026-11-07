@@ -29,14 +29,15 @@
  * keeping the native cookie verifier, and the page owns the Host regardless
  * of its hostname. The default remains the declared-authorities mode.
  *
- * `dashr-mobile` — mobile page config (`window.__DASHR_MOBILE__`): the
- * dual-half plugin's client half carries no loader config, so the resolved
- * mobile thresholds travel to the page through this global; the client
- * feature is inert when the host did not opt the page in.
+ * `dashr-mobile` — swipe-gesture page config + iOS focus auto-zoom
+ * suppression (2026-11-08 revival of the gesture leg onto upstream rc.1's
+ * native mobile drawers, which ship the UI adaptation but no touch
+ * gestures): a `window.__DASHR_MOBILE__` global for the client half, plus
+ * a self-contained static zoomGuard section.
  *
  * Each leg injects nothing at all when its own config disables it; the
  * mobile leg ships default-ON (design D1), so a bare config still carries
- * the mobile global. The scripts are strict IIFEs over JSON-embedded
+ * the zoomGuard section. The scripts are strict IIFEs over JSON-embedded
  * literals — no config string is ever spliced into code unescaped.
  *
  * @module dashr/web-trust
@@ -69,9 +70,17 @@ export function deriveDefaultPageAuthorities(env: string | undefined): string[] 
   return (env ?? '').split(/\s+/).filter(h => h.length > 0 && !/[:/@?#]/.test(h))
 }
 
-/** Mobile page-config knobs (the `dashr-mobile` row's config shape). */
+/** Mobile page-config knobs (the `dashr-mobile` row's config shape).
+ *
+ * 2026-11-08 revival: the gesture knobs are back. Upstream rc.1's native
+ * mobile adaptation is UI-only (no touch gestures), so the field-tested
+ * swipe feature rides again — this row config resolves here and ships to
+ * the client half through the `window.__DASHR_MOBILE__` page global. The
+ * zero-rail CSS leg stays retired (rc.1's own drawer owns layout). */
 export interface MobileConfig {
   enabled?: boolean
+  /** The swipe-gesture leg's escape hatch: `'off'` plants no page global. */
+  gesture?: 'on' | 'off'
   swipeDistancePx?: number
   dominanceRatio?: number
   leftEdgeBandPx?: number
@@ -137,32 +146,38 @@ export function buildTrustScript(trustedPageAuthorities: readonly string[] | und
 
 /**
  * Build the mobile-leg script. Pure: same config in, same script out — the
- * unit tests pin the shape (mobile global, tuned thresholds, zoomGuard
- * section, disabled-when-off).
+ * unit tests pin the shape (page global + zoomGuard section by default,
+ * per-leg escape hatches, injects nothing when both are off).
  *
  * @param mobile - the resolved mobile config.
- * @returns the script text, or `undefined` when the feature is explicitly
- *   disabled (inject nothing).
+ * @returns the script text, or `undefined` when the row is explicitly
+ *   disabled or BOTH legs are off (inject nothing).
  */
 export function buildMobileScript(mobile: MobileConfig | undefined): string | undefined {
   // Ship default ON (design D1): absent config or absent flag both mean
   // enabled; only an explicit `enabled: false` opts the page out.
   const mobileEnabled = mobile?.enabled !== false
   if (!mobileEnabled) return undefined
-  const payload = {
-    enabled: true,
-    ...(mobile?.swipeDistancePx !== undefined ? { swipeDistancePx: mobile.swipeDistancePx } : {}),
-    ...(mobile?.dominanceRatio !== undefined ? { dominanceRatio: mobile.dominanceRatio } : {}),
-    ...(mobile?.leftEdgeBandPx !== undefined ? { leftEdgeBandPx: mobile.leftEdgeBandPx } : {}),
-    ...(mobile?.rightZoneRatio !== undefined ? { rightZoneRatio: mobile.rightZoneRatio } : {}),
-    ...(mobile?.swipeVelocityPxPerMs !== undefined ? { swipeVelocityPxPerMs: mobile.swipeVelocityPxPerMs } : {}),
-    ...(mobile?.zoomGuard !== undefined ? { zoomGuard: mobile.zoomGuard } : {}),
+  // Two independent legs (2026-11-08 revival): the gesture config global
+  // for the client half, and the self-contained zoomGuard section. Each leg
+  // rides unless it is explicitly turned off — the same default-on posture
+  // as the row itself; both off injects nothing at all.
+  const gestureOn = mobile?.gesture !== 'off'
+  const zoomOn = mobile?.zoomGuard !== 'off'
+  if (!gestureOn && !zoomOn) return undefined
+  const body: string[] = []
+  if (gestureOn) {
+    const payload = {
+      enabled: true,
+      ...(mobile?.swipeDistancePx !== undefined ? { swipeDistancePx: mobile.swipeDistancePx } : {}),
+      ...(mobile?.dominanceRatio !== undefined ? { dominanceRatio: mobile.dominanceRatio } : {}),
+      ...(mobile?.leftEdgeBandPx !== undefined ? { leftEdgeBandPx: mobile.leftEdgeBandPx } : {}),
+      ...(mobile?.rightZoneRatio !== undefined ? { rightZoneRatio: mobile.rightZoneRatio } : {}),
+      ...(mobile?.swipeVelocityPxPerMs !== undefined ? { swipeVelocityPxPerMs: mobile.swipeVelocityPxPerMs } : {}),
+    }
+    body.push(`window.__DASHR_MOBILE__=${JSON.stringify(payload)};`)
   }
-  const body = [`window.__DASHR_MOBILE__=${JSON.stringify(payload)};`]
-  // Zoom guard rides the mobile leg (design D5): emitted unless explicitly
-  // 'off' — the same default-on posture as the leg itself. Absent config
-  // still emits the section (the script's own default is 'meta').
-  if (mobile?.zoomGuard !== 'off') body.push(buildZoomGuardSection())
+  if (zoomOn) body.push(buildZoomGuardSection())
   return frame(body)
 }
 

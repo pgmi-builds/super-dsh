@@ -46,8 +46,10 @@
       config:
         trustAllHosts: true
 
-    # Mobile responsiveness leg of the boot script (gestures payload +
-    # zoomGuard section). All knobs default ON; `enabled: false` opts out.
+    # iOS focus auto-zoom suppression leg of the boot script (zoomGuard
+    # section only since 2026-11-08 — layout/gesture legs retired, upstream
+    # 0.2.2-rc.1 ships native mobile drawers). Default ON; `enabled: false`
+    # or `zoomGuard: 'off'` opts out.
     - id: dashr-mobile
       name: 'better-dsh/mobile'
 

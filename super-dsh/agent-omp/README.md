@@ -59,7 +59,7 @@ dsh 宿主 (Node 22, 本包 dist/)               操作员本机的 omp binary
   `createAgent` 与 `resume` 两条路径都走它（resume 有映射时加 `--resume <ompFile>`），生成参数 `--approval-mode <mode>`。
 - **两平面**：dsh 原生 session log 是 WebUI 唯一读面（插件当 producer：OMP RPC 事件 → SessionEvent → `ctx.sessionPersistence`）；
   OMP 原生会话文件是 runtime 权威（插件当 bridge：`bridge-store.sqlite` 只存 dsh↔omp 映射）。双份存储显式接受，单向阀 = 不回读。
-- **已删除面**（本 RPC 轮，2026-10-03）：`src/sdk-client.ts`、`src/sidecar-client.ts`、`src/protocol.ts`、`sidecar/`，以及 SDK/Bun 依赖与 `test/sidecar-*.test.mjs`；`scripts/build-client.ts` 与 `src/client/`、`src/mobile/` 保留（client 半边与 sidecar 无关）。
+- **已删除面**（本 RPC 轮，2026-10-03）：`src/sdk-client.ts`、`src/sidecar-client.ts`、`src/protocol.ts`、`sidecar/`，以及 SDK/Bun 依赖与 `test/sidecar-*.test.mjs`；`scripts/build-client.ts`、`src/client/`、`src/mobile/` 亦于 2026-11-08 随 mobile 全退役删除（world webui 自 2026-09-26 T-D 起零渲染，client 面无任何加载方）。
 
 ## 协议与实测记录（2026-10-03）
 
@@ -78,7 +78,7 @@ dsh 宿主 (Node 22, 本包 dist/)               操作员本机的 omp binary
 ## 测试
 
 ```bash
-npm run build                  # tsc -p tsconfig.json && tsc -p tsconfig.client.json
+npm run build                  # tsc -p tsconfig.json
 node --test test/*.test.mjs    # 全 fakes / 源级断言，零真 runtime、零真 omp spawn
 ```
 

@@ -1,14 +1,22 @@
 /**
- * `dashr-mobile`: the mobile page-config row (Plugins-page component, spec
- * docs/specs/plugins-page-components/spec.md).
+ * `dashr-mobile`: the mobile row (host half) — swipe-gesture page config
+ * plus the iOS zoom-guard.
  *
- * Delivers the resolved mobile thresholds to the page through
- * `window.__DASHR_MOBILE__` (plus the zoomGuard section) via ONE
- * `webserver/index-inject` listener — the MOBILE LEG only. The trusted-page
- * authorities leg lives on the sibling `dashr-web-trust` row; the event is a
- * list, so the two rows compose and toggle independently. The client half
- * reads the page global and is inert when this row is off (the global is
- * simply absent).
+ * 2026-11-08 revival — upstream dsh 0.2.2-rc.1's native mobile adaptation
+ * turned out to be UI-only (SIDEBAR_DRAWER_BREAKPOINT=768 overlay drawers,
+ * always-mounted opener, right-panel autoFullscreen; NO touch gestures), so
+ * the field-tested swipe gestures are BACK, re-wired onto the native drawer
+ * (client half `src/mobile/client/`, config channel `window.__DASHR_MOBILE__`).
+ * What stays retired is the zero-rail CSS leg: rc.1's own drawer owns layout
+ * now, and our `[data-sidebar-collapsed]` grid override would fight the
+ * native right-panel track in the 768–1024 band. The recognition design is
+ * unchanged from the tested form (source `1706b81`: start admission
+ * X120-left-band / right three quarters, ≥40px travel, ×1.3 horizontal
+ * dominance, 0.15 px/ms average velocity, one shot mid-drag). The gesture
+ * leg is delivered as before: this row renders the page global through ONE
+ * `webserver/index-inject` listener (the MOBILE LEG); the trusted-page
+ * authorities leg lives on the sibling `dashr-web-trust` row; the event is
+ * a list, so the two rows compose and toggle independently.
  *
  * @module dashr/mobile
  */
@@ -29,14 +37,16 @@ export const name = 'dashr-mobile'
 export const inject: string[] = []
 
 /**
- * Row config schema — the mobile knobs, moved verbatim from the pre-split
- * `dashr-repl` Config (2026-09-11 mobile wave + zoomGuard changes).
+ * Row config schema — the gesture knobs plus the zoomGuard escape hatch.
  */
 const MOBILE_CONFIG: z<Required<MobileConfig>> = z.object({
   enabled: z.boolean().default(true),
-  // `breakpoint` removed (2026-09-11 mobile wave): responsive behavior tracks
-  // the upstream sidebar auto-collapse STATE ([data-sidebar-collapsed]), never
-  // our own pixel cut-off; zoomGuard carries its own internal narrow band.
+  // The swipe-gesture leg (2026-11-08 revival): 'on' plants the page
+  // global for the client half; 'off' is the per-leg escape hatch.
+  gesture: z.union(['on', 'off']).default('on'),
+  // Recognition thresholds — the tested `1706b81` defaults (see
+  // src/mobile/gesture.ts); the same tuning surface as before the
+  // retirement.
   swipeDistancePx: z.natural().min(8).default(40),
   dominanceRatio: z.number().min(1).default(1.3),
   leftEdgeBandPx: z.natural().min(8).default(120),

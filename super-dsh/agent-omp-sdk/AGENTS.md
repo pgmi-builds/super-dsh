@@ -93,6 +93,6 @@ OMP 的 `--approval-mode` 是 launch flag，**没有任何 RPC/SDK 调用能在�
 - 惰性 + 单例：`sdk-lazy.test.mjs`（构造零 fetch；被动查询零 fetch；两会话 fetch 恰一次；fake runtime 布局被 spawn 使用）；
 - 源级不变量：`omp-rpc-decouple.test.mjs`（`ensureSdkRuntime` 唯一调用点在 `sidecar-client.ts`；`index.ts` 只经 transport 建 wrapper）；
 - 权限：`permission-spawn.test.mjs`；
-- 其余纯函数/磁盘面：`omp-store`、`omp-model-roles-disk`、`omp-disk-discovery`、`agent-preset-roster`、`store`、`mobile-boot`、`sidecar-singleton`。
+- 其余纯函数/磁盘面：`omp-store`、`omp-model-roles-disk`、`omp-disk-discovery`、`agent-preset-roster`、`store`、`sidecar-singleton`。
 
-**已删除、不要恢复**：`modelroles` / `sidecar-decouple`（真 spawn sidecar 的真 runtime 测试）、`mobile-gesture`（client half 的纯函数）、RPC 时代的 `lazy-rpc` / `rpc-client` / `resolve-executable` / `no-sidecar` / `omp-cli-rpc` / `package-contract`（覆盖改由 `omp-rpc-decouple` + `sdk-lazy` + 本目录的 manifest guard 承担）——它们要么测的是 RPC 传输，要么需要真 runtime。
+**已删除、不要恢复**：`modelroles` / `sidecar-decouple`（真 spawn sidecar 的真 runtime 测试）、`mobile-boot`（2026-11-08 mobile 全退役：world webui 已于 2026-09-26 T-D 裁决退役，「没有任何地方渲染 world page」，`__AGENT_OMP_MOBILE__` 注入成死代码）、`mobile-gesture`（client half 的纯函数）、RPC 时代的 `lazy-rpc` / `rpc-client` / `resolve-executable` / `no-sidecar` / `omp-cli-rpc` / `package-contract`（覆盖改由 `omp-rpc-decouple` + `sdk-lazy` + 本目录的 manifest guard 承担）——它们要么测的是 RPC 传输，要么需要真 runtime。

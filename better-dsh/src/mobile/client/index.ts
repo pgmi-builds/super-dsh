@@ -1,46 +1,42 @@
 /**
- * Mobile responsiveness (client half) — an EXACT port of the operator's
- * ui-layout swipe patch (`z_dsh-alpha` commit `1706b81`) into plugin form
- * (see `../gesture.ts` for the semantics and their source anchors), plus
- * the one addition: the average-velocity gate.
+ * Mobile swipe gestures (client half) — the 2026-11-08 revival, re-wired
+ * onto upstream rc.1's NATIVE mobile drawer. The recognition design is
+ * restored unchanged from the tested form (source `1706b81` + the velocity
+ * gate; see `../gesture.ts` for the semantics): start admission X120 left
+ * band / right three quarters, ≥40px travel, ×1.3 horizontal dominance,
+ * 0.15 px/ms average velocity, one shot mid-drag.
  *
- * Two coordinated pieces, both config-gated by the host half's injected
- * boot script (`window.__DASHR_MOBILE__` — the client half of a dual-half
- * plugin carries no loader config, so the page global IS the config
- * channel) and DEVICE-gated on a touch-first primary input (2026-10-18
- * user ruling — `isTouchFirstDevice` in `../gesture.ts`): phones and
- * tablets mount both pieces; a desktop host mounts NEITHER, ever. The
- * superseded behavior compressed upstream's collapsed rail to zero width
- * on ANY pointer, so a desktop window below upstream's own auto-collapse
- * threshold (1024, measured on the frame's own box — which a right-panel
- * call-out helps squeeze) lost its sidebar AND the toggle inside it, with
- * mouse-drag swipes as the only — undiscoverable — way back. Desktop
- * narrow is now upstream's own rail with a visible toggle; swipes stay
- * where they are native (fingers).
- * channel):
+ * rc.1 wiring map (every address is an OFFICIAL upstream surface, verified
+ * against the rc.1 checkout):
+ * - left sidebar/drawer — state: AppFrame's `[data-sidebar-collapsed]`
+ *   (present = collapsed; in drawer mode the drawer is open exactly while
+ *   this is absent); action: `ctx.layout.toggleSidebar()` (ui-layout's
+ *   cross-plugin panel-action face — the same call rc.1's own drawer mask
+ *   and opener button make).
+ * - right panel — state: `[data-rightbar-collapsed]` (trackless) plus
+ *   `[data-rightbar-fullscreen]` (the rc.1 autoFullscreen presentation
+ *   below 768); actions: the official controls, `[data-sidebar-right-expand]`
+ *   (open) and `[data-sidebar-right-toggle]` (close).
+ * - session liveness — the `conversation.session.header` slot anchor.
  *
- * - **CSS** (the upstream-paradigm route — static rules, zero JS
- *   geometry): keyed PURELY on AppFrame's semantic
- *   `[data-sidebar-collapsed]` attribute — whenever upstream's layout
- *   collapses the sidebar (their auto-collapse threshold, 1024 today,
- *   theirs to move freely), our rule further compresses the 56px rail to
- *   a zero-width track. No pixel cut-off of our own (2026-09-11 mobile
- *   wave ruling). Degradation is benign: if upstream renames the
- *   attribute, the rule stops matching and the native rail simply
- *   renders.
+ * NEW with rc.1 (the only behavioral addition over the tested design): the
+ * drawer MASK. AppFrame now renders `[data-sidebar-mask]` with an onClick
+ * that calls `toggleSidebar()` itself — a swipe that fires our toggle
+ * mid-drag may still end as a browser `click` on that mask, which would
+ * toggle the drawer a SECOND time (right back). `armMaskClickSwallow`
+ * swallows exactly one mask-targeted click within 600ms of a left-panel
+ * action; every other click passes untouched.
  *
- * - **Gesture** (additive — upstream ships no swipe code): document-level
- *   CAPTURE listeners (an open overlay panel covers the frame — a
- *   frame-level listener would never see the closing swipe). The drag is
- *   decided on `pointermove` the moment the thresholds are met (one
- *   shot), never at pointerup. Left panel actions go through the layout
- *   service (`ctx.layout.toggleSidebar()`); right panel actions go
- *   through the OFFICIAL 0.1.5 controls (`[data-sidebar-right-expand]`
- *   to open, `[data-sidebar-right-toggle]` to close) with the open state
- *   read off AppFrame's `[data-rightbar-collapsed]`. Both reads address
- *   official surfaces only — third-party plugin DOM is never a state
- *   input. Absent right panel (pre-0.1.5 hosts, no session): right
- *   actions no-op silently; LEFT gestures keep working regardless.
+ * What is NOT restored: the zero-rail CSS leg. rc.1's own drawer owns
+ * narrow-viewport layout (the user field-verified the native UI); the
+ * `[data-sidebar-collapsed]` grid override is retired for good — this
+ * module mounts gesture listeners only, no style tag.
+ *
+ * Gating, unchanged from the tested form: config comes from the host
+ * half's injected boot script (`window.__DASHR_MOBILE__` — the client half
+ * of a dual-half plugin carries no loader config, so the page global IS
+ * the config channel) and the device must be touch-first
+ * (`isTouchFirstDevice`, 2026-10-18 user ruling).
  *
  * @module dashr/mobile/client
  */
@@ -63,32 +59,32 @@ function safeMatchMedia(query: string): MediaQueryList | undefined {
     return undefined
   }
 }
+
 /** Structural layout face (`ctx.layout`): exactly what this feature calls. */
 interface LayoutPanelFace {
   toggleSidebar(): void
 }
 
-/** Left sidebar state, live off AppFrame's semantic attribute. */
+/** Left sidebar/drawer state, live off AppFrame's semantic attribute. */
 function readLeftCollapsed(): boolean {
   return document.querySelector('[data-sidebar-collapsed]') !== null
 }
 
 /**
- * The OFFICIAL right sidebar's state (0.1.5 ui-sidebar-right), read from
- * AppFrame's TWO presentation facets, synchronously (a cached mirror lags
- * the panel's own DOM write by a render, and a close-swipe issued right
- * after an open-swipe would misroute):
+ * The OFFICIAL right sidebar's state, read from AppFrame's TWO presentation
+ * facets, synchronously (a cached mirror lags the panel's own DOM write by
+ * a render, and a close-swipe issued right after an open-swipe would
+ * misroute):
  *
  * - `[data-rightbar-collapsed]` — the reserved GRID TRACK facet (present =
- *   zero-width right column). On phones (<768) the panel presents FULLSCREEN
- *   WITHOUT a track (`autoFullscreen` in SidebarRight), so this attribute
- *   alone misreads a panel that covers the whole frame as "closed" — the
- *   2026-09-11 field bug: every close-swipe misrouted to open-left.
+ *   zero-width right column). Below 768 rc.1 presents the panel FULLSCREEN
+ *   WITHOUT a track (`autoFullscreen`), so this attribute alone misreads a
+ *   panel covering the whole frame as "closed" — the 2026-09-11 field bug:
+ *   every close-swipe misrouted to open-left.
  * - `[data-rightbar-fullscreen]` — the overlay facet (present = fullscreen
- *   presentation active, open by definition).
+ *   presentation active, open by definition; rc.1 emits it below 768).
  *
- * Open = track reserved OR fullscreen overlay. On hosts before 0.1.5 both
- * attributes never appear: closed, permanently — left gestures unaffected.
+ * Open = track reserved OR fullscreen overlay.
  */
 function readRightOpen(): boolean {
   const fullscreen = document.querySelector('[data-rightbar-fullscreen]') !== null
@@ -112,16 +108,13 @@ function readPanelState(): PanelState {
 }
 
 /**
- * Drive the OFFICIAL right sidebar through its own controls (0.1.5
- * ui-sidebar-right): opening clicks `[data-sidebar-right-expand]` (the
- * conversation header corner button — the panel's own documented "way
- * into a hidden panel", rendered exactly while collapsed with a session);
- * closing clicks `[data-sidebar-right-toggle]` (the dock chrome toggle).
- * The store action behind them (`setExpanded`/`toggleExpanded`) is
- * slot-store-internal — cross-plugin imports are the hard boundary, so
- * the native buttons ARE the sanctioned entry. Absent button (pre-0.1.5
- * host, no session, or already in the target state): a no-op, never a
- * crash.
+ * Drive the OFFICIAL right sidebar through its own controls: opening clicks
+ * `[data-sidebar-right-expand]` (the conversation header corner button,
+ * rendered exactly while collapsed with a session); closing clicks
+ * `[data-sidebar-right-toggle]` (the dock chrome toggle). The store action
+ * behind them is slot-store-internal — cross-plugin imports are the hard
+ * boundary, so the native buttons ARE the sanctioned entry. Absent button
+ * (no session, or already in the target state): a no-op, never a crash.
  */
 function openRightPanel(): void {
   document.querySelector<HTMLButtonElement>('[data-sidebar-right-expand]')?.click()
@@ -137,31 +130,40 @@ interface DashrMobileGlobal {
 }
 
 /**
- * The responsive CSS: zero-width sidebar track whenever upstream's layout
- * has collapsed the sidebar, keyed PURELY to AppFrame's semantic
- * attribute (survives class-hash churn). No width media query of our own
- * (2026-09-11 ruling): upstream owns the auto-collapse threshold (1024
- * today), and this rule simply takes the 56px rail they leave behind to
- * zero. If upstream renames the attribute the rule stops matching and
- * their native rail renders (benign degradation). The tag carries the
- * plugin-owned dataset so the loader's style-claim machinery removes it
- * on unload, like module CSS.
+ * The rc.1 drawer-mask double-toggle guard: swallow exactly ONE click that
+ * lands on `[data-sidebar-mask]` shortly after our own left-panel toggle.
+ * rc.1's mask has `onClick={toggleSidebar}` of its own — without this
+ * guard, the browser `click` born of the swipe's pointerup could undo the
+ * very toggle the swipe just made. Scoped hard: a click landing anywhere
+ * else passes through untouched (and disarms the guard), and the guard
+ * self-expires.
  */
-function mobileCss(): string {
-  return [
-    `[data-sidebar-collapsed] {`,
-    `  grid-template-columns: 0px minmax(0, 1fr) 0px !important;`,
-    `}`,
-  ].join('\n')
+function armMaskClickSwallow(): void {
+  const swallow = (event: Event): void => {
+    cleanup()
+    const target = event.target
+    // Duck-typed (`closest` presence) rather than `instanceof Element`:
+    // the module also runs in node-based unit tests where the bare `Element`
+    // global does not exist. Text/document targets simply have no closest.
+    const el = target as Element | null
+    if (el !== null && typeof el.closest === 'function' && el.closest('[data-sidebar-mask]') !== null) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+  }
+  const cleanup = (): void => {
+    clearTimeout(timer)
+    document.removeEventListener('click', swallow, true)
+  }
+  const timer = setTimeout(cleanup, 600)
+  document.addEventListener('click', swallow, true)
 }
 
 /**
- * Mount the mobile feature: style injection plus the swipe listeners.
- * Inert unless the host's boot script opted the page in AND the device is
- * touch-first (2026-10-18 user ruling). Capability flips (a tablet's
- * primary pointer hardware changing) re-evaluate and mount/unmount the
- * surface live; the media queries answer on every browser since ~2015 and
- * a webview without `matchMedia` degrades to the touch-points probe.
+ * Mount the swipe-gesture surface. Inert unless the host's boot script
+ * opted the page in AND the device is touch-first (2026-10-18 user ruling).
+ * Capability flips (a tablet's primary pointer hardware changing)
+ * re-evaluate and mount/unmount the surface live.
  *
  * @param ctx - client root context.
  */
@@ -195,20 +197,13 @@ export function setupMobileLayout(ctx: ClientContext): void {
       hoverQuery?.removeEventListener('change', apply)
       disposeSurface?.()
     }
-  }, 'dashr: mobile layout')
+  }, 'dashr: mobile gestures')
 
-  /** The style tag + gesture listeners, mounted and disposed as one surface. */
+  /** The swipe listeners, mounted and disposed as one surface (no CSS —
+   * rc.1's native drawer owns narrow-viewport layout now). */
   function mountTouchSurface(): () => void {
-    const styleTagId = 'better-dsh/mobile'
-    const tag = document.createElement('style')
-    tag.dataset.plugin = 'better-dsh'
-    tag.dataset.pluginCss = styleTagId
-    tag.textContent = mobileCss()
-    document.head.append(tag)
-
     // The layout service is a conditional peer: a composition without
-    // ui-layout keeps the CSS (pure cosmetics) and skips the left-panel
-    // half of the gesture.
+    // ui-layout gets no gesture surface at all (there is no second leg).
     const offLayout = ctx.inject(['layout'], (layoutCtx: ClientContext) => {
       const layout = layoutCtx.get('layout') as LayoutPanelFace | undefined
       if (layout === undefined) return
@@ -242,16 +237,19 @@ export function setupMobileLayout(ctx: ClientContext): void {
         // One shot: the drag is spent the moment it fires (source
         // semantics — the ref is nulled inside the move handler).
         start = undefined
-        if (action === 'open-left' || action === 'close-left') layout.toggleSidebar()
+        if (action === 'open-left' || action === 'close-left') {
+          armMaskClickSwallow()
+          layout.toggleSidebar()
+        }
         else if (action === 'open-right') openRightPanel()
         else closeRightPanel()
       }
       const onPointerEnd = (): void => {
         start = undefined
       }
-      // CAPTURE on `document`: an open overlay panel (fullscreen right
-      // sidebar, dialogs) is a fixed layer over the frame; bubbling
-      // listeners on the frame would never see its closing swipe.
+      // CAPTURE on `document`: an open overlay panel (rc.1's fullscreen
+      // drawer or right panel, dialogs) is a fixed layer over the frame;
+      // bubbling listeners on the frame would never see its closing swipe.
       document.addEventListener('pointerdown', onPointerDown, true)
       document.addEventListener('pointermove', onPointerMove, true)
       document.addEventListener('pointerup', onPointerEnd, true)
@@ -265,8 +263,7 @@ export function setupMobileLayout(ctx: ClientContext): void {
     })
 
     return () => {
-      tag.remove()
-      void Promise.resolve(offLayout.dispose())
+      offLayout.dispose()
     }
   }
 }

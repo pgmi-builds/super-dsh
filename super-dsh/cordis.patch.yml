@@ -132,8 +132,20 @@
       config:
         key: claude
         label: Claude
+    # In-app browse backend for remote browser clients (list/mkdir over the
+    # web wire). 2026-11-08 desktop gate (Plan A of the 2026-11-07 picker
+    # report): the directoryPicker seam allows exactly ONE backend, and the
+    # DSH Desktop host already ships <NativeDirectoryPicker> — mounting browse
+    # beside it loses the registration race and warns on every install/enable
+    # (fiberPhase: failed). Same upstream-blessed detection as dsh-base's
+    # desktopPlatform probe: on the desktop profile this row stays down; every
+    # Web/remote host keeps it. The surface row below stays mounted everywhere
+    # — without the browse capability it auto-hides (report-verified), and a
+    # mounted surface keeps the workspace picker's directory-flow hole
+    # occupied on hosts where browse is the only flow.
     - id: directory-picker-browse
       name: '@deepseek-ai/dsh-host-directory-picker-browse'
+      disabled: !!js "ctx.get('profileContext')?.name === 'desktop'"
     - id: directory-picker-browse-surface
       name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
 - id: directory-picker
