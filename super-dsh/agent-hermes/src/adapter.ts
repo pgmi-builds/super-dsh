@@ -82,7 +82,7 @@ export class HermesLlmAdapter extends LlmAdapter {
     const catalog = await this.catalog();
     const found = catalog.models.find((candidate) => candidate.id === model && candidate.provider === provider);
     if (found === undefined) {
-      throw new LlmError(`Hermes provider "${provider}" does not serve model "${model}"`, "MODEL_NOT_FOUND");
+      throw new LlmError(`Hermes provider "${provider}" does not serve model "${model}"`, "UNKNOWN_MODEL");
     }
     return {
       provider,
@@ -93,6 +93,6 @@ export class HermesLlmAdapter extends LlmAdapter {
   }
 
   stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
-    throw new LlmError("the Hermes adapter does not stream: Hermes owns generation through its gateway agent", "UNSUPPORTED_STREAM");
+    throw new LlmError("the Hermes adapter does not stream: Hermes owns generation through its gateway agent", "UNSUPPORTED_OPTION");
   }
 }

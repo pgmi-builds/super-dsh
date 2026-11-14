@@ -3934,7 +3934,6 @@ function HubPanelIcon({ size }) {
 	react.useEffect(() => {
 		if (!wide || !switchUi.available) setOpen(false);
 	}, [wide, switchUi.available]);
-	const anchorRect = react.useCallback(() => selectorRef.current?.getBoundingClientRect() ?? null, []);
 	const here = currentMountPath();
 	const isActive = (agent) => hubRowActive({
 		fusion,
@@ -4016,7 +4015,7 @@ function HubPanelIcon({ size }) {
 				dense: true,
 				portal: true,
 				align: "end",
-				getAnchorRect: anchorRect,
+				anchorRef: selectorRef,
 				anchor: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
 					ref: selectorRef,
 					role: "button",

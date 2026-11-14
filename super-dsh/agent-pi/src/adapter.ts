@@ -46,14 +46,14 @@ export class PiLlmAdapter extends LlmAdapter {
   }
 
   stream(_options: never): AsyncIterable<never> {
-    throw new LlmError("the Pi adapter does not stream: pi owns generation through its SDK agent", "UNSUPPORTED_STREAM");
+    throw new LlmError("the Pi adapter does not stream: pi owns generation through its SDK agent", "UNSUPPORTED_OPTION");
   }
 
 
   async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const found = readPiModelCatalog().models.find((candidate) => candidate.provider === provider && candidate.id === model);
     if (found === undefined) {
-      throw new LlmError(`Pi provider "${provider}" does not serve model "${model}"`, "MODEL_NOT_FOUND");
+      throw new LlmError(`Pi provider "${provider}" does not serve model "${model}"`, "UNKNOWN_MODEL");
     }
     return {
       provider,

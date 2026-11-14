@@ -284,9 +284,12 @@ const agentExecutor: AgentBridgeExecutor = async (rawArgs, exec, deps): Promise<
       }
     }
     try {
+      // 0.2.2-rc.3 flat spec: task fields top-level; the legacy nested
+      // `request` rides along for 0.2.1–0.2.2-rc.2 hosts (flat hosts ignore it).
       const activation = await subagents.startActivation({
         provider,
         label: description,
+        ...request,
         request,
         signal: exec.signal,
         delivery: runInBackground ? 'parent' : 'caller',

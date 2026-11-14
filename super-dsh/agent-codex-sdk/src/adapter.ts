@@ -93,7 +93,7 @@ export class CodexLlmAdapter extends LlmAdapter {
     if (found === undefined) {
       throw new LlmError(
         `Codex provider "${provider}" does not serve model "${model}"`,
-        "MODEL_NOT_FOUND",
+        "UNKNOWN_MODEL",
       );
     }
     return {
@@ -109,7 +109,7 @@ export class CodexLlmAdapter extends LlmAdapter {
   stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
     throw new LlmError(
       "the Codex adapter does not stream: Codex owns generation through its app-server thread",
-      "UNSUPPORTED_STREAM",
+      "UNSUPPORTED_OPTION",
     );
   }
 }

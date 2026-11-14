@@ -255,7 +255,10 @@ test('POST {op:"tokenUrl"}：face 的 authenticatedUrl 令牌化 origin → {tok
     assert.deepEqual(minted, ['https://test.pc.internal.test'])
     // GET 投影永不携带完整 token —— 它只调用 face 取 10 字符预览（key tokenPreview），
     // 且 face 抛错时静默降级为无预览，绝不拖垮 machines GET。
-    const get = await handleMeshMachines(req('GET'), { home: h, tokenUrlOf: (origin) => `${origin}/?token=<redacted>` })
+    // 22-char synthetic token: long enough to exercise the preview slice and
+    // the full-token-never-rides-GET assert, short enough to stay under the
+    // leak-scrub threshold (token=[A-Za-z0-9_-]{25,}) that <redacted> this face once.
+    const get = await handleMeshMachines(req('GET'), { home: h, tokenUrlOf: (origin) => `${origin}/?token=LIVE-TOKEN-0123456789` })
     const getBody = await get.json()
     assert.equal(getBody.self.tokenPreview, `${'LIVE-TOKEN-0123456789'.slice(0, 10)}…`)
     assert.ok(!JSON.stringify(getBody).includes('LIVE-TOKEN-0123456789'), 'the full token never rides the GET')

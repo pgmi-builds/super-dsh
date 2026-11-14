@@ -35,7 +35,7 @@ export async function createRealRemoteHarness({ copies = 2, driverOptions = {} a
       const agent = { id: SessionId(id), session: { id: SessionId(id), header: { cwd: process.cwd() } }, status: 'idle' } as Agent
       const scope = createScope(host, agent)
       Object.assign(agent, { ctx: scope.ctx })
-      const detach = host.agents.enter(agent, undefined)
+      const detach = host.agents.enter(agent)
       disposers.set(agent, async () => { detach(); await scope.dispose() })
       agents.push(agent)
       try { await host.agents.announce(agent, source); return agent }

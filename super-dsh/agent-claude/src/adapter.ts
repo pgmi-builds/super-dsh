@@ -129,7 +129,7 @@ export class ClaudeLlmAdapter extends LlmAdapter {
             : {}),
         };
       }
-      throw new LlmError(`Claude provider "${CLAUDE_PROVIDER_ID}" does not serve model "${model}"`, "MODEL_NOT_FOUND");
+      throw new LlmError(`Claude provider "${CLAUDE_PROVIDER_ID}" does not serve model "${model}"`, "UNKNOWN_MODEL");
     }
     const entry = this.curatedProvider(provider);
     const curated = entry?.models.find((candidate) => candidate.id === model);
@@ -143,13 +143,13 @@ export class ClaudeLlmAdapter extends LlmAdapter {
           : {}),
       };
     }
-    throw new LlmError(`Claude provider "${provider}" does not serve model "${model}"`, "MODEL_NOT_FOUND");
+    throw new LlmError(`Claude provider "${provider}" does not serve model "${model}"`, "UNKNOWN_MODEL");
   }
 
   stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
     throw new LlmError(
       "the Claude adapter does not stream: Claude owns generation through its SDK thread",
-      "UNSUPPORTED_STREAM",
+      "UNSUPPORTED_OPTION",
     );
   }
 }

@@ -438,7 +438,7 @@ export class OmpProvider extends Service implements AgentFactory {
     // Nothing can fail from the child here (none exists yet); the publish
     // transaction below unwinds its own half-published state on failure — its
     // catch calls rpc.close(), a no-op until the first prompt spawns.
-    const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, session, rpc, options.parentAgent, "startup", { enterSession: true, preparation, stored });
+    const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, session, rpc, "startup", { enterSession: true, preparation, stored });
     return this.registerHeld(id, "", handle, rpc);
   }
 
@@ -535,7 +535,7 @@ export class OmpProvider extends Service implements AgentFactory {
           cwd: spawnCwd,
         });
       }
-      const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, options.parentAgent, "resume", { enterSession: true, preparation, stored: { handle: stored, written: coldRead.events.length } });
+      const handle = await setupAndPublish(loopCtx, ownerCtx, id, options.agentOptions ?? {}, options.setup, preparation.session, rpc, "resume", { enterSession: true, preparation, stored: { handle: stored, written: coldRead.events.length } });
       return this.registerHeld(id, ompFile ?? "", handle, rpc);
     } catch (error) {
       trace(`resume ${id} THREW: ${String(error)} | stack=${error instanceof Error ? error.stack?.slice(0, 400) : "n/a"}`);
@@ -622,7 +622,6 @@ async function setupAndPublish(
   setup: AgentSetup | undefined,
   session: Session,
   rpc: OmpAgentRpc,
-  parentAgent: Agent | undefined,
   source: "startup" | "resume",
   opts: { enterSession: boolean; preparation?: SessionPreparation; stored?: { handle: SessionHandle; written?: number } },
 ): Promise<AgentHandle> {
@@ -668,7 +667,7 @@ async function setupAndPublish(
       detachSession = agent.ctx.sessions.enter(session);
       agent.ctx.sessions.announce(session);
     }
-    detachAgent = loopCtx.agents.enter(agent, parentAgent);
+    detachAgent = loopCtx.agents.enter(agent);
     // 0.1.6: announce(agent, source) is required, async, and emits agent/created
     // itself — the manual agent/session-start emission is gone upstream.
     await loopCtx.agents.announce(agent, source);

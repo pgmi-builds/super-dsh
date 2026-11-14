@@ -14,7 +14,7 @@
    - a. 真实运行时第一人称验收通过；构建、单测和进程存活不能替代行为验收。
    - b. 报告落 `docs/test-reports/`。
    - c. user 对本次发布明确放行，授权不沿用到下次。
-   - d. 迭代经 tarball 通道，每轮换字母后缀；补丁号与新 minor 留给真实 feature 发布。npm 不是 git，registry `latest` 保持最近一次获准发布。**2026-10-06 user 澄清**：本条讲的是 registry **不可删除、不可回滚**（npm 发了即定版，与 GitHub tag 可删可逆相对）；registry 版本号形态（含字母后缀）由 user 发布指令逐次指定，不得由本条推断出「字母版本不进 registry」之类的限制。
+   - d. 迭代经 tarball 通道，每轮换字母后缀；补丁号与新 minor 留给真实 feature 发布。npm 不是 git，registry `latest` 保持最近一次获准发布。**2026-10-06 user 澄清**：本条讲的是 registry **不可删除、不可回滚**（npm 发了即定版，与 GitHub tag 可删可逆相对）；registry 版本号形态（含字母后缀）由 user 发布指令逐次指定，不得由本条推断出「字母版本不进 registry」之类的限制。**2026-11-15 user 裁决（版本递进规则）**：一个版本系列先用字母先行版（`0.3.N-a/b/c/d…`，semver prerelease 形态，纯数字 `0.3.N` 在 registry 语义上 newer），成熟后升为正式版 `0.3.N`；跳版从 `N-d` 直接到 `(N+1)-a`。dist-tag：**不用 next 等先行频道，`latest` 恒指最近一次获准发布（字母版含在内）**——npm CLI 对 prerelease 强制要求 `--tag`，一律显式 `--tag latest`（0.3.5-a 轮实证：默认会被拒、误用 next 后用 `dist-tag add latest` 扳回）。已知例外：0.3.5 正式版先于其字母版发布（位置被占），0.3.5-a 反向补发并取 latest，user 逐次放行。】
    - e. **npm 凭据（2026-10-19 user 指定，勿再询问）**：位置与用法见 `AGENTS.local.md` §1——仓外 0600 受控 env 文件，变量 `NPM_ACCESS_TOKEN`（账号 pgmi-builds）。发布时经 0600 临时 npmrc + `NPM_CONFIG_USERCONFIG` 指向，结束即删；token 不得进入仓库、长期 npmrc 或报告。
 2. 验收覆盖实际改动行为；Web 测试线保持运行、提供访问 URL，供 user 亲手验收后收尾。
 3. 未经 user 单次明确同意不得 `npm publish`。

@@ -123,14 +123,32 @@ export interface DASHRContinuableStart {
   readonly childId: SessionId
 }
 
-/** One managed child execution the `agent` bridge starts (0.2.1 seam). */
+/** One managed child execution the `agent` bridge starts (0.2.1 seam).
+ *
+ * 0.2.2-rc.3 flattened the spec: task fields that lived under a nested
+ * `request` (`prompt`, `parent`, `maxDepth`, …) are now top-level, and an
+ * optional `name` was added. The nested `request` below stays as an OPTIONAL
+ * legacy carrier: 0.2.1–0.2.2-rc.2 hosts read `spec.request`, flat hosts
+ * ignore it — the bridge passes both, keeping the declared peer range honest
+ * across the reshape.
+ */
 export interface DASHRActivationSpec {
   /** The `ctx.subagents` provider name (`spawn` for delegate, `fork` for fork). */
   readonly provider: string
   /** Short task label retained in the child's cataloged membership. */
   readonly label: string
-  /** Task, parent, and execution options (the delegation body, label-less). */
-  readonly request: DASHRActivationRequest
+  /** Requested child name, unique among the parent's children (0.2.2-rc.3+). */
+  readonly name?: string
+  /** Optional reserved identity for a local child; external backends allocate their own ids. */
+  readonly childId?: SessionId
+  /** Content delivered as the child's user message (flat since 0.2.2-rc.3). */
+  readonly prompt: ContentBlock[]
+  /** The spawning agent (workspace/lineage/depth source; flat since 0.2.2-rc.3). */
+  readonly parent: Agent
+  /** Absolute delegation-depth cap (native default `3`). */
+  readonly maxDepth: number
+  /** Legacy nested carrier (0.2.1–0.2.2-rc.2 hosts); ignored by flat hosts. */
+  readonly request?: DASHRActivationRequest
   /** Cancellation before publication; callers own later cancellation through dispose. */
   readonly signal: AbortSignal
   /** Parent delivery notifies the model; caller delivery only returns the result. */

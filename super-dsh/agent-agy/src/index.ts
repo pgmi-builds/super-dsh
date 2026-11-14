@@ -354,7 +354,6 @@ export class AgyProvider extends Service implements AgentFactory {
         options.setup,
         preparation.session,
         client,
-        options.parentAgent,
         "startup",
         { enterSession: true, preparation },
         stored,
@@ -440,7 +439,6 @@ export class AgyProvider extends Service implements AgentFactory {
         options.setup,
         preparation.session,
         client,
-        options.parentAgent,
         "resume",
         { enterSession: true, preparation },
         stored,
@@ -580,7 +578,6 @@ async function setupAndPublish(
   setup: AgentSetup | undefined,
   session: Session,
   client: LiveAgyClient,
-  parentAgent: Agent | undefined,
   source: "startup" | "resume",
   opts: { enterSession: boolean; preparation?: SessionPreparation },
   stored: StoredSession,
@@ -621,7 +618,7 @@ async function setupAndPublish(
       detachSession = agent.ctx.sessions.enter(session);
       agent.ctx.sessions.announce(session);
     }
-    detachAgent = loopCtx.agents.enter(agent, parentAgent);
+    detachAgent = loopCtx.agents.enter(agent);
     // 0.1.6: announce(agent, source) is required, async, and emits agent/created
     // itself — the manual agent/session-start emission is gone upstream.
     await loopCtx.agents.announce(agent, source);

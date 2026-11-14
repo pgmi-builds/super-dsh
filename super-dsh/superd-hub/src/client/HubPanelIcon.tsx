@@ -181,9 +181,6 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
     if (!wide || !switchUi.available) setOpen(false)
   }, [wide, switchUi.available])
 
-  // Stable identity: the Menu re-places the portaled card from this callback,
-  // and a fresh closure on every hover would restart that work.
-  const anchorRect = React.useCallback((): DOMRect | null => selectorRef.current?.getBoundingClientRect() ?? null, [])
 
   const here = currentMountPath()
   const isActive = (agent: AgentLink): boolean => hubRowActive({
@@ -255,10 +252,11 @@ export function HubPanelIcon({ size }: HubPanelIconProps): React.JSX.Element {
           dense
           portal
           align="end"
-          // The pill is anchored to the wrapper and out of its flow, so the
-          // Menu's own wrapper span measures 0x0: the anchor rect has to come
-          // from the pill itself.
-          getAnchorRect={anchorRect}
+          // The pill is absolutely placed out of the wrapper's flow, so the
+          // Menu's own wrapper span measures 0x0: anchor the portaled card to
+          // the pill element itself (0.2.2-rc.3 Menu API: anchorRef replaces
+          // the removed getAnchorRect).
+          anchorRef={selectorRef}
           anchor={(
             <span
               ref={selectorRef}

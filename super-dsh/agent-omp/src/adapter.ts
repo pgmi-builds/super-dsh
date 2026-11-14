@@ -37,12 +37,12 @@ export class OmpLlmAdapter extends LlmAdapter {
   async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const found = loadOmpModels().find((candidate) => candidate.provider === provider && candidate.id === model);
     if (found === undefined) {
-      throw new LlmError(`OMP provider "${provider}" does not serve model "${model}"`, "MODEL_NOT_FOUND");
+      throw new LlmError(`OMP provider "${provider}" does not serve model "${model}"`, "UNKNOWN_MODEL");
     }
     return toResolvedModelInfo(found);
   }
 
   stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
-    throw new LlmError("the OMP adapter does not stream: OMP owns generation through its rpc agent", "UNSUPPORTED_STREAM");
+    throw new LlmError("the OMP adapter does not stream: OMP owns generation through its rpc agent", "UNSUPPORTED_OPTION");
   }
 }

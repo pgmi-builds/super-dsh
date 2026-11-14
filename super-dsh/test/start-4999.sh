@@ -201,6 +201,68 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
 - id: credentials
   config:
     path: ${SHARED_CREDENTIALS}
+# ZAI Coding Plan provider via the dormant base llm-pi-ai row (prod parity,
+# 2026-11-15 user request; persists for every fresh home this template seeds —
+# an existing profile patch is never rewritten, hand-tuned rows survive).
+# The key must exist in the line home .env as ZAI_PLAN_API_KEY (kept across
+# restarts by the .env keep rule; fresh homes seed it from SUPERD_TEST_ENV_FILE).
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      zai-plan:
+        baseURL: https://api.z.ai/api/coding/paas/v4
+        apiKeyEnv: ZAI_PLAN_API_KEY
+        api: openai-completions
+        displayName: ZAI Coding Plan
+        models:
+          - id: glm-5.3
+            name: GLM-5.3
+            contextWindow: 1000000
+            maxTokens: 131072
+            input:
+              - text
+            compat:
+              thinkingFormat: zai
+              supportsReasoningEffort: true
+          - id: glm-5.3-flash
+            name: GLM-5.3-Flash
+            contextWindow: 1000000
+            maxTokens: 131072
+            input:
+              - text
+              - image
+            compat:
+              thinkingFormat: zai
+              supportsReasoningEffort: true
+          - id: glm-5.3-flashx
+            name: GLM-5.3-Flashx
+            contextWindow: 1000000
+            maxTokens: 131072
+            input:
+              - text
+              - image
+            compat:
+              thinkingFormat: zai
+              supportsReasoningEffort: true
+          - id: glm-5-turbo
+            name: GLM-5-Turbo
+            contextWindow: 200000
+            maxTokens: 131072
+            input:
+              - text
+            compat:
+              thinkingFormat: zai
+              supportsReasoningEffort: false
+          - id: glm-4.7
+            name: GLM-4.7
+            contextWindow: 204800
+            maxTokens: 131072
+            input:
+              - text
+            compat:
+              thinkingFormat: zai
+              supportsReasoningEffort: false
 EOF
 fi
 echo "--- pnpm install (complete local pack, native default script policy)"
