@@ -103,7 +103,7 @@
 
 - [x] **Step 4.1:** 两条 entry 已撰（`pgmi-builds__super-dsh--better-dsh.yml`/`dev`，文案沿用旧条目；`pgmi-builds__super-dsh--super-dsh.yml`/`agi`，首词组 Multi-agent orchestration hub、six runtimes 与 `super-dsh/agent-{agy,claude,codex,hermes,omp,pi}` 逐一对应、SDK 线不计入——数字可核对）
 - [x] **Step 4.2:** fork 已同步 upstream main（stale-fork 守卫满足）→ 分支 `pgmi-super-dsh-monorepo-entries`（commit `fa5d1d16`）：两新 yml + 删旧 yml + **双 README 行再生成**（en 节头 + zh 中文节头「🧭 AGI 架构探索」「🧑‍💻 开发与运行时」各按字母序插入、旧行清零）；PR 文案含 supersede 说明 + 类目拆分提议，已备好
-- [ ] **Step 4.3:** 分支已推至 fork；**PR 创建需 user 一键**（fine-grained PAT 无 fork/PR 权限，API 双试均拒）——入口 `https://github.com/pgmi-builds/awesome-dsh-plugin/pull/new/pgmi-super-dsh-monorepo-entries`，标题/正文见会话报告；CI 绿后等 maintainer merge
+- [x] **Step 4.3:** PR 已开：[awesome-dsh-plugin#15255](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/15255)（user 一键创建）；变更 = rename（删旧 better-dsh 条目 → 新坐标条目，git rename 识别）+ super-dsh 新条目 + 双 README，内容完整（旧文件分支上 404 已验证）；**等 CI 绿 + maintainer merge**
 - [ ] **Step 4.4:** merge 后触发/等待探针（nightly 02:23 UTC PROBE_ALL 或请 maintainer dispatch），确认 npm-map 两包映射新坐标
 - [ ] **Step 4.5:** 消费端实装验证（测试 home）：Discover 两卡片可见可装、Installed 行描述正确（坐标换绑后 dshmarket notes/toggles 重置一次属预期）
 - [ ] **Step 4.6:** 根 README 市场入口占位回收
