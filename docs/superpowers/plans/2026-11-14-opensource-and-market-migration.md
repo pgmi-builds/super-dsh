@@ -90,10 +90,10 @@
 - [x] **Step 3.1:** 备份完成：`~/workspaces/superd-private-backup-20261114/original.git`（mirror 178.5MiB）+ `superd-original-20261114.bundle`（177MB）；基线 HEAD `aa66090`、642 commits、64 tags；`.worktrees/` 为空无需重建
 - [x] **Step 3.2:** filter-repo 31ebad4（单文件脚本）在备份副本 `rewritten.git` 执行完毕：636 commits（6 个因路径移除变空被剪）、64 tags 全保留；**计划外清理**——删除 `refs/stash`、`refs/legacy/*`、`refs/codex/turn-diffs/*`（Codex adapter 工作流 refs 与 stash 挂着旧历史，897 个 hermes 对象由此可达；原始备份全保留）→ gc 后 hermes 零可达、体积 178.5→152.85MiB（余量为 pi 嵌入运行时与 helper 二进制多版本，合理）
 - [x] **Step 3.3:** 验证全绿——①逐 commit grep：775 commits（全 refs）× 4 词表 **0 命中**；②tag 名 64/64 对齐；③**HEAD 树逐字节等价**（original `aa66090` vs rewritten `fb74baf`，diff 0 行）；④抽样 tag：最早 `legacy/better-dash/v0.0.1` diff 为空、中段 `v0.2.5a` 794D+13M、`v0.3.5` 795D+141M（删除=移除路径、修改=词表替换，形态精确符合设计）；⑤gitleaks 全史 9 命中 = Task 2 已分诊的同两个良性文件（deployment-proof 哈希 + 测试端口 URL），无新类别。**⛔ 放行点 2/3 待 user**：push 镜像（`git push --mirror`，顺带删除远端 codex/legacy/stash refs）→ 工作仓 reset 到重写历史 → GitHub 转 public + topics
-- [ ] **Step 3.4:** 本地环境跟进：origin force push（⛔ 放行点 2）；`.worktrees/` 各检出重建；本地分支/tags 重置到重写后哈希
-- [ ] **Step 3.5:** GitHub 门面：repo 转 public（⛔ 放行点 3）；加 topic `dsh-plugin`（市场 CI 前置要求）、`orchestration`、`multi-agent`（branding 落点）；description、social preview、About 链 npm 两包页
-- [ ] **Step 3.6:** 验证自愈：npmjs.com 两包各 0.3.x 版本页 repository/homepage/bugs 逐一 200
-- [ ] **Step 3.7:** 观察窗口 24h：GitHub 侧树 gitleaks 复扫、traffic/watchers 无异常
+- [x] **Step 3.4:** `rewritten.git` `push --mirror` 完成（远端 codex/legacy/stash refs 一并清除；远端 master=重写基线 `fb74baf`）；工作仓 reset + cherry-pick 备份后的 docs 提交 → `3ab5bf18` 推送；工作树与重写前逐字节一致；64 tags force-fetch 同步；`.worktrees/` 原为空无需重建
+- [x] **Step 3.5:** repo 已 public（API 确认 `private:false`，匿名 200——user 在浏览器侧完成翻转；API 令牌无 admin-edit 权限）。**待 user 手动两项（2 分钟）**：①About description（建议文案见报告）②topics：`dsh-plugin`（市场 CI 前置）、`orchestration`、`multi-agent`、`deepseek-harness`、`claude-code`、`codex`
+- [x] **Step 3.6:** 自愈验证全绿——匿名 ls-remote master=`3ab5bf18`；两包子目录 / `AGENTS.template.md` / `THIRD_PARTY_NOTICES.md` 全 200；hermes scrap 404（出史确认）；npm 两包 homepage/repository 链接全部 200（此前公开 404 已痊愈）
+- [ ] **Step 3.7:** 观察窗口 24h：GitHub 侧树 gitleaks 复扫、traffic/watchers 无异常（进行中，2026-11-15 收口）
 
 ## Task 4 — 插件市场两条 entry（⛔ 放行点 4：market PR）
 
