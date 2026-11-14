@@ -1,6 +1,6 @@
 # Super D (superd) — Agent 开发总纲
 
-本文件保留项目定位、开发原则与操作红线；机制细节按需披露，不继续把命令、版本流水账和排障记录堆入根总纲。词汇表见 `CONTEXT.md`，设计正本见 `docs/`。
+本文件保留项目定位、开发原则与操作红线；机制细节按需披露，不继续把命令、版本流水账和排障记录堆入根总纲。词汇表见 `CONTEXT.md`，设计正本见 `docs/`。**本机事实（凭据位置、测试线真实域名、目标机拓扑、本机参数）一律在 `AGENTS.local.md`（不入库，模板见 `AGENTS.local.example.md`）**：本文件只写任何克隆者都该遵守的原则，不写只关于某台机器的地址、路径与参数。
 
 ---
 
@@ -15,7 +15,7 @@
    - b. 报告落 `docs/test-reports/`。
    - c. user 对本次发布明确放行，授权不沿用到下次。
    - d. 迭代经 tarball 通道，每轮换字母后缀；补丁号与新 minor 留给真实 feature 发布。npm 不是 git，registry `latest` 保持最近一次获准发布。**2026-10-06 user 澄清**：本条讲的是 registry **不可删除、不可回滚**（npm 发了即定版，与 GitHub tag 可删可逆相对）；registry 版本号形态（含字母后缀）由 user 发布指令逐次指定，不得由本条推断出「字母版本不进 registry」之类的限制。
-   - e. **npm 凭据位置（2026-10-19 user 指定，勿再询问）**：`~/workspaces/base/secrets/npm.env`，变量 `NPM_ACCESS_TOKEN`（账号 pgmi-builds）。发布时把 token 写进 0600 临时 npmrc 并以 `NPM_CONFIG_USERCONFIG` 指向它，发布结束立即删除；token 不得进入仓库、长期 npmrc 或报告。
+   - e. **npm 凭据（2026-10-19 user 指定，勿再询问）**：位置与用法见 `AGENTS.local.md` §1——仓外 0600 受控 env 文件，变量 `NPM_ACCESS_TOKEN`（账号 pgmi-builds）。发布时经 0600 临时 npmrc + `NPM_CONFIG_USERCONFIG` 指向，结束即删；token 不得进入仓库、长期 npmrc 或报告。
 2. 验收覆盖实际改动行为；Web 测试线保持运行、提供访问 URL，供 user 亲手验收后收尾。
 3. 未经 user 单次明确同意不得 `npm publish`。
 4. GitHub commit / tag / push 不抢在验收、报告和放行之前定版。
@@ -93,4 +93,4 @@
 - 热插拔遵循 Comply or Explain：先核实官方热更新能力与实际生效窗口；确需重启时解释原因并复验。
 
 - **remote 窄范围构建复用例外（2026-10-10；2026-11-02 收窄）**：`better-dsh/src/remote/` 是唯一可编辑源码；Super 生成的 `remote/` ESM/dts 闭包及源码 SHA-256 provenance 保留，但自 2026-11-02（ADR 0016）起为 **hub 内部私有依赖**——无公开 `super-dsh/remote` 导出、无 `superd-remote` 组合行，仅由 hub exec/PTY/task/file lanes 引用其进程原语。模型侧 `remote`/`remote_transfer` 只由 Better 的 `dashr-remote` 行注册；两包同装时 Better 侧自动检测 Super hub 并列为 `hub:<m4>` target（该逻辑不动）。生成物不手改，不含 Better 整包、client、其他工具或 npm 依赖边。
-- **remote helper binary 修正案（2026-10-13/14，spec `docs/specs/remote-rescope/spec.md`）**：在上述例外之上，`better-dsh/src/remote/helper/` 为唯一 Rust 源（零 crate，动词集冻结 banner/run/killgroup），`bin/<target>/superd-run*` + `bin/MANIFEST.json` 为**提交资产**（`build.sh` 生成，darwin 经 `mac` 主机构建）。better-dsh 构建复制进 `lib/remote/helper-bin/`；`build-remote.mjs` 复制进闭包 `remote/helper-bin/` 并计入 provenance outputs，`verify-package-pair.mjs` 逐叶子哈希核验。对端缓存 `~/.cache/superd/run/<triple>-<ver>/`，probe/upload 失败一律回退 POSIX shim，回执 `runner` 字段如实区分。无 postinstall、无 daemon、无监听端点。killgroup 安全契约：pgid ≤ 1 拒绝；Linux starttime 边车防 PID 复用；信号语义测试只在容器/VM 内跑（2026-10-13 事故教训，档案 `~/workspaces/base/70_Incidents/superd-run-killgroup-uid-sweep.md`）。
+- **remote helper binary 修正案（2026-10-13/14，spec `docs/specs/remote-rescope/spec.md`）**：在上述例外之上，`better-dsh/src/remote/helper/` 为唯一 Rust 源（零 crate，动词集冻结 banner/run/killgroup），`bin/<target>/superd-run*` + `bin/MANIFEST.json` 为**提交资产**（`build.sh` 生成，darwin 经 `mac` 主机构建）。better-dsh 构建复制进 `lib/remote/helper-bin/`；`build-remote.mjs` 复制进闭包 `remote/helper-bin/` 并计入 provenance outputs，`verify-package-pair.mjs` 逐叶子哈希核验。对端缓存 `~/.cache/superd/run/<triple>-<ver>/`，probe/upload 失败一律回退 POSIX shim，回执 `runner` 字段如实区分。无 postinstall、无 daemon、无监听端点。killgroup 安全契约：pgid ≤ 1 拒绝；Linux starttime 边车防 PID 复用；信号语义测试只在容器/VM 内跑（2026-10-13 事故教训，档案 仓外事故档案（路径见 `AGENTS.local.md` §4））。

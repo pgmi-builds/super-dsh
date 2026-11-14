@@ -27,3 +27,10 @@ docs/60_exploration-and-research/
 docs/legacy/better-dash-local/
 
 .uv-cache/
+
+# open-source prep (2026-11-14): local overlay + vendor research stash untracked
+AGENTS.local.md
+scripts/leak-patterns.local.txt
+docs/80_upstream-docs-and-skills/
+.superpowers/
+.claude/
