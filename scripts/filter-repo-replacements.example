@@ -1,0 +1,6 @@
+# filter-repo-replacements.local.txt 模板（入库）。复制为同名文件（gitignored）并填真实值。
+# 行格式 = git filter-repo --replace-text：`旧==>新` 字面量，或 `regex:模式==>替换`。
+# 示例：
+#   <真实测试域名>.example.org==>internal.test
+#   10.0.0.<真实主机段>==>192.0.2.<主机段>
+#   regex:token=[A-Za-z0-9_-]{20,}==>token=<redacted>

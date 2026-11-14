@@ -31,7 +31,7 @@ docs/legacy/better-dash-local/
 # open-source prep (2026-11-14): local overlay + vendor research stash untracked
 AGENTS.local.md
 scripts/leak-patterns.local.txt
-docs/80_upstream-docs-and-skills/
+docs/80_upstream-docs-and-skills/hermes-dev-skill/
 .superpowers/
 .claude/
 
@@ -40,3 +40,5 @@ docs/80_upstream-docs-and-skills/
 /AGENTS.md
 .test/seed/test123/start.sh
 .test/seed/bun-test/start.sh
+.superd-test-local.sh
+scripts/filter-repo-replacements.local.txt

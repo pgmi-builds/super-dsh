@@ -37,6 +37,10 @@ BIND="${SUPERD_BIND:-127.0.0.1}"
 # worktree — pack.mjs anchors itself the same way via import.meta.url), never a
 # hardcoded path: a worktree checkout must pack and boot its OWN branch state.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Optional machine-local env (untracked — see AGENTS.template.md / AGENTS.local.example.md):
+# real WAN host, public URL and other machine facts. Never committed.
+# shellcheck disable=SC1091
+[ -f "$REPO/.superd-test-local.sh" ] && . "$REPO/.superd-test-local.sh"
 LINE="$REPO/super-dsh"
 # Components reuse the checkout compiler when a component has no local bin.
 export PATH="$LINE/superd-hub/node_modules/.bin:$PATH"
@@ -269,7 +273,7 @@ HOST_ARGS=()
 # Declare the direct machine entrance on every test port. Only 4999 owns the
 # Caddy-backed test.pc entrance; extra deployment authorities remain additive.
 if [ -n "$LAN_IP" ]; then HOST_ARGS+=(--trusted-host "${LAN_IP}:${PORT}"); fi
-if [ "$PORT" = "4999" ]; then HOST_ARGS+=(--trusted-host test.pc.internal.test); fi
+if [ "$PORT" = "4999" ]; then HOST_ARGS+=(--trusted-host "${SUPERD_TEST_WAN_HOST:-test.pc.internal.test}"); fi
 PUBLIC_URL="${SUPERD_TEST_PUBLIC_URL:-}"
 if [ -z "$PUBLIC_URL" ] && [ "$PORT" = "4999" ]; then PUBLIC_URL=https://test.pc.internal.test; fi
 if [ -n "$PUBLIC_URL" ]; then HOST_ARGS+=(--public-url "$PUBLIC_URL"); fi
@@ -338,7 +342,7 @@ done
 [ -n "$door_ready" ] || { echo "authentication entry / protected API readiness failed — inspect $LOG" >&2; exit 1; }
 echo "  local: http://127.0.0.1:${PORT}/"
 if [ "$PORT" = "4999" ]; then
-  echo "  wan:   https://test.pc.internal.test/"
+  echo "  wan:   ${PUBLIC_URL:-https://test.pc.internal.test}/"
 fi
 if [ "$BIND" = "127.0.0.1" ]; then
   [ -n "$LAN_IP" ] && echo "  lan:   http://${LAN_IP}:${PORT}/   (LAN relay: $RELAY)"

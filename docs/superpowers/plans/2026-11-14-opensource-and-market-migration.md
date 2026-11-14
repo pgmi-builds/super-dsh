@@ -63,7 +63,7 @@
 
 - [x] **Step 1.1:** `AGENTS.local.md` 先建（npm 凭据、域名映射、目标机拓扑、本机参数、敏感词表五节）
 - [x] **Step 1.2:** 根 AGENTS.md（前言 + §〇.1.e + §七事故档案路径）与 super-dsh/AGENTS.md（端口条）原则层改写，机器事实改引 local overlay
-- [x] **Step 1.3:** `AGENTS.local.example.md` 模板；`.gitignore` 增补（`AGENTS.local.md`、`scripts/leak-patterns.local.txt`、`docs/80_upstream-docs-and-skills/`、根 `.superpowers/`）；`git rm -r --cached` 80_upstream（87MB vendor 研究库，含 ClawHub 抓取目录——packaging 测试仅用路径字面量不受影响）与根 `.superpowers/` 残留
+- [x] **Step 1.3:** `AGENTS.local.example.md` 模板；`.gitignore` 增补（`AGENTS.local.md`、`scripts/leak-patterns.local.txt`、`docs/80_upstream-docs-and-skills/hermes-dev-skill/`（**仅 Hermes scrap 77MB**；dsh-dev-skill 11MB 为 better-dsh 随包发布镜像，经 `14f4ec6` 恢复 tracked——clone 构建失败实证）、根 `.superpowers/`、`.claude/`）；`git rm -r --cached` 出库 hermes scrap 与根 `.superpowers/` 残留（packaging spec 用路径字面量不受影响）
 - [x] **Step 1.4:** 域名→`*.internal.test`（115 tracked 文件，排除 seed 运行时默认与本计划文件）；真实 IP（尾 .3）→192.0.2.3（machine-mesh 计划 + hub 两测试）；devN 保留（D2 复审）；受影响测试全绿（web-trust 15/15、hub 67/67）
 - [x] **Step 1.4b（D5 改道）:** seed 真实脚本本地化——`.test/seed/*/start.sh` `git rm --cached` + gitignore（磁盘原样，4999 线零影响），Git 入 `start.example.sh`（占位域 + 说明头）；两 seed README 补「脚本形态」段。原「env 参数化」方案作废（example 法更稳：真身字节不动，无需重启验证）
 - [x] **Step 1.5:** 守门三件套落地（`scripts/check-leaks.sh` + `leak-patterns.local.txt` + `leak-patterns.example`），接入 pre-commit，双向自测通过（干净过 / 泄露拦）
@@ -76,10 +76,10 @@
 
 **Files:** 产出验收记录进 `docs/test-reports/`。
 
-- [ ] **Step 2.1:** gitleaks 扫当前全树（含待 push 文件清单核对）
-- [ ] **Step 2.2:** 附加手扫：`ssh://`、`~/.ssh`、作者邮箱/姓名（是否泛化按 user 意见——npm 侧 email 本已公开）、内网主机名变体
-- [ ] **Step 2.3:** 干净 clone → 构建 → 4999 tarball 线冒烟（红线 0a；两包 install/add 各一次）
-- [ ] **Step 2.4:** 报告落 `docs/test-reports/`，user 放行历史重写
+- [x] **Step 2.1:** gitleaks 8.30.1（临时下载二进制）+ 守门 --all 双轨扫描；**正确口径 = 干净 clone 的 tracked 面**（2060 文件/27MB，工作树全量口径的 1777 命中属本机噪音不可用）——30 命中全部分诊：真问题 2 类（`?token=` 启动/持久令牌 23 处/16 文件→`token=<redacted>`；LAN 网段 192.168[.]31.x 139+ 处→192.0.2.x），其余良性（SHA-256 完整性哈希、带端口测试 URL、合成密钥 fixture）；修复后复扫见报告
+- [x] **Step 2.2:** 附加手扫：作者身份 = `superd <superd@local>`（机器身份，非暴露）+ `mark1kwok <…users.noreply.github.com>`（GitHub 隐私形态）——无需泛化（可选：filter-repo mailmap 统一为 mark1kwok）；`/home/u1/` 1144 处（本机用户名 u1，形态已近匿名，建议接受；Rust helper 二进制内嵌构建路径无法 sed，可选 remap-path-prefix 重建）；`ssh://`/`~/.ssh` 命中均在发货文档示例与 remote 功能代码，属正常
+- [x] **Step 2.3:** 干净 clone 构建 + 4999 冒烟完成，详见 [验收报告](../../test-reports/2026-11-14-opensource-tree-acceptance.md)：clone 侧 better-dsh ✓ / super-dsh hub ✗（farm 类型依赖未声明；registry 实查四包已发布，devDeps 补救可行，列转 public 前待办）；4999 线 fresh pair 装机、门检 200/401、unit active；过程中发现并修复 launcher trust-host 被 sed 成占位域的功能性回归（参数化 `SUPERD_TEST_WAN_HOST` + untracked `.superd-test-local.sh` 注入，journal 证实真实域进 trusted-host）
+- [x] **Step 2.4:** 报告已落 [docs/test-reports/2026-11-14-opensource-tree-acceptance.md](../../test-reports/2026-11-14-opensource-tree-acceptance.md)。**⛔ 放行点 1 待 user**：批准进入 Task 3（filter-repo 历史重写）；转 public 前待办：super-dsh 构建 devDeps 声明（registry 已验证可行）、README build 章节、可选项（作者身份统一 / helper 二进制 remap 重建）
 
 ## Task 3 — 私有态全史重写、验证与切公开（⛔ 放行点 2：force push；⛔ 放行点 3：转 public）
 
@@ -88,7 +88,7 @@
 **Interfaces (Produces):** 公开仓 = 全历史（637 commits 风格、64 tags 重写后全量保留）且逐 commit 验证零泄露。
 
 - [ ] **Step 3.1:** 重写前备份：`git clone --mirror` 至仓外安全位置（+ `super-dsh-private-YYYYMMDD.bundle`）
-- [ ] **Step 3.2:** filter-repo 执行：`--path .superpowers/ --path docs/60_exploration-and-research/ --path docs/80_upstream-docs-and-skills/ --invert-paths`（全本地目录整体出史；末者为 87MB vendor 研究库）+ `--replace-text`（真实域名→internal.test、真实 IP（尾 .3）→192.0.2.3；devN 不替换）
+- [ ] **Step 3.2:** filter-repo 执行：`--path .superpowers/ --path docs/60_exploration-and-research/ --path docs/80_upstream-docs-and-skills/hermes-dev-skill/ --invert-paths`（全本地目录整体出史；末者为 77MB Hermes 镜像+抓取 scrap；**dsh-dev-skill 保留在史**）+ `--replace-text scripts/filter-repo-replacements.local.txt`（真实词表 untracked，结构见 example：域名→internal.test、真实 IP→192.0.2.x、测试线令牌→token=<redacted>；devN 不替换）
 - [ ] **Step 3.3:** 全史逐 commit 验证：`git rev-list --all` 循环内 `git grep -lE <词表> <commit>` 零命中 + gitleaks 全史扫描 + tag 逐个抽查（重写后 tag 重打正确、0.3.5 树与重写前树语义等价——diff 仅限词表替换与移除路径）
 - [ ] **Step 3.4:** 本地环境跟进：origin force push（⛔ 放行点 2）；`.worktrees/` 各检出重建；本地分支/tags 重置到重写后哈希
 - [ ] **Step 3.5:** GitHub 门面：repo 转 public（⛔ 放行点 3）；加 topic `dsh-plugin`（市场 CI 前置要求）、`orchestration`、`multi-agent`（branding 落点）；description、social preview、About 链 npm 两包页
