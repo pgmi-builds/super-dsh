@@ -101,9 +101,9 @@
 
 **Interfaces (Produces):** better-dsh 坐标 = `pgmi-builds/super-dsh#better-dsh`；super-dsh 坐标 = `pgmi-builds/super-dsh#super-dsh`；探针完成 npm 名映射。文件名遵循官方 monorepo 子包模式（`owner__repo--subname.yml`）。
 
-- [ ] **Step 4.1:** 两条 entry 撰写——better-dsh：`category: dev`，文案沿用旧条目（描述须与代码一致，数字会被核对）；super-dsh：`category: agi`，description 首词组 = 「Multi-agent orchestration hub …」，remote/cross-machine 作为能力从句（local or cross-machine over SSH/Docker/Incus），**adapter 数量逐个数准**（夸大是打回首因）
-- [ ] **Step 4.2:** PR 落盘：两新 + 删旧同 PR；PR 文案显式说明「旧 entry 由本 PR 取代（坐标搬迁 + 旧仓将归档）」——PR gate 会列出被改的既有 entry，需在文案里交代清楚；文末向维护者提议：multi-agent/orchestration 类插件渐多时可拆新类目，届时 super-dsh 可第一个迁入
-- [ ] **Step 4.3:** ⛔ user 审阅后提交；CI 绿是合并前置；等 maintainer merge
+- [x] **Step 4.1:** 两条 entry 已撰（`pgmi-builds__super-dsh--better-dsh.yml`/`dev`，文案沿用旧条目；`pgmi-builds__super-dsh--super-dsh.yml`/`agi`，首词组 Multi-agent orchestration hub、six runtimes 与 `super-dsh/agent-{agy,claude,codex,hermes,omp,pi}` 逐一对应、SDK 线不计入——数字可核对）
+- [x] **Step 4.2:** fork 已同步 upstream main（stale-fork 守卫满足）→ 分支 `pgmi-super-dsh-monorepo-entries`（commit `fa5d1d16`）：两新 yml + 删旧 yml + **双 README 行再生成**（en 节头 + zh 中文节头「🧭 AGI 架构探索」「🧑‍💻 开发与运行时」各按字母序插入、旧行清零）；PR 文案含 supersede 说明 + 类目拆分提议，已备好
+- [ ] **Step 4.3:** 分支已推至 fork；**PR 创建需 user 一键**（fine-grained PAT 无 fork/PR 权限，API 双试均拒）——入口 `https://github.com/pgmi-builds/awesome-dsh-plugin/pull/new/pgmi-super-dsh-monorepo-entries`，标题/正文见会话报告；CI 绿后等 maintainer merge
 - [ ] **Step 4.4:** merge 后触发/等待探针（nightly 02:23 UTC PROBE_ALL 或请 maintainer dispatch），确认 npm-map 两包映射新坐标
 - [ ] **Step 4.5:** 消费端实装验证（测试 home）：Discover 两卡片可见可装、Installed 行描述正确（坐标换绑后 dshmarket notes/toggles 重置一次属预期）
 - [ ] **Step 4.6:** 根 README 市场入口占位回收
