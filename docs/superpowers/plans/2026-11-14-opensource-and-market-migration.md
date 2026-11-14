@@ -103,8 +103,8 @@
 
 - [x] **Step 4.1:** 两条 entry 已撰（`pgmi-builds__super-dsh--better-dsh.yml`/`dev`，文案沿用旧条目；`pgmi-builds__super-dsh--super-dsh.yml`/`agi`，首词组 Multi-agent orchestration hub、six runtimes 与 `super-dsh/agent-{agy,claude,codex,hermes,omp,pi}` 逐一对应、SDK 线不计入——数字可核对）
 - [x] **Step 4.2:** fork 已同步 upstream main（stale-fork 守卫满足）→ 分支 `pgmi-super-dsh-monorepo-entries`（commit `fa5d1d16`）：两新 yml + 删旧 yml + **双 README 行再生成**（en 节头 + zh 中文节头「🧭 AGI 架构探索」「🧑‍💻 开发与运行时」各按字母序插入、旧行清零）；PR 文案含 supersede 说明 + 类目拆分提议，已备好
-- [x] **Step 4.3:** PR 已开：[awesome-dsh-plugin#15255](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/15255)（user 一键创建）；变更 = rename（删旧 better-dsh 条目 → 新坐标条目，git rename 识别）+ super-dsh 新条目 + 双 README，内容完整（旧文件分支上 404 已验证）；**等 CI 绿 + maintainer merge**
-- [ ] **Step 4.4:** merge 后触发/等待探针（nightly 02:23 UTC PROBE_ALL 或请 maintainer dispatch），确认 npm-map 两包映射新坐标
+- [x] **Step 4.3:** [#15255](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/15255) **已合并**（2026-11-14，maintainer fkysly；CI Submission gate/check 双绿）。评审产出两项：(a) **Copilot（真问题）**——`data/added-dates.json` 未迁移新 URL 日期基线（会让 better-dsh 显示为新上榜、扰乱 chronology/feed）→ 补丁分支 `pgmi-super-dsh-added-dates` 已推 fork（**2 行最小 diff**：新 URL=2026-08-29 迁移 + super-dsh=2026-11-14 定基；首版整文件重排已废弃重做），待 user 一键开 PR；(b) **maintainer 复验备注（产品安全项）**——合并时在 super-dsh 条目 en/zh 描述里补了「Its HTTP routes have no DSH access check, so a web page open in your browser could call them.」（hub HTTP 路由缺访问检查，浏览器内任意网页可调用）；建议修法 = handler 入口 `ctx.connection.requestRejection(req)` 或改 `ctx.connection.fetch.register` + 要求 POST `Content-Type: application/json`；**修完发新版后** maintainer 拿掉该半句（或按其邀请直接 PR 改 yml）——已列入开发待办
+- [ ] **Step 4.4:** npm-map 为 CI 生成物（main 上不存在）——等 nightly 02:23 UTC PROBE_ALL（约 2026-11-15 10:23 HKT）后确认两包映射新坐标；消费端验证（4.5）随后
 - [ ] **Step 4.5:** 消费端实装验证（测试 home）：Discover 两卡片可见可装、Installed 行描述正确（坐标换绑后 dshmarket notes/toggles 重置一次属预期）
 - [ ] **Step 4.6:** 根 README 市场入口占位回收
 
