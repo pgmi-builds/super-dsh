@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Example variant of start.sh — public placeholder copy. The real, machine-specific
+# start.sh lives locally (gitignored). Swap *.internal.test for your real hosts
+# (mapping convention: AGENTS.template.md / AGENTS.local.example.md).
 # start.sh — bring up the plugin-add test rig (test123): a CLEAN harness
 # checkout serving a profile whose plugins are PHYSICAL installs (tarball via
 # `dsh plugin add`), never workspace symlinks.

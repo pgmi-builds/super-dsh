@@ -112,3 +112,7 @@ client 半边有效）。installation-scope 重定向集合进程内冻结（`re
 `*-test` / `*-relay` 等）→ **停掉接管**；非测试监听（prod 3080/3081、未知进程）→ 拒绝并列出占用者，换口重试
 （`PORT=<空闲口>`，relay 自动跟随）。4999 有 Caddy `test.pc.internal.test`（wan 可见）——通道事实，非占用特权；
 非 Caddy 口默认自动拉 LAN relay（`LAN=1`，socat 只绑 LAN IP；`LAN=0` 仅限本机调试）。
+
+## 脚本形态
+
+Git 只入库 `start.example.sh`（占位域 `*.internal.test`）。本机真实 `start.sh`（真实域名/端口默认值）不入库。首次搭建：`cp start.example.sh start.sh`，按 `AGENTS.local.example.md` 的映射约定替换占位值。

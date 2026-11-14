@@ -34,3 +34,9 @@ scripts/leak-patterns.local.txt
 docs/80_upstream-docs-and-skills/
 .superpowers/
 .claude/
+
+# AGENTS 反转（2026-11-14 user 裁决）：auto-load 的 AGENTS.md 归本地（sync-agents.sh 生成），
+# Git 只放 AGENTS.template.md；seed 真实启动脚本归本地，Git 只放 *.example.sh
+/AGENTS.md
+.test/seed/test123/start.sh
+.test/seed/bun-test/start.sh

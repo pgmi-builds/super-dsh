@@ -1,6 +1,6 @@
 # Super D (superd) — Agent 开发总纲
 
-本文件保留项目定位、开发原则与操作红线；机制细节按需披露，不继续把命令、版本流水账和排障记录堆入根总纲。词汇表见 `CONTEXT.md`，设计正本见 `docs/`。**本机事实（凭据位置、测试线真实域名、目标机拓扑、本机参数）一律在 `AGENTS.local.md`（不入库，模板见 `AGENTS.local.example.md`）**：本文件只写任何克隆者都该遵守的原则，不写只关于某台机器的地址、路径与参数。
+本文件是**公开模板**（Git 上的原则层）。本地开发时，runtime 自动加载的是 `AGENTS.md`（按文件名），由 `scripts/sync-agents.sh` 生成为「本模板 + `AGENTS.local.md`（本机事实：凭据位置、测试线真实域名、目标机拓扑、本机参数）」，`AGENTS.md` 不入库。分层判据：**原则 = 任何克隆者都该遵守 → 写进本模板；事实 = 只关于某台机器 → 写进 `AGENTS.local.md`（其占位模板 `AGENTS.local.example.md` 入库）**。首次搭建：`cp AGENTS.local.example.md AGENTS.local.md` 填本机值 → `scripts/sync-agents.sh`。机制细节按需披露，不继续把命令、版本流水账和排障记录堆入总纲。词汇表见 `CONTEXT.md`，设计正本见 `docs/`。
 
 ---
 

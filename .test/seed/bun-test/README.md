@@ -31,3 +31,7 @@ PORT=4986 bash …                                     # 换端口
 
 取代旧 ad-hoc LAN 单元 `dsh-m1-lan`/`dsh-m1-relay`（4996/4997、`.scratch/m1-lan-home`——该 home 的
 workspace 曾指向旧仓库路径，制造过 `dashr/port/.git/dsh-hooks` 残留）。旧单元已停用删除。
+
+## 脚本形态
+
+Git 只入库 `start.example.sh`（占位域 `*.internal.test`）。本机真实 `start.sh`（真实域名/端口默认值）不入库。首次搭建：`cp start.example.sh start.sh`，按 `AGENTS.local.example.md` 的映射约定替换占位值。

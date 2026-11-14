@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | **硬私有** | 绝不能出现在公开树与公开历史：凭据、事故档案、涉密研究 | 物理出仓，`~/workspaces/base/…`（token 在 `base/secrets/`、事故在 `base/70_Incidents/`，维持现状） |
 | **软本地（全本地目录）** | 整目录都是机器局部内容：`.tests/`、`.test/home/`、`.scratch/`、`.agents/`、`/upstream`、`node_modules`、`*.tgz`、`graphify-out/`、`.venv/`、`docs/60_exploration-and-research/`、`docs/legacy/better-dash-local/`、`.superpowers/` | 树内 + `.gitignore`（现状已如此）；历史残留由 filter-repo 整体移除 |
-| **公开但脱敏** | 对其他开发者有用：`docs/`（含 test-reports 实测报告与计划）、`archive/`、`.test/` seed、AGENTS.md 原则层 | 保持 tracked，内容脱敏（主机名/域名/IP 泛化） |
+| **公开但脱敏** | 对其他开发者有用：`docs/`（含 test-reports 实测报告与计划）、`archive/`、`.test/` seed 文档与 example 脚本、`AGENTS.template.md` 原则层 | 保持 tracked，内容脱敏（主机名/域名/IP 泛化） |
 
 判据口诀（AGENTS.md 分层同款）：**原则 = 任何克隆者都该遵守的 → 入库；事实 = 只关于这台机器的 → 本地 overlay。**
 
@@ -48,28 +48,29 @@
 - ~~D2 脱敏口径~~ → **已裁决 + 2026-11-14 执行轮复审**：只泛化 actionable 标识——真实域名→`*.internal.test`、真实主机 IP（尾 .3）→RFC 5737 `192.0.2.x`；**dev1–dev5 主机名本身保留**（非 actionable：公开侧无地址语义；发货源码 `ssh:dev4` 等示例名被 byte-pin 测试锁定不动；docs 保留 devN 免除本地阅读翻译成本）；`10.0.0.5`/`10.0.0.8` 属发货示例串豁免；docker 标准网段豁免；端口保留；AGENTS.md 机器事实（npm 凭据路径、测试线真实域名、事故档案路径）下沉 `AGENTS.local.md`。
 - ~~D3 archive/tests 去留~~ → **已裁决：按用户规则**——(a) 全本地目录不入库；(b) 有公开价值的脱敏后保留（docs/test-reports、archive/、.test/ seed 均保留）。
 - ~~D4 super-dsh 市场类目~~ → **已裁决（2026-11-14 第三轮）：`agi`**——与既有 multi-agent 生态同类并列（informative 目的）；orchestration 定位由 description 首词组 + repo topics 承载（branding/marketing 目的）；PR 文案顺带向维护者提议未来拆 `orchestration` 类目（顺着其 taxonomy 演化机制，单插件不足以现在触发）。不自造枚举外的 category 值（CI 形状校验风险 + 大概率被维护者改回）。better-dsh 维持 `dev`。
+- **D5 AGENTS/脚本反转（2026-11-14 第四轮 user 裁决）**：runtime 按文件名 auto-load `AGENTS.md`，故 **`AGENTS.md` 归本地**（gitignored，由 `scripts/sync-agents.sh` 生成 = `AGENTS.template.md` + `AGENTS.local.md`，自动加载即得全文、不依赖模型跟随引用）；**Git 上放 `AGENTS.template.md`**（公开原则模板）+ `AGENTS.local.example.md`（事实片段模板）。seed 测试脚本同法：真实 `start.sh`（含本机地址/端口）本地化 ignore，Git 只入 `start.example.sh`（占位域）。devN 示例名保留终裁确认（无所谓即保留）。子包 `super-dsh/AGENTS.md`、`better-dsh/AGENTS.md` 为纯原则（脱敏后零本机事实），维持 tracked 不反转。
 
 - [x] **Step 0.1:** user 确认 D4 → `agi`（四个决策点全部关闭）
 
 ## Task 1 — 树内脱敏、AGENTS.md 分层与 LICENSE / 门面补全（本地，不出仓）
 
-**Files:** 约 305 个 tracked 文件内容替换；`AGENTS.md`、`super-dsh/AGENTS.md`、`better-dsh/AGENTS.md`（原则层改写）；`AGENTS.local.md`（新，untracked）、`AGENTS.local.example.md`（新，tracked 模板）、子包同名对应物（如需）；根 `.gitignore`（补 root `.superpowers/`、`AGENTS.local.md`、`scripts/leak-patterns.local.txt`）；`scripts/check-leaks.sh`（新，tracked 守门脚本）+ `scripts/leak-patterns.local.txt`（新，untracked）+ `scripts/leak-patterns.example`（新，tracked）；`super-dsh/LICENSE`（新）；根 `README.md`（公开门面）。
+**Files:** 约 305 个 tracked 文件内容替换；`AGENTS.template.md`（tracked 原则模板）、`AGENTS.local.md`（untracked 事实片段）、`AGENTS.local.example.md`（tracked）、`scripts/sync-agents.sh`（tracked 拼装）；`super-dsh/AGENTS.md`（原则层改写）；`.test/seed/*/start.sh`（untracked 真身）+ `start.example.sh`（tracked 占位）；根 `.gitignore`（`/AGENTS.md`、seed 真身、`AGENTS.local.md`、`scripts/leak-patterns.local.txt`、`docs/80_upstream-docs-and-skills/`、根 `.superpowers/`、`.claude/`）；`scripts/check-leaks.sh`（tracked）+ `leak-patterns.local.txt`（untracked）+ `leak-patterns.example`（tracked）；`super-dsh/LICENSE`（新）；根 `README.md`（公开门面）。
 
 **Interfaces (Produces):**
-- 泄露终检 = `scripts/check-leaks.sh --all`：仅允许已知豁免（合成 fixture 与延期 seed 脚本）；`git ls-files` 无根 `.superpowers/` 与 `.claude/` 残留。
-- AGENTS.md 分层协议：`AGENTS.md`（tracked）只含原则与流程，含一行引用「本机操作事实（目标机地址、端口、凭据位置、脚本本机参数）见 `AGENTS.local.md`，不入库；模板见 `AGENTS.local.example.md`」；`AGENTS.local.md`（untracked）承载全部机器事实——dev3 地址、3080/3081、Caddy/域名、`~/workspaces/base/secrets/npm.env`、事故档案路径、4999 启动本机参数。本地 agent 链条：AGENTS.md 自动加载 → 按引用读 local → 拿到全部事实，便利性不变。
+- 泄露终检 = `scripts/check-leaks.sh --all`：仅允许已知豁免（`ssh-targets.spec.ts` 合成 PRIVATE KEY fixture）；`git ls-files` 无根 `.superpowers/`、`.claude/`、seed 真身、80_upstream 残留。
+- AGENTS 反转协议（D5）：`AGENTS.template.md`（tracked，公开原则）+ `AGENTS.local.md`（untracked，本机事实）--`scripts/sync-agents.sh`--> 本地 `AGENTS.md`（untracked，auto-load 自足全文）。实证：git mv 移走 AGENTS.md 后 runtime 即报 instructions removed，重新生成后全文（含事实段）恢复加载。
 - 守门脚本契约：`check-leaks.sh` 读 `leak-patterns.local.txt`（存在则附加）+ 内置通用形态（`npm_[A-Za-z0-9]{20,}`、`ghp_…`、`AKIA…`、IP 字面量），对 staged 内容非零退出；公开脚本本体零敏感串。
 
 - [x] **Step 1.1:** `AGENTS.local.md` 先建（npm 凭据、域名映射、目标机拓扑、本机参数、敏感词表五节）
 - [x] **Step 1.2:** 根 AGENTS.md（前言 + §〇.1.e + §七事故档案路径）与 super-dsh/AGENTS.md（端口条）原则层改写，机器事实改引 local overlay
 - [x] **Step 1.3:** `AGENTS.local.example.md` 模板；`.gitignore` 增补（`AGENTS.local.md`、`scripts/leak-patterns.local.txt`、`docs/80_upstream-docs-and-skills/`、根 `.superpowers/`）；`git rm -r --cached` 80_upstream（87MB vendor 研究库，含 ClawHub 抓取目录——packaging 测试仅用路径字面量不受影响）与根 `.superpowers/` 残留
 - [x] **Step 1.4:** 域名→`*.internal.test`（115 tracked 文件，排除 seed 运行时默认与本计划文件）；真实 IP（尾 .3）→192.0.2.3（machine-mesh 计划 + hub 两测试）；devN 保留（D2 复审）；受影响测试全绿（web-trust 15/15、hub 67/67）
-- [ ] **Step 1.4b:** seed 启动脚本运行时默认值参数化（`.test/seed/*/start.sh` 的 TRUST_HOSTS 默认与 echo 行）——真实域名改经 env 注入（值在 `AGENTS.local.md` §2），改后 4999 线重启 + 门检验证；**公开（Task 2/3）前必须完成**
+- [x] **Step 1.4b（D5 改道）:** seed 真实脚本本地化——`.test/seed/*/start.sh` `git rm --cached` + gitignore（磁盘原样，4999 线零影响），Git 入 `start.example.sh`（占位域 + 说明头）；两 seed README 补「脚本形态」段。原「env 参数化」方案作废（example 法更稳：真身字节不动，无需重启验证）
 - [x] **Step 1.5:** 守门三件套落地（`scripts/check-leaks.sh` + `leak-patterns.local.txt` + `leak-patterns.example`），接入 pre-commit，双向自测通过（干净过 / 泄露拦）
 - [x] **Step 1.6:** `super-dsh/LICENSE`（MIT © 2026 super-dsh contributors）；root LICENSE 版权行「DASHR contributors」（旧名）是否更新待 user 拍板；root THIRD_PARTY_NOTICES 暂缓（80_upstream 已出库，Task 2 复核是否仍需）
 - [ ] **Step 1.7:** 根 README 公开门面：目录结构、两包关系与安装命令、ADR 0016 边界一句话、market 入口占位
-- [ ] **Step 1.8:** 硬私有终检：`git ls-files` 对照三分类表逐目录比对
-- [ ] **Step 1.9:** commit（正常提交至当前历史）
+- [x] **Step 1.8:** 硬私有终检完成——`--all` 扫描仅剩 1 个良性合成 fixture；出库路径（80_upstream/.superpowers/.claude/seed 真身/AGENTS.md）`git ls-files` 零残留
+- [x] **Step 1.9:** 两轮 commit（`23dce9e` Task 1 主体；本轮 D5 反转收尾）
 
 ## Task 2 — 树验收（⛔ 放行点 1：历史重写与转公开前总检）
 

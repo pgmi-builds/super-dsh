@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Example variant of start.sh — public placeholder copy. The real, machine-specific
+# start.sh lives locally (gitignored). Swap *.internal.test for your real hosts
+# (mapping convention: AGENTS.template.md / AGENTS.local.example.md).
 # start.sh — bun distro artifact rig (bun-test): boots the COMPILED dashr binary.
 #
 # Unlike test123 (source-level rig), the artifact set here is FIXED per build:
