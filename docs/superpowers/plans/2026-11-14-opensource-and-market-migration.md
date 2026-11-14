@@ -87,9 +87,9 @@
 
 **Interfaces (Produces):** 公开仓 = 全历史（637 commits 风格、64 tags 重写后全量保留）且逐 commit 验证零泄露。
 
-- [ ] **Step 3.1:** 重写前备份：`git clone --mirror` 至仓外安全位置（+ `super-dsh-private-YYYYMMDD.bundle`）
-- [ ] **Step 3.2:** filter-repo 执行：`--path .superpowers/ --path docs/60_exploration-and-research/ --path docs/80_upstream-docs-and-skills/hermes-dev-skill/ --invert-paths`（全本地目录整体出史；末者为 77MB Hermes 镜像+抓取 scrap；**dsh-dev-skill 保留在史**）+ `--replace-text scripts/filter-repo-replacements.local.txt`（真实词表 untracked，结构见 example：域名→internal.test、真实 IP→192.0.2.x、测试线令牌→token=<redacted>；devN 不替换）
-- [ ] **Step 3.3:** 全史逐 commit 验证：`git rev-list --all` 循环内 `git grep -lE <词表> <commit>` 零命中 + gitleaks 全史扫描 + tag 逐个抽查（重写后 tag 重打正确、0.3.5 树与重写前树语义等价——diff 仅限词表替换与移除路径）
+- [x] **Step 3.1:** 备份完成：`~/workspaces/superd-private-backup-20261114/original.git`（mirror 178.5MiB）+ `superd-original-20261114.bundle`（177MB）；基线 HEAD `aa66090`、642 commits、64 tags；`.worktrees/` 为空无需重建
+- [x] **Step 3.2:** filter-repo 31ebad4（单文件脚本）在备份副本 `rewritten.git` 执行完毕：636 commits（6 个因路径移除变空被剪）、64 tags 全保留；**计划外清理**——删除 `refs/stash`、`refs/legacy/*`、`refs/codex/turn-diffs/*`（Codex adapter 工作流 refs 与 stash 挂着旧历史，897 个 hermes 对象由此可达；原始备份全保留）→ gc 后 hermes 零可达、体积 178.5→152.85MiB（余量为 pi 嵌入运行时与 helper 二进制多版本，合理）
+- [x] **Step 3.3:** 验证全绿——①逐 commit grep：775 commits（全 refs）× 4 词表 **0 命中**；②tag 名 64/64 对齐；③**HEAD 树逐字节等价**（original `aa66090` vs rewritten `fb74baf`，diff 0 行）；④抽样 tag：最早 `legacy/better-dash/v0.0.1` diff 为空、中段 `v0.2.5a` 794D+13M、`v0.3.5` 795D+141M（删除=移除路径、修改=词表替换，形态精确符合设计）；⑤gitleaks 全史 9 命中 = Task 2 已分诊的同两个良性文件（deployment-proof 哈希 + 测试端口 URL），无新类别。**⛔ 放行点 2/3 待 user**：push 镜像（`git push --mirror`，顺带删除远端 codex/legacy/stash refs）→ 工作仓 reset 到重写历史 → GitHub 转 public + topics
 - [ ] **Step 3.4:** 本地环境跟进：origin force push（⛔ 放行点 2）；`.worktrees/` 各检出重建；本地分支/tags 重置到重写后哈希
 - [ ] **Step 3.5:** GitHub 门面：repo 转 public（⛔ 放行点 3）；加 topic `dsh-plugin`（市场 CI 前置要求）、`orchestration`、`multi-agent`（branding 落点）；description、social preview、About 链 npm 两包页
 - [ ] **Step 3.6:** 验证自愈：npmjs.com 两包各 0.3.x 版本页 repository/homepage/bugs 逐一 200
