@@ -265,8 +265,9 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
               supportsReasoningEffort: false
 EOF
 fi
-echo "--- pnpm install (complete local pack, native default script policy)"
-(cd "$PROFILE_DIR" && $PNPM add "file:$TARBALL" "file:$DEV_WEBMCP" --prefer-offline)
+echo "--- install via dsh plugin add (the same path a real consumer takes;"
+echo "    2026-11-15 user ruling: the host owns its installer — no hand-rolled pnpm)"
+"$NODE_BIN" "$CLI" plugin --profile "$PROFILE" add "file:$TARBALL" "file:$DEV_WEBMCP"
 
 # ---- 3. boot via the repo build's dsh CLI (no custom boot code) ----
 # ---- test preparation (2026-10-10 test-only isolation; docs/07 §7) ----
