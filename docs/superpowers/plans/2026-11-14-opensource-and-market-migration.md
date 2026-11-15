@@ -93,7 +93,7 @@
 - [x] **Step 3.4:** `rewritten.git` `push --mirror` 完成（远端 codex/legacy/stash refs 一并清除；远端 master=重写基线 `fb74baf`）；工作仓 reset + cherry-pick 备份后的 docs 提交 → `3ab5bf18` 推送；工作树与重写前逐字节一致；64 tags force-fetch 同步；`.worktrees/` 原为空无需重建
 - [x] **Step 3.5:** repo 已 public（API 确认 `private:false`，匿名 200——user 在浏览器侧完成翻转；API 令牌无 admin-edit 权限）。**待 user 手动两项（2 分钟）**：①About description（建议文案见报告）②topics：`dsh-plugin`（市场 CI 前置）、`orchestration`、`multi-agent`、`deepseek-harness`、`claude-code`、`codex`
 - [x] **Step 3.6:** 自愈验证全绿——匿名 ls-remote master=`3ab5bf18`；两包子目录 / `AGENTS.template.md` / `THIRD_PARTY_NOTICES.md` 全 200；hermes scrap 404（出史确认）；npm 两包 homepage/repository 链接全部 200（此前公开 404 已痊愈）
-- [ ] **Step 3.7:** 观察窗口 24h：GitHub 侧树 gitleaks 复扫、traffic/watchers 无异常（进行中，2026-11-15 收口）
+- [x] **Step 3.7:** 观察窗收口（2026-11-15 12:26 HKT，19h 时点，无异常）：公开树 gitleaks 终扫 9 命中 = 既有良性集（哈希/端口 URL）；stars/watchers/forks 0-0-0、open issues 0、pushed_at 与本地一致；npm 两包子目录链接 200
 
 ## Task 4 — 插件市场两条 entry（⛔ 放行点 4：market PR）
 
@@ -104,7 +104,7 @@
 - [x] **Step 4.1:** 两条 entry 已撰（`pgmi-builds__super-dsh--better-dsh.yml`/`dev`，文案沿用旧条目；`pgmi-builds__super-dsh--super-dsh.yml`/`agi`，首词组 Multi-agent orchestration hub、six runtimes 与 `super-dsh/agent-{agy,claude,codex,hermes,omp,pi}` 逐一对应、SDK 线不计入——数字可核对）
 - [x] **Step 4.2:** fork 已同步 upstream main（stale-fork 守卫满足）→ 分支 `pgmi-super-dsh-monorepo-entries`（commit `fa5d1d16`）：两新 yml + 删旧 yml + **双 README 行再生成**（en 节头 + zh 中文节头「🧭 AGI 架构探索」「🧑‍💻 开发与运行时」各按字母序插入、旧行清零）；PR 文案含 supersede 说明 + 类目拆分提议，已备好
 - [x] **Step 4.3:** [#15255](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/15255) **已合并**（2026-11-14，maintainer fkysly；CI Submission gate/check 双绿）。评审产出两项：(a) **Copilot（真问题）**——`data/added-dates.json` 未迁移新 URL 日期基线（会让 better-dsh 显示为新上榜、扰乱 chronology/feed）→ 补丁分支 `pgmi-super-dsh-added-dates` 已推 fork（**2 行最小 diff**：新 URL=2026-08-29 迁移 + super-dsh=2026-11-14 定基；首版整文件重排已废弃重做），待 user 一键开 PR；(b) **maintainer 复验备注（产品安全项）**——合并时在 super-dsh 条目 en/zh 描述里补了「Its HTTP routes have no DSH access check, so a web page open in your browser could call them.」（hub HTTP 路由缺访问检查，浏览器内任意网页可调用）；建议修法 = handler 入口 `ctx.connection.requestRejection(req)` 或改 `ctx.connection.fetch.register` + 要求 POST `Content-Type: application/json`；**修完发新版后** maintainer 拿掉该半句（或按其邀请直接 PR 改 yml）——已列入开发待办
-- [ ] **Step 4.4:** npm-map 为 CI 生成物（main 上不存在）——等 nightly 02:23 UTC PROBE_ALL（约 2026-11-15 10:23 HKT）后确认两包映射新坐标；消费端验证（4.5）随后
+- [x] **Step 4.4:** 实查修正——npm-map.json 为 CI 内部产物、任何分支均不在仓（main/gh-pages 404），nightly 后亦不落盘；registry main 的双 entry yml 即消费者数据源（已 200 在册）→ 映射机制交维护者 CI，不再等待。4.5 消费端 Discover 亲验建议 user 顺带一瞥（Settings → Discover 搜 pgmi-builds）
 - [ ] **Step 4.5:** 消费端实装验证（测试 home）：Discover 两卡片可见可装、Installed 行描述正确（坐标换绑后 dshmarket notes/toggles 重置一次属预期）
 - [ ] **Step 4.6:** 根 README 市场入口占位回收
 
