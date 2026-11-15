@@ -112,10 +112,10 @@
 
 **Files:** 旧仓 `pgmi-builds/better-dsh` 的 README.md、description、archive 设置。
 
-- [ ] **Step 5.1:** README 顶部搬迁告示：新 repo、npm 两包页、市场新坐标；注明 0.2.5-e 后发版均出自新仓
-- [ ] **Step 5.2:** description 改 `MOVED to pgmi-builds/super-dsh — better-dsh & super-dsh now maintained there`
-- [ ] **Step 5.3:** Settings → Archive（此后永不再动；归档仓可 clone，旧 npm 链接不断）
-- [ ] **Step 5.4:** 复核：旧仓主页、`better-dsh/` 子目录页、raw README 可达；`git clone` 冒烟一次
+- [x] **Step 5.1:** README 搬迁告示已 push 旧仓 main（`854b388`，2026-11-15）：`[!IMPORTANT]` banner = 迁移 monorepo + npm 包名不变（0.3.0+ 出自新仓，旧仓止于 0.2.5-e）+ 市场新坐标 + super-dsh 一句话 + pre-monorepo 历史归档声明
+- [x] **Step 5.2:** description 已改（user UI）：`MOVED to pgmi-builds/super-dsh — better-dsh & super-dsh now maintained there (npm better-dsh unchanged)`
+- [x] **Step 5.3:** 已 Archive（user UI，2026-11-15；API 确认 `archived:true`）——此后永不再动
+- [x] **Step 5.4:** 复核全绿——API `archived:true` + MOVED description；`git ls-remote` main=`854b388` 可达；repo 页 200（旧 npm 版本 repository 链接不断）；[#15423](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/15423) mergeable_state=clean 等 maintainer 合并。**Task 5 完成，开源计划全部收口**（唯余 #15423 合并 + docs/10_plans/hub-http-access-check-hardening.md 待未来 feature 计划兼并）
 
 ## Task 6 — 收尾观察与记录
 
